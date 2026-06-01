@@ -1,0 +1,9 @@
+
+> erp_backend@1.0.0 dev
+> ts-node-dev --respawn src/main.ts
+
+[INFO] 13:28:56 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 6.0.3)
+◇ injected env (9) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+Server running on http://localhost:3000
+API Docs  → http://localhost:3000/api-docs
+::ffff:127.0.0.1 - - [18/May/2026:10:29:02 +0000] "GET /health HTTP/1.1" 200 15 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; tr-TR) WindowsPowerShell/5.1.26100.8457"

@@ -1,0 +1,98 @@
+enum LocationType {
+  MAIN_WAREHOUSE
+  SUB_WAREHOUSE
+  STATION_BUFFER
+  PROJECT_RESERVE
+}
+
+enum MovementType {
+  IN
+  OUT
+  TRANSFER
+  RETURN
+  ADJUSTMENT
+}
+
+enum ProposalStatus {
+  PENDING
+  APPROVED
+  CONVERTED
+  REJECTED
+}
+
+model Location {
+  id               String       @id
+  tenantId         String
+  parentLocationId String?
+  locationName     String
+  locationType     LocationType
+  isActive         Boolean      @default(true)
+
+  tenant         Tenant     @relation(fields: [tenantId], references: [id])
+  parentLocation Location?  @relation("LocationHierarchy", fields: [parentLocationId], references: [id])
+  subLocations   Location[] @relation("LocationHierarchy")
+
+  balances        StockBalance[]
+  movementsSource StockMovement[] @relation("SourceLocation")
+  movementsDest   StockMovement[] @relation("DestLocation")
+
+  @@index([tenantId])
+  @@index([parentLocationId])
+}
+
+model StockBalance {
+  id               String   @id
+  tenantId         String
+  articleId        String
+  locationId       String
+  currentQuantity  Float    @default(0)
+  reservedQuantity Float    @default(0)
+  updatedAt        DateTime @updatedAt
+
+  article  Article  @relation(fields: [articleId], references: [id])
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@unique([articleId, locationId])
+  @@index([tenantId])
+}
+
+model StockMovement {
+  id                    String       @id
+  tenantId              String
+  articleId             String
+  movementType          MovementType
+  quantity              Float
+  sourceLocationId      String?
+  destinationLocationId String?
+  transactionDate       DateTime     @default(now())
+  employeeId            String
+  referenceId           String? // Proje ID, İhale ID veya Üretim Emri ID
+  description           String?      @db.Text
+
+  article             Article   @relation(fields: [articleId], references: [id])
+  sourceLocation      Location? @relation("SourceLocation", fields: [sourceLocationId], references: [id])
+  destinationLocation Location? @relation("DestLocation", fields: [destinationLocationId], references: [id])
+  employee            Employee  @relation(fields: [employeeId], references: [id])
+
+  @@index([tenantId])
+  @@index([articleId])
+  @@index([employeeId])
+}
+
+model PurchaseProposal {
+  id               String         @id
+  tenantId         String
+  articleId        String
+  proposedQuantity Float
+  supplierId       String? // İleride Supplier tablosu gelince bağlanabilir
+  status           ProposalStatus @default(PENDING)
+  createdAt        DateTime       @default(now())
+  resolvedAt       DateTime?
+  resolvedByEmpId  String?
+
+  article    Article   @relation(fields: [articleId], references: [id])
+  resolvedBy Employee? @relation(fields: [resolvedByEmpId], references: [id])
+
+  @@index([tenantId])
+  @@index([articleId])
+}

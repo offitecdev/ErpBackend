@@ -1,0 +1,235 @@
+enum ProjectStatus {
+  AWAITING_APPROVAL
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum AppointmentStatus {
+  AVAILABLE
+  BOOKED
+  COMPLETED
+  CANCELLED
+}
+
+model Project {
+  id            String        @id
+  tenantId      String
+  customerId    String
+  tenderId      String?       @unique
+  managerId     String?
+  projectName   String
+  status        ProjectStatus @default(AWAITING_APPROVAL)
+  plannedBudget Float         @default(0)
+  actualCost    Float         @default(0)
+  overtimeHourlyRate Float     @default(0)
+  overtimeTolerancePercent Float @default(15)
+
+  startDate DateTime?
+  endDate   DateTime?
+
+  bookingToken String? @unique @db.VarChar(128)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  customer Customer  @relation(fields: [customerId], references: [id])
+  tender   Tender?   @relation(fields: [tenderId], references: [id])
+  manager  Employee? @relation("ProjectManager", fields: [managerId], references: [id])
+
+  phases            ProjectPhase[]
+  reports           ProjectReport[]
+  expenses          ProjectExpense[]
+  appointments      Appointment[]
+  projectVariations ProjectVariation[]
+  extraMaterials    ProjectExtraMaterial[]
+  shipments         Shipment[]
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+model ProjectPhase {
+  id                 String  @id
+  projectId          String
+  phaseName          String
+  progressPercentage Float   @default(0)
+  isCompleted        Boolean @default(false)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model ProjectReport {
+  id         String   @id
+  projectId  String
+  employeeId String
+  reportDate DateTime @default(now())
+  reportType String
+
+  workDate       DateTime @default(now())
+  startedAt      DateTime?
+  endedAt        DateTime?
+  workedMinutes  Int     @default(0)
+  plannedMinutesForDay Int @default(0)
+  overtimeMinutes Int    @default(0)
+  overtimeHourlyRate Float @default(0)
+  overtimeCost   Float   @default(0)
+  operationsDone String  @db.Text
+  technicalNotes String? @db.Text
+
+  customerSignature String? @db.LongText
+  isSigned          Boolean @default(false)
+
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee      Employee         @relation(fields: [employeeId], references: [id])
+  usedMaterials ReportMaterial[]
+
+  @@index([projectId])
+  @@index([employeeId])
+}
+
+model ReportMaterial {
+  id         String @id
+  reportId   String
+  articleId  String?
+  quantity   Float
+  costAtTime Float
+
+  report     ProjectReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  article    Article?      @relation(fields: [articleId], references: [id])
+  material   Material?     @relation(fields: [materialId], references: [id])
+  materialId String?
+
+  @@index([reportId])
+  @@index([articleId])
+}
+
+model ProjectExpense {
+  id          String   @id
+  projectId   String
+  expenseType String
+  amount      Float
+  description String?  @db.Text
+  expenseDate DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model Appointment {
+  id         String            @id
+  tenantId   String
+  projectId  String?
+  customerId String?
+  startTime  DateTime
+  endTime    DateTime
+  status     AppointmentStatus @default(AVAILABLE)
+  notes      String?           @db.Text
+  isLocked   Boolean           @default(false)
+  tenant     Tenant            @relation(fields: [tenantId], references: [id])
+  project    Project?          @relation(fields: [projectId], references: [id])
+  customer   Customer?         @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@index([startTime, endTime])
+}
+
+model OfferScheduleSlot {
+  id          String   @id
+  tenantId    String
+  tenderId    String
+  customerId  String
+  startTime   DateTime
+  endTime     DateTime
+  notes       String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  tender   Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenderId])
+  @@index([customerId])
+  @@index([startTime, endTime])
+}
+
+model ProjectExtraMaterial {
+  id          String   @id
+  projectId   String
+  materialId  String
+  quantity    Float
+  unitPrice   Float
+  description String?  @db.Text
+  addedAt     DateTime @default(now())
+
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id])
+
+  @@index([projectId])
+  @@index([materialId])
+}
+
+model ProjectVariation {
+  id            String  @id
+  projectId     String
+  requestedById String
+  materialId    String
+  quantity      Float
+  description   String? @db.Text
+  status        String  @default("PENDING")
+  costAtTime    Float
+
+  createdAt    DateTime  @default(now())
+  resolvedById String?
+  resolvedAt   DateTime?
+
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id])
+
+  @@index([projectId])
+}
+
+model Material {
+  id            String  @id
+  tenantId      String
+  serialId      String  @unique
+  name          String
+  stockQuantity Float   @default(0)
+  unitCost      Float   @default(0)
+  isActive      Boolean @default(true)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  reportUsages ReportMaterial[]
+  variations   ProjectVariation[]
+  extraMaterialUsages ProjectExtraMaterial[]
+  tenderUsages TenderMaterialUsage[]
+  positionMappings PositionMaterialMapping[]
+
+  @@index([tenantId])
+}
+
+model MailSetting {
+  id           String   @id
+  tenantId     String   @unique
+  fromName     String?
+  fromEmail    String?
+  replyTo      String?
+  smtpHost     String?
+  smtpPort     Int      @default(587)
+  smtpSecure   Boolean  @default(false)
+  smtpUser     String?
+  smtpPassword String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}

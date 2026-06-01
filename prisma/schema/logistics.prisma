@@ -1,0 +1,45 @@
+enum ShipmentStatus {
+  UNPAID
+  PAID
+  DELAYED
+  CANCELLED
+}
+
+model Shipment {
+  id                  String         @id
+  tenantId            String
+  customerId          String
+  projectId           String?
+  
+  foNumber            String?        @unique
+  cmrNumber           String?        @unique
+  awNumber            String?        @unique
+
+  carrierCompany      String?
+
+  productDescription  String?        @db.Text
+  quantity            Float?
+  unit                String?
+  grossWeight         Float?
+  netWeight           Float?
+  dimensions          String?
+  extraNotes          String?        @db.Text
+
+  shipmentDate        DateTime?
+  eta                 DateTime?     
+  status              ShipmentStatus @default(UNPAID)
+  invoiceUrl          String?        @db.LongText
+  autoMarkDelayed     Boolean        @default(false)
+  requireInvoiceForPaid Boolean      @default(true)
+
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  tenant              Tenant         @relation(fields: [tenantId], references: [id])
+  customer            Customer       @relation(fields: [customerId], references: [id])
+  project             Project?       @relation(fields: [projectId], references: [id])
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([projectId])
+}

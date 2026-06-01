@@ -1,0 +1,38 @@
+CREATE TABLE IF NOT EXISTS `Shipment` (
+  `id` VARCHAR(191) NOT NULL,
+  `tenantId` VARCHAR(191) NOT NULL,
+  `customerId` VARCHAR(191) NOT NULL,
+  `projectId` VARCHAR(191) NULL,
+  `foNumber` VARCHAR(191) NULL,
+  `cmrNumber` VARCHAR(191) NULL,
+  `awNumber` VARCHAR(191) NULL,
+  `carrierCompany` VARCHAR(191) NULL,
+  `productDescription` TEXT NULL,
+  `quantity` DOUBLE NULL,
+  `unit` VARCHAR(191) NULL,
+  `grossWeight` DOUBLE NULL,
+  `netWeight` DOUBLE NULL,
+  `dimensions` VARCHAR(191) NULL,
+  `extraNotes` TEXT NULL,
+  `shipmentDate` DATETIME(3) NULL,
+  `eta` DATETIME(3) NULL,
+  `status` ENUM('UNPAID', 'PAID', 'DELAYED', 'CANCELLED') NOT NULL DEFAULT 'UNPAID',
+  `invoiceUrl` LONGTEXT NULL,
+  `autoMarkDelayed` BOOLEAN NOT NULL DEFAULT false,
+  `requireInvoiceForPaid` BOOLEAN NOT NULL DEFAULT true,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `Shipment_foNumber_key` (`foNumber`),
+  UNIQUE INDEX `Shipment_cmrNumber_key` (`cmrNumber`),
+  UNIQUE INDEX `Shipment_awNumber_key` (`awNumber`),
+  INDEX `Shipment_tenantId_idx` (`tenantId`),
+  INDEX `Shipment_customerId_idx` (`customerId`),
+  INDEX `Shipment_projectId_idx` (`projectId`),
+  CONSTRAINT `Shipment_tenantId_fkey` FOREIGN KEY (`tenantId`) REFERENCES `Tenant`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `Shipment_customerId_fkey` FOREIGN KEY (`customerId`) REFERENCES `Customer`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `Shipment_projectId_fkey` FOREIGN KEY (`projectId`) REFERENCES `Project`(`id`) ON DELETE SET NULL ON UPDATE CASCADE
+);
+
+ALTER TABLE `Shipment` ADD COLUMN IF NOT EXISTS `autoMarkDelayed` BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE `Shipment` ADD COLUMN IF NOT EXISTS `requireInvoiceForPaid` BOOLEAN NOT NULL DEFAULT true;

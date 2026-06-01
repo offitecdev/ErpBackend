@@ -1,0 +1,4 @@
+◇ injected env (9) from .env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+Server running on http://localhost:3000
+API Docs  → http://localhost:3000/api-docs
+::ffff:127.0.0.1 - - [18/May/2026:10:31:52 +0000] "GET /health HTTP/1.1" 200 15 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; tr-TR) WindowsPowerShell/5.1.26100.8457"

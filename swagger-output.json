@@ -1,0 +1,1940 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "OFFITEC ERP API",
+    "version": "1.0.0",
+    "description": "OFFITEC Kurumsal ERP Sistemi API Dokümantasyonu"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000/api/v1"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "Hata mesajı burada yazar."
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "admin@offitec.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "123456"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "employee": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "firstName": {
+                "type": "string"
+              },
+              "lastName": {
+                "type": "string"
+              },
+              "tenantId": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "TenantCreateRequest": {
+        "type": "object",
+        "required": [
+          "tenantName"
+        ],
+        "properties": {
+          "tenantName": {
+            "type": "string",
+            "example": "OFFITEC Merkez"
+          },
+          "parentTenantId": {
+            "type": "string",
+            "nullable": true,
+            "example": "Alt şubeyse buraya üst şirketin IDsi yazılır"
+          }
+        }
+      },
+      "TenantUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "tenantName": {
+            "type": "string",
+            "example": "OFFITEC Yeni İsim"
+          },
+          "isActive": {
+            "type": "boolean",
+            "example": false
+          },
+          "parentTenantId": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "TenantResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenantName": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "parentTenantId": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateEmployeeRequest": {
+        "type": "object",
+        "required": [
+          "firstName",
+          "lastName",
+          "email",
+          "password"
+        ],
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "example": "Ahmet"
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Yilmaz"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "ahmet.yilmaz@offitec.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "SecurePassword123!"
+          },
+          "title": {
+            "type": "string",
+            "example": "Senior Developer"
+          },
+          "departmentId": {
+            "type": "string",
+            "example": "it-dept"
+          },
+          "roleName": {
+            "type": "string",
+            "example": "Mühendis"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+90 555 123 4567"
+          },
+          "address": {
+            "type": "string",
+            "example": "İstanbul, Türkiye"
+          },
+          "hireDate": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-01-15T00:00:00Z"
+          },
+          "annualLeaveEntitlement": {
+            "type": "integer",
+            "example": 14
+          },
+          "notes": {
+            "type": "string",
+            "example": "Personel hakkında not"
+          }
+        }
+      },
+      "UpdateEmployeeRequest": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "departmentId": {
+            "type": "string"
+          },
+          "roleName": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "annualLeaveEntitlement": {
+            "type": "integer"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "terminationDate": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateLeaveRequest": {
+        "type": "object",
+        "required": [
+          "leaveTypeId",
+          "startDate",
+          "endDate"
+        ],
+        "properties": {
+          "leaveTypeId": {
+            "type": "string",
+            "example": "789a1234-b56c-78de-f901-234567890123"
+          },
+          "startDate": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-06-01T00:00:00Z"
+          },
+          "endDate": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-06-10T00:00:00Z"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "example": "Yaz tatili"
+          }
+        }
+      },
+      "EvaluateLeaveRequest": {
+        "type": "object",
+        "required": [
+          "isapproved"
+        ],
+        "properties": {
+          "isapproved": {
+            "type": "boolean",
+            "example": true
+          }
+        }
+      },
+      "CreateCustomerRequest": {
+        "type": "object",
+        "required": [
+          "companyName"
+        ],
+        "properties": {
+          "companyName": {
+            "type": "string",
+            "example": "Tech Corp A.Ş."
+          },
+          "segment": {
+            "type": "string",
+            "example": "Enterprise"
+          },
+          "taxOffice": {
+            "type": "string",
+            "example": "Mecidiyeköy"
+          },
+          "taxNumber": {
+            "type": "string",
+            "example": "1234567890"
+          },
+          "address": {
+            "type": "string",
+            "example": "Levent, İstanbul"
+          },
+          "mainPhone": {
+            "type": "string",
+            "example": "+90 212 123 45 67"
+          },
+          "mainEmail": {
+            "type": "string",
+            "format": "email",
+            "example": "info@techcorp.com"
+          }
+        }
+      },
+      "AddCustomerNoteRequest": {
+        "type": "object",
+        "required": [
+          "noteText",
+          "noteType"
+        ],
+        "properties": {
+          "noteText": {
+            "type": "string",
+            "example": "Müşteri ile SLA sözleşmesi yenilendi."
+          },
+          "noteType": {
+            "type": "string",
+            "enum": [
+              "internal",
+              "technical"
+            ],
+            "example": "internal"
+          },
+          "isHighlight": {
+            "type": "boolean",
+            "description": "Kritik not vurgulama",
+            "example": true
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/articles": {
+      "get": {
+        "tags": [
+          "Articles"
+        ],
+        "summary": "Ürün/Malzeme listesini getir (search, kategori, stok özetli)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "onlyActive",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeStock",
+            "schema": {
+              "type": "boolean",
+              "description": "Stok bakiyelerini de döndür"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Articles"
+        ],
+        "summary": "Yeni ürün/malzeme oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/articles/lookup/{code}": {
+      "get": {
+        "tags": [
+          "Articles"
+        ],
+        "summary": "Stok kodu veya barkod ile ürünü getir (Barkod tarayıcı)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/articles/{id}": {
+      "get": {
+        "tags": [
+          "Articles"
+        ],
+        "summary": "Ürün detayı",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "Articles"
+        ],
+        "summary": "Ürünü güncelle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Articles"
+        ],
+        "summary": "Ürünü sil",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/attendance/check-in": {
+      "post": {
+        "tags": [
+          "Attendance"
+        ],
+        "summary": "Personel giriş kaydı oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Giriş kaydedildi"
+          },
+          "400": {
+            "description": "Hata (zaten giriş yapılmış vb.)"
+          }
+        }
+      }
+    },
+    "/attendance/check-out": {
+      "post": {
+        "tags": [
+          "Attendance"
+        ],
+        "summary": "Personel çıkış kaydı oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Çıkış kaydedildi"
+          },
+          "400": {
+            "description": "Hata (giriş bulunamadı vb.)"
+          }
+        }
+      }
+    },
+    "/attendance": {
+      "get": {
+        "tags": [
+          "Attendance"
+        ],
+        "summary": "Devam kayıtlarını listele (tarih bazlı)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Tarih filtresi (YYYY-MM-DD)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Devam listesi"
+          },
+          "401": {
+            "description": "Yetkisiz"
+          }
+        }
+      }
+    },
+    "/attendance/{id}": {
+      "patch": {
+        "tags": [
+          "Attendance"
+        ],
+        "summary": "Devam kaydını manuel düzelt (İK yetkisi)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "checkInTime": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "checkOutTime": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Kayıt güncellendi (audit loglu)"
+          },
+          "400": {
+            "description": "Hata"
+          }
+        }
+      }
+    },
+    "/attendance/me/today": {
+      "get": {
+        "tags": [
+          "Attendance"
+        ],
+        "summary": "Giriş yapan kullanıcının bugünkü giriş-çıkış bilgisini getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Kullanıcı girişi (JWT token alır)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Başarılı giriş",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Geçersiz kimlik bilgileri",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me/permissions": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Giriş yapan kullanıcının yetkilerini getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Yetki listesi",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "permissions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Yetkisiz"
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Giriş yapan kullanıcının bilgilerini getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Kullanıcı bilgileri",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Employee"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Yetkisiz"
+          }
+        }
+      }
+    },
+    "/customers": {
+      "get": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Müşteri Listesini Getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "isActive",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "segment",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Müşteri listesi"
+          },
+          "401": {
+            "description": "Yetkisiz"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Yeni Müşteri Oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCustomerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Müşteri başarıyla oluşturuldu"
+          },
+          "400": {
+            "description": "Geçersiz istek"
+          }
+        }
+      }
+    },
+    "/customers/{id}": {
+      "patch": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Müşteri bilgilerini güncelle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "companyName": {
+                    "type": "string"
+                  },
+                  "segment": {
+                    "type": "string"
+                  },
+                  "taxOffice": {
+                    "type": "string"
+                  },
+                  "taxNumber": {
+                    "type": "string"
+                  },
+                  "address": {
+                    "type": "string"
+                  },
+                  "mainPhone": {
+                    "type": "string"
+                  },
+                  "mainEmail": {
+                    "type": "string"
+                  },
+                  "isActive": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Müşteri güncellendi"
+          },
+          "400": {
+            "description": "Geçersiz istek"
+          }
+        }
+      }
+    },
+    "/customers/{id}/dashboard": {
+      "get": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Müşteri 360° Genel Bakış Paneli (Dashboard) Getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard verisi başarıyla getirildi"
+          },
+          "404": {
+            "description": "Müşteri bulunamadı"
+          }
+        }
+      }
+    },
+    "/customers/{id}/notes": {
+      "post": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Müşteriye Not Ekle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddCustomerNoteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Not başarıyla eklendi"
+          }
+        }
+      }
+    },
+    "/customers/{id}/activities": {
+      "post": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Müşteri Zaman Çizelgesine Aktivite Ekle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "activityType": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "activityDate": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Aktivite kaydedildi."
+          }
+        }
+      }
+    },
+    "/customers/{id}/documents": {
+      "post": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Müşteriye Ait Doküman Yükle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fileName": {
+                    "type": "string"
+                  },
+                  "fileUrl": {
+                    "type": "string"
+                  },
+                  "fileType": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Doküman meta verisi kaydedildi."
+          }
+        }
+      }
+    },
+    "/customers/{id}/tenders": {
+      "get": {
+        "tags": [
+          "CRM"
+        ],
+        "summary": "Belirli bir müşteriye ait tüm ihaleleri/teklifleri listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/employees": {
+      "post": {
+        "tags": [
+          "Employees"
+        ],
+        "summary": "Yeni çalışan oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEmployeeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Çalışan oluşturuldu"
+          },
+          "400": {
+            "description": "Geçersiz veri",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Yetkisiz"
+          },
+          "403": {
+            "description": "Erişim reddedildi"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Employees"
+        ],
+        "summary": "Çalışan listesini getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "isActive",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Aktif / pasif filtresi"
+          },
+          {
+            "in": "query",
+            "name": "departmentId",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Departman ID"
+          },
+          {
+            "in": "query",
+            "name": "roleName",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Rol filtresi"
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Ad/soyad/e-posta arama"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Çalışan listesi",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Yetkisiz"
+          },
+          "403": {
+            "description": "Erişim reddedildi"
+          }
+        }
+      }
+    },
+    "/employees/{id}": {
+      "get": {
+        "tags": [
+          "Employees"
+        ],
+        "summary": "Personel detayını getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Personel ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Personel detayı"
+          },
+          "404": {
+            "description": "Personel bulunamadı"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Employees"
+        ],
+        "summary": "Personel bilgilerini güncelle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Personel ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateEmployeeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Personel güncellendi"
+          },
+          "400": {
+            "description": "Geçersiz veri"
+          },
+          "404": {
+            "description": "Personel bulunamadı"
+          }
+        }
+      }
+    },
+    "/employees/{id}/deactivate": {
+      "patch": {
+        "tags": [
+          "Employees"
+        ],
+        "summary": "Personeli Pasife Alır (Soft Delete)"
+      }
+    },
+    "/inventory/locations": {
+      "get": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Tüm depoları ve lokasyonları listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Yeni bir lokasyon (Depo/İstasyon) oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "locationName": {
+                    "type": "string"
+                  },
+                  "locationType": {
+                    "type": "string",
+                    "enum": [
+                      "MAIN_WAREHOUSE",
+                      "SUB_WAREHOUSE",
+                      "STATION_BUFFER",
+                      "PROJECT_RESERVE"
+                    ]
+                  },
+                  "parentLocationId": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/inventory/balances": {
+      "get": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Anlık stok durumunu ve bakiyeleri getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "locationId",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/inventory/dashboard": {
+      "get": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Stok dashboard (KPI, kritik stok, satın alma önerileri, lokasyonlar)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/inventory/articles/summary": {
+      "get": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Ürünleri stok bakiyeleri ile birlikte özet olarak getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/inventory/movements/scan": {
+      "post": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Barkod / Ürün kodu ile stok hareketi (Giriş/Çıkış/Transfer) kaydet (Sistemin Kalbi)",
+        "description": "Bu endpoint okutulan barkodu kontrol eder, yetkisiz işlemi veya eksi bakiyeyi engeller. Kritik stoğa düşerse otomatik satın alma talebi fırlatır.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "codeOrBarcode": {
+                    "type": "string",
+                    "description": "Okutulan barkod veya stok kodu"
+                  },
+                  "movementType": {
+                    "type": "string",
+                    "enum": [
+                      "IN",
+                      "OUT",
+                      "TRANSFER",
+                      "RETURN",
+                      "ADJUSTMENT"
+                    ]
+                  },
+                  "quantity": {
+                    "type": "number"
+                  },
+                  "sourceLocationId": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "destLocationId": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "referenceId": {
+                    "type": "string",
+                    "nullable": true,
+                    "description": "Proje veya Üretim Emri ID"
+                  },
+                  "description": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/inventory/movements/{articleId}": {
+      "get": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Bir ürüne ait tüm denetim izini (Audit Ledger / Hareket geçmişi) getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/inventory/proposals": {
+      "get": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Kritik stok seviyesi nedeniyle otomatik oluşan satın alma önerilerini listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/inventory/proposals/{id}/resolve": {
+      "patch": {
+        "tags": [
+          "Inventory"
+        ],
+        "summary": "Satın alma önerisini onayla veya reddet",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "isApproved": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/leaves/types": {
+      "get": {
+        "tags": [
+          "Leaves"
+        ],
+        "summary": "İzin türlerini listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "İzin türleri listesi"
+          },
+          "401": {
+            "description": "Yetkisiz"
+          }
+        }
+      }
+    },
+    "/leaves": {
+      "get": {
+        "tags": [
+          "Leaves"
+        ],
+        "summary": "İzin taleplerini listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Durum filtresi (Pending, Approved, Rejected)"
+          },
+          {
+            "in": "query",
+            "name": "all",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true ise tüm tenant izinleri, false/yoksa sadece kendi izinleri"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "İzin listesi"
+          },
+          "401": {
+            "description": "Yetkisiz"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Leaves"
+        ],
+        "summary": "Yeni izin talebi oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLeaveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "İzin talebi oluşturuldu"
+          },
+          "400": {
+            "description": "Geçersiz veri",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Yetkisiz"
+          },
+          "403": {
+            "description": "Erişim reddedildi"
+          }
+        }
+      }
+    },
+    "/leaves/{id}/evaluate": {
+      "patch": {
+        "tags": [
+          "Leaves"
+        ],
+        "summary": "İzin talebini onayla veya reddet",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "İzin talebi ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluateLeaveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "İşlem tamamlandı"
+          },
+          "400": {
+            "description": "Geçersiz veri",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Yetkisiz"
+          },
+          "403": {
+            "description": "Erişim reddedildi"
+          }
+        }
+      }
+    },
+    "/tenants": {
+      "post": {
+        "tags": [
+          "Tenants"
+        ],
+        "summary": "Yeni Şirket (Tenant) veya Şube (Sub-Tenant) oluşturur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Başarıyla oluşturuldu",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Hata durumu",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tenants/{id}": {
+      "patch": {
+        "tags": [
+          "Tenants"
+        ],
+        "summary": "Şirket / Şube bilgilerini günceller",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Güncellenecek Tenant ID'si"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Başarıyla güncellendi",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Geçersiz istek",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tenders": {
+      "get": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "İhale/teklif listesini getir (filtre destekli)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "customerId",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "Draft",
+                "Approved",
+                "Exported"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Sıfırdan boş bir teklif (taslak) oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}": {
+      "delete": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Taslak teklifi sil",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "İhale detaylarını ve hiyerarşik pozisyonlarını getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/positions": {
+      "post": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Teklif içerisine manuel pozisyon ekle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/positions/{positionId}": {
+      "patch": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Pozisyon açıklaması, miktar ve birimini güncelle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Taslak teklifteki pozisyonu ve alt pozisyonlarını sil",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/import": {
+      "post": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "CRB/SIA 451 Dosyasını İçe Aktar (Parse & Validate)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/positions/{positionId}/calculate": {
+      "post": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Bir pozisyonun maliyetlerini hesapla ve kaydet",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/version": {
+      "post": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "İhalenin yeni bir versiyonunu oluştur (Snapshot)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/approve": {
+      "patch": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Teklifi Onayla (Fiyatları kilitler)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/export": {
+      "post": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Onaylanmış teklifi dışa aktar (SIA/CRBX veya PDF)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Teklifi PDF veya XML çıktısı için hiyerarşik formatta dışa aktarır",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "format",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PDF",
+                "CRBX",
+                "SIA451"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/positions/{positionId}/articles": {
+      "post": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "İhale pozisyonuna dahili ürün (BOM) bağlar ve malzeme maliyetini otomatik hesaplar.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/positions/{positionId}/articles/{mappingId}": {
+      "delete": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Pozisyondan ürün eşleştirmesini kaldırır ve malzeme maliyetini yeniden hesaplar",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/report": {
+      "get": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "İhale için BKP / NPK bazlı kârlılık ve maliyet özet raporunu getirir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tenders/{id}/activities": {
+      "get": {
+        "tags": [
+          "Tender"
+        ],
+        "summary": "Bu teklife ait kullanıcı aktivitelerini (kim ne yaptı) getirir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    }
+  },
+  "tags": []
+}

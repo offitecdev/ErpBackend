@@ -1,0 +1,178 @@
+enum TenderFormat {
+  SIA451
+  CRBX
+}
+
+enum TenderStatus {
+  Draft
+  Approved
+  Exported
+}
+
+model Tender {
+  id                  String       @id
+  tenantId            String
+  customerId          String
+  projectId           String?
+  tenderNumber        String
+  version             Int          @default(1)
+  format              TenderFormat
+  validUntil          DateTime?
+  status              TenderStatus @default(Draft)
+  offerMailSentAt     DateTime?
+  offerAcceptedAt     DateTime?
+  offerMailRecipient  String?
+  offerAcceptanceToken String?     @unique @db.VarChar(128)
+  createdAt           DateTime     @default(now())
+  createdByEmployeeId String
+  tenant              Tenant       @relation(fields: [tenantId], references: [id])
+  customer            Customer     @relation(fields: [customerId], references: [id])
+  createdBy           Employee     @relation(fields: [createdByEmployeeId], references: [id])
+  positions           Position[]
+  usedMaterials       TenderMaterialUsage[]
+  project             Project?
+  offerScheduleSlots  OfferScheduleSlot[]
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+model Position {
+  id               String     @id
+  tenantId         String
+  tenderId         String
+  parentPositionId String?
+  npkCode          String?
+  positionNumber   String
+  shortDescription String
+  longDescription  String?    @db.Text
+  quantity         Float      @default(0)
+  unit             String?
+  hierarchyLevel   Int        @default(0)
+  imageUrl         String?    @db.LongText
+  unitPrice        Float?
+  discount         Float?     @default(0)
+  taxRate          Float?     @default(0)
+  tender           Tender     @relation(fields: [tenderId], references: [id])
+  parentPosition   Position?  @relation("PositionHierarchy", fields: [parentPositionId], references: [id])
+  subPositions     Position[] @relation("PositionHierarchy")
+
+  calculation     CalculationItem?
+  articleMappings PositionArticleMapping[]
+  materialMappings PositionMaterialMapping[]
+
+  @@index([tenderId])
+  @@index([parentPositionId])
+}
+
+model CalculationItem {
+  id                   String @id
+  positionId           String @unique
+  materialCost         Float  @default(0)
+  laborCost            Float  @default(0)
+  overheadCost         Float  @default(0)
+  riskAmount           Float  @default(0)
+  additionalCost       Float  @default(0)
+  profitMargin         Float  @default(0)
+  totalCalculatedPrice Float  @default(0)
+
+  // İlişkiler
+  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+}
+
+model Article {
+  id                 String    @id
+  tenantId           String
+  articleCode        String
+  systemBarcode      String?   @unique
+  supplierBarcode    String?
+  name               String
+  description        String?   @db.Text
+  baseCost           Float     @default(0)
+  unit               String
+  imageUrl           String?   @db.LongText
+  category           String?
+  /// ACTIVE | INACTIVE | IN_SUPPLY | IN_PRODUCTION
+  status             String    @default("ACTIVE")
+  /// Son satın alma / sipariş tarihi
+  lastPurchaseDate   DateTime?
+  isActive           Boolean   @default(true)
+  minStockLevel      Float     @default(0)
+  criticalStockLevel Float     @default(0)
+  maxStockLevel      Float?
+
+  tenant           Tenant                   @relation(fields: [tenantId], references: [id])
+  positionMappings PositionArticleMapping[]
+
+  stockBalances     StockBalance[]
+  stockMovements    StockMovement[]
+  purchaseProposals PurchaseProposal[]
+  reportMaterials   ReportMaterial[]
+
+  @@unique([tenantId, articleCode])
+  @@index([tenantId])
+}
+
+model PositionArticleMapping {
+  id                 String @id
+  positionId         String
+  articleId          String
+  quantityMultiplier Float  @default(1)
+  discount           Float? @default(0)
+
+  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  article  Article  @relation(fields: [articleId], references: [id])
+
+  @@unique([positionId, articleId])
+}
+
+model PositionMaterialMapping {
+  id                 String @id
+  positionId         String
+  materialId         String
+  quantityMultiplier Float  @default(1)
+  discount           Float? @default(0)
+
+  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id])
+
+  @@unique([positionId, materialId])
+}
+
+model TenderMaterialUsage {
+  id          String   @id
+  tenderId    String
+  materialId  String
+  quantity    Float
+  unitCost     Float   @default(0)
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  tender   Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id])
+
+  @@index([tenderId])
+  @@index([materialId])
+}
+
+model TenderActivityLog {
+  id          String   @id
+  tenantId    String
+  tenderId    String
+  positionId  String?
+  mappingId   String?
+  articleId   String?
+  employeeId  String
+  actionType  String
+  fieldName   String?
+  oldValue    String?  @db.Text
+  newValue    String?  @db.Text
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenderId])
+  @@index([positionId])
+  @@index([mappingId])
+  @@index([articleId])
+}

@@ -1,0 +1,84 @@
+model Customer {
+  id           String             @id
+  tenantId     String
+  companyName  String
+  segment      String?
+  taxOffice    String?
+  taxNumber    String?
+  address      String?
+  mainPhone    String?
+  mainEmail    String?
+  isActive     Boolean            @default(true)
+  tenant       Tenant             @relation(fields: [tenantId], references: [id])
+  activities   CustomerActivity[]
+  contacts     CustomerContact[]
+  notes        CustomerNote[]
+  tenders      Tender[]
+  projects     Project[]
+  appointments Appointment[]
+  offerScheduleSlots OfferScheduleSlot[]
+  shipments Shipment[]
+
+  @@index([tenantId], map: "Customer_tenantId_fkey")
+}
+
+model CustomerContact {
+  id               String   @id
+  customerId       String
+  firstName        String
+  lastName         String
+  title            String?
+  phone            String?
+  email            String?
+  isPrimaryContact Boolean  @default(false)
+  customer         Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId], map: "CustomerContact_customerId_fkey")
+}
+
+model CustomerNote {
+  id                  String    @id
+  customerId          String
+  createdByEmployeeId String
+  noteText            String    @db.Text
+  noteType            String
+  isHighlight         Boolean   @default(false)
+  firstName           String?
+  email               String?
+  telephone           String?
+  dateActivity        DateTime?
+  createdAt           DateTime  @default(now())
+  createdBy           Employee  @relation(fields: [createdByEmployeeId], references: [id])
+  customer            Customer  @relation(fields: [customerId], references: [id])
+
+  @@index([createdByEmployeeId], map: "CustomerNote_createdByEmployeeId_fkey")
+  @@index([customerId], map: "CustomerNote_customerId_fkey")
+}
+
+model Document {
+  id                   String   @id
+  tenantId             String
+  relatedEntityId      String
+  entityType           String
+  fileName             String
+  fileUrl              String
+  fileType             String
+  category             String?
+  uploadedByEmployeeId String
+  uploadedBy           Employee @relation(fields: [uploadedByEmployeeId], references: [id])
+
+  @@index([uploadedByEmployeeId], map: "Document_uploadedByEmployeeId_fkey")
+}
+
+model CustomerActivity {
+  id           String   @id
+  customerId   String
+  employeeId   String
+  activityType String
+  description  String?  @db.Text
+  activityDate DateTime @default(now())
+  referenceId  String?
+  customer     Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId], map: "CustomerActivity_customerId_fkey")
+}

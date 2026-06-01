@@ -1,0 +1,148 @@
+model Tenant {
+  id                     String        @id
+  tenantName             String
+  isActive               Boolean       @default(true)
+  createdAt              DateTime      @default(now())
+  parentTenantId         String?
+  checkInQrSecret        String?       @db.VarChar(512)
+  checkOutQrSecret       String?       @db.VarChar(512)
+  workScheduleJson       Json?
+  customers              Customer[]
+  employees              Employee[]
+  leaveTypes             LeaveType[]
+  roles                  Role[]
+  parentTenant           Tenant?       @relation("SubTenants", fields: [parentTenantId], references: [id])
+  subTenants             Tenant[]      @relation("SubTenants")
+  tenders                Tender[]
+  articles               Article[]
+  locations              Location[]
+  isProjectModuleEnabled Boolean       @default(false)
+  projects               Project[]
+  appointments           Appointment[]
+  offerScheduleSlots     OfferScheduleSlot[]
+  materials              Material[]
+  mailSetting            MailSetting?
+  shipments              Shipment[]
+
+  @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
+}
+
+model Employee {
+  id                     String             @id
+  tenantId               String
+  firstName              String
+  lastName               String
+  title                  String?
+  departmentId           String?
+  roleName               String?
+  email                  String             @unique
+  phone                  String?
+  address                String?            @db.Text
+  passwordHash           String
+  isActive               Boolean            @default(true)
+  hireDate               DateTime?
+  terminationDate        DateTime?
+  annualLeaveEntitlement Int                @default(0)
+  profilePictureUrl      String?
+  notes                  String?            @db.Text
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @default(now()) @updatedAt
+  attendanceLogs         AttendanceLog[]
+  customerNotes          CustomerNote[]
+  uploadedDocs           Document[]
+  tenant                 Tenant             @relation(fields: [tenantId], references: [id])
+  employeeRoles          EmployeeRole[]
+  approvedLeaves         LeaveRequest[]     @relation("ApprovedLeaves")
+  leaveRequests          LeaveRequest[]     @relation("EmployeeLeaves")
+  createdTenders         Tender[]
+  stockMovements         StockMovement[]
+  purchaseProposals      PurchaseProposal[]
+  projects               Project[]          @relation("ProjectManager")
+  projectReports         ProjectReport[]
+
+  @@index([tenantId], map: "Employee_tenantId_fkey")
+}
+
+model Role {
+  id          String           @id
+  tenantId    String
+  roleName    String
+  employees   EmployeeRole[]
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  permissions RolePermission[]
+
+  @@index([tenantId], map: "Role_tenantId_fkey")
+}
+
+model Permission {
+  id             String           @id
+  permissionName String           @unique
+  roles          RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  role         Role       @relation(fields: [roleId], references: [id])
+
+  @@id([roleId, permissionId])
+  @@index([permissionId], map: "RolePermission_permissionId_fkey")
+}
+
+model EmployeeRole {
+  employeeId String
+  roleId     String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  role       Role     @relation(fields: [roleId], references: [id])
+
+  @@id([employeeId, roleId])
+  @@index([roleId], map: "EmployeeRole_roleId_fkey")
+}
+
+model LeaveType {
+  id       String         @id
+  tenantId String
+  typeName String
+  requests LeaveRequest[]
+  tenant   Tenant         @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "LeaveType_tenantId_fkey")
+}
+
+model LeaveRequest {
+  id           String    @id
+  employeeId   String
+  leaveTypeId  String
+  startDate    DateTime
+  endDate      DateTime
+  totalDays    Int
+  description  String?   @db.Text
+  status       String    @default("Pending")
+  approvedById String?
+  createdAt    DateTime  @default(now())
+  approvedBy   Employee? @relation("ApprovedLeaves", fields: [approvedById], references: [id])
+  employee     Employee  @relation("EmployeeLeaves", fields: [employeeId], references: [id])
+  leaveType    LeaveType @relation(fields: [leaveTypeId], references: [id])
+
+  @@index([approvedById], map: "LeaveRequest_approvedById_fkey")
+  @@index([employeeId], map: "LeaveRequest_employeeId_fkey")
+  @@index([leaveTypeId], map: "LeaveRequest_leaveTypeId_fkey")
+}
+
+model AttendanceLog {
+  id               String    @id
+  employeeId       String
+  logDate          DateTime  @default(now())
+  checkInTime      DateTime
+  checkOutTime     DateTime?
+  /// [{ "start": "ISO", "end": "ISO" | null }] — end null açık mola
+  breakPeriodsJson Json?
+  /// Çıkış anında hesaplanan net çalışma (mola hariç), saniye
+  netWorkSeconds   Int?
+  isManualEdit     Boolean   @default(false)
+  editedById       String?
+  employee         Employee  @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId], map: "AttendanceLog_employeeId_fkey")
+}
