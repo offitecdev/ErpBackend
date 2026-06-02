@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node main.js",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "prisma generate && tsc -p tsconfig.build.json",
+    "postinstall": "prisma generate",
+    "prisma:generate": "prisma generate",
     "dev": "ts-node-dev --respawn src/main.ts",
     "swagger": "ts-node swagger.ts",
     "generate:swagger": "ts-node scripts/export-swagger.ts",
