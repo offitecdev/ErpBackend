@@ -7,7 +7,12 @@
   },
   "servers": [
     {
-      "url": "http://localhost:3000/api/v1"
+      "url": "https://demo.offitec.ch/backend/api/v1",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:3000/api/v1",
+      "description": "Local"
     }
   ],
   "components": {
@@ -1577,6 +1582,78 @@
             "description": "Erişim reddedildi"
           }
         }
+      }
+    },
+    "/logistics/shipments": {
+      "get": {
+        "tags": [
+          "Logistics"
+        ],
+        "summary": "Sevkiyat (Lojistik) kayıtlarını listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Logistics"
+        ],
+        "summary": "Yeni bir Sevkiyat Kartı oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/logistics/shipments/{id}": {
+      "get": {
+        "tags": [
+          "Logistics"
+        ],
+        "summary": "Tekil sevkiyat kartını getir",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "Logistics"
+        ],
+        "summary": "Sevkiyat kartını güncelle (Fatura yükleme vb.)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Logistics"
+        ],
+        "summary": "Sevkiyat kartını sil",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/logistics/shipments/trigger/check-delayed": {
+      "post": {
+        "tags": [
+          "Logistics"
+        ],
+        "summary": "ETA'sı geçmiş teslimatları otomatik olarak \"Gecikti\" statüsüne çeker",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/tenants": {

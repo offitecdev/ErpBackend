@@ -25,6 +25,18 @@ import logisticsRoutes from './presentation/routes/logistics.routes';
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+const apiPrefixes = ['/api/v1', '/backend/api/v1'];
+const swaggerUiOptions = {
+    customSiteTitle: 'OFFITEC ERP API Docs',
+    swaggerOptions: {
+        persistAuthorization: true,
+        docExpansion: 'list',
+    },
+};
+const allowSwaggerUi = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    res.removeHeader('Content-Security-Policy');
+    next();
+};
 
 app.use(cors());
 app.use(helmet({ crossOriginResourcePolicy: false }));
@@ -33,39 +45,35 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-    customSiteTitle: 'OFFITEC ERP API Docs',
-    swaggerOptions: {
-        persistAuthorization: true,
-        docExpansion: 'list',
-    },
-}));
+app.use('/api-docs', allowSwaggerUi, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+app.use('/backend/api-docs', allowSwaggerUi, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
 
-app.get('/swagger.json', (_req, res) => {
+app.get(['/swagger.json', '/backend/swagger.json'], (_req, res) => {
     res.header('Content-Type', 'application/json');
     res.send(swaggerSpec);
 });
 
 
-app.get('/health', (_req, res) => {
+app.get(['/health', '/backend/health'], (_req, res) => {
     res.status(200).json({ status: 'OK' });
 });
 
-app.use('/api/v1/auth',       authRoutes);
-app.use('/api/v1/employees',  employeeRoutes);
-app.use('/api/v1/leaves',     leaveRoutes);
-app.use('/api/v1/tenants',    tenantRoutes);
-app.use('/api/v1/customers',  customerRoutes);
-app.use('/api/v1/attendance', attendanceRoutes);
-app.use('/api/v1/roles',      roleRoutes);
-app.use('/api/v1/tenders',    tenderRoutes);
-app.use('/api/v1/articles',   articleRoutes);
-app.use('/api/v1/articles',   articleRoutes);
-app.use('/api/v1/inventory',  inventoryRoutes); 
-app.use('/api/v1/projects', projectRoutes);
-app.use('/api/v1/booking', bookingRoutes); 
-app.use('/api/v1/mail', mailRoutes);
-app.use('/api/v1/logistics', logisticsRoutes);
+for (const prefix of apiPrefixes) {
+    app.use(`${prefix}/auth`, authRoutes);
+    app.use(`${prefix}/employees`, employeeRoutes);
+    app.use(`${prefix}/leaves`, leaveRoutes);
+    app.use(`${prefix}/tenants`, tenantRoutes);
+    app.use(`${prefix}/customers`, customerRoutes);
+    app.use(`${prefix}/attendance`, attendanceRoutes);
+    app.use(`${prefix}/roles`, roleRoutes);
+    app.use(`${prefix}/tenders`, tenderRoutes);
+    app.use(`${prefix}/articles`, articleRoutes);
+    app.use(`${prefix}/inventory`, inventoryRoutes);
+    app.use(`${prefix}/projects`, projectRoutes);
+    app.use(`${prefix}/booking`, bookingRoutes);
+    app.use(`${prefix}/mail`, mailRoutes);
+    app.use(`${prefix}/logistics`, logisticsRoutes);
+}
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(err.stack);
@@ -74,5 +82,6 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`API Docs  → http://localhost:${PORT}/api-docs`);
+    console.log(`API Docs  -> http://localhost:${PORT}/api-docs`);
+    console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
 });

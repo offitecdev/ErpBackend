@@ -9,7 +9,14 @@ const options: swaggerJsdoc.Options = {
             description: 'OFFITEC Kurumsal ERP Sistemi API Dokümantasyonu',
         },
         servers: [
-            { url: 'http://localhost:3000/api/v1' },
+            {
+                url: process.env.SWAGGER_SERVER_URL || 'https://demo.offitec.ch/backend/api/v1',
+                description: 'Production',
+            },
+            {
+                url: 'http://localhost:3000/api/v1',
+                description: 'Local',
+            },
         ],
         components: {
             securitySchemes: {
