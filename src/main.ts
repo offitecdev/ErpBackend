@@ -21,6 +21,8 @@ import projectRoutes from './presentation/routes/project.routes';
 import bookingRoutes from './presentation/routes/booking.routes';
 import mailRoutes from './presentation/routes/mail.routes';
 import logisticsRoutes from './presentation/routes/logistics.routes';
+import regieRoutes from './presentation/routes/regie.routes';
+import maintenanceRoutes from './presentation/routes/maintenance.routes';
 
 
 const app  = express();
@@ -73,6 +75,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/booking`, bookingRoutes);
     app.use(`${prefix}/mail`, mailRoutes);
     app.use(`${prefix}/logistics`, logisticsRoutes);
+    app.use(`${prefix}/maintenance`, maintenanceRoutes);
+    app.use(`${prefix}/regie`, regieRoutes);
 }
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

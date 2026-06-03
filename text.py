@@ -1,11 +1,9 @@
 import os
 
 def kodlari_birlestir(proje_dizini, cikti_dosyasi):
-    # Taranmayacak gereksiz veya derlenmiş klasörler
     dislanan_klasorler = {'.git', 'venv', 'env', 'node_modules', '__pycache__', '.idea', '.vscode', 'bin', 'obj', 'migrations'}
     
-    # Sadece bu uzantılara sahip dosyalar okunacak
-    gecerli_uzantilar = {'.py' , '.js','.ts','.prisma'}
+    gecerli_uzantilar = {'.ts', '.prisma'}
 
     with open(cikti_dosyasi, 'w', encoding='utf-8') as cikti:
         for kok_dizin, klasorler, dosyalar in os.walk(proje_dizini):

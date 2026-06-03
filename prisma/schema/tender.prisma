@@ -108,6 +108,8 @@ model Article {
   stockMovements    StockMovement[]
   purchaseProposals PurchaseProposal[]
   reportMaterials   ReportMaterial[]
+  maintenanceMaterials MaintenanceMaterial[]
+  serviceMaterials  ServiceMaterial[]
 
   @@unique([tenantId, articleCode])
   @@index([tenantId])

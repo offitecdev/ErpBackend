@@ -1656,6 +1656,206 @@
         ]
       }
     },
+    "/maintenance/options/customers": {
+      "get": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Bakim/regie formlari icin aktif musterileri listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/maintenance/options/technicians": {
+      "get": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Rolu Teknisyen olan aktif personeli listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/maintenance/contracts": {
+      "post": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Yeni bir periyodik bakım sözleşmesi oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Bakım sözleşmelerini listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/maintenance/tasks": {
+      "get": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Bakim gorevlerini tarih araligina gore listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/maintenance/tasks/{taskId}": {
+      "patch": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Bakim gorevinin tarih, durum veya teknisyen atamasini guncelle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/maintenance/reports": {
+      "get": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Bakim raporlarini listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Teknisyenin sahadaki bakım raporunu kaydetmesi (Stok düşümü otomatik yapılır)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/maintenance/reports/{reportId}/sign": {
+      "post": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Müşterinin bakım raporunu imzalaması",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/regie/calls": {
+      "post": {
+        "tags": [
+          "Regie/Arıza"
+        ],
+        "summary": "Müşteri arızası / Çağrı kaydı oluştur",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Regie/Arıza"
+        ],
+        "summary": "Arıza çağrılarını listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/regie/calls/{callId}": {
+      "patch": {
+        "tags": [
+          "Regie/Ariza"
+        ],
+        "summary": "Regie cagrisi atama, oncelik veya durum guncelle",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/regie/reports": {
+      "get": {
+        "tags": [
+          "Regie/Ariza"
+        ],
+        "summary": "Regie raporlarini listele",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Regie/Arıza"
+        ],
+        "summary": "Arıza müdahale raporunu kaydet",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/regie/reports/{reportId}/sign": {
+      "post": {
+        "tags": [
+          "Regie/Arıza"
+        ],
+        "summary": "Raporu imzala (Garanti dışıysa fatura uyarısı döner)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/regie/reports/{reportId}/bill": {
+      "post": {
+        "tags": [
+          "Regie/Arıza"
+        ],
+        "summary": "Fatura (Auftrag/İş Emri) oluştur (Kullanıcı imzadan sonra EVET derse)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/tenants": {
       "post": {
         "tags": [

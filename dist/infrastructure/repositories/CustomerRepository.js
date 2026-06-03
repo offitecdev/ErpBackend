@@ -124,11 +124,27 @@ class CustomerRepository {
             }
         });
         if (dashboardData) {
+            const employeeIds = Array.from(new Set((dashboardData.activities || []).map((activity) => activity.employeeId).filter(Boolean)));
+            const employees = employeeIds.length > 0
+                ? await prisma_client_1.default.employee.findMany({
+                    where: { id: { in: employeeIds } },
+                    select: { id: true, firstName: true, lastName: true, email: true }
+                })
+                : [];
+            const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
+            const activities = (dashboardData.activities || []).map((activity) => {
+                const employee = employeeMap.get(activity.employeeId);
+                return {
+                    ...activity,
+                    employeeName: employee ? `${employee.firstName} ${employee.lastName}` : null,
+                    employeeEmail: employee?.email ?? null
+                };
+            });
             const documents = await prisma_client_1.default.document.findMany({
                 where: { entityType: 'customer', relatedEntityId: id },
                 orderBy: { fileName: 'asc' }
             });
-            return { ...dashboardData, documents };
+            return { ...dashboardData, activities, documents };
         }
         return dashboardData;
     }

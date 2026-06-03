@@ -1,0 +1,197 @@
+
+
+enum MaintenancePeriod {
+  MONTHLY
+  QUARTERLY
+  BIANNUAL
+  YEARLY
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+
+model MaintenanceContract {
+  id              String            @id
+  tenantId        String
+  customerId      String
+  title           String
+  period          MaintenancePeriod
+  startDate       DateTime
+  endDate         DateTime
+  equipmentInfo   String?           @db.Text
+  serviceScope    String?           @db.Text
+  siteName        String?
+  reminderDaysBefore Int            @default(7)
+  notificationChannels Json?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  tenant          Tenant            @relation(fields: [tenantId], references: [id])
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  tasks           MaintenanceTask[]
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+model MaintenanceTask {
+  id              String               @id
+  contractId      String
+  assignedTechId  String?
+  alternativeTechId String?
+  siteName        String?
+  plannedDate     DateTime
+  status          TaskStatus           @default(PENDING)
+  assignmentHistoryJson Json?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  contract        MaintenanceContract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  technician      Employee?            @relation("MaintenanceTech", fields: [assignedTechId], references: [id])
+  alternativeTechnician Employee?       @relation("MaintenanceAltTech", fields: [alternativeTechId], references: [id])
+  report          MaintenanceReport?
+
+  @@index([contractId])
+  @@index([assignedTechId])
+  @@index([alternativeTechId])
+  @@index([plannedDate])
+}
+
+model MaintenanceReport {
+  id                String   @id
+  taskId            String   @unique
+  techId            String
+  checklistJson     Json? 
+  operationsDone    String   @db.Text
+  observations      String?  @db.Text
+  recommendations   String?  @db.Text
+  riskNotes         String?  @db.Text
+  beforePhotoUrls   Json?  
+  afterPhotoUrls    Json?
+  fileUrls          Json?
+  isSigned          Boolean  @default(false)
+  customerSignature String?  @db.LongText 
+  signedAt          DateTime?
+  lockedAt          DateTime?
+  pdfUrl            String?
+  emailSentAt       DateTime?
+  emailLogJson      Json?
+  createdAt         DateTime @default(now())
+
+  task              MaintenanceTask       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  technician        Employee              @relation("MaintenanceReportTech", fields: [techId], references: [id])
+  usedMaterials     MaintenanceMaterial[]
+
+  @@index([techId])
+}
+
+model MaintenanceMaterial {
+  id          String   @id
+  reportId    String
+  articleId   String
+  quantity    Float
+  unitCost    Float
+  sourceLocationId String?
+
+  report      MaintenanceReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  article     Article           @relation(fields: [articleId], references: [id])
+
+  @@index([reportId])
+  @@index([articleId])
+}
+
+
+model ServiceCall {
+  id              String      @id
+  tenantId        String
+  customerId      String
+  assignedTechId  String?
+  alternativeTechId String?
+  siteName        String?
+  priority        String?
+  reportedIssue   String      @db.Text
+  status          TaskStatus  @default(PENDING)
+  callDate        DateTime    @default(now())
+  assignmentHistoryJson Json?
+  updatedAt       DateTime    @updatedAt
+
+  tenant          Tenant      @relation(fields: [tenantId], references: [id])
+  customer        Customer    @relation(fields: [customerId], references: [id])
+  technician      Employee?   @relation("ServiceCallTech", fields: [assignedTechId], references: [id])
+  alternativeTechnician Employee? @relation("ServiceCallAltTech", fields: [alternativeTechId], references: [id])
+  report          ServiceReport?
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([assignedTechId])
+  @@index([alternativeTechId])
+}
+
+model ServiceReport {
+  id                String   @id
+  callId            String   @unique
+  techId            String
+  workDone          String   @db.Text
+  workingMinutes    Int      @default(0)
+  gasAmount         Float    @default(0) 
+  observations      String?  @db.Text
+  recommendations   String?  @db.Text
+  beforePhotoUrls   Json?
+  afterPhotoUrls    Json?
+  fileUrls          Json?
+  isWarranty        Boolean  @default(false)
+  isSigned          Boolean  @default(false)
+  customerSignature String?  @db.LongText
+  signedAt          DateTime?
+  lockedAt          DateTime?
+  createdAt         DateTime @default(now())
+  linkedOrderId     String?  @unique 
+
+  call              ServiceCall       @relation(fields: [callId], references: [id], onDelete: Cascade)
+  technician        Employee          @relation("ServiceReportTech", fields: [techId], references: [id])
+  usedMaterials     ServiceMaterial[]
+  order             WorkOrder?        @relation(fields: [linkedOrderId], references: [id])
+
+  @@index([techId])
+}
+
+model ServiceMaterial {
+  id          String   @id
+  reportId    String
+  articleId   String
+  quantity    Float
+  unitCost    Float
+  sourceLocationId String?
+
+  report      ServiceReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  article     Article       @relation(fields: [articleId], references: [id])
+
+  @@index([reportId])
+  @@index([articleId])
+}
+
+
+
+model WorkOrder {
+  id            String   @id
+  tenantId      String
+  customerId    String
+  orderNumber   String   @unique
+  orderType     String   
+  totalAmount   Float    @default(0)
+  isBilled      Boolean  @default(false) 
+  createdAt     DateTime @default(now())
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  customer      Customer @relation(fields: [customerId], references: [id])
+  regieReport   ServiceReport?
+
+  @@index([tenantId])
+  @@index([customerId])
+}

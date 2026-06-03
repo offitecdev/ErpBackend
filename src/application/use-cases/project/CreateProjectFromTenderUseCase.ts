@@ -78,6 +78,18 @@ export class CreateProjectFromTenderUseCase {
 
         const project = await this.projectRepository.createProject(projectData);
 
+        await (prisma as any).customerActivity.create({
+            data: {
+                id: nanoid(),
+                customerId: tender.customerId,
+                employeeId,
+                activityType: "TENDER_ORDERED",
+                description: `${tender.tenderNumber} teklifi siparişe verildi.`,
+                referenceId: tender.id,
+                activityDate: new Date()
+            }
+        });
+
         await (prisma as any).appointment.createMany({
             data: scheduleSlots.map((slot: any) => ({
                 id: nanoid(10),

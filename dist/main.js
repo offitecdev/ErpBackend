@@ -25,6 +25,8 @@ const project_routes_1 = __importDefault(require("./presentation/routes/project.
 const booking_routes_1 = __importDefault(require("./presentation/routes/booking.routes"));
 const mail_routes_1 = __importDefault(require("./presentation/routes/mail.routes"));
 const logistics_routes_1 = __importDefault(require("./presentation/routes/logistics.routes"));
+const regie_routes_1 = __importDefault(require("./presentation/routes/regie.routes"));
+const maintenance_routes_1 = __importDefault(require("./presentation/routes/maintenance.routes"));
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3000;
 const apiPrefixes = ['/api/v1', '/backend/api/v1'];
@@ -68,6 +70,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/booking`, booking_routes_1.default);
     app.use(`${prefix}/mail`, mail_routes_1.default);
     app.use(`${prefix}/logistics`, logistics_routes_1.default);
+    app.use(`${prefix}/maintenance`, maintenance_routes_1.default);
+    app.use(`${prefix}/regie`, regie_routes_1.default);
 }
 app.use((err, _req, res, _next) => {
     console.error(err.stack);

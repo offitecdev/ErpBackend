@@ -181,10 +181,24 @@ async function main() {
       'mail.send',
       'logistics.view',
       'logistics.manage',
+      'maintenance.contracts.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+      'workorders.manage',
+      'maintenance.contracts.manage',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+      'workorders.manage'
+
     ];
 
+    const uniquePermissionNames = [...new Set(permissionNames)];
+
     const permissions = await Promise.all(
-      permissionNames.map((name) =>
+      uniquePermissionNames.map((name) =>
         prisma.permission.upsert({
           where: { permissionName: name },
           update: {},
@@ -192,7 +206,62 @@ async function main() {
         })
       )
     );
-    console.log('Permissions hazır:', permissionNames.length);
+    console.log('Permissions hazır:', uniquePermissionNames.length);
+
+    const permissionsByName = new Map(permissions.map((permission) => [permission.permissionName, permission]));
+    const assignPermissionsToRole = async (roleId: string, names: string[]) => {
+      for (const name of [...new Set(names)]) {
+        const permission = permissionsByName.get(name);
+        if (!permission) continue;
+
+        await prisma.rolePermission.upsert({
+          where: {
+            roleId_permissionId: {
+              roleId,
+              permissionId: permission.id,
+            },
+          },
+          update: {},
+          create: {
+            roleId,
+            permissionId: permission.id,
+          },
+        });
+      }
+    };
+
+    const serviceManagerPermissions = [
+      'crm.customers.view',
+      'employees.view',
+      'inventory.view',
+      'inventory.manage',
+      'maintenance.contracts.manage',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+      'workorders.manage',
+    ];
+
+    const technicianPermissions = [
+      'crm.customers.view',
+      'inventory.view',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+    ];
+
+    const serviceViewerPermissions = [
+      'crm.customers.view',
+      'employees.view',
+      'inventory.view',
+      'maintenance.contracts.manage',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+    ];
 
     const adminRole = await prisma.role.upsert({
       where: { id: 'admin-role' },
@@ -208,22 +277,62 @@ async function main() {
     });
     console.log('Admin rolü hazır:', adminRole.roleName);
 
-    for (const permission of permissions) {
-      await prisma.rolePermission.upsert({
-        where: {
-          roleId_permissionId: {
-            roleId: adminRole.id,
-            permissionId: permission.id,
-          },
-        },
-        update: {},
-        create: {
-          roleId: adminRole.id,
-          permissionId: permission.id,
-        },
-      });
-    }
+    await assignPermissionsToRole(adminRole.id, uniquePermissionNames);
     console.log('Tüm permissions Admin rolüne atandı.');
+
+    const existingAdminRoles = await prisma.role.findMany({
+      where: { roleName: 'Admin' },
+      select: { id: true },
+    });
+
+    for (const role of existingAdminRoles) {
+      await assignPermissionsToRole(role.id, uniquePermissionNames);
+    }
+    console.log('Mevcut Admin rollerine de tum permissions atandi:', existingAdminRoles.length);
+
+    const serviceManagerRole = await prisma.role.upsert({
+      where: { id: 'service-manager-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+      create: {
+        id: 'service-manager-role',
+        tenantId: swissTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+    });
+
+    const technicianRole = await prisma.role.upsert({
+      where: { id: 'technician-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Teknisyen',
+      },
+      create: {
+        id: 'technician-role',
+        tenantId: swissTenant.id,
+        roleName: 'Teknisyen',
+      },
+    });
+
+    const serviceViewerRole = await prisma.role.upsert({
+      where: { id: 'service-viewer-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Servis Viewer',
+      },
+      create: {
+        id: 'service-viewer-role',
+        tenantId: swissTenant.id,
+        roleName: 'Servis Viewer',
+      },
+    });
+
+    await assignPermissionsToRole(serviceManagerRole.id, serviceManagerPermissions);
+    await assignPermissionsToRole(technicianRole.id, technicianPermissions);
+    await assignPermissionsToRole(serviceViewerRole.id, serviceViewerPermissions);
+    console.log('Bakim/Regie rolleri hazir:', serviceManagerRole.roleName, technicianRole.roleName, serviceViewerRole.roleName);
 
     await prisma.employeeRole.upsert({
       where: {
@@ -239,6 +348,127 @@ async function main() {
       },
     });
     console.log('Admin rolü kullanıcıya atandı.');
+
+    const technician = await prisma.employee.upsert({
+      where: { email: 'teknisyen@offitec.com' },
+      update: {
+        tenantId: swissTenant.id,
+        departmentId: testDepartmentId,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+      },
+      create: {
+        id: nanoid(8),
+        tenantId: swissTenant.id,
+        departmentId: testDepartmentId,
+        firstName: 'Bakim',
+        lastName: 'Teknisyeni',
+        email: 'teknisyen@offitec.com',
+        passwordHash: hashedPassword,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+        annualLeaveEntitlement: 20,
+      },
+    });
+
+    await prisma.employeeRole.upsert({
+      where: {
+        employeeId_roleId: {
+          employeeId: technician.id,
+          roleId: technicianRole.id,
+        },
+      },
+      update: {},
+      create: {
+        employeeId: technician.id,
+        roleId: technicianRole.id,
+      },
+    });
+    console.log('Demo teknisyen hazir:', technician.email);
+
+    const turkeyServiceManagerRole = await prisma.role.upsert({
+      where: { id: 'service-manager-role-tr' },
+      update: {
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+      create: {
+        id: 'service-manager-role-tr',
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+    });
+
+    const turkeyTechnicianRole = await prisma.role.upsert({
+      where: { id: 'technician-role-tr' },
+      update: {
+        tenantId: turkeyTenant.id,
+        roleName: 'Teknisyen',
+      },
+      create: {
+        id: 'technician-role-tr',
+        tenantId: turkeyTenant.id,
+        roleName: 'Teknisyen',
+      },
+    });
+
+    const turkeyServiceViewerRole = await prisma.role.upsert({
+      where: { id: 'service-viewer-role-tr' },
+      update: {
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Viewer',
+      },
+      create: {
+        id: 'service-viewer-role-tr',
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Viewer',
+      },
+    });
+
+    await assignPermissionsToRole(turkeyServiceManagerRole.id, serviceManagerPermissions);
+    await assignPermissionsToRole(turkeyTechnicianRole.id, technicianPermissions);
+    await assignPermissionsToRole(turkeyServiceViewerRole.id, serviceViewerPermissions);
+
+    const turkeyTechnician = await prisma.employee.upsert({
+      where: { email: 'teknisyen-tr@offitec.com' },
+      update: {
+        tenantId: turkeyTenant.id,
+        departmentId: testDepartmentId,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+      },
+      create: {
+        id: nanoid(8),
+        tenantId: turkeyTenant.id,
+        departmentId: testDepartmentId,
+        firstName: 'Bakim',
+        lastName: 'Teknisyeni TR',
+        email: 'teknisyen-tr@offitec.com',
+        passwordHash: hashedPassword,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+        annualLeaveEntitlement: 20,
+      },
+    });
+
+    await prisma.employeeRole.upsert({
+      where: {
+        employeeId_roleId: {
+          employeeId: turkeyTechnician.id,
+          roleId: turkeyTechnicianRole.id,
+        },
+      },
+      update: {},
+      create: {
+        employeeId: turkeyTechnician.id,
+        roleId: turkeyTechnicianRole.id,
+      },
+    });
+    console.log('Turkiye demo teknisyen hazir:', turkeyTechnician.email);
 
     const leaveTypeNames = [
       { id: 'lt-yillik', typeName: 'Yıllık İzin' },

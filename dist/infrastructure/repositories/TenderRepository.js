@@ -72,6 +72,7 @@ class TenderRepository {
                     offerMailRecipient: true,
                     offerAcceptanceToken: true,
                     customer: { select: { companyName: true } },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                     positions: {
                         select: {
                             quantity: true,
@@ -98,6 +99,10 @@ class TenderRepository {
             }, 0);
             const item = this.mapToEntity(d);
             item.customerName = d.customer?.companyName ?? null;
+            item.createdByName = d.createdBy
+                ? `${d.createdBy.firstName} ${d.createdBy.lastName}`.trim()
+                : null;
+            item.createdByEmail = d.createdBy?.email ?? null;
             item.positionCount = d.positions.length;
             item.grandTotal = grandTotal;
             return item;

@@ -23,6 +23,9 @@ model Tenant {
   materials              Material[]
   mailSetting            MailSetting?
   shipments              Shipment[]
+  maintenanceContracts   MaintenanceContract[]
+  serviceCalls           ServiceCall[]
+  workOrders             WorkOrder[]
 
   @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
 }
@@ -59,6 +62,12 @@ model Employee {
   purchaseProposals      PurchaseProposal[]
   projects               Project[]          @relation("ProjectManager")
   projectReports         ProjectReport[]
+  assignedMaintenanceTasks MaintenanceTask[] @relation("MaintenanceTech")
+  alternativeMaintenanceTasks MaintenanceTask[] @relation("MaintenanceAltTech")
+  maintenanceReports     MaintenanceReport[] @relation("MaintenanceReportTech")
+  assignedServiceCalls   ServiceCall[]      @relation("ServiceCallTech")
+  alternativeServiceCalls ServiceCall[]      @relation("ServiceCallAltTech")
+  serviceReports         ServiceReport[]    @relation("ServiceReportTech")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }

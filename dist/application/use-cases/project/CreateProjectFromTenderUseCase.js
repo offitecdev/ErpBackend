@@ -70,6 +70,17 @@ class CreateProjectFromTenderUseCase {
             overtimeTolerancePercent: 15
         };
         const project = await this.projectRepository.createProject(projectData);
+        await prisma_client_1.default.customerActivity.create({
+            data: {
+                id: (0, nanoid_1.nanoid)(),
+                customerId: tender.customerId,
+                employeeId,
+                activityType: "TENDER_ORDERED",
+                description: `${tender.tenderNumber} teklifi siparişe verildi.`,
+                referenceId: tender.id,
+                activityDate: new Date()
+            }
+        });
         await prisma_client_1.default.appointment.createMany({
             data: scheduleSlots.map((slot) => ({
                 id: (0, nanoid_1.nanoid)(10),

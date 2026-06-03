@@ -18,6 +18,9 @@ model Customer {
   appointments Appointment[]
   offerScheduleSlots OfferScheduleSlot[]
   shipments Shipment[]
+  maintenanceContracts MaintenanceContract[]
+  serviceCalls ServiceCall[]
+  workOrders WorkOrder[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
 }

@@ -43,16 +43,29 @@ export class EmployeeRepository implements IEmployeeRepository {
 
         if (filters.isActive !== undefined) whereClause.isActive = filters.isActive;
         if (filters.departmentId) whereClause.departmentId = filters.departmentId;
-        if (filters.roleName) whereClause.roleName = filters.roleName;
+        const andConditions: any[] = [];
+
+        if (filters.roleName) {
+            andConditions.push({
+                OR: [
+                    { roleName: filters.roleName },
+                    { employeeRoles: { some: { role: { roleName: filters.roleName } } } },
+                ],
+            });
+        }
         
         if (filters.search) {
-            whereClause.OR = [
-                { firstName: { contains: filters.search } },
-                { lastName: { contains: filters.search } },
-                { email: { contains: filters.search } },
-                { phone: { contains: filters.search } }
-            ];
+            andConditions.push({
+                OR: [
+                    { firstName: { contains: filters.search } },
+                    { lastName: { contains: filters.search } },
+                    { email: { contains: filters.search } },
+                    { phone: { contains: filters.search } }
+                ],
+            });
         }
+
+        if (andConditions.length) whereClause.AND = andConditions;
 
         const data = await prisma.employee.findMany({ 
             where: whereClause,

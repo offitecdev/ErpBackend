@@ -1,90 +1,5 @@
 
 ============================================================
-DOSYA: .\encrypt_db_pass.py
-============================================================
-
-import base64
-import os
-from Crypto.Cipher import AES
-
-def encrypt_password(plain_password, secret_key):
-    key = secret_key.encode('utf-8')[:32].ljust(32, b'\0') 
-    iv = os.urandom(12)
-    
-    cipher = AES.new(key, AES.MODE_GCM, nonce=iv)
-    ciphertext, tag = cipher.encrypt_and_digest(plain_password.encode('utf-8'))
-    
-    encrypted_payload = base64.b64encode(iv + tag + ciphertext).decode('utf-8')
-    return encrypted_payload
-
-if __name__ == "__main__":
-    db_password = input("MariaDB Şifresini Girin (Gizli kalacak): ")
-    master_key = "OFFITEC_SUPER_SECRET_MASTER_KEY" 
-    
-    encrypted = encrypt_password(db_password, master_key)
-    print(f"\n[BAŞARILI] .env dosyanıza kopyalayacağınız değer:")
-    print(f"OFFITEC_DB_ENCRYPTED_PASS=\"{encrypted}\"")
-
-============================================================
-DOSYA: .\fix-article-duplicates.js
-============================================================
-
-const { PrismaClient } = require('@prisma/client');
-
-const prisma = new PrismaClient();
-
-async function main() {
-  console.log('Fetching articles...');
-  const articles = await prisma.$queryRaw`SELECT * FROM Article`;
-
-  // Track seen systemBarcodes and (tenantId + articleCode) combinations
-  const seenSystemBarcodes = new Set();
-  const seenTenantArticleCodes = new Set();
-
-  for (const article of articles) {
-    let needsUpdate = false;
-    let newSystemBarcode = article.systemBarcode;
-    let newArticleCode = article.articleCode;
-
-    if (article.systemBarcode) {
-      if (seenSystemBarcodes.has(article.systemBarcode)) {
-        newSystemBarcode = `${article.systemBarcode}-${Math.random().toString(36).substring(7)}`;
-        needsUpdate = true;
-      } else {
-        seenSystemBarcodes.add(article.systemBarcode);
-      }
-    }
-
-    if (article.articleCode) {
-      const tenantCodeKey = `${article.tenantId}-${article.articleCode}`;
-      if (seenTenantArticleCodes.has(tenantCodeKey)) {
-        newArticleCode = `${article.articleCode}-${Math.random().toString(36).substring(7)}`;
-        needsUpdate = true;
-      } else {
-        seenTenantArticleCodes.add(tenantCodeKey);
-      }
-    }
-
-    if (needsUpdate) {
-      console.log(`Updating duplicate article ${article.id}...`);
-      await prisma.$executeRaw`UPDATE Article SET systemBarcode = ${newSystemBarcode}, articleCode = ${newArticleCode} WHERE id = ${article.id}`;
-    }
-  }
-
-  console.log('Done resolving duplicates.');
-}
-
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
-
-
-============================================================
 DOSYA: .\prisma.config.ts
 ============================================================
 
@@ -175,54 +90,6 @@ const endpointsFiles = ['./src/presentation/routes/*.ts'];
 swaggerAutogen()(outputFile, endpointsFiles, doc);
 
 ============================================================
-DOSYA: .\text.py
-============================================================
-
-import os
-
-def kodlari_birlestir(proje_dizini, cikti_dosyasi):
-    # Taranmayacak gereksiz veya derlenmiş klasörler
-    dislanan_klasorler = {'.git', 'venv', 'env', 'node_modules', '__pycache__', '.idea', '.vscode', 'bin', 'obj', 'migrations'}
-    
-    # Sadece bu uzantılara sahip dosyalar okunacak
-    gecerli_uzantilar = {'.py' , '.js','.ts','.prisma'}
-
-    with open(cikti_dosyasi, 'w', encoding='utf-8') as cikti:
-        for kok_dizin, klasorler, dosyalar in os.walk(proje_dizini):
-            klasorler[:] = [k for k in klasorler if k not in dislanan_klasorler]
-            
-            for dosya_adi in dosyalar:
-                _, uzanti = os.path.splitext(dosya_adi)
-                
-                # Dosya uzantısı kontrolü
-                if uzanti.lower() in gecerli_uzantilar:
-                    dosya_yolu = os.path.join(kok_dizin, dosya_adi)
-                    
-                    try:
-                        with open(dosya_yolu, 'r', encoding='utf-8') as dosya:
-                            icerik = dosya.read()
-                            
-                            # Hangi kodun hangi dosyadan geldiğini ayırmak için başlık ekle
-                            cikti.write(f"\n{'='*60}\n")
-                            cikti.write(f"DOSYA: {dosya_yolu}\n")
-                            cikti.write(f"{'='*60}\n\n")
-                            cikti.write(icerik)
-                            cikti.write("\n")
-                    except Exception as e:
-                        print(f"Okunurken hata oluştu ({dosya_yolu}): {e}")
-
-    print(f"İşlem başarılı! Tüm kodlar '{cikti_dosyasi}' dosyasına aktarıldı.")
-
-if __name__ == "__main__":
-    # Aramanın yapılacağı dizin ('.' betiğin çalıştığı klasörü ifade eder)
-    proje_klasoru = '.' 
-    
-    # Oluşturulacak metin dosyasının adı
-    hedef_dosya = 'tum_proje_kodlari.txt' 
-    
-    kodlari_birlestir(proje_klasoru, hedef_dosya)
-
-============================================================
 DOSYA: .\generated\prisma\browser.d.ts
 ============================================================
 
@@ -231,68 +98,6 @@ export { Prisma };
 export * as $Enums from './enums.js';
 export * from './enums.js';
 //# sourceMappingURL=browser.d.ts.map
-
-============================================================
-DOSYA: .\generated\prisma\browser.js
-============================================================
-
-"use strict";
-/* !!! This is code generated by Prisma. Do not edit directly. !!! */
-/* eslint-disable */
-// biome-ignore-all lint: generated file
-// @ts-nocheck 
-/*
- * This file should be your main import to use Prisma-related types and utilities in a browser.
- * Use it to get access to models, enums, and input types.
- *
- * This file does not contain a `PrismaClient` class, nor several other helpers that are intended as server-side only.
- * See `client.ts` for the standard, server-side entry point.
- *
- * 🟢 You can import this file directly.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-var __exportStar = (this && this.__exportStar) || function(m, exports) {
-    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.$Enums = exports.Prisma = void 0;
-const Prisma = __importStar(require("./internal/prismaNamespaceBrowser.js"));
-exports.Prisma = Prisma;
-exports.$Enums = __importStar(require("./enums.js"));
-__exportStar(require("./enums.js"), exports);
-//# sourceMappingURL=browser.js.map
 
 ============================================================
 DOSYA: .\generated\prisma\browser.ts
@@ -348,85 +153,6 @@ export declare const PrismaClient: $Class.PrismaClientConstructor;
 export type PrismaClient<LogOpts extends Prisma.LogLevel = never, OmitOpts extends Prisma.PrismaClientOptions["omit"] = Prisma.PrismaClientOptions["omit"], ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = $Class.PrismaClient<LogOpts, OmitOpts, ExtArgs>;
 export { Prisma };
 //# sourceMappingURL=client.d.ts.map
-
-============================================================
-DOSYA: .\generated\prisma\client.js
-============================================================
-
-"use strict";
-/* !!! This is code generated by Prisma. Do not edit directly. !!! */
-/* eslint-disable */
-// biome-ignore-all lint: generated file
-// @ts-nocheck 
-/*
- * This file should be your main import to use Prisma. Through it you get access to all the models, enums, and input types.
- * If you're looking for something you can import in the client-side of your application, please refer to the `browser.ts` file instead.
- *
- * 🟢 You can import this file directly.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-var __exportStar = (this && this.__exportStar) || function(m, exports) {
-    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.Prisma = exports.PrismaClient = exports.$Enums = void 0;
-const path = __importStar(require("node:path"));
-const node_url_1 = require("node:url");
-globalThis['__dirname'] = path.dirname((0, node_url_1.fileURLToPath)(import.meta.url));
-const $Class = __importStar(require("./internal/class.js"));
-const Prisma = __importStar(require("./internal/prismaNamespace.js"));
-exports.Prisma = Prisma;
-exports.$Enums = __importStar(require("./enums.js"));
-__exportStar(require("./enums.js"), exports);
-/**
- * ## Prisma Client
- *
- * Type-safe database client for TypeScript
- * @example
- * ```
- * const prisma = new PrismaClient({
- *   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL })
- * })
- * // Fetch zero or more Users
- * const users = await prisma.user.findMany()
- * ```
- *
- * Read more in our [docs](https://pris.ly/d/client).
- */
-exports.PrismaClient = $Class.getPrismaClientClass();
-//# sourceMappingURL=client.js.map
 
 ============================================================
 DOSYA: .\generated\prisma\client.ts
@@ -486,23 +212,6 @@ export {};
 //# sourceMappingURL=commonInputTypes.d.ts.map
 
 ============================================================
-DOSYA: .\generated\prisma\commonInputTypes.js
-============================================================
-
-"use strict";
-/* !!! This is code generated by Prisma. Do not edit directly. !!! */
-/* eslint-disable */
-// biome-ignore-all lint: generated file
-// @ts-nocheck 
-/*
- * This file exports various common sort, input & filter types that are not directly linked to a particular model.
- *
- * 🟢 You can import this file directly.
- */
-Object.defineProperty(exports, "__esModule", { value: true });
-//# sourceMappingURL=commonInputTypes.js.map
-
-============================================================
 DOSYA: .\generated\prisma\commonInputTypes.ts
 ============================================================
 
@@ -534,23 +243,6 @@ export {};
 //# sourceMappingURL=enums.d.ts.map
 
 ============================================================
-DOSYA: .\generated\prisma\enums.js
-============================================================
-
-"use strict";
-/* !!! This is code generated by Prisma. Do not edit directly. !!! */
-/* eslint-disable */
-// biome-ignore-all lint: generated file
-// @ts-nocheck 
-/*
-* This file exports all enum related types from the schema.
-*
-* 🟢 You can import this file directly.
-*/
-Object.defineProperty(exports, "__esModule", { value: true });
-//# sourceMappingURL=enums.js.map
-
-============================================================
 DOSYA: .\generated\prisma\enums.ts
 ============================================================
 
@@ -577,14 +269,6 @@ DOSYA: .\generated\prisma\models.d.ts
 
 export type * from './commonInputTypes.js';
 //# sourceMappingURL=models.d.ts.map
-
-============================================================
-DOSYA: .\generated\prisma\models.js
-============================================================
-
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-//# sourceMappingURL=models.js.map
 
 ============================================================
 DOSYA: .\generated\prisma\models.ts
@@ -726,97 +410,6 @@ export interface PrismaClient<in LogOpts extends Prisma.LogLevel = never, in out
 }
 export declare function getPrismaClientClass(): PrismaClientConstructor;
 //# sourceMappingURL=class.d.ts.map
-
-============================================================
-DOSYA: .\generated\prisma\internal\class.js
-============================================================
-
-"use strict";
-/* !!! This is code generated by Prisma. Do not edit directly. !!! */
-/* eslint-disable */
-// biome-ignore-all lint: generated file
-// @ts-nocheck 
-/*
- * WARNING: This is an internal file that is subject to change!
- *
- * 🛑 Under no circumstances should you import this file directly! 🛑
- *
- * Please import the `PrismaClient` class from the `client.ts` file instead.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.getPrismaClientClass = getPrismaClientClass;
-const runtime = __importStar(require("@prisma/client/runtime/client"));
-const config = {
-    "previewFeatures": [],
-    "clientVersion": "7.7.0",
-    "engineVersion": "75cbdc1eb7150937890ad5465d861175c6624711",
-    "activeProvider": "mysql",
-    "inlineSchema": "// This is your Prisma schema file,\n// learn more about it in the docs: https://pris.ly/d/prisma-schema\n\n// Get a free hosted Postgres database in seconds: `npx create-db`\n\ngenerator client {\n  provider = \"prisma-client\"\n  output   = \"../generated/prisma\"\n}\n\ndatasource db {\n  provider = \"mysql\"\n}\n",
-    "runtimeDataModel": {
-        "models": {},
-        "enums": {},
-        "types": {}
-    },
-    "parameterizationSchema": {
-        "strings": [],
-        "graph": ""
-    }
-};
-config.runtimeDataModel = JSON.parse("{\"models\":{},\"enums\":{},\"types\":{}}");
-config.parameterizationSchema = {
-    strings: JSON.parse("[]"),
-    graph: "AAAA"
-};
-async function decodeBase64AsWasm(wasmBase64) {
-    const { Buffer } = await import('node:buffer');
-    const wasmArray = Buffer.from(wasmBase64, 'base64');
-    return new WebAssembly.Module(wasmArray);
-}
-config.compilerWasm = {
-    getRuntime: async () => await import("@prisma/client/runtime/query_compiler_fast_bg.mysql.mjs"),
-    getQueryCompilerWasmModule: async () => {
-        const { wasm } = await import("@prisma/client/runtime/query_compiler_fast_bg.mysql.wasm-base64.mjs");
-        return await decodeBase64AsWasm(wasm);
-    },
-    importName: "./query_compiler_fast_bg.js"
-};
-function getPrismaClientClass() {
-    return runtime.getPrismaClient(config);
-}
-//# sourceMappingURL=class.js.map
 
 ============================================================
 DOSYA: .\generated\prisma\internal\class.ts
@@ -1423,127 +1016,6 @@ export type PrismaAction = 'findUnique' | 'findUniqueOrThrow' | 'findMany' | 'fi
  */
 export type TransactionClient = Omit<DefaultPrismaClient, runtime.ITXClientDenyList>;
 //# sourceMappingURL=prismaNamespace.d.ts.map
-
-============================================================
-DOSYA: .\generated\prisma\internal\prismaNamespace.js
-============================================================
-
-"use strict";
-/* !!! This is code generated by Prisma. Do not edit directly. !!! */
-/* eslint-disable */
-// biome-ignore-all lint: generated file
-// @ts-nocheck 
-/*
- * WARNING: This is an internal file that is subject to change!
- *
- * 🛑 Under no circumstances should you import this file directly! 🛑
- *
- * All exports from this file are wrapped under a `Prisma` namespace object in the client.ts file.
- * While this enables partial backward compatibility, it is not part of the stable public API.
- *
- * If you are looking for your Models, Enums, and Input Types, please import them from the respective
- * model files in the `model` directory!
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.defineExtension = exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.prismaVersion = exports.getExtensionContext = exports.Decimal = exports.Sql = exports.raw = exports.join = exports.empty = exports.sql = exports.PrismaClientValidationError = exports.PrismaClientInitializationError = exports.PrismaClientRustPanicError = exports.PrismaClientUnknownRequestError = exports.PrismaClientKnownRequestError = void 0;
-const runtime = __importStar(require("@prisma/client/runtime/client"));
-/**
- * Prisma Errors
- */
-exports.PrismaClientKnownRequestError = runtime.PrismaClientKnownRequestError;
-exports.PrismaClientUnknownRequestError = runtime.PrismaClientUnknownRequestError;
-exports.PrismaClientRustPanicError = runtime.PrismaClientRustPanicError;
-exports.PrismaClientInitializationError = runtime.PrismaClientInitializationError;
-exports.PrismaClientValidationError = runtime.PrismaClientValidationError;
-/**
- * Re-export of sql-template-tag
- */
-exports.sql = runtime.sqltag;
-exports.empty = runtime.empty;
-exports.join = runtime.join;
-exports.raw = runtime.raw;
-exports.Sql = runtime.Sql;
-/**
- * Decimal.js
- */
-exports.Decimal = runtime.Decimal;
-exports.getExtensionContext = runtime.Extensions.getExtensionContext;
-/**
- * Prisma Client JS version: 7.7.0
- * Query Engine version: 75cbdc1eb7150937890ad5465d861175c6624711
- */
-exports.prismaVersion = {
-    client: "7.7.0",
-    engine: "75cbdc1eb7150937890ad5465d861175c6624711"
-};
-exports.NullTypes = {
-    DbNull: runtime.NullTypes.DbNull,
-    JsonNull: runtime.NullTypes.JsonNull,
-    AnyNull: runtime.NullTypes.AnyNull,
-};
-/**
- * Helper for filtering JSON entries that have `null` on the database (empty on the db)
- *
- * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
- */
-exports.DbNull = runtime.DbNull;
-/**
- * Helper for filtering JSON entries that have JSON `null` values (not empty on the db)
- *
- * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
- */
-exports.JsonNull = runtime.JsonNull;
-/**
- * Helper for filtering JSON entries that are `Prisma.DbNull` or `Prisma.JsonNull`
- *
- * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
- */
-exports.AnyNull = runtime.AnyNull;
-exports.ModelName = {};
-/**
- * Enums
- */
-exports.TransactionIsolationLevel = runtime.makeStrictEnum({
-    ReadUncommitted: 'ReadUncommitted',
-    ReadCommitted: 'ReadCommitted',
-    RepeatableRead: 'RepeatableRead',
-    Serializable: 'Serializable'
-});
-exports.defineExtension = runtime.Extensions.defineExtension;
-//# sourceMappingURL=prismaNamespace.js.map
 
 ============================================================
 DOSYA: .\generated\prisma\internal\prismaNamespace.ts
@@ -2197,98 +1669,6 @@ export type TransactionIsolationLevel = (typeof TransactionIsolationLevel)[keyof
 //# sourceMappingURL=prismaNamespaceBrowser.d.ts.map
 
 ============================================================
-DOSYA: .\generated\prisma\internal\prismaNamespaceBrowser.js
-============================================================
-
-"use strict";
-/* !!! This is code generated by Prisma. Do not edit directly. !!! */
-/* eslint-disable */
-// biome-ignore-all lint: generated file
-// @ts-nocheck 
-/*
- * WARNING: This is an internal file that is subject to change!
- *
- * 🛑 Under no circumstances should you import this file directly! 🛑
- *
- * All exports from this file are wrapped under a `Prisma` namespace object in the browser.ts file.
- * While this enables partial backward compatibility, it is not part of the stable public API.
- *
- * If you are looking for your Models, Enums, and Input Types, please import them from the respective
- * model files in the `model` directory!
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.TransactionIsolationLevel = exports.ModelName = exports.AnyNull = exports.JsonNull = exports.DbNull = exports.NullTypes = exports.Decimal = void 0;
-const runtime = __importStar(require("@prisma/client/runtime/index-browser"));
-exports.Decimal = runtime.Decimal;
-exports.NullTypes = {
-    DbNull: runtime.NullTypes.DbNull,
-    JsonNull: runtime.NullTypes.JsonNull,
-    AnyNull: runtime.NullTypes.AnyNull,
-};
-/**
- * Helper for filtering JSON entries that have `null` on the database (empty on the db)
- *
- * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
- */
-exports.DbNull = runtime.DbNull;
-/**
- * Helper for filtering JSON entries that have JSON `null` values (not empty on the db)
- *
- * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
- */
-exports.JsonNull = runtime.JsonNull;
-/**
- * Helper for filtering JSON entries that are `Prisma.DbNull` or `Prisma.JsonNull`
- *
- * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
- */
-exports.AnyNull = runtime.AnyNull;
-exports.ModelName = {};
-/*
- * Enums
- */
-exports.TransactionIsolationLevel = runtime.makeStrictEnum({
-    ReadUncommitted: 'ReadUncommitted',
-    ReadCommitted: 'ReadCommitted',
-    RepeatableRead: 'RepeatableRead',
-    Serializable: 'Serializable'
-});
-//# sourceMappingURL=prismaNamespaceBrowser.js.map
-
-============================================================
 DOSYA: .\generated\prisma\internal\prismaNamespaceBrowser.ts
 ============================================================
 
@@ -2550,6 +1930,8 @@ async function main() {
       'projects.mail',
       'mail.manage',
       'mail.send',
+      'logistics.view',
+      'logistics.manage',
     ];
 
     const permissions = await Promise.all(
@@ -2775,6 +2157,7 @@ model Customer {
   projects     Project[]
   appointments Appointment[]
   offerScheduleSlots OfferScheduleSlot[]
+  shipments Shipment[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
 }
@@ -2869,6 +2252,7 @@ model Tenant {
   offerScheduleSlots     OfferScheduleSlot[]
   materials              Material[]
   mailSetting            MailSetting?
+  shipments              Shipment[]
 
   @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
 }
@@ -3099,6 +2483,57 @@ model PurchaseProposal {
 
 
 ============================================================
+DOSYA: .\prisma\schema\logistics.prisma
+============================================================
+
+enum ShipmentStatus {
+  UNPAID
+  PAID
+  DELAYED
+  CANCELLED
+}
+
+model Shipment {
+  id                  String         @id
+  tenantId            String
+  customerId          String
+  projectId           String?
+  
+  foNumber            String?        @unique
+  cmrNumber           String?        @unique
+  awNumber            String?        @unique
+
+  carrierCompany      String?
+
+  productDescription  String?        @db.Text
+  quantity            Float?
+  unit                String?
+  grossWeight         Float?
+  netWeight           Float?
+  dimensions          String?
+  extraNotes          String?        @db.Text
+
+  shipmentDate        DateTime?
+  eta                 DateTime?     
+  status              ShipmentStatus @default(UNPAID)
+  invoiceUrl          String?        @db.LongText
+  autoMarkDelayed     Boolean        @default(false)
+  requireInvoiceForPaid Boolean      @default(true)
+
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  tenant              Tenant         @relation(fields: [tenantId], references: [id])
+  customer            Customer       @relation(fields: [customerId], references: [id])
+  project             Project?       @relation(fields: [projectId], references: [id])
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([projectId])
+}
+
+
+============================================================
 DOSYA: .\prisma\schema\main.prisma
 ============================================================
 
@@ -3163,6 +2598,7 @@ model Project {
   appointments      Appointment[]
   projectVariations ProjectVariation[]
   extraMaterials    ProjectExtraMaterial[]
+  shipments         Shipment[]
 
   @@index([tenantId])
   @@index([customerId])
@@ -3575,10 +3011,23 @@ import inventoryRoutes from './presentation/routes/inventory.routes';
 import projectRoutes from './presentation/routes/project.routes';
 import bookingRoutes from './presentation/routes/booking.routes';
 import mailRoutes from './presentation/routes/mail.routes';
+import logisticsRoutes from './presentation/routes/logistics.routes';
 
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+const apiPrefixes = ['/api/v1', '/backend/api/v1'];
+const swaggerUiOptions = {
+    customSiteTitle: 'OFFITEC ERP API Docs',
+    swaggerOptions: {
+        persistAuthorization: true,
+        docExpansion: 'list',
+    },
+};
+const allowSwaggerUi = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    res.removeHeader('Content-Security-Policy');
+    next();
+};
 
 app.use(cors());
 app.use(helmet({ crossOriginResourcePolicy: false }));
@@ -3587,39 +3036,35 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-    customSiteTitle: 'OFFITEC ERP API Docs',
-    swaggerOptions: {
-        persistAuthorization: true,
-        docExpansion: 'list',
-    },
-}));
+app.use('/api-docs', allowSwaggerUi, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+app.use('/backend/api-docs', allowSwaggerUi, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
 
-app.get('/swagger.json', (_req, res) => {
+app.get(['/swagger.json', '/backend/swagger.json'], (_req, res) => {
     res.header('Content-Type', 'application/json');
     res.send(swaggerSpec);
 });
 
 
-app.get('/health', (_req, res) => {
+app.get(['/health', '/backend/health'], (_req, res) => {
     res.status(200).json({ status: 'OK' });
 });
 
-app.use('/api/v1/auth',       authRoutes);
-app.use('/api/v1/employees',  employeeRoutes);
-app.use('/api/v1/leaves',     leaveRoutes);
-app.use('/api/v1/tenants',    tenantRoutes);
-app.use('/api/v1/customers',  customerRoutes);
-app.use('/api/v1/attendance', attendanceRoutes);
-app.use('/api/v1/roles',      roleRoutes);
-app.use('/api/v1/tenders',    tenderRoutes);
-app.use('/api/v1/articles',   articleRoutes);
-app.use('/api/v1/articles',   articleRoutes);
-app.use('/api/v1/inventory',  inventoryRoutes); 
-app.use('/api/v1/projects', projectRoutes);
-app.use('/api/v1/booking', bookingRoutes); 
-app.use('/api/v1/mail', mailRoutes);
-
+for (const prefix of apiPrefixes) {
+    app.use(`${prefix}/auth`, authRoutes);
+    app.use(`${prefix}/employees`, employeeRoutes);
+    app.use(`${prefix}/leaves`, leaveRoutes);
+    app.use(`${prefix}/tenants`, tenantRoutes);
+    app.use(`${prefix}/customers`, customerRoutes);
+    app.use(`${prefix}/attendance`, attendanceRoutes);
+    app.use(`${prefix}/roles`, roleRoutes);
+    app.use(`${prefix}/tenders`, tenderRoutes);
+    app.use(`${prefix}/articles`, articleRoutes);
+    app.use(`${prefix}/inventory`, inventoryRoutes);
+    app.use(`${prefix}/projects`, projectRoutes);
+    app.use(`${prefix}/booking`, bookingRoutes);
+    app.use(`${prefix}/mail`, mailRoutes);
+    app.use(`${prefix}/logistics`, logisticsRoutes);
+}
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(err.stack);
@@ -3628,7 +3073,8 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`API Docs  → http://localhost:${PORT}/api-docs`);
+    console.log(`API Docs  -> http://localhost:${PORT}/api-docs`);
+    console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
 });
 
 
@@ -4613,6 +4059,116 @@ export class ListLeavesUseCase {
             throw new Error("tenantId veya employeeId zorunludur.");
         }
         return await this.leaveRequestRepository.findAll(filter);
+    }
+}
+
+
+============================================================
+DOSYA: .\src\application\use-cases\logistics\CheckDelayedShipmentsUseCase.ts
+============================================================
+
+
+import { IShipmentRepository } from "../../../domain/repositories/IShipmentRepository";
+
+export class CheckDelayedShipmentsUseCase {
+    constructor(private shipmentRepository: IShipmentRepository) {}
+
+    async execute(tenantId: string): Promise<number> {
+        const delayedCandidates = await this.shipmentRepository.findAll({
+            tenantId,
+            isEtaPassed: true
+        });
+
+        let updateCount = 0;
+        for (const shipment of delayedCandidates) {
+            if (shipment.status === 'UNPAID' && shipment.autoMarkDelayed) {
+                await this.shipmentRepository.update(shipment.id, { status: 'DELAYED' });
+                updateCount++;
+            }
+        }
+
+        return updateCount;
+    }
+}
+
+
+============================================================
+DOSYA: .\src\application\use-cases\logistics\CreateShipmentUseCase.ts
+============================================================
+
+
+import { IShipmentRepository } from "../../../domain/repositories/IShipmentRepository";
+import { Shipment } from "../../../domain/entities/Logistics";
+
+export class CreateShipmentUseCase {
+    constructor(private shipmentRepository: IShipmentRepository) {}
+
+    async execute(data: Partial<Shipment>): Promise<Shipment> {
+        if (!data.tenantId || !data.customerId) {
+            throw new Error("Şirket (Tenant) ve Müşteri/Tedarikçi (Cari) bilgisi zorunludur.");
+        }
+
+        if (data.foNumber) {
+            const existingFo = await this.shipmentRepository.findByDocumentNumber(data.tenantId, 'foNumber', data.foNumber);
+            if (existingFo) throw new Error(`Bu FO Numarası (${data.foNumber}) zaten sistemde kayıtlı.`);
+        }
+        if (data.cmrNumber) {
+            const existingCmr = await this.shipmentRepository.findByDocumentNumber(data.tenantId, 'cmrNumber', data.cmrNumber);
+            if (existingCmr) throw new Error(`Bu CMR Numarası (${data.cmrNumber}) zaten sistemde kayıtlı.`);
+        }
+        if (data.awNumber) {
+            const existingAw = await this.shipmentRepository.findByDocumentNumber(data.tenantId, 'awNumber', data.awNumber);
+            if (existingAw) throw new Error(`Bu AW Numarası (${data.awNumber}) zaten sistemde kayıtlı.`);
+        }
+
+        if (data.status === 'PAID' && data.requireInvoiceForPaid !== false && !data.invoiceUrl) {
+            throw new Error("[BLOCKED] Fatura (PDF/Görsel) yüklenmeden statü 'Ödendi' olarak işaretlenemez.");
+        }
+
+        return await this.shipmentRepository.create(data);
+    }
+}
+
+
+============================================================
+DOSYA: .\src\application\use-cases\logistics\UpdateShipmentUseCase.ts
+============================================================
+
+
+import { IShipmentRepository } from "../../../domain/repositories/IShipmentRepository";
+import { Shipment } from "../../../domain/entities/Logistics";
+
+export class UpdateShipmentUseCase {
+    constructor(private shipmentRepository: IShipmentRepository) {}
+
+    async execute(id: string, data: Partial<Shipment>, tenantId: string): Promise<Shipment> {
+        const existing = await this.shipmentRepository.findById(id);
+        if (!existing || existing.tenantId !== tenantId) {
+            throw new Error("Sevkiyat kaydı bulunamadı.");
+        }
+
+        if (data.foNumber && data.foNumber !== existing.foNumber) {
+            const conflict = await this.shipmentRepository.findByDocumentNumber(tenantId, 'foNumber', data.foNumber, id);
+            if (conflict) throw new Error(`Bu FO Numarası (${data.foNumber}) zaten sistemde kayıtlı.`);
+        }
+        if (data.cmrNumber && data.cmrNumber !== existing.cmrNumber) {
+            const conflict = await this.shipmentRepository.findByDocumentNumber(tenantId, 'cmrNumber', data.cmrNumber, id);
+            if (conflict) throw new Error(`Bu CMR Numarası (${data.cmrNumber}) zaten sistemde kayıtlı.`);
+        }
+        if (data.awNumber && data.awNumber !== existing.awNumber) {
+            const conflict = await this.shipmentRepository.findByDocumentNumber(tenantId, 'awNumber', data.awNumber, id);
+            if (conflict) throw new Error(`Bu AW Numarası (${data.awNumber}) zaten sistemde kayıtlı.`);
+        }
+
+        const targetStatus = data.status !== undefined ? data.status : existing.status;
+        const targetInvoiceUrl = data.invoiceUrl !== undefined ? data.invoiceUrl : existing.invoiceUrl;
+        const shouldRequireInvoice = data.requireInvoiceForPaid !== undefined ? data.requireInvoiceForPaid : existing.requireInvoiceForPaid;
+
+        if (targetStatus === 'PAID' && shouldRequireInvoice !== false && !targetInvoiceUrl) {
+            throw new Error("[BLOCKED] Fatura belgesi yüklenmeden statü 'Ödendi' yapılamaz veya mevcut fatura silinemez.");
+        }
+
+        return await this.shipmentRepository.update(id, data);
     }
 }
 
@@ -5862,6 +5418,45 @@ export class LeaveRequest {
 
 
 ============================================================
+DOSYA: .\src\domain\entities\Logistics.ts
+============================================================
+
+// ============================================================
+// DOSYA: src/domain/entities/Logistics.ts
+// ============================================================
+
+export type ShipmentStatus = 'UNPAID' | 'PAID' | 'DELAYED' | 'CANCELLED';
+
+export class Shipment {
+    constructor(
+        public id: string,
+        public tenantId: string,
+        public customerId: string,
+        public status: ShipmentStatus,
+        public foNumber?: string | null,
+        public cmrNumber?: string | null,
+        public awNumber?: string | null,
+        public projectId?: string | null,
+        public carrierCompany?: string | null,
+        public productDescription?: string | null,
+        public quantity?: number | null,
+        public unit?: string | null,
+        public grossWeight?: number | null,
+        public netWeight?: number | null,
+        public dimensions?: string | null,
+        public extraNotes?: string | null,
+        public shipmentDate?: Date | null,
+        public eta?: Date | null,
+        public invoiceUrl?: string | null,
+        public autoMarkDelayed: boolean = false,
+        public requireInvoiceForPaid: boolean = true,
+        public createdAt?: Date,
+        public updatedAt?: Date
+    ) {}
+}
+
+
+============================================================
 DOSYA: .\src\domain\entities\Material.ts
 ============================================================
 
@@ -6372,6 +5967,32 @@ export interface IRoleRepository {
 }
 
 ============================================================
+DOSYA: .\src\domain\repositories\IShipmentRepository.ts
+============================================================
+
+
+import { Shipment } from "../entities/Logistics";
+
+export interface IShipmentFilter {
+    tenantId: string;
+    customerId?: string;
+    projectId?: string;
+    status?: string;
+    search?: string;
+    isEtaPassed?: boolean;
+}
+
+export interface IShipmentRepository {
+    create(data: Partial<Shipment>): Promise<Shipment>;
+    update(id: string, data: Partial<Shipment>): Promise<Shipment>;
+    findById(id: string): Promise<Shipment | null>;
+    findAll(filter: IShipmentFilter): Promise<Shipment[]>;
+    delete(id: string): Promise<void>;
+    
+    findByDocumentNumber(tenantId: string, docType: 'foNumber' | 'cmrNumber' | 'awNumber', number: string, excludeId?: string): Promise<Shipment | null>;
+}
+
+============================================================
 DOSYA: .\src\domain\repositories\ITenantRepository.ts
 ============================================================
 
@@ -6439,7 +6060,14 @@ const options: swaggerJsdoc.Options = {
             description: 'OFFITEC Kurumsal ERP Sistemi API Dokümantasyonu',
         },
         servers: [
-            { url: 'http://localhost:3000/api/v1' },
+            {
+                url: process.env.SWAGGER_SERVER_URL || 'https://demo.offitec.ch/backend/api/v1',
+                description: 'Production',
+            },
+            {
+                url: 'http://localhost:3000/api/v1',
+                description: 'Local',
+            },
         ],
         components: {
             securitySchemes: {
@@ -6586,6 +6214,7 @@ const options: swaggerJsdoc.Options = {
 };
 
 export const swaggerSpec = swaggerJsdoc(options);
+
 
 ============================================================
 DOSYA: .\src\infrastructure\database\prisma.client.ts
@@ -8666,6 +8295,127 @@ export class RoleRepository implements IRoleRepository {
 
 
 ============================================================
+DOSYA: .\src\infrastructure\repositories\ShipmentRepository.ts
+============================================================
+
+
+import prisma from "../database/prisma.client";
+import { IShipmentRepository, IShipmentFilter } from "../../domain/repositories/IShipmentRepository";
+import { Shipment, ShipmentStatus } from "../../domain/entities/Logistics";
+import { nanoid } from "nanoid";
+
+export class ShipmentRepository implements IShipmentRepository {
+    
+    private mapToEntity(data: any): Shipment {
+        return new Shipment(
+            data.id, data.tenantId, data.customerId, data.status as ShipmentStatus,
+            data.foNumber, data.cmrNumber, data.awNumber, data.projectId,
+            data.carrierCompany, data.productDescription, data.quantity, data.unit,
+            data.grossWeight, data.netWeight, data.dimensions, data.extraNotes,
+            data.shipmentDate, data.eta, data.invoiceUrl,
+            Boolean(data.autoMarkDelayed), data.requireInvoiceForPaid !== false,
+            data.createdAt, data.updatedAt
+        );
+    }
+
+    async create(data: Partial<Shipment>): Promise<Shipment> {
+        const created = await prisma.shipment.create({
+            data: {
+                id: data.id || nanoid(10),
+                tenantId: data.tenantId!,
+                customerId: data.customerId!,
+                projectId: data.projectId || null,
+                status: data.status || 'UNPAID',
+                foNumber: data.foNumber || null,
+                cmrNumber: data.cmrNumber || null,
+                awNumber: data.awNumber || null,
+                carrierCompany: data.carrierCompany || null,
+                productDescription: data.productDescription || null,
+                quantity: data.quantity || null,
+                unit: data.unit || null,
+                grossWeight: data.grossWeight || null,
+                netWeight: data.netWeight || null,
+                dimensions: data.dimensions || null,
+                extraNotes: data.extraNotes || null,
+                shipmentDate: data.shipmentDate || null,
+                eta: data.eta || null,
+                invoiceUrl: data.invoiceUrl || null,
+                autoMarkDelayed: data.autoMarkDelayed ?? false,
+                requireInvoiceForPaid: data.requireInvoiceForPaid ?? true,
+            }
+        });
+        return this.mapToEntity(created);
+    }
+
+    async update(id: string, data: Partial<Shipment>): Promise<Shipment> {
+        const updated = await prisma.shipment.update({
+            where: { id },
+            data: data as any
+        });
+        return this.mapToEntity(updated);
+    }
+
+    async findById(id: string): Promise<Shipment | null> {
+        const data = await prisma.shipment.findUnique({
+            where: { id },
+            include: {
+                customer: { select: { companyName: true, mainEmail: true } },
+                project: { select: { projectName: true } }
+            }
+        });
+        return data ? this.mapToEntity(data) : null;
+    }
+
+    async findAll(filter: IShipmentFilter): Promise<any[]> {
+        const where: any = { tenantId: filter.tenantId };
+
+        if (filter.customerId) where.customerId = filter.customerId;
+        if (filter.projectId) where.projectId = filter.projectId;
+        if (filter.status) where.status = filter.status;
+        
+        if (filter.search) {
+            where.OR = [
+                { foNumber: { contains: filter.search } },
+                { cmrNumber: { contains: filter.search } },
+                { awNumber: { contains: filter.search } },
+                { carrierCompany: { contains: filter.search } },
+                { productDescription: { contains: filter.search } },
+            ];
+        }
+
+        if (filter.isEtaPassed) {
+            where.eta = { lt: new Date() };
+            where.status = { notIn: ['PAID', 'CANCELLED'] };
+        }
+
+        const list = await prisma.shipment.findMany({
+            where,
+            include: {
+                customer: { select: { companyName: true } },
+                project: { select: { projectName: true } }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        return list;
+    }
+
+    async delete(id: string): Promise<void> {
+        await prisma.shipment.delete({ where: { id } });
+    }
+
+    async findByDocumentNumber(tenantId: string, docType: 'foNumber' | 'cmrNumber' | 'awNumber', number: string, excludeId?: string): Promise<Shipment | null> {
+        const where: any = { tenantId, [docType]: number };
+        if (excludeId) {
+            where.id = { not: excludeId };
+        }
+        const data = await prisma.shipment.findFirst({ where });
+        return data ? this.mapToEntity(data) : null;
+    }
+}
+
+
+============================================================
 DOSYA: .\src\infrastructure\repositories\TenantRepository.ts
 ============================================================
 
@@ -10332,6 +10082,135 @@ export class LeaveController{
 
             const results = await this.listLeavesUseCase.execute(filter);
             res.status(200).json(results);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+}
+
+============================================================
+DOSYA: .\src\presentation\controllers\LogisticsController.ts
+============================================================
+
+
+import { Request, Response } from 'express';
+import { CreateShipmentUseCase } from '../../application/use-cases/logistics/CreateShipmentUseCase';
+import { UpdateShipmentUseCase } from '../../application/use-cases/logistics/UpdateShipmentUseCase';
+import { CheckDelayedShipmentsUseCase } from '../../application/use-cases/logistics/CheckDelayedShipmentsUseCase';
+import { IShipmentRepository } from '../../domain/repositories/IShipmentRepository';
+
+export class LogisticsController {
+    constructor(
+        private createShipmentUseCase: CreateShipmentUseCase,
+        private updateShipmentUseCase: UpdateShipmentUseCase,
+        private checkDelayedShipmentsUseCase: CheckDelayedShipmentsUseCase,
+        private shipmentRepository: IShipmentRepository
+    ) {}
+
+    async create(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const data = { ...req.body, tenantId };
+
+            if (data.shipmentDate) data.shipmentDate = new Date(data.shipmentDate);
+            if (data.eta) data.eta = new Date(data.eta);
+
+            const result = await this.createShipmentUseCase.execute(data);
+            res.status(201).json({ message: "Sevkiyat kaydı başarıyla oluşturuldu.", data: result });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async update(req: Request, res: Response) {
+        try {
+            const id = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const data = { ...req.body };
+
+            if (data.shipmentDate) data.shipmentDate = new Date(data.shipmentDate);
+            if (data.eta) data.eta = new Date(data.eta);
+
+            const result = await this.updateShipmentUseCase.execute(id, data, tenantId);
+            res.status(200).json({ message: "Sevkiyat kaydı güncellendi.", data: result });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async list(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const filter: any = { tenantId };
+
+            if (req.query.customerId) filter.customerId = req.query.customerId;
+            if (req.query.projectId) filter.projectId = req.query.projectId;
+            if (req.query.status) filter.status = req.query.status;
+            if (req.query.search) filter.search = req.query.search;
+
+            const shipments = await this.shipmentRepository.findAll(filter);
+
+            const now = new Date().getTime();
+            const enrichedShipments = shipments.map(s => {
+                const etaTime = s.eta ? new Date(s.eta).getTime() : null;
+                const isEtaPassed = etaTime ? etaTime < now : false;
+                const needsWarning = isEtaPassed && (s.status === 'UNPAID' || s.status === 'DELAYED');
+
+                return {
+                    ...s,
+                    etaWarning: needsWarning
+                };
+            });
+
+            res.status(200).json(enrichedShipments);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getById(req: Request, res: Response) {
+        try {
+            const id = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+
+            const shipment = await this.shipmentRepository.findById(id);
+            if (!shipment || shipment.tenantId !== tenantId) {
+                return res.status(404).json({ error: "Sevkiyat kaydı bulunamadı." });
+            }
+
+            res.status(200).json(shipment);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async delete(req: Request, res: Response) {
+        try {
+            const id = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+
+            const shipment = await this.shipmentRepository.findById(id);
+            if (!shipment || shipment.tenantId !== tenantId) {
+                return res.status(404).json({ error: "Sevkiyat kaydı bulunamadı." });
+            }
+
+            await this.shipmentRepository.delete(id);
+            res.status(200).json({ message: "Sevkiyat kaydı silindi." });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async autoCheckDelayed(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const updatedCount = await this.checkDelayedShipmentsUseCase.execute(tenantId);
+            
+            res.status(200).json({ 
+                message: "ETA kontrolü yapıldı.", 
+                updatedCount: updatedCount,
+                detail: `${updatedCount} adet teslimat 'Gecikti' statüsüne alındı.`
+            });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -13740,6 +13619,132 @@ router.patch(
         req.body.managerId = req.user?.id;
         leaveController.evaluateLeaveRequest(req, res);
     },
+);
+
+export default router;
+
+============================================================
+DOSYA: .\src\presentation\routes\logistics.routes.ts
+============================================================
+
+import { Router } from 'express';
+import { LogisticsController } from '../controllers/LogisticsController';
+import { ShipmentRepository } from '../../infrastructure/repositories/ShipmentRepository';
+import { CreateShipmentUseCase } from '../../application/use-cases/logistics/CreateShipmentUseCase';
+import { UpdateShipmentUseCase } from '../../application/use-cases/logistics/UpdateShipmentUseCase';
+import { CheckDelayedShipmentsUseCase } from '../../application/use-cases/logistics/CheckDelayedShipmentsUseCase';
+import { requireAuth } from '../middlewares/AuthMiddleware';
+import { requirePermission } from '../middlewares/RbacMiddleware';
+
+const router = Router();
+
+// Bağımlılıkların (Dependencies) oluşturulması
+const shipmentRepo = new ShipmentRepository();
+const createUseCase = new CreateShipmentUseCase(shipmentRepo);
+const updateUseCase = new UpdateShipmentUseCase(shipmentRepo);
+const checkDelayedUseCase = new CheckDelayedShipmentsUseCase(shipmentRepo);
+
+const controller = new LogisticsController(
+    createUseCase,
+    updateUseCase,
+    checkDelayedUseCase,
+    shipmentRepo
+);
+
+/**
+ * @swagger
+ * /logistics/shipments:
+ *   get:
+ *     tags: [Logistics]
+ *     summary: Sevkiyat (Lojistik) kayıtlarını listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/shipments',
+    requireAuth,
+    requirePermission('logistics.view'),
+    (req, res) => controller.list(req, res)
+);
+
+/**
+ * @swagger
+ * /logistics/shipments/{id}:
+ *   get:
+ *     tags: [Logistics]
+ *     summary: Tekil sevkiyat kartını getir
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/shipments/:id',
+    requireAuth,
+    requirePermission('logistics.view'),
+    (req, res) => controller.getById(req, res)
+);
+
+/**
+ * @swagger
+ * /logistics/shipments:
+ *   post:
+ *     tags: [Logistics]
+ *     summary: Yeni bir Sevkiyat Kartı oluştur
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/shipments',
+    requireAuth,
+    requirePermission('logistics.manage'),
+    (req, res) => controller.create(req, res)
+);
+
+/**
+ * @swagger
+ * /logistics/shipments/{id}:
+ *   patch:
+ *     tags: [Logistics]
+ *     summary: Sevkiyat kartını güncelle (Fatura yükleme vb.)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+    '/shipments/:id',
+    requireAuth,
+    requirePermission('logistics.manage'),
+    (req, res) => controller.update(req, res)
+);
+
+/**
+ * @swagger
+ * /logistics/shipments/{id}:
+ *   delete:
+ *     tags: [Logistics]
+ *     summary: Sevkiyat kartını sil
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete(
+    '/shipments/:id',
+    requireAuth,
+    requirePermission('logistics.manage'),
+    (req, res) => controller.delete(req, res)
+);
+
+/**
+ * @swagger
+ * /logistics/shipments/trigger/check-delayed:
+ *   post:
+ *     tags: [Logistics]
+ *     summary: ETA'sı geçmiş teslimatları otomatik olarak "Gecikti" statüsüne çeker
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/shipments/trigger/check-delayed',
+    requireAuth,
+    requirePermission('logistics.manage'),
+    (req, res) => controller.autoCheckDelayed(req, res)
 );
 
 export default router;

@@ -12,7 +12,8 @@
     "dev": "ts-node-dev --respawn src/main.ts",
     "swagger": "ts-node swagger.ts",
     "generate:swagger": "ts-node scripts/export-swagger.ts",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed.ts",
+    "sees": "npm run seed"
   },
   "keywords": [],
   "author": "",
