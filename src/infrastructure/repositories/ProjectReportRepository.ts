@@ -24,7 +24,7 @@ export class ProjectReportRepository {
         });
     }
 
-    async findByProjectAndWorkDate(projectId: string, workDate: Date) {
+    async findByProjectAndWorkDate(projectId: string, workDate: Date, salesOrderId?: string | null, includeUnscoped = false) {
         const dayStart = new Date(workDate);
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(workDate);
@@ -33,12 +33,17 @@ export class ProjectReportRepository {
         return await (prisma as any).projectReport.findFirst({
             where: {
                 projectId,
+                ...(salesOrderId !== undefined
+                    ? includeUnscoped
+                        ? { OR: [{ salesOrderId }, { salesOrderId: null }] }
+                        : { salesOrderId }
+                    : {}),
                 workDate: { gte: dayStart, lte: dayEnd }
             }
         });
     }
 
-    async findByProjectAndWorkDateExcept(projectId: string, workDate: Date, reportId: string) {
+    async findByProjectAndWorkDateExcept(projectId: string, workDate: Date, reportId: string, salesOrderId?: string | null, includeUnscoped = false) {
         const dayStart = new Date(workDate);
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(workDate);
@@ -47,6 +52,11 @@ export class ProjectReportRepository {
         return await (prisma as any).projectReport.findFirst({
             where: {
                 projectId,
+                ...(salesOrderId !== undefined
+                    ? includeUnscoped
+                        ? { OR: [{ salesOrderId }, { salesOrderId: null }] }
+                        : { salesOrderId }
+                    : {}),
                 id: { not: reportId },
                 workDate: { gte: dayStart, lte: dayEnd }
             }
@@ -65,11 +75,12 @@ export class ProjectReportRepository {
     }
 
     async signReport(reportId: string, signatureBase64: string) {
-        await prisma.projectReport.update({
+        await (prisma as any).projectReport.update({
             where: { id: reportId },
             data: {
                 isSigned: true,
-                customerSignature: signatureBase64
+                customerSignature: signatureBase64,
+                signedAt: new Date(),
             }
         });
     }

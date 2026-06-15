@@ -21,6 +21,7 @@ export class MaintenanceReportUseCase {
         afterPhotoUrls?: unknown;
         fileUrls?: unknown;
         extraMaterials?: { articleId: string; quantity: number; unitCost: number; sourceLocationId: string }[];
+        expenses?: { expenseType: string; amount: number; description?: string }[];
     }) {
         if (!data.taskId) throw new Error("Bakim gorevi zorunludur.");
         if (!data.operationsDone?.trim()) throw new Error("Yapilan islemler zorunludur.");
@@ -28,6 +29,14 @@ export class MaintenanceReportUseCase {
         const task = await this.maintenanceRepository.getTaskById(data.taskId);
         if (!task) throw new Error("Bakim gorevi bulunamadi.");
         if ((task as any).contract?.tenantId !== data.tenantId) throw new Error("Bu gorev icin yetkiniz yok.");
+        const assignedIds = [
+            (task as any).assignedTechId,
+            (task as any).alternativeTechId,
+            ...(((task as any).assignments || []).map((assignment: any) => assignment.technicianId)),
+        ].filter(Boolean);
+        if (assignedIds.length && !assignedIds.includes(data.techId)) {
+            throw new Error("Bu bakim gorevi size atanmamis.");
+        }
 
         const existingReport = await this.maintenanceRepository.getReportByTaskId(data.taskId);
         if (existingReport?.isSigned) throw new Error("Imzalanmis rapor kilitlidir.");
@@ -76,6 +85,21 @@ export class MaintenanceReportUseCase {
                     quantity: Number(mat.quantity),
                     unitCost: Number(mat.unitCost || 0),
                     sourceLocationId: mat.sourceLocationId,
+                });
+            }
+        }
+
+        if (data.expenses && data.expenses.length > 0) {
+            for (const expense of data.expenses) {
+                if (!expense.expenseType?.trim()) throw new Error("Gider tipi zorunludur.");
+                if (Number(expense.amount) < 0) throw new Error("Gider tutari negatif olamaz.");
+                await this.maintenanceRepository.addExpense({
+                    id: nanoid(12),
+                    taskId: data.taskId,
+                    reportId,
+                    expenseType: expense.expenseType.trim(),
+                    amount: Number(expense.amount || 0),
+                    description: expense.description?.trim() || null,
                 });
             }
         }

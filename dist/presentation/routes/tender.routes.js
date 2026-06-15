@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const TenderController_1 = require("../controllers/TenderController");
 const ImportTenderUseCase_1 = require("../../application/use-cases/tender/ImportTenderUseCase");
+const ImportSalesOrderCsvUseCase_1 = require("../../application/use-cases/tender/ImportSalesOrderCsvUseCase");
 const CalculatePositionCostUseCase_1 = require("../../application/use-cases/tender/CalculatePositionCostUseCase");
 const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepository");
 const PositionRepository_1 = require("../../infrastructure/repositories/PositionRepository");
@@ -25,11 +26,12 @@ const parserService = new DummyTenderParserService_1.DummyTenderParserService();
 const customerActivityRepo = new CustomerActivityRepository_1.CustomerActivityRepository();
 const tenderLogRepo = new TenderActivityLogRepository_1.TenderActivityLogRepository();
 const importTenderUseCase = new ImportTenderUseCase_1.ImportTenderUseCase(tenderRepository, positionRepository, parserService, customerActivityRepo);
+const importSalesOrderCsvUseCase = new ImportSalesOrderCsvUseCase_1.ImportSalesOrderCsvUseCase();
 const calculateCostUseCase = new CalculatePositionCostUseCase_1.CalculatePositionCostUseCase(positionRepository, tenderRepository);
 const summaryUseCase = new GetTenderSummaryReportUseCase_1.GetTenderSummaryReportUseCase(tenderRepository, positionRepository);
 const exportDataUseCase = new ExportTenderDataUseCase_1.ExportTenderDataUseCase(tenderRepository, positionRepository);
 const tenderReportController = new TenderReportController_1.TenderReportController(summaryUseCase, exportDataUseCase);
-const tenderController = new TenderController_1.TenderController(importTenderUseCase, calculateCostUseCase, tenderRepository, positionRepository, customerActivityRepo, tenderLogRepo);
+const tenderController = new TenderController_1.TenderController(importTenderUseCase, importSalesOrderCsvUseCase, calculateCostUseCase, tenderRepository, positionRepository, customerActivityRepo, tenderLogRepo);
 const articleRepo = new ArticleRepository_1.ArticleRepository();
 const inventoryRepository = new InventoryRepository_1.InventoryRepository();
 const mapArticleUseCase = new MapArticleToPositionUseCase_1.MapArticleToPositionUseCase(articleRepo, tenderRepository, positionRepository, inventoryRepository);
@@ -79,7 +81,7 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
  * /tenders/{id}/positions:
  *   post:
  *     tags: [Tender]
- *     summary: Teklif içerisine manuel pozisyon ekle
+ *     summary: Teklif içerisine esnek satır ekle
  *     security:
  *       - bearerAuth: []
  */
@@ -89,7 +91,7 @@ router.post('/:id/positions', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
  * /tenders/{id}/positions/{positionId}:
  *   patch:
  *     tags: [Tender]
- *     summary: Pozisyon açıklaması, miktar ve birimini güncelle
+ *     summary: Satır açıklaması, miktar, fiyat ve tipini güncelle
  *     security:
  *       - bearerAuth: []
  */
@@ -104,13 +106,14 @@ router.patch('/:id/positions/:positionId', AuthMiddleware_1.requireAuth, (0, Rba
  *       - bearerAuth: []
  */
 router.post('/import', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.import'), (req, res) => tenderController.import(req, res));
+router.post('/import-sales-order-csv', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.import'), (req, res) => tenderController.importSalesOrderCsv(req, res));
 router.get('/offer-accept/:token', (req, res) => tenderController.acceptOfferByToken(req, res));
 /**
  * @swagger
  * /tenders/{id}/positions/{positionId}/calculate:
  *   post:
  *     tags: [Tender]
- *     summary: Bir pozisyonun maliyetlerini hesapla ve kaydet
+ *     summary: Bir satırın maliyetlerini hesapla ve kaydet
  *     security:
  *       - bearerAuth: []
  */
@@ -137,6 +140,8 @@ router.post('/:id/version', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.r
  */
 router.patch('/:id/approve', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.approve'), // Sadece Yönetici / Project Manager
 (req, res) => tenderController.approve(req, res));
+router.patch('/:id/meta', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
+router.patch('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
 router.get('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getScheduleSlots(req, res));
 router.post('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.createScheduleSlot(req, res));
 router.patch('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateScheduleSlot(req, res));
@@ -158,7 +163,7 @@ router.post('/:id/export', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
  * /tenders/{id}:
  *   get:
  *     tags: [Tender]
- *     summary: İhale detaylarını ve hiyerarşik pozisyonlarını getir
+ *     summary: İhale detaylarını ve esnek teklif satırlarını getir
  *     security:
  *       - bearerAuth: []
  */
@@ -168,7 +173,7 @@ router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePer
  * /tenders/{id}/positions/{positionId}:
  *   delete:
  *     tags: [Tender]
- *     summary: Taslak teklifteki pozisyonu ve alt pozisyonlarını sil
+ *     summary: Taslak teklifteki satırı ve alt satırlarını sil
  *     security:
  *       - bearerAuth: []
  */
@@ -178,7 +183,7 @@ router.delete('/:id/positions/:positionId', AuthMiddleware_1.requireAuth, (0, Rb
  * /tenders/{id}/positions/{positionId}/articles:
  *   post:
  *     tags: [Tender]
- *     summary: İhale pozisyonuna dahili ürün (BOM) bağlar ve malzeme maliyetini otomatik hesaplar.
+ *     summary: Eski ürün eşleştirme kaydını satıra ekler.
  *     security:
  *       - bearerAuth: []
  */
@@ -188,7 +193,7 @@ router.post('/:id/positions/:positionId/articles', AuthMiddleware_1.requireAuth,
  * /tenders/{id}/positions/{positionId}/articles/{mappingId}:
  *   delete:
  *     tags: [Tender]
- *     summary: Pozisyondan ürün eşleştirmesini kaldırır ve malzeme maliyetini yeniden hesaplar
+ *     summary: Satırdan eski ürün eşleştirme kaydını kaldırır
  *     security:
  *       - bearerAuth: []
  */
@@ -202,7 +207,7 @@ router.delete('/:id/materials/:mappingId', AuthMiddleware_1.requireAuth, (0, Rba
  * /tenders/{id}/report:
  *   get:
  *     tags: [Tender]
- *     summary: İhale için BKP / NPK bazlı kârlılık ve maliyet özet raporunu getirir
+ *     summary: İhale için kârlılık ve maliyet özet raporunu getirir
  *     security:
  *       - bearerAuth: []
  */
@@ -213,7 +218,7 @@ router.get('/:id/report', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
  * /tenders/{id}/export:
  *   get:
  *     tags: [Tender]
- *     summary: Teklifi PDF veya XML çıktısı için hiyerarşik formatta dışa aktarır
+ *     summary: Teklifi PDF veya XML çıktısı için satır formatında dışa aktarır
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -236,5 +241,9 @@ router.get('/:id/export', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
  */
 router.get('/:id/activities', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getActivities(req, res));
 router.get('/:id/logs', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getLogs(req, res));
+router.get('/:id/chatter-summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getChatterSummary(req, res));
+router.post('/:id/notes', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addNote(req, res));
+router.get('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDocuments(req, res));
+router.post('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addDocument(req, res));
 exports.default = router;
 //# sourceMappingURL=tender.routes.js.map

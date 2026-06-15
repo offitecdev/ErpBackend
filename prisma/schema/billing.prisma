@@ -1,0 +1,45 @@
+model Invoice {
+  id                 String   @id
+  tenantId           String
+  customerId         String?
+  projectId          String?
+  salesOrderId       String?
+  invoiceNumber      String
+  billingType        String   @default("FULL") // FULL | PARTIAL
+  billedPercent      Float    @default(100)
+  baseAmount         Float    @default(0) // order/project total this invoice was computed from
+  amount             Float    @default(0) // baseAmount * billedPercent / 100
+  status             String   @default("ISSUED") // ISSUED | PAID | CANCELLED
+  notes              String?  @db.Text
+  issuedByEmployeeId String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id])
+  customer   Customer?   @relation(fields: [customerId], references: [id])
+  project    Project?    @relation(fields: [projectId], references: [id])
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id])
+  issuedBy   Employee    @relation("EmployeeIssuedInvoices", fields: [issuedByEmployeeId], references: [id])
+  lineItems  InvoiceLineItem[]
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([projectId])
+  @@index([salesOrderId])
+  @@index([issuedByEmployeeId])
+}
+
+model InvoiceLineItem {
+  id          String  @id
+  invoiceId   String
+  description String  @db.Text
+  sourceType  String  // ORDER | OVERTIME | EXPENSE | EXTRA_MATERIAL | MANUAL
+  sourceId    String?
+  quantity    Float   @default(1)
+  unitAmount  Float   @default(0)
+  lineTotal   Float   @default(0)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}

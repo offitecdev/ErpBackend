@@ -36,7 +36,7 @@ export class ImportTenderUseCase {
         });
 
         const idMap = new Map<string, string>(); 
-        const positionsToInsert = parsedData.positions.map(p => {
+        const positionsToInsert = parsedData.positions.map((p, index) => {
             const realId = nanoid(10);
             idMap.set(p.refId, realId);
             return {
@@ -44,6 +44,9 @@ export class ImportTenderUseCase {
                 tenantId,
                 tenderId,
                 parentPositionId: p.parentRefId ? idMap.get(p.parentRefId) : null,
+                rowType: 'SECTION',
+                displayOrder: (index + 1) * 1000,
+                sourceArticleId: null,
                 positionNumber: p.positionNumber,
                 shortDescription: p.shortDescription,
                 longDescription: p.longDescription,

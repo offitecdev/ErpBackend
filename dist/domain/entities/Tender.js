@@ -17,7 +17,30 @@ class Tender {
     offerAcceptedAt;
     offerMailRecipient;
     offerAcceptanceToken;
-    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken) {
+    sourceCreatedAt;
+    orderDate;
+    billingAddress;
+    deliveryAddress;
+    internalDeliveryDate;
+    priceList;
+    paymentTerms;
+    commissionNumber;
+    salespersonName;
+    sourceStatus;
+    sourceCompany;
+    shippingTerms;
+    shippingWeight;
+    fiscalPosition;
+    salesTeam;
+    onlineSignature;
+    onlinePayment;
+    coverLetter;
+    sourceTotal;
+    sourceNetAmount;
+    sourceTaxAmount;
+    sourceRecurringTotal;
+    sourceMargin;
+    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -33,6 +56,29 @@ class Tender {
         this.offerAcceptedAt = offerAcceptedAt;
         this.offerMailRecipient = offerMailRecipient;
         this.offerAcceptanceToken = offerAcceptanceToken;
+        this.sourceCreatedAt = sourceCreatedAt;
+        this.orderDate = orderDate;
+        this.billingAddress = billingAddress;
+        this.deliveryAddress = deliveryAddress;
+        this.internalDeliveryDate = internalDeliveryDate;
+        this.priceList = priceList;
+        this.paymentTerms = paymentTerms;
+        this.commissionNumber = commissionNumber;
+        this.salespersonName = salespersonName;
+        this.sourceStatus = sourceStatus;
+        this.sourceCompany = sourceCompany;
+        this.shippingTerms = shippingTerms;
+        this.shippingWeight = shippingWeight;
+        this.fiscalPosition = fiscalPosition;
+        this.salesTeam = salesTeam;
+        this.onlineSignature = onlineSignature;
+        this.onlinePayment = onlinePayment;
+        this.coverLetter = coverLetter;
+        this.sourceTotal = sourceTotal;
+        this.sourceNetAmount = sourceNetAmount;
+        this.sourceTaxAmount = sourceTaxAmount;
+        this.sourceRecurringTotal = sourceRecurringTotal;
+        this.sourceMargin = sourceMargin;
     }
 }
 exports.Tender = Tender;

@@ -48,6 +48,8 @@ export class ProjectReport {
     constructor(
         public id: string,
         public projectId: string,
+        public salesOrderId: string | null,
+        public appointmentId: string | null,
         public employeeId: string,
         public reportDate: Date,
         public reportType: string,
@@ -80,6 +82,8 @@ export class ProjectExpense {
     constructor(
         public id: string,
         public projectId: string,
+        public salesOrderId: string | null,
+        public appointmentId: string | null,
         public expenseType: string,
         public amount: number,
         public expenseDate: Date,

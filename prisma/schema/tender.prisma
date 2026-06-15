@@ -12,12 +12,35 @@ enum TenderStatus {
 model Tender {
   id                  String       @id
   tenantId            String
-  customerId          String
+  customerId          String?
   projectId           String?
   tenderNumber        String
   version             Int          @default(1)
   format              TenderFormat
   validUntil          DateTime?
+  sourceCreatedAt     DateTime?
+  orderDate           DateTime?
+  billingAddress      String?      @db.Text
+  deliveryAddress     String?      @db.Text
+  internalDeliveryDate DateTime?
+  priceList           String?
+  paymentTerms        String?
+  commissionNumber    String?
+  salespersonName     String?
+  sourceStatus        String?
+  sourceCompany       String?
+  shippingTerms       String?
+  shippingWeight      Float?
+  fiscalPosition      String?
+  salesTeam           String?
+  onlineSignature     Boolean?
+  onlinePayment       Boolean?
+  coverLetter         String?      @db.LongText
+  sourceTotal         Float?
+  sourceNetAmount     Float?
+  sourceTaxAmount     Float?
+  sourceRecurringTotal Float?
+  sourceMargin        Float?
   status              TenderStatus @default(Draft)
   offerMailSentAt     DateTime?
   offerAcceptedAt     DateTime?
@@ -26,10 +49,11 @@ model Tender {
   createdAt           DateTime     @default(now())
   createdByEmployeeId String
   tenant              Tenant       @relation(fields: [tenantId], references: [id])
-  customer            Customer     @relation(fields: [customerId], references: [id])
+  customer            Customer?    @relation(fields: [customerId], references: [id])
   createdBy           Employee     @relation(fields: [createdByEmployeeId], references: [id])
   positions           Position[]
   usedMaterials       TenderMaterialUsage[]
+  salesOrder          SalesOrder?
   project             Project?
   offerScheduleSlots  OfferScheduleSlot[]
 
@@ -42,6 +66,9 @@ model Position {
   tenantId         String
   tenderId         String
   parentPositionId String?
+  rowType          String     @default("SECTION")
+  sourceArticleId  String?
+  displayOrder     Int        @default(0)
   npkCode          String?
   positionNumber   String
   shortDescription String
@@ -63,6 +90,8 @@ model Position {
 
   @@index([tenderId])
   @@index([parentPositionId])
+  @@index([sourceArticleId])
+  @@index([tenderId, parentPositionId, displayOrder])
 }
 
 model CalculationItem {
@@ -89,6 +118,8 @@ model Article {
   name               String
   description        String?   @db.Text
   baseCost           Float     @default(0)
+  salePrice          Float     @default(0)
+  defaultSupplierId  String?
   unit               String
   imageUrl           String?   @db.LongText
   category           String?
@@ -107,6 +138,7 @@ model Article {
   stockBalances     StockBalance[]
   stockMovements    StockMovement[]
   purchaseProposals PurchaseProposal[]
+  articleSuppliers  ArticleSupplier[]
   reportMaterials   ReportMaterial[]
   maintenanceMaterials MaintenanceMaterial[]
   serviceMaterials  ServiceMaterial[]
@@ -125,7 +157,8 @@ model PositionArticleMapping {
   position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
   article  Article  @relation(fields: [articleId], references: [id])
 
-  @@unique([positionId, articleId])
+  @@index([positionId])
+  @@index([articleId])
 }
 
 model PositionMaterialMapping {

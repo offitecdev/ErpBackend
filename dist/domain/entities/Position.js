@@ -13,7 +13,10 @@ class Position {
     npkCode;
     longDescription;
     unit;
-    constructor(id, tenantId, tenderId, positionNumber, shortDescription, hierarchyLevel, quantity = 0, parentPositionId, npkCode, longDescription, unit) {
+    rowType;
+    sourceArticleId;
+    displayOrder;
+    constructor(id, tenantId, tenderId, positionNumber, shortDescription, hierarchyLevel, quantity = 0, parentPositionId, npkCode, longDescription, unit, rowType = 'SECTION', sourceArticleId, displayOrder = 0) {
         this.id = id;
         this.tenantId = tenantId;
         this.tenderId = tenderId;
@@ -25,6 +28,9 @@ class Position {
         this.npkCode = npkCode;
         this.longDescription = longDescription;
         this.unit = unit;
+        this.rowType = rowType;
+        this.sourceArticleId = sourceArticleId;
+        this.displayOrder = displayOrder;
     }
 }
 exports.Position = Position;

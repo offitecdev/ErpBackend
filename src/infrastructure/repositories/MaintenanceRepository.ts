@@ -1,7 +1,17 @@
 
 import prisma from "../database/prisma.client";
 import { IMaintenanceRepository, TenantScope } from "../../domain/repositories/IMaintenanceRepository";
-import { MaintenanceContract, MaintenanceTask, MaintenanceReport, MaintenanceMaterial, TaskStatus } from "../../domain/entities/Maintenance";
+import {
+    MaintenanceAppointmentOption,
+    MaintenanceContract,
+    MaintenanceExpense,
+    MaintenanceMaterial,
+    MaintenanceReport,
+    MaintenanceTask,
+    MaintenanceTaskAssignment,
+    TaskStatus,
+} from "../../domain/entities/Maintenance";
+import { nanoid } from "nanoid";
 
 const tenantWhere = (tenantId: TenantScope) => Array.isArray(tenantId) ? { in: tenantId } : tenantId;
 
@@ -37,11 +47,20 @@ const materialInclude = {
 const reportInclude = {
     technician: { select: technicianSelect },
     usedMaterials: { include: materialInclude },
+    expenses: true,
 };
 
 const taskInclude = {
     technician: { select: technicianSelect },
     alternativeTechnician: { select: technicianSelect },
+    assignments: {
+        orderBy: { assignedAt: 'asc' as const },
+        include: { technician: { select: technicianSelect } },
+    },
+    appointmentOptions: {
+        orderBy: { startTime: 'asc' as const },
+    },
+    expenses: true,
     report: { include: reportInclude },
     contract: {
         include: {
@@ -58,6 +77,18 @@ export class MaintenanceRepository implements IMaintenanceRepository {
         return data as unknown as MaintenanceContract;
     }
 
+    async getNextContractCode(tenantId: string): Promise<string> {
+        const rows = await prisma.maintenanceContract.findMany({
+            where: { tenantId, contractCode: { startsWith: 'M-' } },
+            select: { contractCode: true },
+        });
+        const max = rows.reduce((value, row) => {
+            const match = /^M-(\d{3,})-\d{2}$/.exec(row.contractCode || '');
+            return match ? Math.max(value, Number(match[1]) || 0) : value;
+        }, 0);
+        return `M-${String(max + 1).padStart(3, '0')}-01`;
+    }
+
     async getContractById(id: string): Promise<MaintenanceContract | null> {
         const data = await prisma.maintenanceContract.findUnique({
             where: { id },
@@ -68,6 +99,12 @@ export class MaintenanceRepository implements IMaintenanceRepository {
                     include: {
                         technician: { select: technicianSelect },
                         alternativeTechnician: { select: technicianSelect },
+                        assignments: {
+                            orderBy: { assignedAt: 'asc' },
+                            include: { technician: { select: technicianSelect } },
+                        },
+                        appointmentOptions: { orderBy: { startTime: 'asc' } },
+                        expenses: true,
                         report: { include: reportInclude },
                     }
                 }
@@ -77,7 +114,7 @@ export class MaintenanceRepository implements IMaintenanceRepository {
     }
 
     async listContracts(tenantId: TenantScope, customerId?: string): Promise<MaintenanceContract[]> {
-        const where: any = { tenantId: tenantWhere(tenantId) };
+        const where: any = { tenantId: tenantWhere(tenantId), deletedAt: null };
         if (customerId) where.customerId = customerId;
         const data = await prisma.maintenanceContract.findMany({
             where,
@@ -89,12 +126,49 @@ export class MaintenanceRepository implements IMaintenanceRepository {
                     include: {
                         technician: { select: technicianSelect },
                         alternativeTechnician: { select: technicianSelect },
+                        assignments: {
+                            orderBy: { assignedAt: 'asc' },
+                            include: { technician: { select: technicianSelect } },
+                        },
+                        appointmentOptions: { orderBy: { startTime: 'asc' } },
                         report: { select: { id: true, isSigned: true, createdAt: true, signedAt: true } },
                     }
                 },
             },
         });
         return data as unknown as MaintenanceContract[];
+    }
+
+    async updateContract(id: string, patch: Partial<MaintenanceContract>): Promise<MaintenanceContract> {
+        const data = await prisma.maintenanceContract.update({
+            where: { id },
+            data: patch as any,
+            include: {
+                customer: { select: customerSelect },
+                tasks: {
+                    orderBy: { plannedDate: 'asc' },
+                    include: {
+                        technician: { select: technicianSelect },
+                        alternativeTechnician: { select: technicianSelect },
+                        assignments: {
+                            orderBy: { assignedAt: 'asc' },
+                            include: { technician: { select: technicianSelect } },
+                        },
+                        appointmentOptions: { orderBy: { startTime: 'asc' } },
+                        report: { include: reportInclude },
+                    },
+                },
+            },
+        });
+        return data as unknown as MaintenanceContract;
+    }
+
+    async archiveContract(id: string): Promise<MaintenanceContract> {
+        const data = await prisma.maintenanceContract.update({
+            where: { id },
+            data: { deletedAt: new Date(), isActive: false },
+        });
+        return data as unknown as MaintenanceContract;
     }
 
     async createTask(task: Partial<MaintenanceTask>): Promise<MaintenanceTask> {
@@ -105,6 +179,14 @@ export class MaintenanceRepository implements IMaintenanceRepository {
     async getTaskById(id: string): Promise<MaintenanceTask | null> {
         const data = await prisma.maintenanceTask.findUnique({
             where: { id },
+            include: taskInclude,
+        });
+        return data ? data as unknown as MaintenanceTask : null;
+    }
+
+    async getTaskByBookingToken(token: string): Promise<MaintenanceTask | null> {
+        const data = await prisma.maintenanceTask.findUnique({
+            where: { bookingToken: token },
             include: taskInclude,
         });
         return data ? data as unknown as MaintenanceTask : null;
@@ -138,6 +220,225 @@ export class MaintenanceRepository implements IMaintenanceRepository {
             include: taskInclude,
         });
         return data as unknown as MaintenanceTask[];
+    }
+
+    async getTasksAssignedToTechnician(tenantId: TenantScope, technicianId: string, startDate: Date, endDate: Date): Promise<MaintenanceTask[]> {
+        const data = await prisma.maintenanceTask.findMany({
+            where: {
+                contract: { tenantId: tenantWhere(tenantId), deletedAt: null },
+                plannedDate: { gte: startDate, lte: endDate },
+                managerApprovedAt: { not: null },
+                OR: [
+                    { assignedTechId: technicianId },
+                    { alternativeTechId: technicianId },
+                    { assignments: { some: { technicianId } } },
+                ],
+            },
+            orderBy: [{ scheduledStartTime: 'asc' }, { plannedDate: 'asc' }],
+            include: taskInclude,
+        });
+        return data as unknown as MaintenanceTask[];
+    }
+
+    async replaceTaskAssignments(taskId: string, technicianIds: string[], createdById?: string): Promise<MaintenanceTaskAssignment[]> {
+        const uniqueIds = [...new Set(technicianIds.filter(Boolean))];
+        await prisma.$transaction(async (tx) => {
+            await tx.maintenanceTaskAssignment.deleteMany({ where: { taskId } });
+            if (uniqueIds.length) {
+                await tx.maintenanceTaskAssignment.createMany({
+                    data: uniqueIds.map((technicianId) => ({
+                        id: nanoid(12),
+                        taskId,
+                        technicianId,
+                        createdById: createdById || null,
+                    })),
+                });
+            }
+            await tx.maintenanceTask.update({
+                where: { id: taskId },
+                data: {
+                    assignedTechId: uniqueIds[0] || null,
+                    alternativeTechId: uniqueIds[1] && uniqueIds[1] !== uniqueIds[0] ? uniqueIds[1] : null,
+                },
+            });
+        });
+
+        const data = await prisma.maintenanceTaskAssignment.findMany({
+            where: { taskId },
+            orderBy: { assignedAt: 'asc' },
+            include: { technician: { select: technicianSelect } },
+        });
+        return data as unknown as MaintenanceTaskAssignment[];
+    }
+
+    async findAssignmentConflict(technicianIds: string[], startTime: Date, endTime: Date, excludeTaskId?: string): Promise<MaintenanceTask | null> {
+        const uniqueIds = [...new Set(technicianIds.filter(Boolean))];
+        if (!uniqueIds.length) return null;
+        const data = await prisma.maintenanceTask.findFirst({
+            where: {
+                ...(excludeTaskId ? { id: { not: excludeTaskId } } : {}),
+                status: { not: 'CANCELLED' },
+                scheduledStartTime: { lt: endTime },
+                scheduledEndTime: { gt: startTime },
+                OR: [
+                    { assignedTechId: { in: uniqueIds } },
+                    { alternativeTechId: { in: uniqueIds } },
+                    { assignments: { some: { technicianId: { in: uniqueIds } } } },
+                ],
+            },
+            include: taskInclude,
+        });
+        return data ? data as unknown as MaintenanceTask : null;
+    }
+
+    async findAppointmentOptionConflict(
+        technicianIds: string[],
+        startTime: Date,
+        endTime: Date,
+        excludeTaskId?: string,
+        excludeOptionId?: string
+    ): Promise<MaintenanceAppointmentOption | null> {
+        const uniqueIds = [...new Set(technicianIds.filter(Boolean))];
+        if (!uniqueIds.length) return null;
+        const data = await prisma.maintenanceAppointmentOption.findFirst({
+            where: {
+                ...(excludeOptionId ? { id: { not: excludeOptionId } } : {}),
+                ...(excludeTaskId ? { taskId: { not: excludeTaskId } } : {}),
+                status: { in: ['PENDING', 'APPROVED'] },
+                startTime: { lt: endTime },
+                endTime: { gt: startTime },
+                task: {
+                    status: { not: 'CANCELLED' },
+                    OR: [
+                        { assignedTechId: { in: uniqueIds } },
+                        { alternativeTechId: { in: uniqueIds } },
+                        { assignments: { some: { technicianId: { in: uniqueIds } } } },
+                    ],
+                },
+            },
+            orderBy: { startTime: 'asc' },
+            include: {
+                task: {
+                    include: {
+                        contract: { include: { customer: { select: customerSelect } } },
+                        technician: { select: technicianSelect },
+                        alternativeTechnician: { select: technicianSelect },
+                        assignments: {
+                            orderBy: { assignedAt: 'asc' },
+                            include: { technician: { select: technicianSelect } },
+                        },
+                    },
+                },
+            },
+        });
+        return data ? data as unknown as MaintenanceAppointmentOption : null;
+    }
+
+    async createAppointmentOptions(taskId: string, options: Partial<MaintenanceAppointmentOption>[]): Promise<MaintenanceAppointmentOption[]> {
+        await prisma.$transaction(async (tx) => {
+            await tx.maintenanceAppointmentOption.updateMany({
+                where: { taskId, status: 'PENDING' },
+                data: { status: 'EXPIRED' },
+            });
+            if (options.length) {
+                await tx.maintenanceAppointmentOption.createMany({
+                    data: options.map((option) => ({
+                        id: option.id || nanoid(12),
+                        taskId,
+                        token: option.token || nanoid(32),
+                        startTime: option.startTime!,
+                        endTime: option.endTime!,
+                        status: option.status || 'PENDING',
+                        sentAt: option.sentAt || new Date(),
+                        emailLogJson: option.emailLogJson as any,
+                    })),
+                });
+            }
+        });
+
+        const data = await prisma.maintenanceAppointmentOption.findMany({
+            where: { taskId, status: 'PENDING' },
+            orderBy: { startTime: 'asc' },
+        });
+        return data as unknown as MaintenanceAppointmentOption[];
+    }
+
+    async listAppointmentOptionsByToken(token: string): Promise<MaintenanceAppointmentOption[]> {
+        const task = await prisma.maintenanceTask.findUnique({
+            where: { bookingToken: token },
+            include: { appointmentOptions: { where: { status: 'PENDING' }, orderBy: { startTime: 'asc' } } },
+        });
+        return (task?.appointmentOptions || []) as unknown as MaintenanceAppointmentOption[];
+    }
+
+    async confirmAppointmentOption(taskToken: string, optionId: string): Promise<MaintenanceTask> {
+        const task = await prisma.$transaction(async (tx) => {
+            const current = await tx.maintenanceTask.findUnique({
+                where: { bookingToken: taskToken },
+                include: { appointmentOptions: true },
+            });
+            if (!current) throw new Error("Randevu linki bulunamadi.");
+            const selected = current.appointmentOptions.find((option) => option.id === optionId);
+            if (!selected || selected.status !== 'PENDING') {
+                throw new Error("Secilen randevu artik uygun degil.");
+            }
+
+            await tx.maintenanceAppointmentOption.updateMany({
+                where: { taskId: current.id, status: 'PENDING', id: { not: optionId } },
+                data: { status: 'DECLINED', respondedAt: new Date() },
+            });
+            await tx.maintenanceAppointmentOption.update({
+                where: { id: optionId },
+                data: { status: 'APPROVED', respondedAt: new Date() },
+            });
+            return await tx.maintenanceTask.update({
+                where: { id: current.id },
+                data: {
+                    plannedDate: selected.startTime,
+                    scheduledStartTime: selected.startTime,
+                    scheduledEndTime: selected.endTime,
+                    managerApprovedAt: new Date(),
+                    managerApprovedById: null,
+                },
+                include: taskInclude,
+            });
+        });
+        return task as unknown as MaintenanceTask;
+    }
+
+    async approveAppointmentOptionForTask(taskId: string, optionId: string, managerId: string): Promise<MaintenanceTask> {
+        const task = await prisma.$transaction(async (tx) => {
+            const current = await tx.maintenanceTask.findUnique({
+                where: { id: taskId },
+                include: { appointmentOptions: true },
+            });
+            if (!current) throw new Error("Gorev bulunamadi.");
+            const selected = current.appointmentOptions.find((option) => option.id === optionId);
+            if (!selected || !['PENDING', 'APPROVED'].includes(selected.status)) {
+                throw new Error("Secilen randevu artik uygun degil.");
+            }
+
+            await tx.maintenanceAppointmentOption.updateMany({
+                where: { taskId: current.id, status: 'PENDING', id: { not: optionId } },
+                data: { status: 'DECLINED', respondedAt: new Date() },
+            });
+            await tx.maintenanceAppointmentOption.update({
+                where: { id: optionId },
+                data: { status: 'APPROVED', respondedAt: selected.respondedAt || new Date() },
+            });
+            return await tx.maintenanceTask.update({
+                where: { id: current.id },
+                data: {
+                    plannedDate: selected.startTime,
+                    scheduledStartTime: selected.startTime,
+                    scheduledEndTime: selected.endTime,
+                    managerApprovedAt: new Date(),
+                    managerApprovedById: managerId,
+                },
+                include: taskInclude,
+            });
+        });
+        return task as unknown as MaintenanceTask;
     }
 
     async createReport(report: Partial<MaintenanceReport>): Promise<MaintenanceReport> {
@@ -231,5 +532,12 @@ export class MaintenanceRepository implements IMaintenanceRepository {
             include: materialInclude,
         });
         return data as unknown as MaintenanceMaterial;
+    }
+
+    async addExpense(expense: Partial<MaintenanceExpense>): Promise<MaintenanceExpense> {
+        const data = await prisma.maintenanceExpense.create({
+            data: expense as any,
+        });
+        return data as unknown as MaintenanceExpense;
     }
 }

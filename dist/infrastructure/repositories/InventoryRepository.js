@@ -41,7 +41,7 @@ class InventoryRepository {
         return await prisma_client_1.default.stockBalance.findMany({
             where,
             include: {
-                article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
+                article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, salePrice: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
                 location: { select: { locationName: true, locationType: true } }
             }
         });
@@ -52,15 +52,25 @@ class InventoryRepository {
             include: {
                 stockBalances: {
                     include: { location: { select: { locationName: true, locationType: true } } }
-                }
+                },
+                articleSuppliers: {
+                    include: {
+                        supplier: true,
+                        location: { select: { id: true, locationName: true, locationType: true } }
+                    },
+                    orderBy: [{ isPreferred: 'desc' }, { lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }]
+                },
             }
         });
         return articles.map((a) => ({
             id: a.id,
             articleCode: a.articleCode,
             name: a.name,
+            description: a.description,
             unit: a.unit,
             baseCost: a.baseCost,
+            salePrice: a.salePrice ?? 0,
+            defaultSupplierId: a.defaultSupplierId,
             imageUrl: a.imageUrl,
             systemBarcode: a.systemBarcode,
             supplierBarcode: a.supplierBarcode,
@@ -80,6 +90,7 @@ class InventoryRepository {
                 currentQuantity: b.currentQuantity,
                 reservedQuantity: b.reservedQuantity,
             })),
+            suppliers: a.articleSuppliers,
         }));
     }
     async findArticleByBarcodeOrCode(tenantId, codeOrBarcode) {
@@ -95,7 +106,7 @@ class InventoryRepository {
         });
         if (!data)
             return null;
-        return new Article_1.Article(data.id, data.tenantId, data.articleCode, data.name, data.baseCost, data.unit, data.description, data.systemBarcode, data.supplierBarcode, data.imageUrl, data.category, data.status ?? 'ACTIVE', data.isActive, data.minStockLevel, data.criticalStockLevel, data.maxStockLevel, data.lastPurchaseDate);
+        return new Article_1.Article(data.id, data.tenantId, data.articleCode, data.name, data.baseCost, data.unit, data.description, data.systemBarcode, data.supplierBarcode, data.imageUrl, data.category, data.status ?? 'ACTIVE', data.isActive, data.minStockLevel, data.criticalStockLevel, data.maxStockLevel, data.lastPurchaseDate, data.salePrice ?? 0, data.defaultSupplierId ?? null);
     }
     async processMovement(movementData, articleId, sourceLocationId, destLocationId, quantity) {
         const result = await prisma_client_1.default.$transaction(async (tx) => {

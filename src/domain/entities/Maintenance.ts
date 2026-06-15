@@ -1,5 +1,6 @@
 export type MaintenancePeriod = 'MONTHLY' | 'QUARTERLY' | 'BIANNUAL' | 'YEARLY';
 export type TaskStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type MaintenanceAppointmentOptionStatus = 'PENDING' | 'APPROVED' | 'DECLINED' | 'EXPIRED';
 
 export class MaintenanceContract {
     constructor(
@@ -10,12 +11,15 @@ export class MaintenanceContract {
         public period: MaintenancePeriod,
         public startDate: Date,
         public endDate: Date,
+        public contractCode?: string | null,
         public equipmentInfo?: string | null,
         public serviceScope?: string | null,
         public siteName?: string | null,
         public reminderDaysBefore: number = 7,
         public notificationChannels?: unknown | null,
+        public overtimeHourlyRate: number = 0,
         public isActive: boolean = true,
+        public deletedAt?: Date | null,
         public createdAt?: Date,
         public updatedAt?: Date
     ) {}
@@ -30,6 +34,12 @@ export class MaintenanceTask {
         public assignedTechId?: string | null,
         public alternativeTechId?: string | null,
         public siteName?: string | null,
+        public scheduledStartTime?: Date | null,
+        public scheduledEndTime?: Date | null,
+        public bookingToken?: string | null,
+        public reminderSentAt?: Date | null,
+        public managerApprovedAt?: Date | null,
+        public managerApprovedById?: string | null,
         public assignmentHistoryJson?: unknown | null,
         public createdAt?: Date,
         public updatedAt?: Date
@@ -56,6 +66,45 @@ export class MaintenanceReport {
         public pdfUrl?: string | null,
         public emailSentAt?: Date | null,
         public emailLogJson?: unknown | null,
+        public createdAt?: Date
+    ) {}
+}
+
+export class MaintenanceTaskAssignment {
+    constructor(
+        public id: string,
+        public taskId: string,
+        public technicianId: string,
+        public assignedAt?: Date,
+        public createdById?: string | null
+    ) {}
+}
+
+export class MaintenanceAppointmentOption {
+    constructor(
+        public id: string,
+        public taskId: string,
+        public token: string,
+        public startTime: Date,
+        public endTime: Date,
+        public status: MaintenanceAppointmentOptionStatus,
+        public sentAt?: Date | null,
+        public respondedAt?: Date | null,
+        public emailLogJson?: unknown | null,
+        public createdAt?: Date,
+        public isAvailable?: boolean,
+        public unavailableReason?: string | null
+    ) {}
+}
+
+export class MaintenanceExpense {
+    constructor(
+        public id: string,
+        public taskId: string,
+        public expenseType: string,
+        public amount: number,
+        public reportId?: string | null,
+        public description?: string | null,
         public createdAt?: Date
     ) {}
 }

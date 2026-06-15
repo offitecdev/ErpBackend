@@ -34,7 +34,8 @@ export class StockMovement{
         public sourceLocationId?: string | null,
         public destinationLocationId?: string | null,
         public referenceId?: string | null,
-        public description?: string | null
+        public description?: string | null,
+        public unitCost?: number | null
     ){}
 }
 

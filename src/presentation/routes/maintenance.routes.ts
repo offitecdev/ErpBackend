@@ -24,6 +24,16 @@ const serviceOptionPermissions = [
     'regie.reports.manage',
 ];
 
+router.get(
+    '/public/booking/:token',
+    (req, res) => controller.getPublicAppointmentOptions(req, res)
+);
+
+router.post(
+    '/public/booking/:token/confirm',
+    (req, res) => controller.confirmPublicAppointment(req, res)
+);
+
 /**
  * @swagger
  * /maintenance/options/customers:
@@ -88,6 +98,20 @@ router.get(
     (req, res) => controller.listContracts(req, res)
 );
 
+router.patch(
+    '/contracts/:contractId',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.updateContract(req, res)
+);
+
+router.delete(
+    '/contracts/:contractId',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.archiveContract(req, res)
+);
+
 /**
  * @swagger
  * /maintenance/tasks:
@@ -104,6 +128,27 @@ router.get(
     (req, res) => controller.listTasks(req, res)
 );
 
+router.get(
+    '/tasks/:taskId',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.getTask(req, res)
+);
+
+router.get(
+    '/technician/tasks',
+    requireAuth,
+    requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    (req, res) => controller.listMyTasks(req, res)
+);
+
+router.get(
+    '/technician/tasks/:taskId',
+    requireAuth,
+    requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    (req, res) => controller.getMyTask(req, res)
+);
+
 /**
  * @swagger
  * /maintenance/tasks/{taskId}:
@@ -118,6 +163,27 @@ router.patch(
     requireAuth,
     requirePermission('maintenance.contracts.manage'),
     (req, res) => controller.updateTask(req, res)
+);
+
+router.put(
+    '/tasks/:taskId/appointment-options/draft',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.saveAppointmentOptionsDraft(req, res)
+);
+
+router.post(
+    '/tasks/:taskId/appointment-options',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.sendAppointmentOptions(req, res)
+);
+
+router.post(
+    '/tasks/:taskId/appointment-options/:optionId/approve',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.approveAppointmentOption(req, res)
 );
 
 /**

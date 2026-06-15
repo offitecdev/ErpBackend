@@ -9,7 +9,7 @@ const Tender_1 = require("../../domain/entities/Tender");
 const nanoid_1 = require("nanoid");
 class TenderRepository {
     mapToEntity(data) {
-        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken);
+        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin);
     }
     async create(tenderData) {
         const data = await prisma_client_1.default.tender.create({
@@ -67,6 +67,29 @@ class TenderRepository {
                     createdAt: true,
                     projectId: true,
                     validUntil: true,
+                    sourceCreatedAt: true,
+                    orderDate: true,
+                    billingAddress: true,
+                    deliveryAddress: true,
+                    internalDeliveryDate: true,
+                    priceList: true,
+                    paymentTerms: true,
+                    commissionNumber: true,
+                    salespersonName: true,
+                    sourceStatus: true,
+                    sourceCompany: true,
+                    shippingTerms: true,
+                    shippingWeight: true,
+                    fiscalPosition: true,
+                    salesTeam: true,
+                    onlineSignature: true,
+                    onlinePayment: true,
+                    coverLetter: true,
+                    sourceTotal: true,
+                    sourceNetAmount: true,
+                    sourceTaxAmount: true,
+                    sourceRecurringTotal: true,
+                    sourceMargin: true,
                     offerMailSentAt: true,
                     offerAcceptedAt: true,
                     offerMailRecipient: true,
@@ -168,6 +191,29 @@ class TenderRepository {
                     status: 'Draft',
                     createdByEmployeeId: newCreatedBy,
                     validUntil: existingTender.validUntil,
+                    sourceCreatedAt: existingTender.sourceCreatedAt,
+                    orderDate: existingTender.orderDate,
+                    billingAddress: existingTender.billingAddress,
+                    deliveryAddress: existingTender.deliveryAddress,
+                    internalDeliveryDate: existingTender.internalDeliveryDate,
+                    priceList: existingTender.priceList,
+                    paymentTerms: existingTender.paymentTerms,
+                    commissionNumber: existingTender.commissionNumber,
+                    salespersonName: existingTender.salespersonName,
+                    sourceStatus: existingTender.sourceStatus,
+                    sourceCompany: existingTender.sourceCompany,
+                    shippingTerms: existingTender.shippingTerms,
+                    shippingWeight: existingTender.shippingWeight,
+                    fiscalPosition: existingTender.fiscalPosition,
+                    salesTeam: existingTender.salesTeam,
+                    onlineSignature: existingTender.onlineSignature,
+                    onlinePayment: existingTender.onlinePayment,
+                    coverLetter: existingTender.coverLetter,
+                    sourceTotal: existingTender.sourceTotal,
+                    sourceNetAmount: existingTender.sourceNetAmount,
+                    sourceTaxAmount: existingTender.sourceTaxAmount,
+                    sourceRecurringTotal: existingTender.sourceRecurringTotal,
+                    sourceMargin: existingTender.sourceMargin,
                     projectId: existingTender.projectId,
                 }
             });
@@ -185,6 +231,9 @@ class TenderRepository {
                         tenantId: pos.tenantId,
                         tenderId: newTenderId,
                         parentPositionId: newParentId,
+                        rowType: pos.rowType || 'SECTION',
+                        sourceArticleId: pos.sourceArticleId || null,
+                        displayOrder: pos.displayOrder ?? 0,
                         npkCode: pos.npkCode || null,
                         positionNumber: pos.positionNumber,
                         shortDescription: pos.shortDescription,
@@ -207,6 +256,7 @@ class TenderRepository {
                             laborCost: pos.calculation.laborCost,
                             overheadCost: pos.calculation.overheadCost,
                             riskAmount: pos.calculation.riskAmount,
+                            additionalCost: pos.calculation.additionalCost || 0,
                             profitMargin: pos.calculation.profitMargin,
                             totalCalculatedPrice: pos.calculation.totalCalculatedPrice
                         }
@@ -220,6 +270,7 @@ class TenderRepository {
                                 positionId: newPosId,
                                 articleId: mapping.articleId,
                                 quantityMultiplier: mapping.quantityMultiplier,
+                                discount: mapping.discount ?? 0,
                             }
                         });
                     }

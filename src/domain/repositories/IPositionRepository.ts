@@ -18,5 +18,8 @@ export interface IPositionRepository{
         taxRate?: number | null;
         imageUrl?: string | null;
         npkCode?: string | null;
+        rowType?: string;
+        sourceArticleId?: string | null;
+        displayOrder?: number;
     }): Promise<any>;
 }

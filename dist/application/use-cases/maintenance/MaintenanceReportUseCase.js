@@ -19,6 +19,14 @@ class MaintenanceReportUseCase {
             throw new Error("Bakim gorevi bulunamadi.");
         if (task.contract?.tenantId !== data.tenantId)
             throw new Error("Bu gorev icin yetkiniz yok.");
+        const assignedIds = [
+            task.assignedTechId,
+            task.alternativeTechId,
+            ...((task.assignments || []).map((assignment) => assignment.technicianId)),
+        ].filter(Boolean);
+        if (assignedIds.length && !assignedIds.includes(data.techId)) {
+            throw new Error("Bu bakim gorevi size atanmamis.");
+        }
         const existingReport = await this.maintenanceRepository.getReportByTaskId(data.taskId);
         if (existingReport?.isSigned)
             throw new Error("Imzalanmis rapor kilitlidir.");
@@ -59,6 +67,22 @@ class MaintenanceReportUseCase {
                     quantity: Number(mat.quantity),
                     unitCost: Number(mat.unitCost || 0),
                     sourceLocationId: mat.sourceLocationId,
+                });
+            }
+        }
+        if (data.expenses && data.expenses.length > 0) {
+            for (const expense of data.expenses) {
+                if (!expense.expenseType?.trim())
+                    throw new Error("Gider tipi zorunludur.");
+                if (Number(expense.amount) < 0)
+                    throw new Error("Gider tutari negatif olamaz.");
+                await this.maintenanceRepository.addExpense({
+                    id: (0, nanoid_1.nanoid)(12),
+                    taskId: data.taskId,
+                    reportId,
+                    expenseType: expense.expenseType.trim(),
+                    amount: Number(expense.amount || 0),
+                    description: expense.description?.trim() || null,
                 });
             }
         }

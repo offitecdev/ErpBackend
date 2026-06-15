@@ -1,0 +1,4 @@
+ALTER TABLE `MaintenanceTask`
+  ADD COLUMN IF NOT EXISTS `managerApprovedAt` DATETIME(3) NULL,
+  ADD COLUMN IF NOT EXISTS `managerApprovedById` VARCHAR(191) NULL;
+

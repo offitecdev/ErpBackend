@@ -26,9 +26,9 @@ class ProjectRepository {
             data: data
         });
     }
-    async findById(id) {
-        return await prisma_client_1.default.project.findUnique({
-            where: { id },
+    async findById(id, tenantId) {
+        return await prisma_client_1.default.project.findFirst({
+            where: tenantId ? { id, tenantId } : { id },
             include: {
                 customer: true,
                 manager: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -68,9 +68,63 @@ class ProjectRepository {
                         }
                     }
                 },
+                salesOrders: {
+                    orderBy: { createdAt: 'asc' },
+                    include: {
+                        customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
+                        parentSalesOrder: { select: { id: true, orderNumber: true } },
+                        addonSalesOrders: { select: { id: true, orderNumber: true, revisionNumber: true, totalAmount: true, createdAt: true } },
+                        tender: {
+                            select: {
+                                id: true,
+                                tenderNumber: true,
+                                status: true,
+                                projectId: true,
+                                usedMaterials: {
+                                    orderBy: { createdAt: 'desc' },
+                                    include: { material: true },
+                                },
+                                positions: {
+                                    select: {
+                                        id: true,
+                                        positionNumber: true,
+                                        shortDescription: true,
+                                        materialMappings: {
+                                            select: {
+                                                id: true,
+                                                materialId: true,
+                                                quantityMultiplier: true,
+                                                discount: true,
+                                                material: {
+                                                    select: {
+                                                        id: true,
+                                                        serialId: true,
+                                                        name: true,
+                                                        stockQuantity: true,
+                                                        unitCost: true,
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    },
+                },
                 phases: true,
                 expenses: { orderBy: { expenseDate: 'desc' } },
-                appointments: { orderBy: { startTime: 'asc' } },
+                appointments: {
+                    orderBy: { startTime: 'asc' },
+                    include: {
+                        assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+                        technicianAssignments: {
+                            orderBy: { assignedAt: 'asc' },
+                            include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } },
+                        },
+                    },
+                },
                 reports: {
                     orderBy: { reportDate: 'desc' },
                     include: {
@@ -118,8 +172,32 @@ class ProjectRepository {
                 customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
                 manager: { select: { id: true, firstName: true, lastName: true, email: true } },
                 tender: { select: { id: true, tenderNumber: true, status: true } },
-                appointments: { orderBy: { startTime: 'asc' } },
-                _count: { select: { reports: true, expenses: true, projectVariations: true } }
+                salesOrders: {
+                    orderBy: { createdAt: 'asc' },
+                    select: {
+                        id: true,
+                        orderNumber: true,
+                        orderType: true,
+                        status: true,
+                        totalAmount: true,
+                        parentSalesOrderId: true,
+                        revisionNumber: true,
+                        createdAt: true,
+                        parentSalesOrder: { select: { id: true, orderNumber: true } },
+                        tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
+                    },
+                },
+                appointments: {
+                    orderBy: { startTime: 'asc' },
+                    include: {
+                        assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+                        technicianAssignments: {
+                            orderBy: { assignedAt: 'asc' },
+                            include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } },
+                        },
+                    },
+                },
+                _count: { select: { reports: true, expenses: true, projectVariations: true, salesOrders: true } }
             }
         });
     }

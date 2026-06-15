@@ -1,7 +1,7 @@
 import { Router } from 'express';
 // (Yukarıda oluşturduğumuz ProjectController ve UseCase/Repo sınıflarını import edin)
 import { requireAuth } from '../middlewares/AuthMiddleware';
-import { requirePermission } from '../middlewares/RbacMiddleware';
+import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
 import { ProjectController } from '../controllers/ProjectController';
 import { CreateProjectFromTenderUseCase } from '../../application/use-cases/project/CreateProjectFromTenderUseCase';
 import { AddProjectReportUseCase } from '../../application/use-cases/project/AddProjectReportUseCase';
@@ -53,7 +53,11 @@ const requireProjectModule = async (req: Request, res: Response, next: NextFunct
 router.use(requireAuth, requireProjectModule);
 
 router.get('/', requirePermission('projects.view'), (req, res) => controller.list(req, res));
-router.get('/materials', requirePermission('projects.view'), (req, res) => controller.listMaterials(req, res));
+router.get('/options/technicians', requireAnyPermission(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
+router.get('/technician/installations', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
+router.get('/technician/installations/:appointmentId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
+router.post('/technician/installations/:appointmentId/complete', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
+router.get('/materials', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
 router.post('/materials', requirePermission('inventory.articles.create'), (req, res) => controller.createMaterial(req, res));
 router.patch('/materials/:materialId', requirePermission('inventory.articles.update'), (req, res) => controller.updateMaterial(req, res));
 router.delete('/materials/:materialId', requirePermission('inventory.articles.delete'), (req, res) => controller.deleteMaterial(req, res));
@@ -68,14 +72,21 @@ router.post('/:id/send-booking-mail', requirePermission('projects.mail'), (req, 
 router.post('/:id/reports', requirePermission('projects.report'), (req, res) => controller.addReport(req, res));
 router.patch('/reports/:reportId', requirePermission('projects.report'), (req, res) => controller.updateReport(req, res));
 router.patch('/reports/:reportId/sign', requirePermission('projects.report'), (req, res) => controller.signReport(req, res));
+router.post('/reports/:reportId/signature-request', requirePermission('projects.report'), (req, res) => controller.requestReportSignature(req, res));
 
 router.post('/:id/appointments', requirePermission('projects.manage'), (req, res) => controller.createAppointment(req, res));
 router.patch('/appointments/:appointmentId', requirePermission('projects.manage'), (req, res) => controller.updateAppointment(req, res));
 router.delete('/appointments/:appointmentId', requirePermission('projects.manage'), (req, res) => controller.deleteAppointment(req, res));
+router.post('/appointments/:appointmentId/complete', requirePermission('projects.manage'), (req, res) => controller.completeInstallation(req, res, { allowManagerComplete: true }));
 
 router.post('/:id/variations', requirePermission('projects.report'), (req, res) => controller.requestExtraMaterial(req, res));
 router.patch('/variations/:variationId/approve', requirePermission('projects.approveVariation'), (req, res) => controller.approveVariation(req, res));
 
 router.post('/:id/expenses', requirePermission('projects.manage'), (req, res) => controller.addExpense(req, res));
+router.patch('/expenses/:expenseId', requirePermission('projects.manage'), (req, res) => controller.updateExpense(req, res));
+router.delete('/expenses/:expenseId', requirePermission('projects.manage'), (req, res) => controller.deleteExpense(req, res));
+router.patch('/extra-materials/:extraMaterialId', requirePermission('projects.manage'), (req, res) => controller.updateExtraMaterial(req, res));
+router.delete('/extra-materials/:extraMaterialId', requirePermission('projects.manage'), (req, res) => controller.deleteExtraMaterial(req, res));
+router.post('/:id/addon-orders', requirePermission('projects.createAddonOrder'), (req, res) => controller.createAddonOrder(req, res));
 
 export default router;

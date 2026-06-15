@@ -26,7 +26,7 @@ class ProjectReportRepository {
             }
         });
     }
-    async findByProjectAndWorkDate(projectId, workDate) {
+    async findByProjectAndWorkDate(projectId, workDate, salesOrderId, includeUnscoped = false) {
         const dayStart = new Date(workDate);
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(workDate);
@@ -34,11 +34,16 @@ class ProjectReportRepository {
         return await prisma_client_1.default.projectReport.findFirst({
             where: {
                 projectId,
+                ...(salesOrderId !== undefined
+                    ? includeUnscoped
+                        ? { OR: [{ salesOrderId }, { salesOrderId: null }] }
+                        : { salesOrderId }
+                    : {}),
                 workDate: { gte: dayStart, lte: dayEnd }
             }
         });
     }
-    async findByProjectAndWorkDateExcept(projectId, workDate, reportId) {
+    async findByProjectAndWorkDateExcept(projectId, workDate, reportId, salesOrderId, includeUnscoped = false) {
         const dayStart = new Date(workDate);
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(workDate);
@@ -46,6 +51,11 @@ class ProjectReportRepository {
         return await prisma_client_1.default.projectReport.findFirst({
             where: {
                 projectId,
+                ...(salesOrderId !== undefined
+                    ? includeUnscoped
+                        ? { OR: [{ salesOrderId }, { salesOrderId: null }] }
+                        : { salesOrderId }
+                    : {}),
                 id: { not: reportId },
                 workDate: { gte: dayStart, lte: dayEnd }
             }
@@ -66,7 +76,8 @@ class ProjectReportRepository {
             where: { id: reportId },
             data: {
                 isSigned: true,
-                customerSignature: signatureBase64
+                customerSignature: signatureBase64,
+                signedAt: new Date(),
             }
         });
     }

@@ -7,7 +7,7 @@ class AddProjectExpenseUseCase {
     constructor(projectRepository) {
         this.projectRepository = projectRepository;
     }
-    async execute(projectId, expenseType, amount, description) {
+    async execute(projectId, expenseType, amount, description, salesOrderId, appointmentId) {
         const validTypes = ["Nakliye", "Ekipman Kiralama", "Dış hizmetler", "Taşeron", "Diğer"];
         if (!validTypes.includes(expenseType)) {
             throw new Error("Geçersiz harici gider türü.");
@@ -15,9 +15,11 @@ class AddProjectExpenseUseCase {
         const expense = await this.projectRepository.addExpense({
             id: (0, nanoid_1.nanoid)(10),
             projectId,
+            salesOrderId: salesOrderId || null,
+            appointmentId: appointmentId || null,
             expenseType,
             amount,
-            description
+            description,
         });
         return expense;
     }

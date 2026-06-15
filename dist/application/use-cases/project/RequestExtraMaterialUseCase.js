@@ -9,7 +9,7 @@ class RequestExtraMaterialUseCase {
         this.projectRepository = projectRepository;
         this.materialRepository = materialRepository;
     }
-    async execute(projectId, employeeId, materialId, quantity, description) {
+    async execute(projectId, employeeId, materialId, quantity, description, salesOrderId, appointmentId) {
         const project = await this.projectRepository.findById(projectId);
         if (!project)
             throw new Error("Proje bulunamadı.");
@@ -25,6 +25,8 @@ class RequestExtraMaterialUseCase {
         return await this.projectRepository.createExtraMaterial({
             id: (0, nanoid_1.nanoid)(10),
             projectId,
+            salesOrderId: salesOrderId || null,
+            appointmentId: appointmentId || null,
             materialId,
             quantity: normalizedQuantity,
             unitPrice: material.unitCost,

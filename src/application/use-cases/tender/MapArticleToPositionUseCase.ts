@@ -57,7 +57,7 @@ export class MapArticleToPositionUseCase {
                     movementType: 'OUT',
                     employeeId: input.employeeId,
                     referenceId: input.tenderId,
-                    description: `Teklif rezervasyonu: pozisyon ${input.positionId}`,
+                    description: `Teklif rezervasyonu: satır ${input.positionId}`,
                 },
                 input.articleId,
                 input.sourceLocationId,

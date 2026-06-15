@@ -20,6 +20,8 @@ const serviceOptionPermissions = [
     'regie.calls.manage',
     'regie.reports.manage',
 ];
+router.get('/public/booking/:token', (req, res) => controller.getPublicAppointmentOptions(req, res));
+router.post('/public/booking/:token/confirm', (req, res) => controller.confirmPublicAppointment(req, res));
 /**
  * @swagger
  * /maintenance/options/customers:
@@ -60,6 +62,8 @@ router.post('/contracts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
  *       - bearerAuth: []
  */
 router.get('/contracts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.listContracts(req, res));
+router.patch('/contracts/:contractId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.updateContract(req, res));
+router.delete('/contracts/:contractId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.archiveContract(req, res));
 /**
  * @swagger
  * /maintenance/tasks:
@@ -70,6 +74,9 @@ router.get('/contracts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
  *       - bearerAuth: []
  */
 router.get('/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.listTasks(req, res));
+router.get('/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.getTask(req, res));
+router.get('/technician/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.listMyTasks(req, res));
+router.get('/technician/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.getMyTask(req, res));
 /**
  * @swagger
  * /maintenance/tasks/{taskId}:
@@ -80,6 +87,9 @@ router.get('/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireP
  *       - bearerAuth: []
  */
 router.patch('/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.updateTask(req, res));
+router.put('/tasks/:taskId/appointment-options/draft', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.saveAppointmentOptionsDraft(req, res));
+router.post('/tasks/:taskId/appointment-options', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.sendAppointmentOptions(req, res));
+router.post('/tasks/:taskId/appointment-options/:optionId/approve', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.approveAppointmentOption(req, res));
 /**
  * @swagger
  * /maintenance/reports:

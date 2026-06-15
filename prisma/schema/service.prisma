@@ -14,11 +14,19 @@ enum TaskStatus {
   CANCELLED
 }
 
+enum MaintenanceAppointmentOptionStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  EXPIRED
+}
+
 
 model MaintenanceContract {
   id              String            @id
   tenantId        String
   customerId      String
+  contractCode    String            @db.VarChar(32)
   title           String
   period          MaintenancePeriod
   startDate       DateTime
@@ -28,7 +36,9 @@ model MaintenanceContract {
   siteName        String?
   reminderDaysBefore Int            @default(7)
   notificationChannels Json?
+  overtimeHourlyRate Float          @default(0)
   isActive        Boolean           @default(true)
+  deletedAt       DateTime?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
@@ -38,6 +48,7 @@ model MaintenanceContract {
 
   @@index([tenantId])
   @@index([customerId])
+  @@unique([tenantId, contractCode])
 }
 
 model MaintenanceTask {
@@ -47,6 +58,12 @@ model MaintenanceTask {
   alternativeTechId String?
   siteName        String?
   plannedDate     DateTime
+  scheduledStartTime DateTime?
+  scheduledEndTime   DateTime?
+  bookingToken    String?              @unique @db.VarChar(128)
+  reminderSentAt  DateTime?
+  managerApprovedAt DateTime?
+  managerApprovedById String?
   status          TaskStatus           @default(PENDING)
   assignmentHistoryJson Json?
   createdAt       DateTime             @default(now())
@@ -55,12 +72,50 @@ model MaintenanceTask {
   contract        MaintenanceContract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
   technician      Employee?            @relation("MaintenanceTech", fields: [assignedTechId], references: [id])
   alternativeTechnician Employee?       @relation("MaintenanceAltTech", fields: [alternativeTechId], references: [id])
+  assignments     MaintenanceTaskAssignment[]
+  appointmentOptions MaintenanceAppointmentOption[]
+  expenses        MaintenanceExpense[]
   report          MaintenanceReport?
 
   @@index([contractId])
   @@index([assignedTechId])
   @@index([alternativeTechId])
   @@index([plannedDate])
+  @@index([scheduledStartTime, scheduledEndTime])
+}
+
+model MaintenanceTaskAssignment {
+  id             String          @id
+  taskId         String
+  technicianId   String
+  assignedAt     DateTime        @default(now())
+  createdById    String?
+
+  task           MaintenanceTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  technician     Employee        @relation("MaintenanceTaskAssignmentTech", fields: [technicianId], references: [id])
+
+  @@unique([taskId, technicianId])
+  @@index([taskId])
+  @@index([technicianId])
+}
+
+model MaintenanceAppointmentOption {
+  id             String                             @id
+  taskId         String
+  token          String                             @unique @db.VarChar(128)
+  startTime      DateTime
+  endTime        DateTime
+  status         MaintenanceAppointmentOptionStatus @default(PENDING)
+  sentAt         DateTime?
+  respondedAt    DateTime?
+  emailLogJson   Json?
+  createdAt      DateTime                           @default(now())
+
+  task           MaintenanceTask                    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([status])
+  @@index([startTime, endTime])
 }
 
 model MaintenanceReport {
@@ -87,8 +142,25 @@ model MaintenanceReport {
   task              MaintenanceTask       @relation(fields: [taskId], references: [id], onDelete: Cascade)
   technician        Employee              @relation("MaintenanceReportTech", fields: [techId], references: [id])
   usedMaterials     MaintenanceMaterial[]
+  expenses          MaintenanceExpense[]
 
   @@index([techId])
+}
+
+model MaintenanceExpense {
+  id            String             @id
+  taskId        String
+  reportId      String?
+  expenseType   String
+  amount        Float              @default(0)
+  description   String?            @db.Text
+  createdAt     DateTime           @default(now())
+
+  task          MaintenanceTask     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  report        MaintenanceReport?  @relation(fields: [reportId], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@index([reportId])
 }
 
 model MaintenanceMaterial {
@@ -194,4 +266,25 @@ model WorkOrder {
 
   @@index([tenantId])
   @@index([customerId])
+}
+
+model Notification {
+  id                  String    @id
+  tenantId            String
+  recipientEmployeeId String?
+  type                String
+  title               String
+  message             String    @db.Text
+  linkUrl             String?
+  metadata            Json?
+  isRead              Boolean   @default(false)
+  readAt              DateTime?
+  createdAt           DateTime  @default(now())
+
+  tenant              Tenant    @relation(fields: [tenantId], references: [id])
+  recipient           Employee? @relation("EmployeeNotifications", fields: [recipientEmployeeId], references: [id])
+
+  @@index([tenantId])
+  @@index([recipientEmployeeId])
+  @@index([isRead, createdAt])
 }

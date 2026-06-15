@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { TenderController } from '../controllers/TenderController';
 import { ImportTenderUseCase } from '../../application/use-cases/tender/ImportTenderUseCase';
+import { ImportSalesOrderCsvUseCase } from '../../application/use-cases/tender/ImportSalesOrderCsvUseCase';
 import { CalculatePositionCostUseCase } from '../../application/use-cases/tender/CalculatePositionCostUseCase';
 import { TenderRepository } from '../../infrastructure/repositories/TenderRepository';
 import { PositionRepository } from '../../infrastructure/repositories/PositionRepository';
@@ -26,12 +27,14 @@ const parserService = new DummyTenderParserService();
 const customerActivityRepo = new CustomerActivityRepository();
 const tenderLogRepo = new TenderActivityLogRepository();
 const importTenderUseCase = new ImportTenderUseCase(tenderRepository, positionRepository, parserService, customerActivityRepo);
+const importSalesOrderCsvUseCase = new ImportSalesOrderCsvUseCase();
 const calculateCostUseCase = new CalculatePositionCostUseCase(positionRepository, tenderRepository);
 const summaryUseCase = new GetTenderSummaryReportUseCase(tenderRepository, positionRepository);
 const exportDataUseCase = new ExportTenderDataUseCase(tenderRepository, positionRepository);
 const tenderReportController = new TenderReportController(summaryUseCase, exportDataUseCase);
 const tenderController = new TenderController(
     importTenderUseCase,
+    importSalesOrderCsvUseCase,
     calculateCostUseCase,
     tenderRepository,
     positionRepository,
@@ -106,7 +109,7 @@ router.delete(
  * /tenders/{id}/positions:
  *   post:
  *     tags: [Tender]
- *     summary: Teklif içerisine manuel pozisyon ekle
+ *     summary: Teklif içerisine esnek satır ekle
  *     security:
  *       - bearerAuth: []
  */
@@ -122,7 +125,7 @@ router.post(
  * /tenders/{id}/positions/{positionId}:
  *   patch:
  *     tags: [Tender]
- *     summary: Pozisyon açıklaması, miktar ve birimini güncelle
+ *     summary: Satır açıklaması, miktar, fiyat ve tipini güncelle
  *     security:
  *       - bearerAuth: []
  */
@@ -149,6 +152,13 @@ router.post(
     (req, res) => tenderController.import(req, res)
 );
 
+router.post(
+    '/import-sales-order-csv',
+    requireAuth,
+    requirePermission('tenders.import'),
+    (req, res) => tenderController.importSalesOrderCsv(req, res)
+);
+
 router.get(
     '/offer-accept/:token',
     (req, res) => tenderController.acceptOfferByToken(req, res)
@@ -159,7 +169,7 @@ router.get(
  * /tenders/{id}/positions/{positionId}/calculate:
  *   post:
  *     tags: [Tender]
- *     summary: Bir pozisyonun maliyetlerini hesapla ve kaydet
+ *     summary: Bir satırın maliyetlerini hesapla ve kaydet
  *     security:
  *       - bearerAuth: []
  */
@@ -200,6 +210,20 @@ router.patch(
     requireAuth,
     requirePermission('tenders.approve'), // Sadece Yönetici / Project Manager
     (req, res) => tenderController.approve(req, res)
+);
+
+router.patch(
+    '/:id/meta',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.updateMeta(req, res)
+);
+
+router.patch(
+    '/:id',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.updateMeta(req, res)
 );
 
 router.get(
@@ -265,7 +289,7 @@ router.post(
  * /tenders/{id}:
  *   get:
  *     tags: [Tender]
- *     summary: İhale detaylarını ve hiyerarşik pozisyonlarını getir
+ *     summary: İhale detaylarını ve esnek teklif satırlarını getir
  *     security:
  *       - bearerAuth: []
  */
@@ -281,7 +305,7 @@ router.get(
  * /tenders/{id}/positions/{positionId}:
  *   delete:
  *     tags: [Tender]
- *     summary: Taslak teklifteki pozisyonu ve alt pozisyonlarını sil
+ *     summary: Taslak teklifteki satırı ve alt satırlarını sil
  *     security:
  *       - bearerAuth: []
  */
@@ -297,7 +321,7 @@ router.delete(
  * /tenders/{id}/positions/{positionId}/articles:
  *   post:
  *     tags: [Tender]
- *     summary: İhale pozisyonuna dahili ürün (BOM) bağlar ve malzeme maliyetini otomatik hesaplar.
+ *     summary: Eski ürün eşleştirme kaydını satıra ekler.
  *     security:
  *       - bearerAuth: []
  */
@@ -313,7 +337,7 @@ router.post(
  * /tenders/{id}/positions/{positionId}/articles/{mappingId}:
  *   delete:
  *     tags: [Tender]
- *     summary: Pozisyondan ürün eşleştirmesini kaldırır ve malzeme maliyetini yeniden hesaplar
+ *     summary: Satırdan eski ürün eşleştirme kaydını kaldırır
  *     security:
  *       - bearerAuth: []
  */
@@ -357,7 +381,7 @@ router.delete(
  * /tenders/{id}/report:
  *   get:
  *     tags: [Tender]
- *     summary: İhale için BKP / NPK bazlı kârlılık ve maliyet özet raporunu getirir
+ *     summary: İhale için kârlılık ve maliyet özet raporunu getirir
  *     security:
  *       - bearerAuth: []
  */
@@ -373,7 +397,7 @@ router.get(
  * /tenders/{id}/export:
  *   get:
  *     tags: [Tender]
- *     summary: Teklifi PDF veya XML çıktısı için hiyerarşik formatta dışa aktarır
+ *     summary: Teklifi PDF veya XML çıktısı için satır formatında dışa aktarır
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -411,6 +435,34 @@ router.get(
     requireAuth,
     requirePermission('tenders.view'),
     (req, res) => tenderController.getLogs(req, res)
+);
+
+router.get(
+    '/:id/chatter-summary',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getChatterSummary(req, res)
+);
+
+router.post(
+    '/:id/notes',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.addNote(req, res)
+);
+
+router.get(
+    '/:id/documents',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getDocuments(req, res)
+);
+
+router.post(
+    '/:id/documents',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.addDocument(req, res)
 );
 
 
