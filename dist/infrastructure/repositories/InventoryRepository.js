@@ -103,6 +103,7 @@ class InventoryRepository {
                     },
                     orderBy: [{ isPreferred: 'desc' }, { lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }]
                 },
+<<<<<<< HEAD
                 stockMovements: {
                     select: {
                         id: true,
@@ -150,6 +151,40 @@ class InventoryRepository {
                 ...costSummary,
             };
         });
+=======
+            }
+        });
+        return articles.map((a) => ({
+            id: a.id,
+            articleCode: a.articleCode,
+            name: a.name,
+            description: a.description,
+            unit: a.unit,
+            baseCost: a.baseCost,
+            salePrice: a.salePrice ?? 0,
+            defaultSupplierId: a.defaultSupplierId,
+            imageUrl: a.imageUrl,
+            systemBarcode: a.systemBarcode,
+            supplierBarcode: a.supplierBarcode,
+            isActive: a.isActive,
+            status: a.status,
+            category: a.category,
+            minStockLevel: a.minStockLevel,
+            criticalStockLevel: a.criticalStockLevel,
+            maxStockLevel: a.maxStockLevel,
+            lastPurchaseDate: a.lastPurchaseDate,
+            totalQuantity: a.stockBalances.reduce((s, b) => s + (b.currentQuantity || 0), 0),
+            totalReserved: a.stockBalances.reduce((s, b) => s + (b.reservedQuantity || 0), 0),
+            balances: a.stockBalances.map((b) => ({
+                locationId: b.locationId,
+                locationName: b.location?.locationName,
+                locationType: b.location?.locationType,
+                currentQuantity: b.currentQuantity,
+                reservedQuantity: b.reservedQuantity,
+            })),
+            suppliers: a.articleSuppliers,
+        }));
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     }
     async findArticleByBarcodeOrCode(tenantId, codeOrBarcode) {
         const data = await prisma_client_1.default.article.findFirst({

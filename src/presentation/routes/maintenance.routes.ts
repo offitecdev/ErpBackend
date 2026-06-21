@@ -34,11 +34,14 @@ router.post(
     (req, res) => controller.confirmPublicAppointment(req, res)
 );
 
+<<<<<<< HEAD
 router.post(
     '/public/booking/:token/disapprove',
     (req, res) => controller.disapprovePublicAppointment(req, res)
 );
 
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 /**
  * @swagger
  * /maintenance/options/customers:

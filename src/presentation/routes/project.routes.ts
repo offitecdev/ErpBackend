@@ -54,7 +54,10 @@ router.use(requireAuth, requireProjectModule);
 
 router.get('/', requirePermission('projects.view'), (req, res) => controller.list(req, res));
 router.get('/options/technicians', requireAnyPermission(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
+<<<<<<< HEAD
 router.get('/appointments', requireAnyPermission(['projects.view', 'projects.manage']), (req, res) => controller.listAppointments(req, res));
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 router.get('/technician/installations', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
 router.get('/technician/installations/:appointmentId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
@@ -76,7 +79,10 @@ router.post('/:id/send-booking-mail', requirePermission('projects.mail'), (req, 
 router.post('/:id/reports', requirePermission('projects.report'), (req, res) => controller.addReport(req, res));
 router.patch('/reports/:reportId', requirePermission('projects.report'), (req, res) => controller.updateReport(req, res));
 router.patch('/reports/:reportId/sign', requirePermission('projects.report'), (req, res) => controller.signReport(req, res));
+<<<<<<< HEAD
 router.post('/reports/:reportId/materials', requirePermission('projects.report'), (req, res) => controller.addReportMaterials(req, res));
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 router.post('/reports/:reportId/signature-request', requirePermission('projects.report'), (req, res) => controller.requestReportSignature(req, res));
 
 router.post('/:id/appointments', requirePermission('projects.manage'), (req, res) => controller.createAppointment(req, res));

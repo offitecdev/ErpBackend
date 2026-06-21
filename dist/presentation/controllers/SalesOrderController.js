@@ -7,6 +7,7 @@ exports.SalesOrderController = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+<<<<<<< HEAD
 const GetBillingSummaryUseCase_1 = require("../../application/use-cases/billing/GetBillingSummaryUseCase");
 const InvoiceRepository_1 = require("../../infrastructure/repositories/InvoiceRepository");
 const billingSummaryUseCase = new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(new InvoiceRepository_1.InvoiceRepository());
@@ -18,6 +19,8 @@ const safeBillingSummary = async (tenantId, salesOrderId) => {
         return null;
     }
 };
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 const allowedOrderModes = new Set(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
 const orderTotal = (positions) => positions.reduce((sum, position) => {
     const quantity = Number(position.quantity || 0);
@@ -57,6 +60,7 @@ class SalesOrderController {
             res.status(400).json({ error: error.message });
         }
     }
+<<<<<<< HEAD
     // "Siparişlerim" – top-level orders with addon hierarchy + billing summary
     async myOrders(req, res) {
         try {
@@ -165,6 +169,8 @@ class SalesOrderController {
             res.status(400).json({ error: error.message });
         }
     }
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     async createFromTender(req, res) {
         try {
             const tenantId = req.user.tenantId;

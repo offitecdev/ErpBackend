@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import prisma from "../database/prisma.client";
+<<<<<<< HEAD
 import { AddProjectReportUseCase } from "../../application/use-cases/project/AddProjectReportUseCase";
 import { ProjectReportRepository } from "../repositories/ProjectReportRepository";
 import { ProjectRepository } from "../repositories/ProjectRepository";
@@ -26,6 +27,11 @@ const addProjectReportUseCase = new AddProjectReportUseCase(
     new MaterialRepository() as any
 );
 
+=======
+
+let started = false;
+
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 const taskTechnicianIds = (task: any) => [
     task.assignedTechId,
     task.alternativeTechId,
@@ -112,6 +118,7 @@ const runProjectInstallationReminderPass = async () => {
     }
 };
 
+<<<<<<< HEAD
 // Once an installation day has fully ended, the field work is closed automatically: a field report
 // is written ending at the latest by midnight of that day and the appointment is marked COMPLETED.
 const runAutoFinishInstallationPass = async () => {
@@ -191,4 +198,15 @@ export const startMaintenanceReminderService = () => {
     };
     runAll();
     setInterval(runAll, 60 * 60 * 1000);
+=======
+export const startMaintenanceReminderService = () => {
+    if (started || process.env.OFFITEC_DISABLE_REMINDERS === "true") return;
+    started = true;
+    void runReminderPass().catch((error) => console.error("[maintenance-reminders]", error));
+    void runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error));
+    setInterval(() => {
+        void runReminderPass().catch((error) => console.error("[maintenance-reminders]", error));
+        void runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error));
+    }, 60 * 60 * 1000);
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 };

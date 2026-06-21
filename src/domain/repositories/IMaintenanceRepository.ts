@@ -34,7 +34,10 @@ export interface IMaintenanceRepository {
     createAppointmentOptions(taskId: string, options: Partial<MaintenanceAppointmentOption>[]): Promise<MaintenanceAppointmentOption[]>;
     listAppointmentOptionsByToken(token: string): Promise<MaintenanceAppointmentOption[]>;
     confirmAppointmentOption(taskToken: string, optionId: string): Promise<MaintenanceTask>;
+<<<<<<< HEAD
     disapproveAppointmentOptions(taskToken: string): Promise<MaintenanceTask>;
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     approveAppointmentOptionForTask(taskId: string, optionId: string, managerId: string): Promise<MaintenanceTask>;
     
     createReport(report: Partial<MaintenanceReport>): Promise<MaintenanceReport>;

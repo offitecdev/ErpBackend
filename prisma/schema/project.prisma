@@ -88,12 +88,15 @@ model ProjectReport {
   customerSignature String? @db.LongText
   isSigned          Boolean @default(false)
   signedAt          DateTime?
+<<<<<<< HEAD
 
   // Manager approval of the worked-hours / overtime. Set when an administrator
   // finishes the montaj, or automatically (autoApproved) by the end-of-day pass.
   hoursApprovedAt   DateTime?
   hoursApprovedById String?
   autoApproved      Boolean  @default(false)
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 
   project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   salesOrder    SalesOrder?      @relation(fields: [salesOrderId], references: [id])

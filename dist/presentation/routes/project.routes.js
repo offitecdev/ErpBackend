@@ -43,7 +43,10 @@ const requireProjectModule = async (req, res, next) => {
 router.use(AuthMiddleware_1.requireAuth, requireProjectModule);
 router.get('/', (0, RbacMiddleware_1.requirePermission)('projects.view'), (req, res) => controller.list(req, res));
 router.get('/options/technicians', (0, RbacMiddleware_1.requireAnyPermission)(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
+<<<<<<< HEAD
 router.get('/appointments', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.listAppointments(req, res));
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
 router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
@@ -61,7 +64,10 @@ router.post('/:id/send-booking-mail', (0, RbacMiddleware_1.requirePermission)('p
 router.post('/:id/reports', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.addReport(req, res));
 router.patch('/reports/:reportId', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.updateReport(req, res));
 router.patch('/reports/:reportId/sign', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.signReport(req, res));
+<<<<<<< HEAD
 router.post('/reports/:reportId/materials', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.addReportMaterials(req, res));
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 router.post('/reports/:reportId/signature-request', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.requestReportSignature(req, res));
 router.post('/:id/appointments', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.createAppointment(req, res));
 router.patch('/appointments/:appointmentId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.updateAppointment(req, res));

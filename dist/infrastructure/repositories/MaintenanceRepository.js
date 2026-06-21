@@ -369,6 +369,7 @@ class MaintenanceRepository {
         });
         return task;
     }
+<<<<<<< HEAD
     async disapproveAppointmentOptions(taskToken) {
         const task = await prisma_client_1.default.$transaction(async (tx) => {
             const current = await tx.maintenanceTask.findUnique({
@@ -389,6 +390,8 @@ class MaintenanceRepository {
         });
         return task;
     }
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     async approveAppointmentOptionForTask(taskId, optionId, managerId) {
         const task = await prisma_client_1.default.$transaction(async (tx) => {
             const current = await tx.maintenanceTask.findUnique({

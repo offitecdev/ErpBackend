@@ -353,10 +353,14 @@ class ProjectController {
                     },
                     reports: {
                         orderBy: { reportDate: "desc" },
+<<<<<<< HEAD
                         include: {
                             employee: { select: { id: true, firstName: true, lastName: true, email: true } },
                             images: { orderBy: { createdAt: "asc" } },
                         },
+=======
+                        include: { employee: { select: { id: true, firstName: true, lastName: true, email: true } } },
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
                     },
                     expenses: { orderBy: { expenseDate: "desc" } },
                     extraMaterials: { orderBy: { addedAt: "desc" }, include: { material: true } },
@@ -367,6 +371,7 @@ class ProjectController {
     async listMyInstallations(req, res) {
         try {
             const now = new Date();
+<<<<<<< HEAD
             const rawStart = req.query.start ? new Date(String(req.query.start)) : new Date(now.getFullYear(), now.getMonth(), 1);
             const rawEnd = req.query.end ? new Date(String(req.query.end)) : new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59, 999);
             if (Number.isNaN(rawStart.getTime()) || Number.isNaN(rawEnd.getTime())) {
@@ -376,6 +381,13 @@ class ProjectController {
             // the full first/last day so single-day (day view) ranges are not empty.
             const start = startOfDay(rawStart);
             const end = endOfDay(rawEnd);
+=======
+            const start = req.query.start ? new Date(String(req.query.start)) : new Date(now.getFullYear(), now.getMonth(), 1);
+            const end = req.query.end ? new Date(String(req.query.end)) : new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59, 999);
+            if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+                return res.status(400).json({ error: "Geçerli tarih aralığı girin." });
+            }
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             const appointments = await prisma_client_1.default.appointment.findMany({
                 where: {
                     tenantId: req.user.tenantId,
@@ -397,6 +409,7 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
+<<<<<<< HEAD
     // Manager-facing list of every order appointment in the tenant for the range
     // (technicians use listMyInstallations, which scopes to their own assignments).
     async listAppointments(req, res) {
@@ -428,6 +441,8 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     async getMyInstallation(req, res) {
         try {
             const appointment = await prisma_client_1.default.appointment.findFirst({
@@ -873,6 +888,7 @@ class ProjectController {
                 : [];
             const operationsDone = operationItems.length
                 ? operationItems.map((item) => `- ${item}`).join("\n")
+<<<<<<< HEAD
                 : String(req.body.operationsDone || "").trim()
                     // Managers can finish directly without filling anything in; record a standard note.
                     || (isManagerCompletion ? "Saha çalışması yönetici tarafından tamamlandı." : "");
@@ -882,10 +898,18 @@ class ProjectController {
             // Field work belongs to its day: the report may end at the latest by midnight of the appointment day.
             const dayEnd = endOfDay(new Date(appointment.startTime));
             let endedAt = req.body.endedAt ? new Date(req.body.endedAt) : new Date();
+=======
+                : String(req.body.operationsDone || "").trim();
+            if (!operationsDone)
+                return res.status(400).json({ error: "Yapilan isler zorunludur." });
+            const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user.tenantId, appointment.salesOrderId);
+            const endedAt = req.body.endedAt ? new Date(req.body.endedAt) : new Date();
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             const startedAt = req.body.startedAt ? new Date(req.body.startedAt) : new Date(appointment.startTime);
             if (Number.isNaN(endedAt.getTime()) || Number.isNaN(startedAt.getTime())) {
                 return res.status(400).json({ error: "Geçerli başlangıç ve bitiş zamanı girin." });
             }
+<<<<<<< HEAD
             if (endedAt > dayEnd)
                 endedAt = dayEnd;
             const reportEmployeeId = isManagerCompletion ? (appointment.assignedTechId || req.user.id) : req.user.id;
@@ -908,6 +932,20 @@ class ProjectController {
                     technicalNotes: req.body.technicalNotes,
                     images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
                 });
+=======
+            const reportEmployeeId = isManagerCompletion ? (appointment.assignedTechId || req.user.id) : req.user.id;
+            const reportResult = await this.addReportUseCase.execute({
+                projectId: appointment.projectId,
+                salesOrderId,
+                appointmentId: appointment.id,
+                employeeId: reportEmployeeId,
+                workDate: startOfDay(new Date(appointment.startTime)).toISOString(),
+                startedAt: startedAt.toISOString(),
+                endedAt: endedAt.toISOString(),
+                operationsDone,
+                technicalNotes: req.body.technicalNotes,
+            });
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             const cleanUsedMaterials = Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : [];
             const usedMaterialRows = [];
             for (const material of cleanUsedMaterials) {
@@ -952,6 +990,7 @@ class ProjectController {
                 where: { id: appointment.id },
                 data: { status: "COMPLETED" },
             });
+<<<<<<< HEAD
             // Finishing as administrator also approves the report's worked-hours / overtime.
             if (isManagerCompletion) {
                 await prisma_client_1.default.projectReport.update({
@@ -959,6 +998,8 @@ class ProjectController {
                     data: { hoursApprovedAt: new Date(), hoursApprovedById: req.user.id, autoApproved: false },
                 });
             }
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             const parentSalesOrderId = appointment.salesOrder?.parentSalesOrderId || salesOrderId || appointment.project.salesOrders?.[0]?.id || null;
             const addon = parentSalesOrderId
                 ? await this.createAddonOrderForParent(appointment.project, parentSalesOrderId, req.user.id)
@@ -990,8 +1031,12 @@ class ProjectController {
             const employeeId = req.user.id;
             const { materialId, quantity, description } = req.body;
             const salesOrderId = await this.resolveProjectSalesOrderId(projectId, req.user.tenantId, req.body.salesOrderId);
+<<<<<<< HEAD
             const appointmentId = req.body.appointmentId ? String(req.body.appointmentId) : null;
             const extraMaterial = await this.requestVariationUseCase.execute(projectId, employeeId, materialId, quantity, description, salesOrderId, appointmentId);
+=======
+            const extraMaterial = await this.requestVariationUseCase.execute(projectId, employeeId, materialId, quantity, description, salesOrderId);
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             res.status(201).json({ message: "Ek malzeme projeye eklendi.", extraMaterial });
         }
         catch (error) {
@@ -1015,8 +1060,12 @@ class ProjectController {
             const projectId = req.params.id;
             const { expenseType, amount, description } = req.body;
             const salesOrderId = await this.resolveProjectSalesOrderId(projectId, req.user.tenantId, req.body.salesOrderId);
+<<<<<<< HEAD
             const appointmentId = req.body.appointmentId ? String(req.body.appointmentId) : null;
             const expense = await this.addExpenseUseCase.execute(projectId, expenseType, amount, description, salesOrderId, appointmentId);
+=======
+            const expense = await this.addExpenseUseCase.execute(projectId, expenseType, amount, description, salesOrderId);
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             res.status(201).json({ message: "Harici gider eklendi.", expense });
         }
         catch (error) {
@@ -1282,6 +1331,7 @@ class ProjectController {
             notes: body.notes === undefined ? undefined : String(body.notes || "").trim() || null
         };
     }
+<<<<<<< HEAD
     // A customer may receive at most one field appointment per calendar day, regardless of project/order.
     async findCustomerSameDayAppointment(customerId, day, excludeAppointmentId) {
         if (!customerId)
@@ -1296,6 +1346,8 @@ class ProjectController {
             },
         });
     }
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     async findProjectAppointmentConflict(projectId, startTime, endTime, appointmentId, salesOrderId) {
         return await prisma_client_1.default.appointment.findFirst({
             where: {
@@ -1405,9 +1457,12 @@ class ProjectController {
             }
             const parsed = this.parseAppointmentBody(req.body);
             const salesOrderId = await this.resolveProjectSalesOrderId(project.id, req.user.tenantId, req.body.salesOrderId);
+<<<<<<< HEAD
             const sameDayForCustomer = await this.findCustomerSameDayAppointment(project.customerId, parsed.startTime);
             if (sameDayForCustomer)
                 return res.status(409).json({ error: "Bu müşteri için aynı güne ait başka bir randevu var. Bir günde tek randevu verilebilir." });
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             const conflict = await this.findProjectAppointmentConflict(project.id, parsed.startTime, parsed.endTime, undefined, salesOrderId);
             if (conflict)
                 return res.status(409).json({ error: "Bu proje için saat planı çakışıyor." });
@@ -1463,9 +1518,12 @@ class ProjectController {
             }
             const parsed = this.parseAppointmentBody(req.body);
             const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user.tenantId, req.body.salesOrderId || appointment.salesOrderId);
+<<<<<<< HEAD
             const sameDayForCustomer = await this.findCustomerSameDayAppointment(appointment.customerId || appointment.project.customerId, parsed.startTime, appointment.id);
             if (sameDayForCustomer)
                 return res.status(409).json({ error: "Bu müşteri için aynı güne ait başka bir randevu var. Bir günde tek randevu verilebilir." });
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             const conflict = await this.findProjectAppointmentConflict(appointment.projectId, parsed.startTime, parsed.endTime, appointment.id, salesOrderId);
             if (conflict)
                 return res.status(409).json({ error: "Bu proje için saat planı çakışıyor." });

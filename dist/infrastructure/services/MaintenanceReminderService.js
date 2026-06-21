@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.startMaintenanceReminderService = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+<<<<<<< HEAD
 const AddProjectReportUseCase_1 = require("../../application/use-cases/project/AddProjectReportUseCase");
 const ProjectReportRepository_1 = require("../repositories/ProjectReportRepository");
 const ProjectRepository_1 = require("../repositories/ProjectRepository");
@@ -23,6 +24,9 @@ const endOfDay = (date) => {
 };
 const projectReportRepository = new ProjectReportRepository_1.ProjectReportRepository();
 const addProjectReportUseCase = new AddProjectReportUseCase_1.AddProjectReportUseCase(projectReportRepository, new ProjectRepository_1.ProjectRepository(), new MaterialRepository_1.MaterialRepository());
+=======
+let started = false;
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 const taskTechnicianIds = (task) => [
     task.assignedTechId,
     task.alternativeTechId,
@@ -102,6 +106,7 @@ const runProjectInstallationReminderPass = async () => {
         });
     }
 };
+<<<<<<< HEAD
 // Once an installation day has fully ended, the field work is closed automatically: a field report
 // is written ending at the latest by midnight of that day and the appointment is marked COMPLETED.
 const runAutoFinishInstallationPass = async () => {
@@ -161,10 +166,13 @@ const runAutoFinishInstallationPass = async () => {
         }
     }
 };
+=======
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 const startMaintenanceReminderService = () => {
     if (started || process.env.OFFITEC_DISABLE_REMINDERS === "true")
         return;
     started = true;
+<<<<<<< HEAD
     const runAll = () => {
         void runReminderPass().catch((error) => console.error("[maintenance-reminders]", error));
         void runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error));
@@ -172,6 +180,14 @@ const startMaintenanceReminderService = () => {
     };
     runAll();
     setInterval(runAll, 60 * 60 * 1000);
+=======
+    void runReminderPass().catch((error) => console.error("[maintenance-reminders]", error));
+    void runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error));
+    setInterval(() => {
+        void runReminderPass().catch((error) => console.error("[maintenance-reminders]", error));
+        void runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error));
+    }, 60 * 60 * 1000);
+>>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 };
 exports.startMaintenanceReminderService = startMaintenanceReminderService;
 //# sourceMappingURL=MaintenanceReminderService.js.map
