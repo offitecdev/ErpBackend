@@ -35,6 +35,7 @@ model Location {
   balances        StockBalance[]
   movementsSource StockMovement[] @relation("SourceLocation")
   movementsDest   StockMovement[] @relation("DestLocation")
+  articleSuppliers ArticleSupplier[]
 
   @@index([tenantId])
   @@index([parentLocationId])
@@ -62,6 +63,7 @@ model StockMovement {
   articleId             String
   movementType          MovementType
   quantity              Float
+  unitCost              Float? // Manuel girişlerde bu partinin birim maliyeti (ağırlıklı ortalama için)
   sourceLocationId      String?
   destinationLocationId String?
   transactionDate       DateTime     @default(now())
@@ -91,8 +93,60 @@ model PurchaseProposal {
   resolvedByEmpId  String?
 
   article    Article   @relation(fields: [articleId], references: [id])
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
   resolvedBy Employee? @relation(fields: [resolvedByEmpId], references: [id])
 
   @@index([tenantId])
   @@index([articleId])
+  @@index([supplierId])
+}
+
+model Supplier {
+  id             String   @id
+  tenantId       String
+  companyName    String
+  contactName    String?
+  email          String?
+  phone          String?
+  address        String?  @db.Text
+  notes          String?  @db.Text
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant            Tenant            @relation(fields: [tenantId], references: [id])
+  articleSuppliers  ArticleSupplier[]
+  purchaseProposals PurchaseProposal[]
+
+  @@unique([tenantId, companyName])
+  @@index([tenantId])
+}
+
+model ArticleSupplier {
+  id               String   @id
+  tenantId         String
+  articleId        String
+  supplierId       String
+  locationId       String?
+  supplierSku      String?
+  purchasePrice    Float    @default(0)
+  quantity         Float    @default(0)
+  remainingQuantity Float  @default(0)
+  currency         String   @default("CHF")
+  lastPurchaseDate DateTime?
+  stockMovementId  String?
+  notes            String?  @db.Text
+  isPreferred      Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  article  Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  location Location? @relation(fields: [locationId], references: [id])
+
+  @@index([tenantId])
+  @@index([articleId])
+  @@index([supplierId])
+  @@index([locationId])
 }

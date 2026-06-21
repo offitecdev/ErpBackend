@@ -10,7 +10,7 @@ export interface IProjectFilter {
 export interface IProjectRepository {
     createProject(project: Partial<Project>): Promise<Project>;
     updateProject(id: string, data: Partial<Project>): Promise<Project>;
-    findById(id: string): Promise<Project | null>;
+    findById(id: string, tenantId?: string): Promise<Project | null>;
     findByToken(bookingToken: string): Promise<Project | null>; 
     findAll(filter: IProjectFilter): Promise<Project[]>;
     updateActualCost(id: string, additionalCost: number): Promise<void>; 

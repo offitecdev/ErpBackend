@@ -19,7 +19,9 @@ export class Article {
         public minStockLevel: number = 0,
         public criticalStockLevel: number = 0,
         public maxStockLevel?: number | null,
-        public lastPurchaseDate?: Date | null
+        public lastPurchaseDate?: Date | null,
+        public salePrice: number = 0,
+        public defaultSupplierId?: string | null
     ) {}
 }
 

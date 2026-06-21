@@ -17,6 +17,8 @@ class PositionRepository {
             name: true,
             description: true,
             baseCost: true,
+            salePrice: true,
+            defaultSupplierId: true,
             unit: true,
             category: true,
             status: true,
@@ -34,6 +36,9 @@ class PositionRepository {
             tenantId: true,
             tenderId: true,
             parentPositionId: true,
+            rowType: true,
+            sourceArticleId: true,
+            displayOrder: true,
             npkCode: true,
             positionNumber: true,
             shortDescription: true,
@@ -79,7 +84,7 @@ class PositionRepository {
         };
     }
     mapToPositionEntity(data) {
-        return new Position_1.Position(data.id, data.tenantId, data.tenderId, data.positionNumber, data.shortDescription, data.hierarchyLevel, data.quantity ?? 0, data.parentPositionId, data.npkCode, data.longDescription, data.unit);
+        return new Position_1.Position(data.id, data.tenantId, data.tenderId, data.positionNumber, data.shortDescription, data.hierarchyLevel, data.quantity ?? 0, data.parentPositionId, data.npkCode, data.longDescription, data.unit, data.rowType ?? 'SECTION', data.sourceArticleId, data.displayOrder ?? 0);
     }
     mapToCalculationEntity(data) {
         return new CalculationItem_1.CalculationItem(data.id, data.positionId, data.materialCost, data.laborCost, data.overheadCost, data.riskAmount, data.additionalCost || 0, data.profitMargin, data.totalCalculatedPrice);
@@ -93,13 +98,20 @@ class PositionRepository {
             tenantId: p.tenantId,
             tenderId: p.tenderId,
             parentPositionId: p.parentPositionId || null,
+            rowType: p.rowType || 'SECTION',
+            sourceArticleId: p.sourceArticleId || null,
+            displayOrder: Number(p.displayOrder ?? 0),
             positionNumber: p.positionNumber,
             shortDescription: p.shortDescription,
             longDescription: p.longDescription || null,
             hierarchyLevel: p.hierarchyLevel ?? 0,
             quantity: p.quantity ?? 0,
             unit: p.unit || null,
-            npkCode: p.npkCode || null
+            npkCode: p.npkCode || null,
+            unitPrice: p.unitPrice ?? null,
+            discount: p.discount ?? 0,
+            taxRate: p.taxRate ?? 0,
+            imageUrl: p.imageUrl ?? null
         }));
         await prisma_client_1.default.position.createMany({
             data
@@ -116,7 +128,10 @@ class PositionRepository {
         const data = await prisma_client_1.default.position.findMany({
             where: { tenderId },
             select: this.positionSelect(!!options?.includeImages),
-            orderBy: { positionNumber: 'asc' }
+            orderBy: [
+                { displayOrder: 'asc' },
+                { positionNumber: 'asc' }
+            ]
         });
         return data;
     }
@@ -203,6 +218,12 @@ class PositionRepository {
             data.imageUrl = patch.imageUrl;
         if (patch.npkCode !== undefined)
             data.npkCode = patch.npkCode;
+        if (patch.rowType !== undefined)
+            data.rowType = patch.rowType;
+        if (patch.sourceArticleId !== undefined)
+            data.sourceArticleId = patch.sourceArticleId;
+        if (patch.displayOrder !== undefined)
+            data.displayOrder = Number(patch.displayOrder);
         return await prisma_client_1.default.position.update({ where: { id: positionId }, data });
     }
 }

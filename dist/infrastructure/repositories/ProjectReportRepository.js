@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectReportRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const nanoid_1 = require("nanoid");
 class ProjectReportRepository {
     async createReport(reportData) {
         return await prisma_client_1.default.projectReport.create({
@@ -16,17 +17,36 @@ class ProjectReportRepository {
             data: materials
         });
     }
+    // Replaces the full set of field-report images. `images` is a list of base64
+    // data URLs; passing an empty array clears all images for the report.
+    async replaceImages(reportId, images, uploadedById) {
+        await prisma_client_1.default.$transaction(async (tx) => {
+            await tx.projectReportImage.deleteMany({ where: { reportId } });
+            const rows = (images || [])
+                .filter((data) => typeof data === "string" && data.trim().length > 0)
+                .map((data) => ({
+                id: (0, nanoid_1.nanoid)(10),
+                reportId,
+                imageData: data,
+                uploadedById: uploadedById || null,
+            }));
+            if (rows.length) {
+                await tx.projectReportImage.createMany({ data: rows });
+            }
+        });
+    }
     async findById(id) {
         return await prisma_client_1.default.projectReport.findUnique({
             where: { id },
             include: {
                 usedMaterials: {
                     include: { material: true }
-                }
+                },
+                images: { orderBy: { createdAt: "asc" } }
             }
         });
     }
-    async findByProjectAndWorkDate(projectId, workDate) {
+    async findByProjectAndWorkDate(projectId, workDate, salesOrderId, includeUnscoped = false) {
         const dayStart = new Date(workDate);
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(workDate);
@@ -34,11 +54,16 @@ class ProjectReportRepository {
         return await prisma_client_1.default.projectReport.findFirst({
             where: {
                 projectId,
+                ...(salesOrderId !== undefined
+                    ? includeUnscoped
+                        ? { OR: [{ salesOrderId }, { salesOrderId: null }] }
+                        : { salesOrderId }
+                    : {}),
                 workDate: { gte: dayStart, lte: dayEnd }
             }
         });
     }
-    async findByProjectAndWorkDateExcept(projectId, workDate, reportId) {
+    async findByProjectAndWorkDateExcept(projectId, workDate, reportId, salesOrderId, includeUnscoped = false) {
         const dayStart = new Date(workDate);
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(workDate);
@@ -46,6 +71,11 @@ class ProjectReportRepository {
         return await prisma_client_1.default.projectReport.findFirst({
             where: {
                 projectId,
+                ...(salesOrderId !== undefined
+                    ? includeUnscoped
+                        ? { OR: [{ salesOrderId }, { salesOrderId: null }] }
+                        : { salesOrderId }
+                    : {}),
                 id: { not: reportId },
                 workDate: { gte: dayStart, lte: dayEnd }
             }
@@ -57,7 +87,8 @@ class ProjectReportRepository {
             data: reportData,
             include: {
                 employee: { select: { id: true, firstName: true, lastName: true, email: true } },
-                usedMaterials: { include: { article: true, material: true } }
+                usedMaterials: { include: { article: true, material: true } },
+                images: { orderBy: { createdAt: "asc" } }
             }
         });
     }
@@ -66,7 +97,8 @@ class ProjectReportRepository {
             where: { id: reportId },
             data: {
                 isSigned: true,
-                customerSignature: signatureBase64
+                customerSignature: signatureBase64,
+                signedAt: new Date(),
             }
         });
     }
@@ -76,7 +108,8 @@ class ProjectReportRepository {
             include: {
                 usedMaterials: {
                     include: { material: true }
-                }
+                },
+                images: { orderBy: { createdAt: "asc" } }
             }
         });
     }

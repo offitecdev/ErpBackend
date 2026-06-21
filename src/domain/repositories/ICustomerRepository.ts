@@ -20,6 +20,7 @@ export interface PaginatedResult<T> {
 export interface ICustomerRepository {
     createCustomer(customer: Partial<Customer>): Promise<Customer>;
     update(id: string, customer: Partial<Customer>): Promise<Customer>;
+    delete(id: string, tenantId?: string): Promise<void>;
     findById(id: string): Promise<Customer | null>;
     findAll(filter: ICustomerFilter): Promise<Customer[] | PaginatedResult<Customer>>;
     getCustomerDashboard(id: string, tenantId?: string): Promise<any>;

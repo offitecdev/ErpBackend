@@ -88,6 +88,19 @@ class CustomerController {
             res.status(400).json({ error: error.message || 'Müşteri güncellenemedi.' });
         }
     }
+    async delete(req, res) {
+        try {
+            const { id } = req.params;
+            if (!id || Array.isArray(id)) {
+                return res.status(400).json({ error: 'Geçersiz müşteri ID.' });
+            }
+            await this.customerRepository.delete(id, req.user?.tenantId);
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Müşteri silinemedi.' });
+        }
+    }
     async addNote(req, res) {
         try {
             const { id } = req.params;

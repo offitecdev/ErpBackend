@@ -42,33 +42,54 @@ class CreateMaintenanceContractUseCase {
             throw new Error("Tarih bilgisi gecersiz.");
         if (start >= end)
             throw new Error("Bitis tarihi baslangic tarihinden sonra olmalidir.");
-        const assignedTechId = data.assignedTechId || null;
-        const alternativeTechId = data.alternativeTechId && data.alternativeTechId !== assignedTechId
-            ? data.alternativeTechId
+        const technicianIds = [
+            ...(Array.isArray(data.technicianIds) ? data.technicianIds : []),
+            data.assignedTechId || "",
+            data.alternativeTechId || "",
+        ].filter(Boolean);
+        const uniqueTechnicianIds = [...new Set(technicianIds)];
+        const assignedTechId = uniqueTechnicianIds[0] || null;
+        const alternativeTechId = uniqueTechnicianIds[1] && uniqueTechnicianIds[1] !== assignedTechId
+            ? uniqueTechnicianIds[1]
             : null;
-        const contract = await this.maintenanceRepository.createContract({
-            id: (0, nanoid_1.nanoid)(10),
-            tenantId: data.tenantId,
-            customerId: data.customerId,
-            title: data.title,
-            period: data.period,
-            startDate: start,
-            endDate: end,
-            equipmentInfo: data.equipmentInfo,
-            serviceScope: data.serviceScope,
-            siteName: data.siteName,
-            reminderDaysBefore: Number(data.reminderDaysBefore ?? 7),
-            notificationChannels: data.notificationChannels ?? { inApp: true, email: true },
-            isActive: true,
-        });
-        const assignmentHistoryJson = assignedTechId ? [{
+        let contract = null;
+        for (let attempt = 0; attempt < 3 && !contract; attempt += 1) {
+            const contractCode = await this.maintenanceRepository.getNextContractCode(data.tenantId);
+            try {
+                contract = await this.maintenanceRepository.createContract({
+                    id: (0, nanoid_1.nanoid)(10),
+                    tenantId: data.tenantId,
+                    customerId: data.customerId,
+                    contractCode,
+                    title: data.title,
+                    period: data.period,
+                    startDate: start,
+                    endDate: end,
+                    equipmentInfo: data.equipmentInfo,
+                    serviceScope: data.serviceScope,
+                    siteName: data.siteName,
+                    reminderDaysBefore: Number(data.reminderDaysBefore ?? 7),
+                    notificationChannels: data.notificationChannels ?? { inApp: true, email: true },
+                    overtimeHourlyRate: Math.max(0, Number(data.overtimeHourlyRate || 0)),
+                    isActive: true,
+                });
+            }
+            catch (error) {
+                if (error?.code !== "P2002" || attempt === 2)
+                    throw error;
+            }
+        }
+        if (!contract)
+            throw new Error("Sozlesme kodu uretilemedi.");
+        const assignmentHistoryJson = uniqueTechnicianIds.length ? [{
                 assignedTechId,
                 alternativeTechId,
+                technicianIds: uniqueTechnicianIds,
                 at: new Date().toISOString(),
                 action: "CONTRACT_CREATED",
             }] : [];
         for (const plannedDate of buildPlannedDates(start, end, data.period)) {
-            await this.maintenanceRepository.createTask({
+            const task = await this.maintenanceRepository.createTask({
                 id: (0, nanoid_1.nanoid)(10),
                 contractId: contract.id,
                 plannedDate,
@@ -76,8 +97,12 @@ class CreateMaintenanceContractUseCase {
                 assignedTechId,
                 alternativeTechId,
                 siteName: data.siteName || null,
+                bookingToken: (0, nanoid_1.nanoid)(32),
                 assignmentHistoryJson,
             });
+            if (uniqueTechnicianIds.length) {
+                await this.maintenanceRepository.replaceTaskAssignments(task.id, uniqueTechnicianIds);
+            }
         }
         return await this.maintenanceRepository.getContractById(contract.id) || contract;
     }

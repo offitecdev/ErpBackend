@@ -21,10 +21,12 @@ const mappingArticleSelect = {
     criticalStockLevel: true,
     maxStockLevel: true,
     lastPurchaseDate: true,
+    salePrice: true,
+    defaultSupplierId: true,
 };
 class ArticleRepository {
     mapToEntity(d) {
-        return new Article_1.Article(d.id, d.tenantId, d.articleCode, d.name, d.baseCost, d.unit, d.description, d.systemBarcode, d.supplierBarcode, d.imageUrl, d.category, d.status ?? 'ACTIVE', d.isActive ?? true, d.minStockLevel ?? 0, d.criticalStockLevel ?? 0, d.maxStockLevel, d.lastPurchaseDate);
+        return new Article_1.Article(d.id, d.tenantId, d.articleCode, d.name, d.baseCost, d.unit, d.description, d.systemBarcode, d.supplierBarcode, d.imageUrl, d.category, d.status ?? 'ACTIVE', d.isActive ?? true, d.minStockLevel ?? 0, d.criticalStockLevel ?? 0, d.maxStockLevel, d.lastPurchaseDate, d.salePrice ?? 0, d.defaultSupplierId ?? null);
     }
     mapToMappingEntity(data) {
         const articleEntity = data.article ? this.mapToEntity(data.article) : undefined;
@@ -38,6 +40,8 @@ class ArticleRepository {
                 articleCode: articleData.articleCode,
                 name: articleData.name,
                 baseCost: articleData.baseCost ?? 0,
+                salePrice: articleData.salePrice ?? 0,
+                defaultSupplierId: articleData.defaultSupplierId ?? null,
                 unit: articleData.unit,
                 description: articleData.description ?? null,
                 systemBarcode: articleData.systemBarcode ?? null,
@@ -60,7 +64,7 @@ class ArticleRepository {
             'articleCode', 'name', 'baseCost', 'unit', 'description',
             'systemBarcode', 'supplierBarcode', 'imageUrl', 'category',
             'status', 'isActive', 'minStockLevel', 'criticalStockLevel',
-            'maxStockLevel', 'lastPurchaseDate'
+            'maxStockLevel', 'lastPurchaseDate', 'salePrice', 'defaultSupplierId'
         ];
         for (const f of fields) {
             if (patch[f] !== undefined)
@@ -75,6 +79,7 @@ class ArticleRepository {
             await tx.stockBalance.deleteMany({ where: { articleId: id } });
             await tx.purchaseProposal.deleteMany({ where: { articleId: id } });
             await tx.stockMovement.deleteMany({ where: { articleId: id } });
+            await tx.articleSupplier.deleteMany({ where: { articleId: id } });
             await tx.article.delete({ where: { id } });
         });
     }
@@ -118,18 +123,8 @@ class ArticleRepository {
         return data ? this.mapToEntity(data) : null;
     }
     async mapArticleToPosition(mapping) {
-        const data = await prisma_client_1.default.positionArticleMapping.upsert({
-            where: {
-                positionId_articleId: {
-                    positionId: mapping.positionId,
-                    articleId: mapping.articleId
-                }
-            },
-            update: {
-                quantityMultiplier: mapping.quantityMultiplier,
-                discount: mapping.discount ?? 0
-            },
-            create: {
+        const data = await prisma_client_1.default.positionArticleMapping.create({
+            data: {
                 id: (0, nanoid_1.nanoid)(10),
                 positionId: mapping.positionId,
                 articleId: mapping.articleId,

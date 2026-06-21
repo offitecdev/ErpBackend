@@ -63,7 +63,7 @@ class ArticleController {
     async create(req, res) {
         try {
             const tenantId = req.user.tenantId;
-            const { articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status, isActive, minStockLevel, criticalStockLevel, maxStockLevel, lastPurchaseDate, } = req.body;
+            const { articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status, isActive, minStockLevel, criticalStockLevel, maxStockLevel, lastPurchaseDate, salePrice, defaultSupplierId, } = req.body;
             if (!articleCode || !name || !unit) {
                 return res.status(400).json({ error: "Ürün kodu, ad ve birim zorunludur." });
             }
@@ -73,6 +73,8 @@ class ArticleController {
                 articleCode,
                 name,
                 baseCost: Number(baseCost ?? 0),
+                salePrice: Number(salePrice ?? 0),
+                defaultSupplierId: defaultSupplierId ?? null,
                 unit,
                 description: description ?? null,
                 systemBarcode: systemBarcode ?? null,
@@ -105,6 +107,8 @@ class ArticleController {
             delete patch.mappingId;
             if (patch.baseCost != null)
                 patch.baseCost = Number(patch.baseCost);
+            if (patch.salePrice != null)
+                patch.salePrice = Number(patch.salePrice);
             if (patch.minStockLevel != null)
                 patch.minStockLevel = Number(patch.minStockLevel);
             if (patch.criticalStockLevel != null)
@@ -121,6 +125,8 @@ class ArticleController {
                     articleCode: "Stok kodu",
                     name: "ÃœrÃ¼n adÄ±",
                     baseCost: "Birim maliyet",
+                    salePrice: "Satış fiyatı",
+                    defaultSupplierId: "Varsayılan tedarikçi",
                     unit: "Birim",
                     description: "AÃ§Ä±klama",
                     systemBarcode: "Sistem barkodu",

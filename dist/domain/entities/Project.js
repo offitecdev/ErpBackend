@@ -75,6 +75,8 @@ exports.Appointment = Appointment;
 class ProjectReport {
     id;
     projectId;
+    salesOrderId;
+    appointmentId;
     employeeId;
     reportDate;
     reportType;
@@ -90,9 +92,11 @@ class ProjectReport {
     overtimeCost;
     technicalNotes;
     customerSignature;
-    constructor(id, projectId, employeeId, reportDate, reportType, workedMinutes, operationsDone, isSigned, workDate, startedAt, endedAt, plannedMinutesForDay, overtimeMinutes, overtimeHourlyRate, overtimeCost, technicalNotes, customerSignature) {
+    constructor(id, projectId, salesOrderId, appointmentId, employeeId, reportDate, reportType, workedMinutes, operationsDone, isSigned, workDate, startedAt, endedAt, plannedMinutesForDay, overtimeMinutes, overtimeHourlyRate, overtimeCost, technicalNotes, customerSignature) {
         this.id = id;
         this.projectId = projectId;
+        this.salesOrderId = salesOrderId;
+        this.appointmentId = appointmentId;
         this.employeeId = employeeId;
         this.reportDate = reportDate;
         this.reportType = reportType;
@@ -129,13 +133,17 @@ exports.ReportMaterial = ReportMaterial;
 class ProjectExpense {
     id;
     projectId;
+    salesOrderId;
+    appointmentId;
     expenseType;
     amount;
     expenseDate;
     description;
-    constructor(id, projectId, expenseType, amount, expenseDate, description) {
+    constructor(id, projectId, salesOrderId, appointmentId, expenseType, amount, expenseDate, description) {
         this.id = id;
         this.projectId = projectId;
+        this.salesOrderId = salesOrderId;
+        this.appointmentId = appointmentId;
         this.expenseType = expenseType;
         this.amount = amount;
         this.expenseDate = expenseDate;

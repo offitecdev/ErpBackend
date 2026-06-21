@@ -171,12 +171,16 @@ async function main() {
       'inventory.articles.delete',
       'projects.view',
       'projects.create',
+      'projects.createAddonOrder',
       'projects.manage',
       'projects.approve',
       'projects.report',
       'projects.approveVariation',
       'projects.bookings.manage',
       'projects.mail',
+      'billing.view',
+      'billing.create',
+      'billing.manage',
       'mail.manage',
       'mail.send',
       'logistics.view',
@@ -246,6 +250,8 @@ async function main() {
     const technicianPermissions = [
       'crm.customers.view',
       'inventory.view',
+      'projects.view',
+      'projects.report',
       'maintenance.tasks.manage',
       'maintenance.reports.manage',
       'regie.calls.manage',
@@ -387,6 +393,77 @@ async function main() {
       },
     });
     console.log('Demo teknisyen hazir:', technician.email);
+
+    // ── Engin Sahin: kisitli "Proje Sorumlusu" rolu ──────────────────────────
+    // Sadece su modullere erisir: Takvim, CRM, Stok (yalniz stok kartlari),
+    // Proje yonetimi + siparisler, Servis programlari.
+    // Erisemez: Personel, Mesai, Lojistik, Bakim, Ayarlar.
+    const enginPermissions = [
+      'crm.customers.view',
+      'crm.customers.create',
+      'crm.customers.addNote',
+      'crm.activities.create',
+      'crm.documents.upload',
+      'tenders.view',
+      'inventory.view',
+      'projects.view',
+      'projects.create',
+      'projects.createAddonOrder',
+      'projects.report',
+    ];
+
+    const projectOfficerRole = await prisma.role.upsert({
+      where: { id: 'project-officer-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Proje Sorumlusu',
+      },
+      create: {
+        id: 'project-officer-role',
+        tenantId: swissTenant.id,
+        roleName: 'Proje Sorumlusu',
+      },
+    });
+    await assignPermissionsToRole(projectOfficerRole.id, enginPermissions);
+
+    const enginUser = await prisma.employee.upsert({
+      where: { email: 'engin.sahin@offitec.ch' },
+      update: {
+        tenantId: swissTenant.id,
+        departmentId: testDepartmentId,
+        title: 'Proje Sorumlusu',
+        roleName: 'Proje Sorumlusu',
+        isActive: true,
+      },
+      create: {
+        id: nanoid(8),
+        tenantId: swissTenant.id,
+        departmentId: testDepartmentId,
+        firstName: 'Engin',
+        lastName: 'Sahin',
+        email: 'engin.sahin@offitec.ch',
+        passwordHash: hashedPassword,
+        title: 'Proje Sorumlusu',
+        roleName: 'Proje Sorumlusu',
+        isActive: true,
+        annualLeaveEntitlement: 20,
+      },
+    });
+
+    await prisma.employeeRole.upsert({
+      where: {
+        employeeId_roleId: {
+          employeeId: enginUser.id,
+          roleId: projectOfficerRole.id,
+        },
+      },
+      update: {},
+      create: {
+        employeeId: enginUser.id,
+        roleId: projectOfficerRole.id,
+      },
+    });
+    console.log('Proje Sorumlusu (Engin) hazir:', enginUser.email);
 
     const turkeyServiceManagerRole = await prisma.role.upsert({
       where: { id: 'service-manager-role-tr' },

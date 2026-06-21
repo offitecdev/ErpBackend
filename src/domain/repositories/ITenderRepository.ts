@@ -10,7 +10,7 @@ export interface ITenderFilter{
 }
 
 export interface TenderListItem extends Tender {
-    customerName?: string;
+    customerName?: string | null;
     positionCount?: number;
     grandTotal?: number;
 }

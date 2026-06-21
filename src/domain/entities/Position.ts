@@ -11,6 +11,9 @@ export class Position{
         public npkCode?: string | null,
         public longDescription?: string | null,
         public unit?: string | null,
+        public rowType: string = 'SECTION',
+        public sourceArticleId?: string | null,
+        public displayOrder: number = 0,
     ){}
 }
 

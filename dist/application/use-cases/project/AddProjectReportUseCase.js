@@ -17,6 +17,12 @@ const endOfDay = (date) => {
     return d;
 };
 const minutesBetween = (start, end) => Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+const isPrimarySalesOrder = (project, salesOrderId) => {
+    if (!salesOrderId)
+        return false;
+    const orders = [...(project.salesOrders || [])].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    return orders[0]?.id === salesOrderId;
+};
 class AddProjectReportUseCase {
     reportRepository;
     projectRepository;
@@ -34,6 +40,12 @@ class AddProjectReportUseCase {
             throw new Error("Proje bulunamadı.");
         if (project.status === "ON_HOLD")
             throw new Error("Proje şu an beklemede. Rapor girilemez.");
+        const includeUnscoped = isPrimarySalesOrder(project, input.salesOrderId);
+        if (input.salesOrderId) {
+            const belongsToProject = (project.salesOrders || []).some((order) => order.id === input.salesOrderId);
+            if (!belongsToProject)
+                throw new Error("Sipariş bu projeye ait değil.");
+        }
         const workDate = startOfDay(new Date(input.workDate));
         const startedAt = new Date(input.startedAt);
         const endedAt = new Date(input.endedAt);
@@ -49,7 +61,12 @@ class AddProjectReportUseCase {
         const appointments = await prisma_client_1.default.appointment.findMany({
             where: {
                 projectId: input.projectId,
-                status: "BOOKED",
+                ...(input.salesOrderId
+                    ? includeUnscoped
+                        ? { OR: [{ salesOrderId: input.salesOrderId }, { salesOrderId: null }] }
+                        : { salesOrderId: input.salesOrderId }
+                    : {}),
+                status: { in: ["BOOKED", "COMPLETED"] },
                 startTime: { gte: dayStart },
                 endTime: { lte: dayEnd }
             }
@@ -68,6 +85,8 @@ class AddProjectReportUseCase {
         const overtimeCost = overtimeMinutes > 0 ? (overtimeMinutes / 60) * overtimeHourlyRate : 0;
         return {
             projectId: input.projectId,
+            salesOrderId: input.salesOrderId || null,
+            appointmentId: input.appointmentId || null,
             employeeId: input.employeeId,
             reportDate: new Date(),
             workDate,
@@ -85,15 +104,20 @@ class AddProjectReportUseCase {
     }
     async execute(input) {
         const payload = await this.buildReportPayload(input);
-        const existing = await this.reportRepository.findByProjectAndWorkDate(input.projectId, payload.workDate);
+        const project = await this.projectRepository.findById(input.projectId);
+        const existing = await this.reportRepository.findByProjectAndWorkDate(input.projectId, payload.workDate, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
         if (existing)
             throw new Error("Bu proje için aynı güne ait saha raporu zaten var. Lütfen mevcut raporu düzenleyin.");
         const report = await this.reportRepository.createReport({
             id: (0, nanoid_1.nanoid)(10),
             ...payload
         });
+        if (input.images !== undefined) {
+            await this.reportRepository.replaceImages(report.id, input.images || [], input.employeeId);
+        }
+        const withImages = await this.reportRepository.findById(report.id);
         return {
-            ...report,
+            ...(withImages || report),
             overtimeWarning: payload.overtimeMinutes > 0
                 ? `%15 tolerans aşıldı. ${payload.overtimeMinutes} dk fazla çalışma için ek ücret hesaplandı.`
                 : null
@@ -105,12 +129,17 @@ class AddProjectReportUseCase {
             throw new Error("Saha raporu bulunamadı.");
         if (existingReport.projectId !== input.projectId)
             throw new Error("Saha raporu bu projeye ait değil.");
-        if (existingReport.isSigned)
-            throw new Error("İmzalanmış saha raporu düzenlenemez.");
+        input.salesOrderId = input.salesOrderId ?? existingReport.salesOrderId ?? null;
+        input.appointmentId = input.appointmentId ?? existingReport.appointmentId ?? null;
         const payload = await this.buildReportPayload(input);
-        const sameDayReport = await this.reportRepository.findByProjectAndWorkDateExcept(input.projectId, payload.workDate, reportId);
+        const project = await this.projectRepository.findById(input.projectId);
+        const sameDayReport = await this.reportRepository.findByProjectAndWorkDateExcept(input.projectId, payload.workDate, reportId, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
         // if (sameDayReport) throw new Error("Bu proje için aynı güne ait başka bir saha raporu var. Bir günde yalnızca bir rapor olabilir.");
-        const report = await this.reportRepository.updateReport(reportId, payload);
+        let report = await this.reportRepository.updateReport(reportId, payload);
+        if (input.images !== undefined) {
+            await this.reportRepository.replaceImages(reportId, input.images || [], input.employeeId);
+            report = await this.reportRepository.findById(reportId) || report;
+        }
         return {
             ...report,
             overtimeWarning: payload.overtimeMinutes > 0

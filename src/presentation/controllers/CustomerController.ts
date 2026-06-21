@@ -84,6 +84,19 @@ export class CustomerController {
         }
     }
 
+    async delete(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            if (!id || Array.isArray(id)) {
+                return res.status(400).json({ error: 'Geçersiz müşteri ID.' });
+            }
+            await this.customerRepository.delete(id, req.user?.tenantId);
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Müşteri silinemedi.' });
+        }
+    }
+
     async addNote(req: Request, res: Response) {
         try {
             const { id } = req.params;

@@ -1,0 +1,2 @@
+ALTER TABLE `Document`
+  MODIFY `fileUrl` LONGTEXT NOT NULL;

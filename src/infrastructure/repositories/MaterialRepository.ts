@@ -26,7 +26,7 @@ export class MaterialRepository {
         });
     }
 
-    async createMaterial(tenantId: string, name: string, serialId: string, unitCost: number, initialStock: number) {
+    async createMaterial(tenantId: string, name: string, serialId: string, unitCost: number, initialStock: number, imageUrl?: string | null) {
         return await prisma.material.create({
             data: {
                 id: nanoid(10),
@@ -35,8 +35,9 @@ export class MaterialRepository {
                 serialId,
                 unitCost,
                 stockQuantity: initialStock,
+                imageUrl: imageUrl || null,
                 isActive: true
-            }
+            } as any
         });
     }
 

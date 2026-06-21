@@ -21,6 +21,7 @@ export class MaintenanceReportUseCase {
         afterPhotoUrls?: unknown;
         fileUrls?: unknown;
         extraMaterials?: { articleId: string; quantity: number; unitCost: number; sourceLocationId: string }[];
+        expenses?: { expenseType: string; amount: number; description?: string }[];
     }) {
         if (!data.taskId) throw new Error("Bakim gorevi zorunludur.");
         if (!data.operationsDone?.trim()) throw new Error("Yapilan islemler zorunludur.");
@@ -28,6 +29,14 @@ export class MaintenanceReportUseCase {
         const task = await this.maintenanceRepository.getTaskById(data.taskId);
         if (!task) throw new Error("Bakim gorevi bulunamadi.");
         if ((task as any).contract?.tenantId !== data.tenantId) throw new Error("Bu gorev icin yetkiniz yok.");
+        const assignedIds = [
+            (task as any).assignedTechId,
+            (task as any).alternativeTechId,
+            ...(((task as any).assignments || []).map((assignment: any) => assignment.technicianId)),
+        ].filter(Boolean);
+        if (assignedIds.length && !assignedIds.includes(data.techId)) {
+            throw new Error("Bu bakim gorevi size atanmamis.");
+        }
 
         const existingReport = await this.maintenanceRepository.getReportByTaskId(data.taskId);
         if (existingReport?.isSigned) throw new Error("Imzalanmis rapor kilitlidir.");
@@ -80,8 +89,49 @@ export class MaintenanceReportUseCase {
             }
         }
 
+        if (data.expenses && data.expenses.length > 0) {
+            for (const expense of data.expenses) {
+                if (!expense.expenseType?.trim()) throw new Error("Gider tipi zorunludur.");
+                if (Number(expense.amount) < 0) throw new Error("Gider tutari negatif olamaz.");
+                await this.maintenanceRepository.addExpense({
+                    id: nanoid(12),
+                    taskId: data.taskId,
+                    reportId,
+                    expenseType: expense.expenseType.trim(),
+                    amount: Number(expense.amount || 0),
+                    description: expense.description?.trim() || null,
+                });
+            }
+        }
+
         await this.maintenanceRepository.updateTaskStatus(data.taskId, "IN_PROGRESS");
         return await this.maintenanceRepository.getReportById(reportId) || report;
+    }
+
+    async updateReport(data: {
+        reportId: string;
+        operationsDone?: string;
+        observations?: string | null;
+        recommendations?: string | null;
+        riskNotes?: string | null;
+        checklistJson?: unknown;
+    }) {
+        const report = await this.maintenanceRepository.getReportById(data.reportId);
+        if (!report) throw new Error("Rapor bulunamadi.");
+        if (report.isSigned || (report as any).lockedAt) throw new Error("Imzalanmis rapor kilitlidir ve duzenlenemez.");
+
+        const patch: any = {};
+        if (data.operationsDone !== undefined) {
+            if (!data.operationsDone.trim()) throw new Error("Yapilan islemler zorunludur.");
+            patch.operationsDone = data.operationsDone.trim();
+        }
+        if (data.observations !== undefined) patch.observations = data.observations?.trim() || null;
+        if (data.recommendations !== undefined) patch.recommendations = data.recommendations?.trim() || null;
+        if (data.riskNotes !== undefined) patch.riskNotes = data.riskNotes?.trim() || null;
+        if (data.checklistJson !== undefined) patch.checklistJson = data.checklistJson;
+
+        if (!Object.keys(patch).length) return report;
+        return await this.maintenanceRepository.updateReport(data.reportId, patch);
     }
 
     async signReport(reportId: string, signatureBase64: string) {

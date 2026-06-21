@@ -1,0 +1,165 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DeliveryReportController = void 0;
+const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const nanoid_1 = require("nanoid");
+const VALID_STATUS = new Set(["YES", "NO", "NA"]);
+function normalizeResponses(raw) {
+    if (!Array.isArray(raw))
+        return [];
+    return raw
+        .map((r) => {
+        const status = String(r?.status || "").toUpperCase();
+        return {
+            id: (r?.id && String(r.id)) || (0, nanoid_1.nanoid)(8),
+            category: String(r?.category || "").trim(),
+            label: String(r?.label || "").trim(),
+            status: VALID_STATUS.has(status) ? status : null,
+            measurement: r?.measurement === null || r?.measurement === undefined ? "" : String(r.measurement),
+            measurementEnabled: Boolean(r?.measurementEnabled),
+        };
+    })
+        .filter((r) => r.label.length > 0);
+}
+class DeliveryReportController {
+    /** Admin listing of delivery reports, optionally scoped to an order/project/appointment. */
+    async list(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const where = { tenantId };
+            if (req.query.appointmentId)
+                where.appointmentId = String(req.query.appointmentId);
+            if (req.query.projectId)
+                where.projectId = String(req.query.projectId);
+            if (req.query.salesOrderId)
+                where.salesOrderId = String(req.query.salesOrderId);
+            const reports = await prisma_client_1.default.deliveryReport.findMany({
+                where,
+                orderBy: { createdAt: "desc" },
+            });
+            // Enrich with project + customer + order labels (no Prisma relation on
+            // DeliveryReport, so we resolve names in a couple of batched lookups).
+            const projectIds = [...new Set(reports.map((r) => r.projectId).filter(Boolean))];
+            const orderIds = [...new Set(reports.map((r) => r.salesOrderId).filter(Boolean))];
+            const [projects, orders] = await Promise.all([
+                projectIds.length
+                    ? prisma_client_1.default.project.findMany({
+                        where: { id: { in: projectIds } },
+                        select: { id: true, projectName: true, customer: { select: { companyName: true } } },
+                    })
+                    : Promise.resolve([]),
+                orderIds.length
+                    ? prisma_client_1.default.salesOrder.findMany({ where: { id: { in: orderIds } }, select: { id: true, orderNumber: true } })
+                    : Promise.resolve([]),
+            ]);
+            const projectMap = new Map(projects.map((p) => [p.id, p]));
+            const orderMap = new Map(orders.map((o) => [o.id, o]));
+            const enriched = reports.map((r) => ({
+                ...r,
+                projectName: r.projectId ? projectMap.get(r.projectId)?.projectName ?? null : null,
+                customerName: r.projectId ? projectMap.get(r.projectId)?.customer?.companyName ?? null : null,
+                orderNumber: r.salesOrderId ? orderMap.get(r.salesOrderId)?.orderNumber ?? null : null,
+            }));
+            res.status(200).json(enriched);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async getOne(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const report = await prisma_client_1.default.deliveryReport.findFirst({
+                where: { id: String(req.params.id), tenantId },
+            });
+            if (!report)
+                return res.status(404).json({ error: "Teslim raporu bulunamadı." });
+            res.status(200).json(report);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /** Latest delivery report for an appointment (so the technician tab can preload it). */
+    async getByAppointment(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const report = await prisma_client_1.default.deliveryReport.findFirst({
+                where: { tenantId, appointmentId: String(req.params.appointmentId) },
+                orderBy: { createdAt: "desc" },
+            });
+            res.status(200).json(report || null);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /**
+     * Technician creates and sends a delivery report. A drawn signature is
+     * optional — without it the report is still saved and forwarded to the
+     * administrator (isSigned = false).
+     */
+    async create(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
+            const body = req.body || {};
+            const responses = normalizeResponses(body.responses);
+            if (responses.length === 0) {
+                return res.status(400).json({ error: "Kontrol listesi yanıtları zorunludur." });
+            }
+            const signature = body.signatureBase64 ? String(body.signatureBase64) : null;
+            const now = new Date();
+            const report = await prisma_client_1.default.deliveryReport.create({
+                data: {
+                    id: (0, nanoid_1.nanoid)(10),
+                    tenantId,
+                    employeeId,
+                    projectId: body.projectId ? String(body.projectId) : null,
+                    salesOrderId: body.salesOrderId ? String(body.salesOrderId) : null,
+                    appointmentId: body.appointmentId ? String(body.appointmentId) : null,
+                    checklistTemplateId: body.checklistTemplateId ? String(body.checklistTemplateId) : null,
+                    checklistName: body.checklistName ? String(body.checklistName) : null,
+                    responses,
+                    notes: body.notes ? String(body.notes) : null,
+                    customerSignature: signature,
+                    isSigned: Boolean(signature),
+                    signedAt: signature ? now : null,
+                    sentAt: now,
+                },
+            });
+            res.status(201).json(report);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /** Attach (or replace) a customer signature on an existing delivery report. */
+    async sign(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const body = req.body || {};
+            const signature = body.signatureBase64 ? String(body.signatureBase64) : null;
+            if (!signature)
+                return res.status(400).json({ error: "İmza zorunludur." });
+            const existing = await prisma_client_1.default.deliveryReport.findFirst({
+                where: { id: String(req.params.id), tenantId },
+            });
+            if (!existing)
+                return res.status(404).json({ error: "Teslim raporu bulunamadı." });
+            const report = await prisma_client_1.default.deliveryReport.update({
+                where: { id: existing.id },
+                data: { customerSignature: signature, isSigned: true, signedAt: new Date() },
+            });
+            res.status(200).json(report);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+}
+exports.DeliveryReportController = DeliveryReportController;
+//# sourceMappingURL=DeliveryReportController.js.map

@@ -19,6 +19,14 @@ class MaintenanceReportUseCase {
             throw new Error("Bakim gorevi bulunamadi.");
         if (task.contract?.tenantId !== data.tenantId)
             throw new Error("Bu gorev icin yetkiniz yok.");
+        const assignedIds = [
+            task.assignedTechId,
+            task.alternativeTechId,
+            ...((task.assignments || []).map((assignment) => assignment.technicianId)),
+        ].filter(Boolean);
+        if (assignedIds.length && !assignedIds.includes(data.techId)) {
+            throw new Error("Bu bakim gorevi size atanmamis.");
+        }
         const existingReport = await this.maintenanceRepository.getReportByTaskId(data.taskId);
         if (existingReport?.isSigned)
             throw new Error("Imzalanmis rapor kilitlidir.");
@@ -62,8 +70,48 @@ class MaintenanceReportUseCase {
                 });
             }
         }
+        if (data.expenses && data.expenses.length > 0) {
+            for (const expense of data.expenses) {
+                if (!expense.expenseType?.trim())
+                    throw new Error("Gider tipi zorunludur.");
+                if (Number(expense.amount) < 0)
+                    throw new Error("Gider tutari negatif olamaz.");
+                await this.maintenanceRepository.addExpense({
+                    id: (0, nanoid_1.nanoid)(12),
+                    taskId: data.taskId,
+                    reportId,
+                    expenseType: expense.expenseType.trim(),
+                    amount: Number(expense.amount || 0),
+                    description: expense.description?.trim() || null,
+                });
+            }
+        }
         await this.maintenanceRepository.updateTaskStatus(data.taskId, "IN_PROGRESS");
         return await this.maintenanceRepository.getReportById(reportId) || report;
+    }
+    async updateReport(data) {
+        const report = await this.maintenanceRepository.getReportById(data.reportId);
+        if (!report)
+            throw new Error("Rapor bulunamadi.");
+        if (report.isSigned || report.lockedAt)
+            throw new Error("Imzalanmis rapor kilitlidir ve duzenlenemez.");
+        const patch = {};
+        if (data.operationsDone !== undefined) {
+            if (!data.operationsDone.trim())
+                throw new Error("Yapilan islemler zorunludur.");
+            patch.operationsDone = data.operationsDone.trim();
+        }
+        if (data.observations !== undefined)
+            patch.observations = data.observations?.trim() || null;
+        if (data.recommendations !== undefined)
+            patch.recommendations = data.recommendations?.trim() || null;
+        if (data.riskNotes !== undefined)
+            patch.riskNotes = data.riskNotes?.trim() || null;
+        if (data.checklistJson !== undefined)
+            patch.checklistJson = data.checklistJson;
+        if (!Object.keys(patch).length)
+            return report;
+        return await this.maintenanceRepository.updateReport(data.reportId, patch);
     }
     async signReport(reportId, signatureBase64) {
         const report = await this.maintenanceRepository.getReportById(reportId);

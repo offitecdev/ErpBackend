@@ -6,6 +6,7 @@ export class Material {
         public name: string,
         public stockQuantity: number,
         public unitCost: number,
+        public imageUrl: string | null,
         public isActive: boolean
     ) {}
 }

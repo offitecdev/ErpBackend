@@ -46,6 +46,44 @@ export class CustomerRepository implements ICustomerRepository {
         return this.mapToEntity(data);
     }
 
+    async delete(id: string, tenantId?: string): Promise<void> {
+        const where: any = { id };
+        if (tenantId) where.tenantId = tenantId;
+
+        const customer = await prisma.customer.findFirst({ where });
+        if (!customer) {
+            throw new Error('Müşteri bulunamadı.');
+        }
+
+        // Block deletion when the customer still has business records that must be preserved.
+        const [tenders, projects, salesOrders, invoices, shipments, serviceCalls, workOrders, maintenanceContracts] = await Promise.all([
+            prisma.tender.count({ where: { customerId: id } }),
+            prisma.project.count({ where: { customerId: id } }),
+            prisma.salesOrder.count({ where: { customerId: id } }),
+            prisma.invoice.count({ where: { customerId: id } }),
+            prisma.shipment.count({ where: { customerId: id } }),
+            prisma.serviceCall.count({ where: { customerId: id } }),
+            prisma.workOrder.count({ where: { customerId: id } }),
+            prisma.maintenanceContract.count({ where: { customerId: id } }),
+        ]);
+
+        const blockingTotal = tenders + projects + salesOrders + invoices + shipments + serviceCalls + workOrders + maintenanceContracts;
+        if (blockingTotal > 0) {
+            throw new Error('Bu müşteri silinemez: teklif, proje veya sipariş gibi bağlı kayıtlar bulunuyor. Önce ilişkili kayıtları kaldırın ya da müşteriyi pasif yapın.');
+        }
+
+        // Remove the purely CRM-owned child records, then the customer, atomically.
+        await prisma.$transaction([
+            prisma.customerNote.deleteMany({ where: { customerId: id } }),
+            prisma.customerActivity.deleteMany({ where: { customerId: id } }),
+            prisma.customerContact.deleteMany({ where: { customerId: id } }),
+            prisma.appointment.deleteMany({ where: { customerId: id } }),
+            prisma.offerScheduleSlot.deleteMany({ where: { customerId: id } }),
+            prisma.document.deleteMany({ where: { entityType: 'customer', relatedEntityId: id } }),
+            prisma.customer.delete({ where: { id } }),
+        ]);
+    }
+
     async findById(id: string): Promise<Customer | null> {
         const data = await prisma.customer.findUnique({
             where: { id },

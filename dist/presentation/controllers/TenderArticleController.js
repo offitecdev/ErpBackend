@@ -42,10 +42,10 @@ class TenderArticleController {
             const mappedArticle = result.mapping?.article;
             const targetPosition = await prisma_client_1.default.position.findUnique({
                 where: { id: positionId },
-                select: { positionNumber: true, shortDescription: true },
+                select: { shortDescription: true },
             });
             const positionLabel = targetPosition
-                ? `${targetPosition.positionNumber} - ${targetPosition.shortDescription}`
+                ? targetPosition.shortDescription
                 : positionId;
             const unit = mappedArticle?.unit || 'adet';
             void this.tenderLogRepo.create({
@@ -59,7 +59,7 @@ class TenderArticleController {
                 fieldName: "quantityMultiplier",
                 oldValue: null,
                 newValue: String(quantityMultiplier),
-                description: `${mappedArticle?.name ?? 'ÃœrÃ¼n'} Ã¼rÃ¼nÃ¼ ${positionLabel} pozisyonuna ${quantityMultiplier} ${unit} olarak eklendi.${autoConsumeStock ? ' SeÃ§ilen lokasyondan stoktan dÃ¼ÅŸÃ¼ldÃ¼.' : ''}${discount ? ` Ä°ndirim: %${discount}.` : ''}`,
+                description: `${mappedArticle?.name ?? 'Ürün'} ürünü ${positionLabel} satırına ${quantityMultiplier} ${unit} olarak eklendi.${autoConsumeStock ? ' Seçilen lokasyondan stoktan düşüldü.' : ''}${discount ? ` İndirim: %${discount}.` : ''}`,
             }).catch((error) => {
                 console.error('[mapArticle] log write failed:', error);
             });
@@ -97,6 +97,7 @@ class TenderArticleController {
                             name: true,
                             description: true,
                             baseCost: true,
+                            salePrice: true,
                             unit: true,
                             category: true,
                             status: true,
@@ -212,7 +213,6 @@ class TenderArticleController {
                     position: {
                         select: {
                             tenderId: true,
-                            positionNumber: true,
                             shortDescription: true,
                             calculation: true,
                             tender: { select: { status: true } },
@@ -233,7 +233,7 @@ class TenderArticleController {
                 await tx.positionArticleMapping.delete({ where: { id: mappingId } });
             });
             if (before) {
-                const positionLabel = `${before.position.positionNumber} - ${before.position.shortDescription}`;
+                const positionLabel = before.position.shortDescription;
                 void this.tenderLogRepo.create({
                     tenantId,
                     tenderId,
@@ -245,7 +245,7 @@ class TenderArticleController {
                     fieldName: null,
                     oldValue: before.article?.name ?? before.articleId,
                     newValue: null,
-                    description: `${before.article?.name ?? 'Ürün'} ürünü ${positionLabel} pozisyonundan kaldırıldı. ${before.quantityMultiplier} ${before.article?.unit ?? 'adet'} için iade/silme işlemi tamamlandı.`
+                    description: `${before.article?.name ?? 'Ürün'} ürünü ${positionLabel} satırından kaldırıldı. ${before.quantityMultiplier} ${before.article?.unit ?? 'adet'} için iade/silme işlemi tamamlandı.`
                 }).catch((error) => {
                     console.error('[removeArticleMapping] log write failed:', error);
                 });

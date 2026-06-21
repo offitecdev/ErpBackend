@@ -64,7 +64,7 @@ export class ArticleController {
                 systemBarcode, supplierBarcode, imageUrl, category,
                 status, isActive,
                 minStockLevel, criticalStockLevel, maxStockLevel,
-                lastPurchaseDate,
+                lastPurchaseDate, salePrice, defaultSupplierId,
             } = req.body;
 
             if (!articleCode || !name || !unit) {
@@ -77,6 +77,8 @@ export class ArticleController {
                 articleCode,
                 name,
                 baseCost: Number(baseCost ?? 0),
+                salePrice: Number(salePrice ?? 0),
+                defaultSupplierId: defaultSupplierId ?? null,
                 unit,
                 description: description ?? null,
                 systemBarcode: systemBarcode ?? null,
@@ -108,6 +110,7 @@ export class ArticleController {
             delete patch.positionId;
             delete patch.mappingId;
             if (patch.baseCost != null) patch.baseCost = Number(patch.baseCost);
+            if (patch.salePrice != null) patch.salePrice = Number(patch.salePrice);
             if (patch.minStockLevel != null) patch.minStockLevel = Number(patch.minStockLevel);
             if (patch.criticalStockLevel != null) patch.criticalStockLevel = Number(patch.criticalStockLevel);
             if (patch.maxStockLevel != null) patch.maxStockLevel = Number(patch.maxStockLevel);
@@ -121,6 +124,8 @@ export class ArticleController {
                     articleCode: "Stok kodu",
                     name: "ÃœrÃ¼n adÄ±",
                     baseCost: "Birim maliyet",
+                    salePrice: "Satış fiyatı",
+                    defaultSupplierId: "Varsayılan tedarikçi",
                     unit: "Birim",
                     description: "AÃ§Ä±klama",
                     systemBarcode: "Sistem barkodu",

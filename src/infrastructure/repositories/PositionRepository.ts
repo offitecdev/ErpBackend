@@ -14,6 +14,8 @@ export class PositionRepository implements IPositionRepository {
             name: true,
             description: true,
             baseCost: true,
+            salePrice: true,
+            defaultSupplierId: true,
             unit: true,
             category: true,
             status: true,
@@ -32,6 +34,9 @@ export class PositionRepository implements IPositionRepository {
             tenantId: true,
             tenderId: true,
             parentPositionId: true,
+            rowType: true,
+            sourceArticleId: true,
+            displayOrder: true,
             npkCode: true,
             positionNumber: true,
             shortDescription: true,
@@ -89,7 +94,10 @@ export class PositionRepository implements IPositionRepository {
             data.parentPositionId,
             data.npkCode,
             data.longDescription,
-            data.unit
+            data.unit,
+            data.rowType ?? 'SECTION',
+            data.sourceArticleId,
+            data.displayOrder ?? 0
         );
     }
 
@@ -117,13 +125,20 @@ export class PositionRepository implements IPositionRepository {
             tenantId: p.tenantId!,
             tenderId: p.tenderId!,
             parentPositionId: p.parentPositionId || null,
+            rowType: (p as any).rowType || 'SECTION',
+            sourceArticleId: (p as any).sourceArticleId || null,
+            displayOrder: Number((p as any).displayOrder ?? 0),
             positionNumber: p.positionNumber!,
             shortDescription: p.shortDescription!,
             longDescription: p.longDescription || null,
             hierarchyLevel: p.hierarchyLevel ?? 0,
             quantity: p.quantity ?? 0,
             unit: p.unit || null,
-            npkCode: p.npkCode || null
+            npkCode: p.npkCode || null,
+            unitPrice: (p as any).unitPrice ?? null,
+            discount: (p as any).discount ?? 0,
+            taxRate: (p as any).taxRate ?? 0,
+            imageUrl: (p as any).imageUrl ?? null
         }));
 
         await prisma.position.createMany({
@@ -143,7 +158,10 @@ export class PositionRepository implements IPositionRepository {
         const data = await prisma.position.findMany({
             where: { tenderId },
             select: this.positionSelect(!!options?.includeImages),
-            orderBy: { positionNumber: 'asc' }
+            orderBy: [
+                { displayOrder: 'asc' },
+                { positionNumber: 'asc' }
+            ]
         });
 
         return data;
@@ -239,6 +257,9 @@ export class PositionRepository implements IPositionRepository {
         if (patch.taxRate !== undefined) data.taxRate = patch.taxRate;
         if (patch.imageUrl !== undefined) data.imageUrl = patch.imageUrl;
         if (patch.npkCode !== undefined) data.npkCode = patch.npkCode;
+        if ((patch as any).rowType !== undefined) data.rowType = (patch as any).rowType;
+        if ((patch as any).sourceArticleId !== undefined) data.sourceArticleId = (patch as any).sourceArticleId;
+        if ((patch as any).displayOrder !== undefined) data.displayOrder = Number((patch as any).displayOrder);
         return await prisma.position.update({ where: { id: positionId }, data });
     }
 }

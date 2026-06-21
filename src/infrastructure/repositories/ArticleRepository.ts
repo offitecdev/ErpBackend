@@ -19,6 +19,8 @@ const mappingArticleSelect = {
     criticalStockLevel: true,
     maxStockLevel: true,
     lastPurchaseDate: true,
+    salePrice: true,
+    defaultSupplierId: true,
 } as const;
 
 export class ArticleRepository implements IArticleRepository {
@@ -41,7 +43,9 @@ export class ArticleRepository implements IArticleRepository {
             d.minStockLevel ?? 0,
             d.criticalStockLevel ?? 0,
             d.maxStockLevel,
-            d.lastPurchaseDate
+            d.lastPurchaseDate,
+            d.salePrice ?? 0,
+            d.defaultSupplierId ?? null
         );
     }
 
@@ -65,6 +69,8 @@ export class ArticleRepository implements IArticleRepository {
                 articleCode: articleData.articleCode!,
                 name: articleData.name!,
                 baseCost: articleData.baseCost ?? 0,
+                salePrice: (articleData as any).salePrice ?? 0,
+                defaultSupplierId: (articleData as any).defaultSupplierId ?? null,
                 unit: articleData.unit!,
                 description: articleData.description ?? null,
                 systemBarcode: articleData.systemBarcode ?? null,
@@ -88,7 +94,7 @@ export class ArticleRepository implements IArticleRepository {
             'articleCode', 'name', 'baseCost', 'unit', 'description',
             'systemBarcode', 'supplierBarcode', 'imageUrl', 'category',
             'status', 'isActive', 'minStockLevel', 'criticalStockLevel',
-            'maxStockLevel', 'lastPurchaseDate'
+            'maxStockLevel', 'lastPurchaseDate', 'salePrice', 'defaultSupplierId'
         ];
         for (const f of fields) {
             if (patch[f] !== undefined) updateData[f] = patch[f];
@@ -103,6 +109,7 @@ export class ArticleRepository implements IArticleRepository {
             await tx.stockBalance.deleteMany({ where: { articleId: id } });
             await tx.purchaseProposal.deleteMany({ where: { articleId: id } });
             await tx.stockMovement.deleteMany({ where: { articleId: id } });
+            await (tx as any).articleSupplier.deleteMany({ where: { articleId: id } });
             await tx.article.delete({ where: { id } });
         });
     }
@@ -147,18 +154,8 @@ export class ArticleRepository implements IArticleRepository {
     }
 
     async mapArticleToPosition(mapping: Partial<PositionArticleMapping>): Promise<PositionArticleMapping> {
-        const data = await prisma.positionArticleMapping.upsert({
-            where: {
-                positionId_articleId: {
-                    positionId: mapping.positionId!,
-                    articleId: mapping.articleId!
-                }
-            },
-            update: { 
-                quantityMultiplier: mapping.quantityMultiplier!,
-                discount: mapping.discount ?? 0
-            },
-            create: {
+        const data = await prisma.positionArticleMapping.create({
+            data: {
                 id: nanoid(10),
                 positionId: mapping.positionId!,
                 articleId: mapping.articleId!,

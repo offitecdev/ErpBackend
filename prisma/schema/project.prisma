@@ -46,6 +46,8 @@ model Project {
   projectVariations ProjectVariation[]
   extraMaterials    ProjectExtraMaterial[]
   shipments         Shipment[]
+  salesOrders       SalesOrder[]
+  invoices          Invoice[]
 
   @@index([tenantId])
   @@index([customerId])
@@ -66,6 +68,8 @@ model ProjectPhase {
 model ProjectReport {
   id         String   @id
   projectId  String
+  salesOrderId String?
+  appointmentId String?
   employeeId String
   reportDate DateTime @default(now())
   reportType String
@@ -83,13 +87,38 @@ model ProjectReport {
 
   customerSignature String? @db.LongText
   isSigned          Boolean @default(false)
+  signedAt          DateTime?
+
+  // Manager approval of the worked-hours / overtime. Set when an administrator
+  // finishes the montaj, or automatically (autoApproved) by the end-of-day pass.
+  hoursApprovedAt   DateTime?
+  hoursApprovedById String?
+  autoApproved      Boolean  @default(false)
 
   project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  salesOrder    SalesOrder?      @relation(fields: [salesOrderId], references: [id])
+  appointment   Appointment?     @relation("ProjectAppointmentReports", fields: [appointmentId], references: [id], onDelete: SetNull)
   employee      Employee         @relation(fields: [employeeId], references: [id])
   usedMaterials ReportMaterial[]
+  images        ProjectReportImage[]
 
   @@index([projectId])
+  @@index([salesOrderId])
+  @@index([appointmentId])
   @@index([employeeId])
+}
+
+model ProjectReportImage {
+  id           String   @id
+  reportId     String
+  imageData    String   @db.LongText
+  caption      String?
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  report ProjectReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
 }
 
 model ReportMaterial {
@@ -111,32 +140,63 @@ model ReportMaterial {
 model ProjectExpense {
   id          String   @id
   projectId   String
+  salesOrderId String?
+  appointmentId String?
   expenseType String
   amount      Float
   description String?  @db.Text
   expenseDate DateTime @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id])
+  appointment Appointment? @relation("ProjectAppointmentExpenses", fields: [appointmentId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
+  @@index([salesOrderId])
+  @@index([appointmentId])
 }
 
 model Appointment {
   id         String            @id
   tenantId   String
   projectId  String?
+  salesOrderId String?
+  assignedTechId String?
   customerId String?
   startTime  DateTime
   endTime    DateTime
   status     AppointmentStatus @default(AVAILABLE)
   notes      String?           @db.Text
   isLocked   Boolean           @default(false)
+  installationReminderSentAt DateTime?
   tenant     Tenant            @relation(fields: [tenantId], references: [id])
   project    Project?          @relation(fields: [projectId], references: [id])
+  salesOrder SalesOrder?       @relation(fields: [salesOrderId], references: [id])
+  assignedTechnician Employee? @relation("ProjectAppointmentTechnician", fields: [assignedTechId], references: [id])
   customer   Customer?         @relation(fields: [customerId], references: [id])
+  technicianAssignments ProjectAppointmentAssignment[]
+  reports ProjectReport[] @relation("ProjectAppointmentReports")
+  expenses ProjectExpense[] @relation("ProjectAppointmentExpenses")
+  extraMaterials ProjectExtraMaterial[] @relation("ProjectAppointmentExtraMaterials")
 
   @@index([tenantId])
+  @@index([salesOrderId])
+  @@index([assignedTechId])
   @@index([startTime, endTime])
+}
+
+model ProjectAppointmentAssignment {
+  id            String      @id
+  appointmentId String
+  technicianId  String
+  assignedAt    DateTime    @default(now())
+
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  technician    Employee    @relation("ProjectAppointmentAssignmentTech", fields: [technicianId], references: [id])
+
+  @@unique([appointmentId, technicianId])
+  @@index([appointmentId])
+  @@index([technicianId])
 }
 
 model OfferScheduleSlot {
@@ -162,6 +222,8 @@ model OfferScheduleSlot {
 model ProjectExtraMaterial {
   id          String   @id
   projectId   String
+  salesOrderId String?
+  appointmentId String?
   materialId  String
   quantity    Float
   unitPrice   Float
@@ -169,9 +231,13 @@ model ProjectExtraMaterial {
   addedAt     DateTime @default(now())
 
   project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id])
+  appointment Appointment? @relation("ProjectAppointmentExtraMaterials", fields: [appointmentId], references: [id], onDelete: SetNull)
   material Material @relation(fields: [materialId], references: [id])
 
   @@index([projectId])
+  @@index([salesOrderId])
+  @@index([appointmentId])
   @@index([materialId])
 }
 
@@ -202,6 +268,7 @@ model Material {
   name          String
   stockQuantity Float   @default(0)
   unitCost      Float   @default(0)
+  imageUrl      String? @db.Text
   isActive      Boolean @default(true)
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
@@ -213,6 +280,88 @@ model Material {
   positionMappings PositionMaterialMapping[]
 
   @@index([tenantId])
+}
+
+/// Checklist templates configured by an administrator under Settings.
+/// Each template holds an ordered list of items grouped by category. An item
+/// captures a Yes/No/Not-Applicable status plus an optional measurement value
+/// (number or free text) when filled in on a delivery report.
+/// items JSON shape: { id: string, category: string, label: string, measurement: boolean }[]
+model ChecklistTemplate {
+  id          String   @id
+  tenantId    String
+  name        String
+  description String?  @db.Text
+  items       Json
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}
+
+/// A delivery (Teslim / Schlussrapport) report filled by a technician for an
+/// installation appointment. It snapshots the chosen checklist and the answers
+/// (Yes/No/Not-Applicable + optional measurement value) plus an optional
+/// customer signature. Field-report visuals are referenced live from the
+/// related project/appointment reports, not duplicated here.
+/// responses JSON shape:
+///   { id, category, label, status: 'YES'|'NO'|'NA', measurement: string, measurementEnabled: boolean }[]
+model DeliveryReport {
+  id                  String    @id
+  tenantId            String
+  projectId           String?
+  salesOrderId        String?
+  appointmentId       String?
+  employeeId          String?
+  checklistTemplateId String?
+  checklistName       String?
+  responses           Json
+  notes               String?   @db.Text
+  customerSignature   String?   @db.LongText
+  isSigned            Boolean   @default(false)
+  signedAt            DateTime?
+  sentAt              DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([appointmentId])
+  @@index([projectId])
+  @@index([salesOrderId])
+}
+
+/// A tokenized customer signature request that can target any report kind
+/// (field / delivery / general). The public sign page is rendered from `snapshot`
+/// so even general reports — which are generated on the fly and not otherwise
+/// persisted — can be previewed and signed without a login.
+/// reportType: 'FIELD' | 'DELIVERY' | 'GENERAL'
+/// snapshot JSON: a render-ready summary { title, customerName, projectName, sections, images }
+model SignatureRequest {
+  id              String    @id
+  tenantId        String
+  reportType      String
+  reportId        String?
+  projectId       String?
+  token           String    @unique @db.VarChar(128)
+  customerEmail   String?
+  title           String?
+  snapshot        Json
+  status          String    @default("PENDING")
+  signatureBase64 String?   @db.LongText
+  signedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([reportType])
+  @@index([reportId])
 }
 
 model MailSetting {

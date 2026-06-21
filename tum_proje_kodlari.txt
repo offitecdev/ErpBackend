@@ -1932,10 +1932,24 @@ async function main() {
       'mail.send',
       'logistics.view',
       'logistics.manage',
+      'maintenance.contracts.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+      'workorders.manage',
+      'maintenance.contracts.manage',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+      'workorders.manage'
+
     ];
 
+    const uniquePermissionNames = [...new Set(permissionNames)];
+
     const permissions = await Promise.all(
-      permissionNames.map((name) =>
+      uniquePermissionNames.map((name) =>
         prisma.permission.upsert({
           where: { permissionName: name },
           update: {},
@@ -1943,7 +1957,62 @@ async function main() {
         })
       )
     );
-    console.log('Permissions hazır:', permissionNames.length);
+    console.log('Permissions hazır:', uniquePermissionNames.length);
+
+    const permissionsByName = new Map(permissions.map((permission) => [permission.permissionName, permission]));
+    const assignPermissionsToRole = async (roleId: string, names: string[]) => {
+      for (const name of [...new Set(names)]) {
+        const permission = permissionsByName.get(name);
+        if (!permission) continue;
+
+        await prisma.rolePermission.upsert({
+          where: {
+            roleId_permissionId: {
+              roleId,
+              permissionId: permission.id,
+            },
+          },
+          update: {},
+          create: {
+            roleId,
+            permissionId: permission.id,
+          },
+        });
+      }
+    };
+
+    const serviceManagerPermissions = [
+      'crm.customers.view',
+      'employees.view',
+      'inventory.view',
+      'inventory.manage',
+      'maintenance.contracts.manage',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+      'workorders.manage',
+    ];
+
+    const technicianPermissions = [
+      'crm.customers.view',
+      'inventory.view',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+    ];
+
+    const serviceViewerPermissions = [
+      'crm.customers.view',
+      'employees.view',
+      'inventory.view',
+      'maintenance.contracts.manage',
+      'maintenance.tasks.manage',
+      'maintenance.reports.manage',
+      'regie.calls.manage',
+      'regie.reports.manage',
+    ];
 
     const adminRole = await prisma.role.upsert({
       where: { id: 'admin-role' },
@@ -1959,22 +2028,62 @@ async function main() {
     });
     console.log('Admin rolü hazır:', adminRole.roleName);
 
-    for (const permission of permissions) {
-      await prisma.rolePermission.upsert({
-        where: {
-          roleId_permissionId: {
-            roleId: adminRole.id,
-            permissionId: permission.id,
-          },
-        },
-        update: {},
-        create: {
-          roleId: adminRole.id,
-          permissionId: permission.id,
-        },
-      });
-    }
+    await assignPermissionsToRole(adminRole.id, uniquePermissionNames);
     console.log('Tüm permissions Admin rolüne atandı.');
+
+    const existingAdminRoles = await prisma.role.findMany({
+      where: { roleName: 'Admin' },
+      select: { id: true },
+    });
+
+    for (const role of existingAdminRoles) {
+      await assignPermissionsToRole(role.id, uniquePermissionNames);
+    }
+    console.log('Mevcut Admin rollerine de tum permissions atandi:', existingAdminRoles.length);
+
+    const serviceManagerRole = await prisma.role.upsert({
+      where: { id: 'service-manager-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+      create: {
+        id: 'service-manager-role',
+        tenantId: swissTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+    });
+
+    const technicianRole = await prisma.role.upsert({
+      where: { id: 'technician-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Teknisyen',
+      },
+      create: {
+        id: 'technician-role',
+        tenantId: swissTenant.id,
+        roleName: 'Teknisyen',
+      },
+    });
+
+    const serviceViewerRole = await prisma.role.upsert({
+      where: { id: 'service-viewer-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Servis Viewer',
+      },
+      create: {
+        id: 'service-viewer-role',
+        tenantId: swissTenant.id,
+        roleName: 'Servis Viewer',
+      },
+    });
+
+    await assignPermissionsToRole(serviceManagerRole.id, serviceManagerPermissions);
+    await assignPermissionsToRole(technicianRole.id, technicianPermissions);
+    await assignPermissionsToRole(serviceViewerRole.id, serviceViewerPermissions);
+    console.log('Bakim/Regie rolleri hazir:', serviceManagerRole.roleName, technicianRole.roleName, serviceViewerRole.roleName);
 
     await prisma.employeeRole.upsert({
       where: {
@@ -1990,6 +2099,127 @@ async function main() {
       },
     });
     console.log('Admin rolü kullanıcıya atandı.');
+
+    const technician = await prisma.employee.upsert({
+      where: { email: 'teknisyen@offitec.com' },
+      update: {
+        tenantId: swissTenant.id,
+        departmentId: testDepartmentId,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+      },
+      create: {
+        id: nanoid(8),
+        tenantId: swissTenant.id,
+        departmentId: testDepartmentId,
+        firstName: 'Bakim',
+        lastName: 'Teknisyeni',
+        email: 'teknisyen@offitec.com',
+        passwordHash: hashedPassword,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+        annualLeaveEntitlement: 20,
+      },
+    });
+
+    await prisma.employeeRole.upsert({
+      where: {
+        employeeId_roleId: {
+          employeeId: technician.id,
+          roleId: technicianRole.id,
+        },
+      },
+      update: {},
+      create: {
+        employeeId: technician.id,
+        roleId: technicianRole.id,
+      },
+    });
+    console.log('Demo teknisyen hazir:', technician.email);
+
+    const turkeyServiceManagerRole = await prisma.role.upsert({
+      where: { id: 'service-manager-role-tr' },
+      update: {
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+      create: {
+        id: 'service-manager-role-tr',
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Yoneticisi',
+      },
+    });
+
+    const turkeyTechnicianRole = await prisma.role.upsert({
+      where: { id: 'technician-role-tr' },
+      update: {
+        tenantId: turkeyTenant.id,
+        roleName: 'Teknisyen',
+      },
+      create: {
+        id: 'technician-role-tr',
+        tenantId: turkeyTenant.id,
+        roleName: 'Teknisyen',
+      },
+    });
+
+    const turkeyServiceViewerRole = await prisma.role.upsert({
+      where: { id: 'service-viewer-role-tr' },
+      update: {
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Viewer',
+      },
+      create: {
+        id: 'service-viewer-role-tr',
+        tenantId: turkeyTenant.id,
+        roleName: 'Servis Viewer',
+      },
+    });
+
+    await assignPermissionsToRole(turkeyServiceManagerRole.id, serviceManagerPermissions);
+    await assignPermissionsToRole(turkeyTechnicianRole.id, technicianPermissions);
+    await assignPermissionsToRole(turkeyServiceViewerRole.id, serviceViewerPermissions);
+
+    const turkeyTechnician = await prisma.employee.upsert({
+      where: { email: 'teknisyen-tr@offitec.com' },
+      update: {
+        tenantId: turkeyTenant.id,
+        departmentId: testDepartmentId,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+      },
+      create: {
+        id: nanoid(8),
+        tenantId: turkeyTenant.id,
+        departmentId: testDepartmentId,
+        firstName: 'Bakim',
+        lastName: 'Teknisyeni TR',
+        email: 'teknisyen-tr@offitec.com',
+        passwordHash: hashedPassword,
+        title: 'Teknisyen',
+        roleName: 'Teknisyen',
+        isActive: true,
+        annualLeaveEntitlement: 20,
+      },
+    });
+
+    await prisma.employeeRole.upsert({
+      where: {
+        employeeId_roleId: {
+          employeeId: turkeyTechnician.id,
+          roleId: turkeyTechnicianRole.id,
+        },
+      },
+      update: {},
+      create: {
+        employeeId: turkeyTechnician.id,
+        roleId: turkeyTechnicianRole.id,
+      },
+    });
+    console.log('Turkiye demo teknisyen hazir:', turkeyTechnician.email);
 
     const leaveTypeNames = [
       { id: 'lt-yillik', typeName: 'Yıllık İzin' },
@@ -2158,6 +2388,9 @@ model Customer {
   appointments Appointment[]
   offerScheduleSlots OfferScheduleSlot[]
   shipments Shipment[]
+  maintenanceContracts MaintenanceContract[]
+  serviceCalls ServiceCall[]
+  workOrders WorkOrder[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
 }
@@ -2201,7 +2434,7 @@ model Document {
   relatedEntityId      String
   entityType           String
   fileName             String
-  fileUrl              String
+  fileUrl              String   @db.LongText
   fileType             String
   category             String?
   uploadedByEmployeeId String
@@ -2253,6 +2486,9 @@ model Tenant {
   materials              Material[]
   mailSetting            MailSetting?
   shipments              Shipment[]
+  maintenanceContracts   MaintenanceContract[]
+  serviceCalls           ServiceCall[]
+  workOrders             WorkOrder[]
 
   @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
 }
@@ -2289,6 +2525,12 @@ model Employee {
   purchaseProposals      PurchaseProposal[]
   projects               Project[]          @relation("ProjectManager")
   projectReports         ProjectReport[]
+  assignedMaintenanceTasks MaintenanceTask[] @relation("MaintenanceTech")
+  alternativeMaintenanceTasks MaintenanceTask[] @relation("MaintenanceAltTech")
+  maintenanceReports     MaintenanceReport[] @relation("MaintenanceReportTech")
+  assignedServiceCalls   ServiceCall[]      @relation("ServiceCallTech")
+  alternativeServiceCalls ServiceCall[]      @relation("ServiceCallAltTech")
+  serviceReports         ServiceReport[]    @relation("ServiceReportTech")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }
@@ -2789,6 +3031,209 @@ model MailSetting {
 
 
 ============================================================
+DOSYA: .\prisma\schema\service.prisma
+============================================================
+
+
+
+enum MaintenancePeriod {
+  MONTHLY
+  QUARTERLY
+  BIANNUAL
+  YEARLY
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+
+model MaintenanceContract {
+  id              String            @id
+  tenantId        String
+  customerId      String
+  title           String
+  period          MaintenancePeriod
+  startDate       DateTime
+  endDate         DateTime
+  equipmentInfo   String?           @db.Text
+  serviceScope    String?           @db.Text
+  siteName        String?
+  reminderDaysBefore Int            @default(7)
+  notificationChannels Json?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  tenant          Tenant            @relation(fields: [tenantId], references: [id])
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  tasks           MaintenanceTask[]
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+model MaintenanceTask {
+  id              String               @id
+  contractId      String
+  assignedTechId  String?
+  alternativeTechId String?
+  siteName        String?
+  plannedDate     DateTime
+  status          TaskStatus           @default(PENDING)
+  assignmentHistoryJson Json?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  contract        MaintenanceContract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  technician      Employee?            @relation("MaintenanceTech", fields: [assignedTechId], references: [id])
+  alternativeTechnician Employee?       @relation("MaintenanceAltTech", fields: [alternativeTechId], references: [id])
+  report          MaintenanceReport?
+
+  @@index([contractId])
+  @@index([assignedTechId])
+  @@index([alternativeTechId])
+  @@index([plannedDate])
+}
+
+model MaintenanceReport {
+  id                String   @id
+  taskId            String   @unique
+  techId            String
+  checklistJson     Json? 
+  operationsDone    String   @db.Text
+  observations      String?  @db.Text
+  recommendations   String?  @db.Text
+  riskNotes         String?  @db.Text
+  beforePhotoUrls   Json?  
+  afterPhotoUrls    Json?
+  fileUrls          Json?
+  isSigned          Boolean  @default(false)
+  customerSignature String?  @db.LongText 
+  signedAt          DateTime?
+  lockedAt          DateTime?
+  pdfUrl            String?
+  emailSentAt       DateTime?
+  emailLogJson      Json?
+  createdAt         DateTime @default(now())
+
+  task              MaintenanceTask       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  technician        Employee              @relation("MaintenanceReportTech", fields: [techId], references: [id])
+  usedMaterials     MaintenanceMaterial[]
+
+  @@index([techId])
+}
+
+model MaintenanceMaterial {
+  id          String   @id
+  reportId    String
+  articleId   String
+  quantity    Float
+  unitCost    Float
+  sourceLocationId String?
+
+  report      MaintenanceReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  article     Article           @relation(fields: [articleId], references: [id])
+
+  @@index([reportId])
+  @@index([articleId])
+}
+
+
+model ServiceCall {
+  id              String      @id
+  tenantId        String
+  customerId      String
+  assignedTechId  String?
+  alternativeTechId String?
+  siteName        String?
+  priority        String?
+  reportedIssue   String      @db.Text
+  status          TaskStatus  @default(PENDING)
+  callDate        DateTime    @default(now())
+  assignmentHistoryJson Json?
+  updatedAt       DateTime    @updatedAt
+
+  tenant          Tenant      @relation(fields: [tenantId], references: [id])
+  customer        Customer    @relation(fields: [customerId], references: [id])
+  technician      Employee?   @relation("ServiceCallTech", fields: [assignedTechId], references: [id])
+  alternativeTechnician Employee? @relation("ServiceCallAltTech", fields: [alternativeTechId], references: [id])
+  report          ServiceReport?
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([assignedTechId])
+  @@index([alternativeTechId])
+}
+
+model ServiceReport {
+  id                String   @id
+  callId            String   @unique
+  techId            String
+  workDone          String   @db.Text
+  workingMinutes    Int      @default(0)
+  gasAmount         Float    @default(0) 
+  observations      String?  @db.Text
+  recommendations   String?  @db.Text
+  beforePhotoUrls   Json?
+  afterPhotoUrls    Json?
+  fileUrls          Json?
+  isWarranty        Boolean  @default(false)
+  isSigned          Boolean  @default(false)
+  customerSignature String?  @db.LongText
+  signedAt          DateTime?
+  lockedAt          DateTime?
+  createdAt         DateTime @default(now())
+  linkedOrderId     String?  @unique 
+
+  call              ServiceCall       @relation(fields: [callId], references: [id], onDelete: Cascade)
+  technician        Employee          @relation("ServiceReportTech", fields: [techId], references: [id])
+  usedMaterials     ServiceMaterial[]
+  order             WorkOrder?        @relation(fields: [linkedOrderId], references: [id])
+
+  @@index([techId])
+}
+
+model ServiceMaterial {
+  id          String   @id
+  reportId    String
+  articleId   String
+  quantity    Float
+  unitCost    Float
+  sourceLocationId String?
+
+  report      ServiceReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  article     Article       @relation(fields: [articleId], references: [id])
+
+  @@index([reportId])
+  @@index([articleId])
+}
+
+
+
+model WorkOrder {
+  id            String   @id
+  tenantId      String
+  customerId    String
+  orderNumber   String   @unique
+  orderType     String   
+  totalAmount   Float    @default(0)
+  isBilled      Boolean  @default(false) 
+  createdAt     DateTime @default(now())
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  customer      Customer @relation(fields: [customerId], references: [id])
+  regieReport   ServiceReport?
+
+  @@index([tenantId])
+  @@index([customerId])
+}
+
+
+============================================================
 DOSYA: .\prisma\schema\tender.prisma
 ============================================================
 
@@ -2806,7 +3251,7 @@ enum TenderStatus {
 model Tender {
   id                  String       @id
   tenantId            String
-  customerId          String
+  customerId          String?
   projectId           String?
   tenderNumber        String
   version             Int          @default(1)
@@ -2820,7 +3265,7 @@ model Tender {
   createdAt           DateTime     @default(now())
   createdByEmployeeId String
   tenant              Tenant       @relation(fields: [tenantId], references: [id])
-  customer            Customer     @relation(fields: [customerId], references: [id])
+  customer            Customer?    @relation(fields: [customerId], references: [id])
   createdBy           Employee     @relation(fields: [createdByEmployeeId], references: [id])
   positions           Position[]
   usedMaterials       TenderMaterialUsage[]
@@ -2836,6 +3281,9 @@ model Position {
   tenantId         String
   tenderId         String
   parentPositionId String?
+  rowType          String     @default("SECTION")
+  sourceArticleId  String?
+  displayOrder     Int        @default(0)
   npkCode          String?
   positionNumber   String
   shortDescription String
@@ -2857,6 +3305,8 @@ model Position {
 
   @@index([tenderId])
   @@index([parentPositionId])
+  @@index([sourceArticleId])
+  @@index([tenderId, parentPositionId, displayOrder])
 }
 
 model CalculationItem {
@@ -2902,6 +3352,8 @@ model Article {
   stockMovements    StockMovement[]
   purchaseProposals PurchaseProposal[]
   reportMaterials   ReportMaterial[]
+  maintenanceMaterials MaintenanceMaterial[]
+  serviceMaterials  ServiceMaterial[]
 
   @@unique([tenantId, articleCode])
   @@index([tenantId])
@@ -2917,7 +3369,8 @@ model PositionArticleMapping {
   position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
   article  Article  @relation(fields: [articleId], references: [id])
 
-  @@unique([positionId, articleId])
+  @@index([positionId])
+  @@index([articleId])
 }
 
 model PositionMaterialMapping {
@@ -3012,6 +3465,12 @@ import projectRoutes from './presentation/routes/project.routes';
 import bookingRoutes from './presentation/routes/booking.routes';
 import mailRoutes from './presentation/routes/mail.routes';
 import logisticsRoutes from './presentation/routes/logistics.routes';
+import regieRoutes from './presentation/routes/regie.routes';
+import maintenanceRoutes from './presentation/routes/maintenance.routes';
+import { requireAuth } from './presentation/middlewares/AuthMiddleware';
+import { requirePermission } from './presentation/middlewares/RbacMiddleware';
+import prisma from './infrastructure/database/prisma.client';
+import { nanoid } from 'nanoid';
 
 
 const app  = express();
@@ -3049,7 +3508,239 @@ app.get(['/health', '/backend/health'], (_req, res) => {
     res.status(200).json({ status: 'OK' });
 });
 
+const normalizeTenderRef = (value?: string) => {
+    const raw = String(value || '').trim();
+    try {
+        return decodeURIComponent(raw).trim();
+    } catch {
+        return raw;
+    }
+};
+
+const tenantRootId = async (tenantId: string): Promise<string | null> => {
+    let current: any = await (prisma as any).tenant.findUnique({
+        where: { id: tenantId },
+        select: { id: true, parentTenantId: true, isActive: true },
+    });
+
+    if (!current?.isActive) return null;
+
+    for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
+        const parent: any = await (prisma as any).tenant.findUnique({
+            where: { id: current.parentTenantId },
+            select: { id: true, parentTenantId: true, isActive: true },
+        });
+        if (!parent?.isActive) return null;
+        current = parent;
+    }
+
+    return current.id;
+};
+
+const canAccessTenant = async (targetTenantId: string, requestTenantId: string) => {
+    if (targetTenantId === requestTenantId) return true;
+    const [targetRootId, requestRootId] = await Promise.all([
+        tenantRootId(targetTenantId),
+        tenantRootId(requestTenantId),
+    ]);
+    return Boolean(targetRootId && requestRootId && targetRootId === requestRootId);
+};
+
+const findTenderForTenant = async (rawRef: string, tenantId: string) => {
+    const tenderRef = normalizeTenderRef(rawRef);
+    if (!tenderRef) return null;
+
+    const byId = await (prisma as any).tender.findUnique({
+        where: { id: tenderRef },
+        select: { id: true, tenantId: true },
+    });
+    if (byId && await canAccessTenant(byId.tenantId, tenantId)) return byId;
+
+    const byNumber = await (prisma as any).tender.findMany({
+        where: { tenderNumber: tenderRef },
+        take: 50,
+        select: { id: true, tenantId: true },
+    });
+    for (const candidate of byNumber) {
+        if (await canAccessTenant(candidate.tenantId, tenantId)) return candidate;
+    }
+    return null;
+};
+
+const registerTenderChatterRoutes = (prefix: string) => {
+    app.get(
+        `${prefix}/tenders/:id/chatter-summary`,
+        requireAuth,
+        requirePermission('tenders.view'),
+        async (req, res) => {
+            try {
+                const tenantId = req.user!.tenantId;
+                const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
+                if (!tender) {
+                    res.status(404).json({ error: 'Teklif bulunamadı.' });
+                    return;
+                }
+
+                const [noteCount, documentCount, logCount] = await prisma.$transaction([
+                    (prisma as any).tenderActivityLog.count({
+                        where: { tenderId: tender.id, actionType: 'TENDER_NOTE' },
+                    }),
+                    (prisma as any).document.count({
+                        where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: 'TENDER' },
+                    }),
+                    (prisma as any).tenderActivityLog.count({
+                        where: { tenderId: tender.id },
+                    }),
+                ]);
+
+                res.status(200).json({ noteCount, documentCount, logCount });
+            } catch (error: any) {
+                res.status(400).json({ error: error.message });
+            }
+        }
+    );
+
+    app.post(
+        `${prefix}/tenders/:id/notes`,
+        requireAuth,
+        requirePermission('tenders.manage'),
+        async (req, res) => {
+            try {
+                const tenantId = req.user!.tenantId;
+                const employeeId = req.user!.id;
+                const noteText = String(req.body.noteText || '').trim();
+
+                if (!noteText) {
+                    res.status(400).json({ error: 'Not içeriği boş olamaz.' });
+                    return;
+                }
+
+                const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
+                if (!tender) {
+                    res.status(404).json({ error: 'Teklif bulunamadı.' });
+                    return;
+                }
+
+                const log = await (prisma as any).tenderActivityLog.create({
+                    data: {
+                        id: nanoid(8),
+                        tenantId: tender.tenantId,
+                        tenderId: tender.id,
+                        employeeId,
+                        actionType: 'TENDER_NOTE',
+                        fieldName: 'note',
+                        oldValue: null,
+                        newValue: noteText,
+                        description: noteText,
+                    },
+                });
+
+                res.status(201).json(log);
+            } catch (error: any) {
+                res.status(400).json({ error: error.message });
+            }
+        }
+    );
+
+    app.get(
+        `${prefix}/tenders/:id/documents`,
+        requireAuth,
+        requirePermission('tenders.view'),
+        async (req, res) => {
+            try {
+                const tenantId = req.user!.tenantId;
+                const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
+                if (!tender) {
+                    res.status(404).json({ error: 'Teklif bulunamadı.' });
+                    return;
+                }
+
+                const documents = await (prisma as any).document.findMany({
+                    where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: 'TENDER' },
+                    orderBy: { fileName: 'asc' },
+                });
+
+                res.status(200).json(documents);
+            } catch (error: any) {
+                res.status(400).json({ error: error.message });
+            }
+        }
+    );
+
+    app.post(
+        `${prefix}/tenders/:id/documents`,
+        requireAuth,
+        requirePermission('tenders.manage'),
+        async (req, res) => {
+            try {
+                const tenantId = req.user!.tenantId;
+                const employeeId = req.user!.id;
+                const fileName = String(req.body.fileName || '').trim();
+                const fileUrl = String(req.body.fileUrl || '').trim();
+                const fileType = String(req.body.fileType || '').trim().toLowerCase();
+                const category = String(req.body.category || 'tender').trim() || 'tender';
+
+                if (!fileName || !fileUrl || !fileType) {
+                    res.status(400).json({ error: 'Dosya adı, URL ve tür zorunludur.' });
+                    return;
+                }
+
+                const allowed = fileType === 'application/pdf'
+                    || fileType === 'image/png'
+                    || fileType === 'image/jpeg'
+                    || /\.pdf$/i.test(fileName)
+                    || /\.png$/i.test(fileName)
+                    || /\.jpe?g$/i.test(fileName);
+
+                if (!allowed) {
+                    res.status(400).json({ error: 'Sadece PDF, PNG veya JPG dosyası eklenebilir.' });
+                    return;
+                }
+
+                const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
+                if (!tender) {
+                    res.status(404).json({ error: 'Teklif bulunamadı.' });
+                    return;
+                }
+
+                const document = await (prisma as any).document.create({
+                    data: {
+                        id: nanoid(8),
+                        tenantId: tender.tenantId,
+                        relatedEntityId: tender.id,
+                        entityType: 'TENDER',
+                        fileName,
+                        fileUrl,
+                        fileType,
+                        category,
+                        uploadedByEmployeeId: employeeId,
+                    },
+                });
+
+                await (prisma as any).tenderActivityLog.create({
+                    data: {
+                        id: nanoid(8),
+                        tenantId: tender.tenantId,
+                        tenderId: tender.id,
+                        employeeId,
+                        actionType: 'TENDER_ATTACHMENT',
+                        fieldName: 'attachment',
+                        oldValue: null,
+                        newValue: fileName,
+                        description: `Ek dosya eklendi: ${fileName}`,
+                    },
+                });
+
+                res.status(201).json(document);
+            } catch (error: any) {
+                res.status(400).json({ error: error.message });
+            }
+        }
+    );
+};
+
 for (const prefix of apiPrefixes) {
+    registerTenderChatterRoutes(prefix);
     app.use(`${prefix}/auth`, authRoutes);
     app.use(`${prefix}/employees`, employeeRoutes);
     app.use(`${prefix}/leaves`, leaveRoutes);
@@ -3064,6 +3755,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/booking`, bookingRoutes);
     app.use(`${prefix}/mail`, mailRoutes);
     app.use(`${prefix}/logistics`, logisticsRoutes);
+    app.use(`${prefix}/maintenance`, maintenanceRoutes);
+    app.use(`${prefix}/regie`, regieRoutes);
 }
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -4174,6 +4867,216 @@ export class UpdateShipmentUseCase {
 
 
 ============================================================
+DOSYA: .\src\application\use-cases\maintenance\CreateMaintenanceContract.ts
+============================================================
+
+import { IMaintenanceRepository } from "../../../domain/repositories/IMaintenanceRepository";
+import { MaintenanceContract, MaintenancePeriod } from "../../../domain/entities/Maintenance";
+import { nanoid } from "nanoid";
+
+const periodToMonths: Record<MaintenancePeriod, number> = {
+    MONTHLY: 1,
+    QUARTERLY: 3,
+    BIANNUAL: 6,
+    YEARLY: 12,
+};
+
+const addMonthsSafe = (date: Date, months: number) => {
+    const next = new Date(date);
+    const originalDay = next.getDate();
+    next.setMonth(next.getMonth() + months);
+    if (next.getDate() < originalDay) next.setDate(0);
+    return next;
+};
+
+const buildPlannedDates = (start: Date, end: Date, period: MaintenancePeriod) => {
+    const dates: Date[] = [];
+    const step = periodToMonths[period];
+
+    for (let cursor = new Date(start); cursor <= end; cursor = addMonthsSafe(cursor, step)) {
+        dates.push(new Date(cursor));
+    }
+
+    return dates;
+};
+
+export class CreateMaintenanceContractUseCase {
+    constructor(private maintenanceRepository: IMaintenanceRepository) {}
+
+    async execute(data: {
+        tenantId: string;
+        customerId: string;
+        title: string;
+        period: MaintenancePeriod;
+        startDate: string;
+        endDate: string;
+        equipmentInfo?: string;
+        serviceScope?: string;
+        siteName?: string;
+        assignedTechId?: string | null;
+        alternativeTechId?: string | null;
+        reminderDaysBefore?: number;
+        notificationChannels?: unknown;
+    }): Promise<MaintenanceContract> {
+        const start = new Date(data.startDate);
+        const end = new Date(data.endDate);
+
+        if (!data.customerId) throw new Error("Musteri zorunludur.");
+        if (!data.title) throw new Error("Sozlesme basligi zorunludur.");
+        if (!periodToMonths[data.period]) throw new Error("Gecersiz bakim periyodu.");
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error("Tarih bilgisi gecersiz.");
+        if (start >= end) throw new Error("Bitis tarihi baslangic tarihinden sonra olmalidir.");
+
+        const assignedTechId = data.assignedTechId || null;
+        const alternativeTechId = data.alternativeTechId && data.alternativeTechId !== assignedTechId
+            ? data.alternativeTechId
+            : null;
+
+        const contract = await this.maintenanceRepository.createContract({
+            id: nanoid(10),
+            tenantId: data.tenantId,
+            customerId: data.customerId,
+            title: data.title,
+            period: data.period,
+            startDate: start,
+            endDate: end,
+            equipmentInfo: data.equipmentInfo,
+            serviceScope: data.serviceScope,
+            siteName: data.siteName,
+            reminderDaysBefore: Number(data.reminderDaysBefore ?? 7),
+            notificationChannels: data.notificationChannels ?? { inApp: true, email: true },
+            isActive: true,
+        });
+
+        const assignmentHistoryJson = assignedTechId ? [{
+            assignedTechId,
+            alternativeTechId,
+            at: new Date().toISOString(),
+            action: "CONTRACT_CREATED",
+        }] : [];
+
+        for (const plannedDate of buildPlannedDates(start, end, data.period)) {
+            await this.maintenanceRepository.createTask({
+                id: nanoid(10),
+                contractId: contract.id,
+                plannedDate,
+                status: "PENDING",
+                assignedTechId,
+                alternativeTechId,
+                siteName: data.siteName || null,
+                assignmentHistoryJson,
+            });
+        }
+
+        return await this.maintenanceRepository.getContractById(contract.id) || contract;
+    }
+}
+
+
+============================================================
+DOSYA: .\src\application\use-cases\maintenance\MaintenanceReportUseCase.ts
+============================================================
+
+import { IMaintenanceRepository } from "../../../domain/repositories/IMaintenanceRepository";
+import { IInventoryRepository } from "../../../domain/repositories/IInventoryRepository";
+import { nanoid } from "nanoid";
+
+export class MaintenanceReportUseCase {
+    constructor(
+        private maintenanceRepository: IMaintenanceRepository,
+        private inventoryRepository: IInventoryRepository
+    ) {}
+
+    async submitReport(data: {
+        tenantId: string;
+        taskId: string;
+        techId: string;
+        operationsDone: string;
+        observations?: string;
+        recommendations?: string;
+        riskNotes?: string;
+        checklistJson?: unknown;
+        beforePhotoUrls?: unknown;
+        afterPhotoUrls?: unknown;
+        fileUrls?: unknown;
+        extraMaterials?: { articleId: string; quantity: number; unitCost: number; sourceLocationId: string }[];
+    }) {
+        if (!data.taskId) throw new Error("Bakim gorevi zorunludur.");
+        if (!data.operationsDone?.trim()) throw new Error("Yapilan islemler zorunludur.");
+
+        const task = await this.maintenanceRepository.getTaskById(data.taskId);
+        if (!task) throw new Error("Bakim gorevi bulunamadi.");
+        if ((task as any).contract?.tenantId !== data.tenantId) throw new Error("Bu gorev icin yetkiniz yok.");
+
+        const existingReport = await this.maintenanceRepository.getReportByTaskId(data.taskId);
+        if (existingReport?.isSigned) throw new Error("Imzalanmis rapor kilitlidir.");
+        if (existingReport) throw new Error("Bu gorev icin zaten rapor olusturulmus.");
+
+        const reportId = nanoid(10);
+
+        const report = await this.maintenanceRepository.createReport({
+            id: reportId,
+            taskId: data.taskId,
+            techId: data.techId,
+            operationsDone: data.operationsDone,
+            observations: data.observations,
+            recommendations: data.recommendations,
+            riskNotes: data.riskNotes,
+            checklistJson: data.checklistJson,
+            beforePhotoUrls: data.beforePhotoUrls,
+            afterPhotoUrls: data.afterPhotoUrls,
+            fileUrls: data.fileUrls,
+            isSigned: false,
+        });
+
+        if (data.extraMaterials && data.extraMaterials.length > 0) {
+            for (const mat of data.extraMaterials) {
+                if (!mat.sourceLocationId) throw new Error("Ekstra malzemeler icin depo secimi zorunludur.");
+                if (!mat.articleId || Number(mat.quantity) <= 0) throw new Error("Malzeme ve miktar zorunludur.");
+
+                await this.inventoryRepository.processMovement(
+                    {
+                        tenantId: data.tenantId,
+                        movementType: "OUT",
+                        employeeId: data.techId,
+                        referenceId: data.taskId,
+                        description: `Bakim ek malzeme (Task ID: ${data.taskId})`,
+                    },
+                    mat.articleId,
+                    mat.sourceLocationId,
+                    null,
+                    Number(mat.quantity)
+                );
+
+                await this.maintenanceRepository.addMaterialToReport({
+                    id: nanoid(12),
+                    reportId,
+                    articleId: mat.articleId,
+                    quantity: Number(mat.quantity),
+                    unitCost: Number(mat.unitCost || 0),
+                    sourceLocationId: mat.sourceLocationId,
+                });
+            }
+        }
+
+        await this.maintenanceRepository.updateTaskStatus(data.taskId, "IN_PROGRESS");
+        return await this.maintenanceRepository.getReportById(reportId) || report;
+    }
+
+    async signReport(reportId: string, signatureBase64: string) {
+        const report = await this.maintenanceRepository.getReportById(reportId);
+        if (!report) throw new Error("Rapor bulunamadi.");
+        if (report.isSigned) return report;
+
+        const signedReport = await this.maintenanceRepository.signReport(reportId, signatureBase64);
+        await this.maintenanceRepository.updateTaskStatus((signedReport as any).taskId, "COMPLETED");
+
+        return await this.maintenanceRepository.getReportById(reportId) || signedReport;
+    }
+}
+
+
+============================================================
 DOSYA: .\src\application\use-cases\project\AddProjectExpenseUseCase.ts
 ============================================================
 
@@ -4495,6 +5398,18 @@ export class CreateProjectFromTenderUseCase {
 
         const project = await this.projectRepository.createProject(projectData);
 
+        await (prisma as any).customerActivity.create({
+            data: {
+                id: nanoid(),
+                customerId: tender.customerId,
+                employeeId,
+                activityType: "TENDER_ORDERED",
+                description: `${tender.tenderNumber} teklifi siparişe verildi.`,
+                referenceId: tender.id,
+                activityDate: new Date()
+            }
+        });
+
         await (prisma as any).appointment.createMany({
             data: scheduleSlots.map((slot: any) => ({
                 id: nanoid(10),
@@ -4582,6 +5497,240 @@ export class RequestExtraMaterialUseCase {
             unitPrice: material.unitCost,
             description: description || null
         });
+    }
+}
+
+
+============================================================
+DOSYA: .\src\application\use-cases\regie\CreateServiceCallUseCase.ts
+============================================================
+
+import { IRegieRepository } from "../../../domain/repositories/IRegieRepository";
+import { ServiceCall } from "../../../domain/entities/Regie";
+import { nanoid } from "nanoid";
+
+export class CreateServiceCallUseCase {
+    constructor(private regieRepository: IRegieRepository) {}
+
+    async execute(input: {
+        tenantId: string;
+        customerId: string;
+        reportedIssue: string;
+        assignedTechId?: string | null;
+        alternativeTechId?: string | null;
+        siteName?: string | null;
+        priority?: string | null;
+    }): Promise<ServiceCall> {
+        if (!input.customerId) throw new Error("Musteri zorunludur.");
+        if (!input.reportedIssue?.trim()) throw new Error("Ariza aciklamasi zorunludur.");
+
+        const assignedTechId = input.assignedTechId || null;
+        const alternativeTechId = input.alternativeTechId && input.alternativeTechId !== assignedTechId
+            ? input.alternativeTechId
+            : null;
+
+        const assignmentHistoryJson = assignedTechId ? [{
+            assignedTechId,
+            alternativeTechId,
+            at: new Date().toISOString(),
+            action: "CALL_CREATED",
+        }] : [];
+
+        return await this.regieRepository.createCall({
+            id: nanoid(10),
+            tenantId: input.tenantId,
+            customerId: input.customerId,
+            reportedIssue: input.reportedIssue,
+            status: "PENDING",
+            callDate: new Date(),
+            assignedTechId,
+            alternativeTechId,
+            siteName: input.siteName || null,
+            priority: input.priority || "NORMAL",
+            assignmentHistoryJson,
+        });
+    }
+}
+
+
+============================================================
+DOSYA: .\src\application\use-cases\regie\CreateServiceReportUseCase.ts
+============================================================
+
+import { IRegieRepository } from "../../../domain/repositories/IRegieRepository";
+import { IInventoryRepository } from "../../../domain/repositories/IInventoryRepository";
+import { ServiceReport } from "../../../domain/entities/Regie";
+import { nanoid } from "nanoid";
+
+export interface RegieMaterialInput {
+    articleId: string;
+    quantity: number;
+    unitCost: number;
+    sourceLocationId: string;
+}
+
+export class CreateServiceReportUseCase {
+    constructor(
+        private regieRepository: IRegieRepository,
+        private inventoryRepository: IInventoryRepository
+    ) {}
+
+    async execute(input: {
+        tenantId: string;
+        employeeId: string;
+        callId: string;
+        workDone: string;
+        workingMinutes: number;
+        gasAmount: number;
+        isWarranty: boolean;
+        materials?: RegieMaterialInput[];
+        observations?: string;
+        recommendations?: string;
+        beforePhotoUrls?: unknown;
+        afterPhotoUrls?: unknown;
+        fileUrls?: unknown;
+    }): Promise<ServiceReport> {
+        if (!input.callId) throw new Error("Servis cagrisi zorunludur.");
+        if (!input.workDone?.trim()) throw new Error("Yapilan is aciklamasi zorunludur.");
+
+        const call = await this.regieRepository.getCallById(input.callId);
+        if (!call) throw new Error("Ariza kaydi bulunamadi.");
+        if ((call as any).tenantId !== input.tenantId) throw new Error("Bu cagri icin yetkiniz yok.");
+
+        const existingReport = await this.regieRepository.getReportByCallId(input.callId);
+        if (existingReport?.isSigned) throw new Error("Imzalanmis rapor kilitlidir.");
+        if (existingReport) throw new Error("Bu ariza icin zaten bir rapor olusturulmus.");
+
+        const reportId = nanoid(10);
+
+        const report = await this.regieRepository.createReport({
+            id: reportId,
+            callId: input.callId,
+            techId: input.employeeId,
+            workDone: input.workDone,
+            workingMinutes: Number(input.workingMinutes || 0),
+            gasAmount: Number(input.gasAmount || 0),
+            observations: input.observations,
+            recommendations: input.recommendations,
+            beforePhotoUrls: input.beforePhotoUrls,
+            afterPhotoUrls: input.afterPhotoUrls,
+            fileUrls: input.fileUrls,
+            isWarranty: Boolean(input.isWarranty),
+            isSigned: false,
+        });
+
+        for (const mat of input.materials || []) {
+            if (!mat.sourceLocationId) {
+                throw new Error("Kullanilan malzemeler icin cikis yapilacak depo/lokasyon secimi zorunludur.");
+            }
+            if (!mat.articleId || Number(mat.quantity) <= 0) throw new Error("Malzeme ve miktar zorunludur.");
+
+            await this.inventoryRepository.processMovement(
+                {
+                    tenantId: input.tenantId,
+                    movementType: "OUT",
+                    employeeId: input.employeeId,
+                    referenceId: input.callId,
+                    description: `Regie ariza (Cagri ID: ${input.callId}) kullanimi`,
+                },
+                mat.articleId,
+                mat.sourceLocationId,
+                null,
+                Number(mat.quantity)
+            );
+
+            await this.regieRepository.addMaterialToReport({
+                id: nanoid(12),
+                reportId,
+                articleId: mat.articleId,
+                quantity: Number(mat.quantity),
+                unitCost: Number(mat.unitCost || 0),
+                sourceLocationId: mat.sourceLocationId,
+            });
+        }
+
+        await this.regieRepository.updateCallStatus(input.callId, "IN_PROGRESS");
+
+        return await this.regieRepository.getReportById(reportId) || report;
+    }
+}
+
+
+============================================================
+DOSYA: .\src\application\use-cases\regie\SignAndBillRegieUseCase.ts
+============================================================
+
+import { IRegieRepository } from "../../../domain/repositories/IRegieRepository";
+import { IWorkOrderRepository } from "../../../domain/repositories/IWorkOrderRepository";
+import { nanoid } from "nanoid";
+
+export class SignAndBillRegieUseCase {
+    constructor(
+        private regieRepository: IRegieRepository,
+        private workOrderRepository: IWorkOrderRepository
+    ) {}
+
+    async signReport(reportId: string, signatureBase64: string) {
+        const report = await this.regieRepository.getReportById(reportId);
+        if (!report) throw new Error("Rapor bulunamadi.");
+        if (report.isSigned) {
+            return {
+                report,
+                promptForBilling: !report.isWarranty && !report.linkedOrderId,
+                message: report.isWarranty
+                    ? "Garanti kapsaminda: fatura olusturulmayacak."
+                    : "Rapor zaten imzali. Is emri / fatura olusturulabilir.",
+            };
+        }
+
+        const signedReport = await this.regieRepository.signReport(reportId, signatureBase64);
+        await this.regieRepository.updateCallStatus((signedReport as any).callId, "COMPLETED");
+
+        return {
+            report: await this.regieRepository.getReportById(reportId) || signedReport,
+            promptForBilling: !signedReport.isWarranty,
+            message: signedReport.isWarranty
+                ? "Garanti kapsaminda: fatura olusturulmayacak."
+                : "Bu raporda faturalandirilabilecek kalemler var. Is emri / fatura olusturulsun mu?",
+        };
+    }
+
+    async createWorkOrderForReport(reportId: string, tenantId: string, customerId?: string) {
+        const report = await this.regieRepository.getReportById(reportId);
+        if (!report) throw new Error("Rapor bulunamadi.");
+        if (!report.isSigned) throw new Error("[BLOCKED] Imza olmadan regie raporu faturalandirilamaz.");
+        if (report.isWarranty) throw new Error("[BLOCKED] Garanti kapsamindaki isler faturalandirilamaz.");
+        if (report.linkedOrderId) {
+            const existingOrder = await this.workOrderRepository.getOrderById(report.linkedOrderId);
+            if (existingOrder) return existingOrder;
+        }
+
+        const effectiveCustomerId = customerId || (report as any).call?.customerId;
+        if (!effectiveCustomerId) throw new Error("Musteri bilgisi bulunamadi.");
+
+        const HOURLY_RATE = 80;
+        const GAS_PRICE_PER_UNIT = 25;
+
+        const materials = await this.regieRepository.getMaterialsByReportId(reportId);
+
+        const materialTotal = materials.reduce((sum, m) => sum + (m.quantity * m.unitCost), 0);
+        const laborTotal = (report.workingMinutes / 60) * HOURLY_RATE;
+        const gasTotal = report.gasAmount * GAS_PRICE_PER_UNIT;
+        const grandTotal = materialTotal + laborTotal + gasTotal;
+
+        const order = await this.workOrderRepository.createOrder({
+            id: nanoid(10),
+            tenantId,
+            customerId: effectiveCustomerId,
+            orderNumber: `ORD-REG-${Date.now().toString(36).toUpperCase()}`,
+            orderType: "REGIE",
+            totalAmount: grandTotal,
+            isBilled: false,
+        });
+
+        await this.regieRepository.linkOrderToReport(reportId, order.id);
+
+        return order;
     }
 }
 
@@ -4938,7 +6087,7 @@ export class ImportTenderUseCase {
         });
 
         const idMap = new Map<string, string>(); 
-        const positionsToInsert = parsedData.positions.map(p => {
+        const positionsToInsert = parsedData.positions.map((p, index) => {
             const realId = nanoid(10);
             idMap.set(p.refId, realId);
             return {
@@ -4946,6 +6095,9 @@ export class ImportTenderUseCase {
                 tenantId,
                 tenderId,
                 parentPositionId: p.parentRefId ? idMap.get(p.parentRefId) : null,
+                rowType: 'SECTION',
+                displayOrder: (index + 1) * 1000,
+                sourceArticleId: null,
                 positionNumber: p.positionNumber,
                 shortDescription: p.shortDescription,
                 longDescription: p.longDescription,
@@ -4970,6 +6122,7 @@ export class ImportTenderUseCase {
     }
       
 }
+
 
 ============================================================
 DOSYA: .\src\application\use-cases\tender\MapArticleToPositionUseCase.ts
@@ -5034,7 +6187,7 @@ export class MapArticleToPositionUseCase {
                     movementType: 'OUT',
                     employeeId: input.employeeId,
                     referenceId: input.tenderId,
-                    description: `Teklif rezervasyonu: pozisyon ${input.positionId}`,
+                    description: `Teklif rezervasyonu: satır ${input.positionId}`,
                 },
                 input.articleId,
                 input.sourceLocationId,
@@ -5457,6 +6610,84 @@ export class Shipment {
 
 
 ============================================================
+DOSYA: .\src\domain\entities\Maintenance.ts
+============================================================
+
+export type MaintenancePeriod = 'MONTHLY' | 'QUARTERLY' | 'BIANNUAL' | 'YEARLY';
+export type TaskStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+
+export class MaintenanceContract {
+    constructor(
+        public id: string,
+        public tenantId: string,
+        public customerId: string,
+        public title: string,
+        public period: MaintenancePeriod,
+        public startDate: Date,
+        public endDate: Date,
+        public equipmentInfo?: string | null,
+        public serviceScope?: string | null,
+        public siteName?: string | null,
+        public reminderDaysBefore: number = 7,
+        public notificationChannels?: unknown | null,
+        public isActive: boolean = true,
+        public createdAt?: Date,
+        public updatedAt?: Date
+    ) {}
+}
+
+export class MaintenanceTask {
+    constructor(
+        public id: string,
+        public contractId: string,
+        public plannedDate: Date,
+        public status: TaskStatus,
+        public assignedTechId?: string | null,
+        public alternativeTechId?: string | null,
+        public siteName?: string | null,
+        public assignmentHistoryJson?: unknown | null,
+        public createdAt?: Date,
+        public updatedAt?: Date
+    ) {}
+}
+
+export class MaintenanceReport {
+    constructor(
+        public id: string,
+        public taskId: string,
+        public techId: string,
+        public operationsDone: string,
+        public isSigned: boolean,
+        public checklistJson?: unknown | null,
+        public observations?: string | null,
+        public recommendations?: string | null,
+        public riskNotes?: string | null,
+        public beforePhotoUrls?: unknown | null,
+        public afterPhotoUrls?: unknown | null,
+        public fileUrls?: unknown | null,
+        public customerSignature?: string | null,
+        public signedAt?: Date | null,
+        public lockedAt?: Date | null,
+        public pdfUrl?: string | null,
+        public emailSentAt?: Date | null,
+        public emailLogJson?: unknown | null,
+        public createdAt?: Date
+    ) {}
+}
+
+export class MaintenanceMaterial {
+    constructor(
+        public id: string,
+        public reportId: string,
+        public articleId: string,
+        public quantity: number,
+        public unitCost: number,
+        public sourceLocationId?: string | null
+    ) {}
+}
+
+
+============================================================
 DOSYA: .\src\domain\entities\Material.ts
 ============================================================
 
@@ -5489,6 +6720,9 @@ export class Position{
         public npkCode?: string | null,
         public longDescription?: string | null,
         public unit?: string | null,
+        public rowType: string = 'SECTION',
+        public sourceArticleId?: string | null,
+        public displayOrder: number = 0,
     ){}
 }
 
@@ -5590,6 +6824,64 @@ export class ProjectExpense {
 
 
 ============================================================
+DOSYA: .\src\domain\entities\Regie.ts
+============================================================
+
+import { TaskStatus } from './Maintenance';
+
+export class ServiceCall {
+    constructor(
+        public id: string,
+        public tenantId: string,
+        public customerId: string,
+        public reportedIssue: string,
+        public status: TaskStatus,
+        public callDate: Date,
+        public assignedTechId?: string | null,
+        public alternativeTechId?: string | null,
+        public siteName?: string | null,
+        public priority?: string | null,
+        public assignmentHistoryJson?: unknown | null,
+        public updatedAt?: Date
+    ) {}
+}
+
+export class ServiceReport {
+    constructor(
+        public id: string,
+        public callId: string,
+        public techId: string,
+        public workDone: string,
+        public workingMinutes: number,
+        public gasAmount: number,
+        public isWarranty: boolean,
+        public isSigned: boolean,
+        public customerSignature?: string | null,
+        public observations?: string | null,
+        public recommendations?: string | null,
+        public beforePhotoUrls?: unknown | null,
+        public afterPhotoUrls?: unknown | null,
+        public fileUrls?: unknown | null,
+        public signedAt?: Date | null,
+        public lockedAt?: Date | null,
+        public linkedOrderId?: string | null,
+        public createdAt?: Date
+    ) {}
+}
+
+export class ServiceMaterial {
+    constructor(
+        public id: string,
+        public reportId: string,
+        public articleId: string,
+        public quantity: number,
+        public unitCost: number,
+        public sourceLocationId?: string | null
+    ) {}
+}
+
+
+============================================================
 DOSYA: .\src\domain\entities\Tenant.ts
 ============================================================
 
@@ -5617,7 +6909,7 @@ export class Tender {
     constructor(
         public id: string,
         public tenantId: string,
-        public customerId: string,
+        public customerId: string | null,
         public tenderNumber: string,
         public version: number,
         public format : 'SIA451' | 'CRBX',
@@ -5637,6 +6929,24 @@ export class Tender {
 
 
 
+
+============================================================
+DOSYA: .\src\domain\entities\WorkOrder.ts
+============================================================
+
+
+export class WorkOrder {
+    constructor(
+        public id: string,
+        public tenantId: string,
+        public customerId: string,
+        public orderNumber: string,
+        public orderType: string,
+        public totalAmount: number,
+        public isBilled: boolean,
+        public createdAt?: Date
+    ) {}
+}
 
 ============================================================
 DOSYA: .\src\domain\repositories\IAppointmentRepository.ts
@@ -5875,6 +7185,37 @@ export interface ILeaveRequestRepository {
 
 
 ============================================================
+DOSYA: .\src\domain\repositories\IMaintenanceRepository.ts
+============================================================
+
+
+import { MaintenanceContract, MaintenanceTask, MaintenanceReport, MaintenanceMaterial, TaskStatus } from "../entities/Maintenance";
+
+export type TenantScope = string | string[];
+
+export interface IMaintenanceRepository {
+
+    createContract(contract: Partial<MaintenanceContract>): Promise<MaintenanceContract>;
+    getContractById(id: string): Promise<MaintenanceContract | null>;
+    listContracts(tenantId: TenantScope, customerId?: string): Promise<MaintenanceContract[]>;
+    
+    createTask(task: Partial<MaintenanceTask>): Promise<MaintenanceTask>;
+    getTaskById(id: string): Promise<MaintenanceTask | null>;
+    updateTask(id: string, patch: Partial<MaintenanceTask>): Promise<MaintenanceTask>;
+    updateTaskStatus(id: string, status: TaskStatus): Promise<MaintenanceTask>;
+    getTasksByDateRange(tenantId: TenantScope, startDate: Date, endDate: Date): Promise<MaintenanceTask[]>;
+    
+    createReport(report: Partial<MaintenanceReport>): Promise<MaintenanceReport>;
+    getReportByTaskId(taskId: string): Promise<MaintenanceReport | null>;
+    getReportById(reportId: string): Promise<MaintenanceReport | null>;
+    listReports(tenantId: TenantScope): Promise<MaintenanceReport[]>;
+    signReport(reportId: string, signatureBase64: string): Promise<MaintenanceReport>;
+    
+    addMaterialToReport(material: Partial<MaintenanceMaterial>): Promise<MaintenanceMaterial>;
+}
+
+
+============================================================
 DOSYA: .\src\domain\repositories\IMaterialRepository.ts
 ============================================================
 
@@ -5912,6 +7253,9 @@ export interface IPositionRepository{
         taxRate?: number | null;
         imageUrl?: string | null;
         npkCode?: string | null;
+        rowType?: string;
+        sourceArticleId?: string | null;
+        displayOrder?: number;
     }): Promise<any>;
 }
 
@@ -5956,6 +7300,36 @@ export interface IProjectRepository {
     addExpense(expense: Partial<ProjectExpense>): Promise<ProjectExpense>;
     getExpensesByProjectId(projectId: string): Promise<ProjectExpense[]>;
 }
+
+============================================================
+DOSYA: .\src\domain\repositories\IRegieRepository.ts
+============================================================
+
+import { ServiceCall, ServiceReport, ServiceMaterial } from "../entities/Regie";
+import { TaskStatus } from "../entities/Maintenance";
+
+export type TenantScope = string | string[];
+
+export interface IRegieRepository {
+
+    createCall(call: Partial<ServiceCall>): Promise<ServiceCall>;
+    getCallById(id: string): Promise<ServiceCall | null>;
+    listCalls(tenantId: TenantScope, status?: TaskStatus): Promise<ServiceCall[]>;
+    updateCall(id: string, patch: Partial<ServiceCall>): Promise<ServiceCall>;
+    updateCallStatus(id: string, status: TaskStatus): Promise<ServiceCall>;
+    
+
+    createReport(report: Partial<ServiceReport>): Promise<ServiceReport>;
+    getReportByCallId(callId: string): Promise<ServiceReport | null>;
+    getReportById(reportId: string): Promise<ServiceReport | null>;
+    listReports(tenantId: TenantScope): Promise<ServiceReport[]>;
+    signReport(reportId: string, signatureBase64: string): Promise<ServiceReport>;
+    linkOrderToReport(reportId: string, orderId: string): Promise<void>;
+    
+    addMaterialToReport(material: Partial<ServiceMaterial>): Promise<ServiceMaterial>;
+    getMaterialsByReportId(reportId: string): Promise<ServiceMaterial[]>;
+}
+
 
 ============================================================
 DOSYA: .\src\domain\repositories\IRoleRepository.ts
@@ -6022,7 +7396,7 @@ export interface ITenderFilter{
 }
 
 export interface TenderListItem extends Tender {
-    customerName?: string;
+    customerName?: string | null;
     positionCount?: number;
     grandTotal?: number;
 }
@@ -6044,6 +7418,19 @@ export interface ITenderRepository{
     delete(id: string): Promise<void>;
 }
 
+
+============================================================
+DOSYA: .\src\domain\repositories\IWorkOrderRepository.ts
+============================================================
+
+import { WorkOrder } from "../entities/WorkOrder";
+
+export interface IWorkOrderRepository {
+    createOrder(order: Partial<WorkOrder>): Promise<WorkOrder>;
+    getOrderById(id: string): Promise<WorkOrder | null>;
+    listOrders(tenantId: string, isBilled?: boolean): Promise<WorkOrder[]>;
+    markAsBilled(id: string): Promise<void>;
+}
 
 ============================================================
 DOSYA: .\src\infrastructure\config\swagger.config.ts
@@ -6500,18 +7887,8 @@ export class ArticleRepository implements IArticleRepository {
     }
 
     async mapArticleToPosition(mapping: Partial<PositionArticleMapping>): Promise<PositionArticleMapping> {
-        const data = await prisma.positionArticleMapping.upsert({
-            where: {
-                positionId_articleId: {
-                    positionId: mapping.positionId!,
-                    articleId: mapping.articleId!
-                }
-            },
-            update: { 
-                quantityMultiplier: mapping.quantityMultiplier!,
-                discount: mapping.discount ?? 0
-            },
-            create: {
+        const data = await prisma.positionArticleMapping.create({
+            data: {
                 id: nanoid(10),
                 positionId: mapping.positionId!,
                 articleId: mapping.articleId!,
@@ -7108,11 +8485,27 @@ export class CustomerRepository implements ICustomerRepository {
         });
 
         if (dashboardData) {
+            const employeeIds = Array.from(new Set((dashboardData.activities || []).map((activity: any) => activity.employeeId).filter(Boolean)));
+            const employees = employeeIds.length > 0
+                ? await prisma.employee.findMany({
+                    where: { id: { in: employeeIds } },
+                    select: { id: true, firstName: true, lastName: true, email: true }
+                })
+                : [];
+            const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
+            const activities = (dashboardData.activities || []).map((activity: any) => {
+                const employee = employeeMap.get(activity.employeeId);
+                return {
+                    ...activity,
+                    employeeName: employee ? `${employee.firstName} ${employee.lastName}` : null,
+                    employeeEmail: employee?.email ?? null
+                };
+            });
             const documents = await prisma.document.findMany({
                 where: { entityType: 'customer', relatedEntityId: id },
                 orderBy: { fileName: 'asc' }
             });
-            return { ...dashboardData, documents };
+            return { ...dashboardData, activities, documents };
         }
 
         return dashboardData;
@@ -7222,16 +8615,29 @@ export class EmployeeRepository implements IEmployeeRepository {
 
         if (filters.isActive !== undefined) whereClause.isActive = filters.isActive;
         if (filters.departmentId) whereClause.departmentId = filters.departmentId;
-        if (filters.roleName) whereClause.roleName = filters.roleName;
+        const andConditions: any[] = [];
+
+        if (filters.roleName) {
+            andConditions.push({
+                OR: [
+                    { roleName: filters.roleName },
+                    { employeeRoles: { some: { role: { roleName: filters.roleName } } } },
+                ],
+            });
+        }
         
         if (filters.search) {
-            whereClause.OR = [
-                { firstName: { contains: filters.search } },
-                { lastName: { contains: filters.search } },
-                { email: { contains: filters.search } },
-                { phone: { contains: filters.search } }
-            ];
+            andConditions.push({
+                OR: [
+                    { firstName: { contains: filters.search } },
+                    { lastName: { contains: filters.search } },
+                    { email: { contains: filters.search } },
+                    { phone: { contains: filters.search } }
+                ],
+            });
         }
+
+        if (andConditions.length) whereClause.AND = andConditions;
 
         const data = await prisma.employee.findMany({ 
             where: whereClause,
@@ -7356,6 +8762,7 @@ export class InventoryRepository implements IInventoryRepository {
             id: a.id,
             articleCode: a.articleCode,
             name: a.name,
+            description: a.description,
             unit: a.unit,
             baseCost: a.baseCost,
             imageUrl: a.imageUrl,
@@ -7513,6 +8920,7 @@ export class InventoryRepository implements IInventoryRepository {
     }
 }
 
+
 ============================================================
 DOSYA: .\src\infrastructure\repositories\LeaveRequestRepository.ts
 ============================================================
@@ -7608,6 +9016,247 @@ export class LeaveRequestRepository implements ILeaveRequestRepository {
             },
             orderBy: { startDate: 'desc' }
         });
+    }
+}
+
+
+============================================================
+DOSYA: .\src\infrastructure\repositories\MaintenanceRepository.ts
+============================================================
+
+
+import prisma from "../database/prisma.client";
+import { IMaintenanceRepository, TenantScope } from "../../domain/repositories/IMaintenanceRepository";
+import { MaintenanceContract, MaintenanceTask, MaintenanceReport, MaintenanceMaterial, TaskStatus } from "../../domain/entities/Maintenance";
+
+const tenantWhere = (tenantId: TenantScope) => Array.isArray(tenantId) ? { in: tenantId } : tenantId;
+
+const technicianSelect = {
+    id: true,
+    firstName: true,
+    lastName: true,
+    email: true,
+    phone: true,
+};
+
+const customerSelect = {
+    id: true,
+    companyName: true,
+    address: true,
+    mainEmail: true,
+    mainPhone: true,
+};
+
+const materialInclude = {
+    article: {
+        select: {
+            id: true,
+            articleCode: true,
+            name: true,
+            unit: true,
+            baseCost: true,
+            imageUrl: true,
+        }
+    }
+};
+
+const reportInclude = {
+    technician: { select: technicianSelect },
+    usedMaterials: { include: materialInclude },
+};
+
+const taskInclude = {
+    technician: { select: technicianSelect },
+    alternativeTechnician: { select: technicianSelect },
+    report: { include: reportInclude },
+    contract: {
+        include: {
+            customer: { select: customerSelect },
+        }
+    },
+};
+
+export class MaintenanceRepository implements IMaintenanceRepository {
+    async createContract(contract: Partial<MaintenanceContract>): Promise<MaintenanceContract> {
+        const data = await prisma.maintenanceContract.create({
+            data: contract as any
+        });
+        return data as unknown as MaintenanceContract;
+    }
+
+    async getContractById(id: string): Promise<MaintenanceContract | null> {
+        const data = await prisma.maintenanceContract.findUnique({
+            where: { id },
+            include: {
+                customer: { select: customerSelect },
+                tasks: {
+                    orderBy: { plannedDate: 'asc' },
+                    include: {
+                        technician: { select: technicianSelect },
+                        alternativeTechnician: { select: technicianSelect },
+                        report: { include: reportInclude },
+                    }
+                }
+            }
+        });
+        return data ? data as unknown as MaintenanceContract : null;
+    }
+
+    async listContracts(tenantId: TenantScope, customerId?: string): Promise<MaintenanceContract[]> {
+        const where: any = { tenantId: tenantWhere(tenantId) };
+        if (customerId) where.customerId = customerId;
+        const data = await prisma.maintenanceContract.findMany({
+            where,
+            orderBy: { createdAt: 'desc' },
+            include: {
+                customer: { select: customerSelect },
+                tasks: {
+                    orderBy: { plannedDate: 'asc' },
+                    include: {
+                        technician: { select: technicianSelect },
+                        alternativeTechnician: { select: technicianSelect },
+                        report: { select: { id: true, isSigned: true, createdAt: true, signedAt: true } },
+                    }
+                },
+            },
+        });
+        return data as unknown as MaintenanceContract[];
+    }
+
+    async createTask(task: Partial<MaintenanceTask>): Promise<MaintenanceTask> {
+        const data = await prisma.maintenanceTask.create({ data: task as any });
+        return data as unknown as MaintenanceTask;
+    }
+
+    async getTaskById(id: string): Promise<MaintenanceTask | null> {
+        const data = await prisma.maintenanceTask.findUnique({
+            where: { id },
+            include: taskInclude,
+        });
+        return data ? data as unknown as MaintenanceTask : null;
+    }
+
+    async updateTask(id: string, patch: Partial<MaintenanceTask>): Promise<MaintenanceTask> {
+        const data = await prisma.maintenanceTask.update({
+            where: { id },
+            data: patch as any,
+            include: taskInclude,
+        });
+        return data as unknown as MaintenanceTask;
+    }
+
+    async updateTaskStatus(id: string, status: TaskStatus): Promise<MaintenanceTask> {
+        const data = await prisma.maintenanceTask.update({
+            where: { id },
+            data: { status },
+            include: taskInclude,
+        });
+        return data as unknown as MaintenanceTask;
+    }
+
+    async getTasksByDateRange(tenantId: TenantScope, startDate: Date, endDate: Date): Promise<MaintenanceTask[]> {
+        const data = await prisma.maintenanceTask.findMany({
+            where: {
+                contract: { tenantId: tenantWhere(tenantId) },
+                plannedDate: { gte: startDate, lte: endDate }
+            },
+            orderBy: { plannedDate: 'asc' },
+            include: taskInclude,
+        });
+        return data as unknown as MaintenanceTask[];
+    }
+
+    async createReport(report: Partial<MaintenanceReport>): Promise<MaintenanceReport> {
+        const data = await prisma.maintenanceReport.create({
+            data: report as any,
+            include: reportInclude,
+        });
+        return data as unknown as MaintenanceReport;
+    }
+
+    async getReportByTaskId(taskId: string): Promise<MaintenanceReport | null> {
+        const data = await prisma.maintenanceReport.findUnique({
+            where: { taskId },
+            include: {
+                ...reportInclude,
+                task: {
+                    include: {
+                        contract: { include: { customer: { select: customerSelect } } },
+                    },
+                },
+            },
+        });
+        return data ? data as unknown as MaintenanceReport : null;
+    }
+
+    async getReportById(reportId: string): Promise<MaintenanceReport | null> {
+        const data = await prisma.maintenanceReport.findUnique({
+            where: { id: reportId },
+            include: {
+                ...reportInclude,
+                task: {
+                    include: {
+                        technician: { select: technicianSelect },
+                        alternativeTechnician: { select: technicianSelect },
+                        contract: { include: { customer: { select: customerSelect } } },
+                    },
+                },
+            },
+        });
+        return data ? data as unknown as MaintenanceReport : null;
+    }
+
+    async listReports(tenantId: TenantScope): Promise<MaintenanceReport[]> {
+        const data = await prisma.maintenanceReport.findMany({
+            where: { task: { contract: { tenantId: tenantWhere(tenantId) } } },
+            orderBy: { createdAt: 'desc' },
+            include: {
+                ...reportInclude,
+                task: {
+                    include: {
+                        technician: { select: technicianSelect },
+                        alternativeTechnician: { select: technicianSelect },
+                        contract: { include: { customer: { select: customerSelect } } },
+                    },
+                },
+            },
+        });
+        return data as unknown as MaintenanceReport[];
+    }
+
+    async signReport(reportId: string, signatureBase64: string): Promise<MaintenanceReport> {
+        const data = await prisma.maintenanceReport.update({
+            where: { id: reportId },
+            data: {
+                isSigned: true,
+                customerSignature: signatureBase64,
+                signedAt: new Date(),
+                lockedAt: new Date(),
+                pdfUrl: `/maintenance/reports/${reportId}/pdf`,
+                emailLogJson: {
+                    status: 'queued',
+                    channel: 'email',
+                    createdAt: new Date().toISOString(),
+                },
+            },
+            include: {
+                ...reportInclude,
+                task: {
+                    include: {
+                        contract: { include: { customer: { select: customerSelect } } },
+                    },
+                },
+            },
+        });
+        return data as unknown as MaintenanceReport;
+    }
+
+    async addMaterialToReport(material: Partial<MaintenanceMaterial>): Promise<MaintenanceMaterial> {
+        const data = await prisma.maintenanceMaterial.create({
+            data: material as any,
+            include: materialInclude,
+        });
+        return data as unknown as MaintenanceMaterial;
     }
 }
 
@@ -7712,6 +9361,9 @@ export class PositionRepository implements IPositionRepository {
             tenantId: true,
             tenderId: true,
             parentPositionId: true,
+            rowType: true,
+            sourceArticleId: true,
+            displayOrder: true,
             npkCode: true,
             positionNumber: true,
             shortDescription: true,
@@ -7769,7 +9421,10 @@ export class PositionRepository implements IPositionRepository {
             data.parentPositionId,
             data.npkCode,
             data.longDescription,
-            data.unit
+            data.unit,
+            data.rowType ?? 'SECTION',
+            data.sourceArticleId,
+            data.displayOrder ?? 0
         );
     }
 
@@ -7797,13 +9452,20 @@ export class PositionRepository implements IPositionRepository {
             tenantId: p.tenantId!,
             tenderId: p.tenderId!,
             parentPositionId: p.parentPositionId || null,
+            rowType: (p as any).rowType || 'SECTION',
+            sourceArticleId: (p as any).sourceArticleId || null,
+            displayOrder: Number((p as any).displayOrder ?? 0),
             positionNumber: p.positionNumber!,
             shortDescription: p.shortDescription!,
             longDescription: p.longDescription || null,
             hierarchyLevel: p.hierarchyLevel ?? 0,
             quantity: p.quantity ?? 0,
             unit: p.unit || null,
-            npkCode: p.npkCode || null
+            npkCode: p.npkCode || null,
+            unitPrice: (p as any).unitPrice ?? null,
+            discount: (p as any).discount ?? 0,
+            taxRate: (p as any).taxRate ?? 0,
+            imageUrl: (p as any).imageUrl ?? null
         }));
 
         await prisma.position.createMany({
@@ -7823,7 +9485,10 @@ export class PositionRepository implements IPositionRepository {
         const data = await prisma.position.findMany({
             where: { tenderId },
             select: this.positionSelect(!!options?.includeImages),
-            orderBy: { positionNumber: 'asc' }
+            orderBy: [
+                { displayOrder: 'asc' },
+                { positionNumber: 'asc' }
+            ]
         });
 
         return data;
@@ -7919,6 +9584,9 @@ export class PositionRepository implements IPositionRepository {
         if (patch.taxRate !== undefined) data.taxRate = patch.taxRate;
         if (patch.imageUrl !== undefined) data.imageUrl = patch.imageUrl;
         if (patch.npkCode !== undefined) data.npkCode = patch.npkCode;
+        if ((patch as any).rowType !== undefined) data.rowType = (patch as any).rowType;
+        if ((patch as any).sourceArticleId !== undefined) data.sourceArticleId = (patch as any).sourceArticleId;
+        if ((patch as any).displayOrder !== undefined) data.displayOrder = Number((patch as any).displayOrder);
         return await prisma.position.update({ where: { id: positionId }, data });
     }
 }
@@ -8235,6 +9903,190 @@ export class ProjectRepository {
         return await prisma.projectExpense.findMany({
             where: { projectId: projectId }
         });
+    }
+}
+
+
+============================================================
+DOSYA: .\src\infrastructure\repositories\RegieRepository.ts
+============================================================
+
+
+import prisma from "../database/prisma.client";
+import { IRegieRepository, TenantScope } from "../../domain/repositories/IRegieRepository";
+import { ServiceCall, ServiceReport, ServiceMaterial } from "../../domain/entities/Regie";
+import { TaskStatus } from "../../domain/entities/Maintenance";
+
+const tenantWhere = (tenantId: TenantScope) => Array.isArray(tenantId) ? { in: tenantId } : tenantId;
+
+const technicianSelect = {
+    id: true,
+    firstName: true,
+    lastName: true,
+    email: true,
+    phone: true,
+};
+
+const customerSelect = {
+    id: true,
+    companyName: true,
+    address: true,
+    mainEmail: true,
+    mainPhone: true,
+};
+
+const materialInclude = {
+    article: {
+        select: {
+            id: true,
+            articleCode: true,
+            name: true,
+            unit: true,
+            baseCost: true,
+            imageUrl: true,
+        }
+    }
+};
+
+const reportInclude = {
+    technician: { select: technicianSelect },
+    usedMaterials: { include: materialInclude },
+    order: true,
+};
+
+const callInclude = {
+    customer: { select: customerSelect },
+    technician: { select: technicianSelect },
+    alternativeTechnician: { select: technicianSelect },
+    report: { include: reportInclude },
+};
+
+export class RegieRepository implements IRegieRepository {
+    async createCall(call: Partial<ServiceCall>): Promise<ServiceCall> {
+        const data = await prisma.serviceCall.create({
+            data: call as any,
+            include: callInclude,
+        });
+        return data as unknown as ServiceCall;
+    }
+
+    async getCallById(id: string): Promise<ServiceCall | null> {
+        const data = await prisma.serviceCall.findUnique({
+            where: { id },
+            include: callInclude,
+        });
+        return data ? data as unknown as ServiceCall : null;
+    }
+
+    async listCalls(tenantId: TenantScope, status?: TaskStatus): Promise<ServiceCall[]> {
+        const where: any = { tenantId: tenantWhere(tenantId) };
+        if (status) where.status = status;
+        const data = await prisma.serviceCall.findMany({
+            where,
+            orderBy: { callDate: 'desc' },
+            include: callInclude,
+        });
+        return data as unknown as ServiceCall[];
+    }
+
+    async updateCall(id: string, patch: Partial<ServiceCall>): Promise<ServiceCall> {
+        const data = await prisma.serviceCall.update({
+            where: { id },
+            data: patch as any,
+            include: callInclude,
+        });
+        return data as unknown as ServiceCall;
+    }
+
+    async updateCallStatus(id: string, status: TaskStatus): Promise<ServiceCall> {
+        const data = await prisma.serviceCall.update({
+            where: { id },
+            data: { status },
+            include: callInclude,
+        });
+        return data as unknown as ServiceCall;
+    }
+
+    async createReport(report: Partial<ServiceReport>): Promise<ServiceReport> {
+        const data = await prisma.serviceReport.create({
+            data: report as any,
+            include: reportInclude,
+        });
+        return data as unknown as ServiceReport;
+    }
+
+    async getReportByCallId(callId: string): Promise<ServiceReport | null> {
+        const data = await prisma.serviceReport.findUnique({ 
+            where: { callId },
+            include: {
+                ...reportInclude,
+                call: { include: callInclude },
+            }
+        });
+        return data ? data as unknown as ServiceReport : null;
+    }
+
+    async getReportById(reportId: string): Promise<ServiceReport | null> {
+        const data = await prisma.serviceReport.findUnique({
+            where: { id: reportId },
+            include: {
+                ...reportInclude,
+                call: { include: callInclude },
+            },
+        });
+        return data ? data as unknown as ServiceReport : null;
+    }
+
+    async listReports(tenantId: TenantScope): Promise<ServiceReport[]> {
+        const data = await prisma.serviceReport.findMany({
+            where: { call: { tenantId: tenantWhere(tenantId) } },
+            orderBy: { createdAt: 'desc' },
+            include: {
+                ...reportInclude,
+                call: { include: callInclude },
+            },
+        });
+        return data as unknown as ServiceReport[];
+    }
+
+    async signReport(reportId: string, signatureBase64: string): Promise<ServiceReport> {
+        const data = await prisma.serviceReport.update({
+            where: { id: reportId },
+            data: {
+                isSigned: true,
+                customerSignature: signatureBase64,
+                signedAt: new Date(),
+                lockedAt: new Date(),
+            },
+            include: {
+                ...reportInclude,
+                call: { include: callInclude },
+            },
+        });
+        return data as unknown as ServiceReport;
+    }
+
+    async linkOrderToReport(reportId: string, orderId: string): Promise<void> {
+        await prisma.serviceReport.update({
+            where: { id: reportId },
+            data: { linkedOrderId: orderId }
+        });
+    }
+
+    async addMaterialToReport(material: Partial<ServiceMaterial>): Promise<ServiceMaterial> {
+        const data = await prisma.serviceMaterial.create({
+            data: material as any,
+            include: materialInclude,
+        });
+        return data as unknown as ServiceMaterial;
+    }
+
+    async getMaterialsByReportId(reportId: string): Promise<ServiceMaterial[]> {
+        const data = await prisma.serviceMaterial.findMany({
+            where: { reportId },
+            include: materialInclude,
+        });
+        return data as unknown as ServiceMaterial[];
     }
 }
 
@@ -8646,6 +10498,7 @@ export class TenderRepository implements ITenderRepository {
                 offerMailRecipient: true,
                 offerAcceptanceToken: true,
                 customer: { select: { companyName: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                 positions: {
                     select: {
                         quantity: true,
@@ -8673,6 +10526,10 @@ export class TenderRepository implements ITenderRepository {
             }, 0);
             const item: any = this.mapToEntity(d);
             item.customerName = d.customer?.companyName ?? null;
+            item.createdByName = d.createdBy
+                ? `${d.createdBy.firstName} ${d.createdBy.lastName}`.trim()
+                : null;
+            item.createdByEmail = d.createdBy?.email ?? null;
             item.positionCount = d.positions.length;
             item.grandTotal = grandTotal;
             return item as TenderListItem;
@@ -8766,6 +10623,9 @@ export class TenderRepository implements ITenderRepository {
                         tenantId: pos.tenantId,
                         tenderId: newTenderId,
                         parentPositionId: newParentId,
+                        rowType: (pos as any).rowType || 'SECTION',
+                        sourceArticleId: (pos as any).sourceArticleId || null,
+                        displayOrder: (pos as any).displayOrder ?? 0,
                         npkCode: pos.npkCode || null,
                         positionNumber: pos.positionNumber,
                         shortDescription: pos.shortDescription,
@@ -8789,6 +10649,7 @@ export class TenderRepository implements ITenderRepository {
                             laborCost: pos.calculation.laborCost,
                             overheadCost: pos.calculation.overheadCost,
                             riskAmount: pos.calculation.riskAmount,
+                            additionalCost: (pos.calculation as any).additionalCost || 0,
                             profitMargin: pos.calculation.profitMargin,
                             totalCalculatedPrice: pos.calculation.totalCalculatedPrice
                         }
@@ -8803,6 +10664,7 @@ export class TenderRepository implements ITenderRepository {
                                 positionId: newPosId,
                                 articleId: mapping.articleId,
                                 quantityMultiplier: mapping.quantityMultiplier,
+                                discount: (mapping as any).discount ?? 0,
                             }
                         });
                     }
@@ -8816,6 +10678,40 @@ export class TenderRepository implements ITenderRepository {
     }
 }
 
+
+============================================================
+DOSYA: .\src\infrastructure\repositories\WorkOrderRepository.ts
+============================================================
+
+import prisma from "../database/prisma.client";
+import { IWorkOrderRepository } from "../../domain/repositories/IWorkOrderRepository";
+import { WorkOrder } from "../../domain/entities/WorkOrder";
+
+export class WorkOrderRepository implements IWorkOrderRepository {
+    async createOrder(order: Partial<WorkOrder>): Promise<WorkOrder> {
+        const data = await prisma.workOrder.create({ data: order as any });
+        return data as unknown as WorkOrder;
+    }
+
+    async getOrderById(id: string): Promise<WorkOrder | null> {
+        const data = await prisma.workOrder.findUnique({ where: { id } });
+        return data ? data as unknown as WorkOrder : null;
+    }
+
+    async listOrders(tenantId: string, isBilled?: boolean): Promise<WorkOrder[]> {
+        const where: any = { tenantId };
+        if (isBilled !== undefined) where.isBilled = isBilled;
+        const data = await prisma.workOrder.findMany({ where, orderBy: { createdAt: 'desc' } });
+        return data as unknown as WorkOrder[];
+    }
+
+    async markAsBilled(id: string): Promise<void> {
+        await prisma.workOrder.update({
+            where: { id },
+            data: { isBilled: true }
+        });
+    }
+}
 
 ============================================================
 DOSYA: .\src\infrastructure\services\BcryptCryptoService.ts
@@ -10340,6 +12236,306 @@ export class MailController {
 
 
 ============================================================
+DOSYA: .\src\presentation\controllers\MaintenanceController.ts
+============================================================
+
+import { Request, Response } from 'express';
+import { CreateMaintenanceContractUseCase } from '../../application/use-cases/maintenance/CreateMaintenanceContract';
+import { MaintenanceReportUseCase } from '../../application/use-cases/maintenance/MaintenanceReportUseCase';
+import { IMaintenanceRepository } from '../../domain/repositories/IMaintenanceRepository';
+import prisma from '../../infrastructure/database/prisma.client';
+import { getCustomerInServiceTenantScope, getServiceTenantScope, isTenantInServiceTenantScope } from './serviceTenantScope';
+
+const startOfDay = (date: Date) => {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+};
+
+const endOfDay = (date: Date) => {
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999);
+    return d;
+};
+
+const defaultRange = () => {
+    const start = new Date();
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(start);
+    end.setMonth(end.getMonth() + 2);
+    end.setDate(0);
+    end.setHours(23, 59, 59, 999);
+
+    return { start, end };
+};
+
+export class MaintenanceController {
+    constructor(
+        private createContractUseCase: CreateMaintenanceContractUseCase,
+        private reportUseCase: MaintenanceReportUseCase,
+        private maintenanceRepo: IMaintenanceRepository
+    ) {}
+
+    async listOptionCustomers(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const tenantIds = await getServiceTenantScope(tenantId);
+            const customers = await prisma.customer.findMany({
+                where: { tenantId: { in: tenantIds }, isActive: true },
+                orderBy: { companyName: 'asc' },
+                select: {
+                    id: true,
+                    tenantId: true,
+                    companyName: true,
+                    address: true,
+                    mainEmail: true,
+                    mainPhone: true,
+                    isActive: true,
+                },
+            });
+            res.status(200).json(customers);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async listTechnicians(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const tenantIds = await getServiceTenantScope(tenantId);
+            const technicians = await prisma.employee.findMany({
+                where: {
+                    tenantId: { in: tenantIds },
+                    isActive: true,
+                    OR: [
+                        { roleName: { contains: 'Teknisyen' } },
+                        { title: { contains: 'Teknisyen' } },
+                        { employeeRoles: { some: { role: { roleName: { contains: 'Teknisyen' } } } } },
+                    ],
+                },
+                orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+                select: {
+                    id: true,
+                    tenantId: true,
+                    firstName: true,
+                    lastName: true,
+                    email: true,
+                    phone: true,
+                    title: true,
+                    isActive: true,
+                    roleName: true,
+                    employeeRoles: {
+                        select: { role: { select: { roleName: true } } },
+                    },
+                },
+            });
+
+            res.status(200).json(technicians.map((employee) => ({
+                id: employee.id,
+                tenantId: employee.tenantId,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                phone: employee.phone,
+                title: employee.title,
+                isActive: employee.isActive,
+                roleName: employee.employeeRoles.find((employeeRole) =>
+                    employeeRole.role.roleName.includes('Teknisyen')
+                )?.role.roleName || employee.roleName || employee.title,
+            })));
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async createContract(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const customer = await getCustomerInServiceTenantScope(req.body.customerId, tenantId);
+            if (!customer) {
+                res.status(400).json({ error: "Secili musteri bu sirket kapsaminda bulunamadi." });
+                return;
+            }
+
+            const result = await this.createContractUseCase.execute({ ...req.body, tenantId: customer.tenantId });
+            res.status(201).json({ message: "Bakim sozlesmesi olusturuldu.", contract: result });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async listContracts(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const tenantIds = await getServiceTenantScope(tenantId);
+            const customerId = req.query.customerId as string;
+            const contracts = await this.maintenanceRepo.listContracts(tenantIds, customerId);
+            res.status(200).json(contracts);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async listTasks(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const fallback = defaultRange();
+            const start = req.query.start ? new Date(req.query.start as string) : fallback.start;
+            const end = req.query.end ? new Date(req.query.end as string) : fallback.end;
+            const tenantIds = await getServiceTenantScope(tenantId);
+
+            if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+                res.status(400).json({ error: "Tarih araligi gecersiz." });
+                return;
+            }
+
+            const tasks = await this.maintenanceRepo.getTasksByDateRange(tenantIds, start, end);
+            res.status(200).json(tasks);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async updateTask(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const taskId = String(req.params.taskId || "");
+            if (!taskId) {
+                res.status(400).json({ error: "Gorev ID zorunludur." });
+                return;
+            }
+            const current = await this.maintenanceRepo.getTaskById(taskId);
+            if (!current) {
+                res.status(404).json({ error: "Gorev bulunamadi." });
+                return;
+            }
+            if (!(await isTenantInServiceTenantScope((current as any).contract?.tenantId, tenantId))) {
+                res.status(403).json({ error: "Bu gorev icin yetkiniz yok." });
+                return;
+            }
+
+            const nextPlannedDate = req.body.plannedDate ? new Date(req.body.plannedDate) : new Date((current as any).plannedDate);
+            if (Number.isNaN(nextPlannedDate.getTime())) {
+                res.status(400).json({ error: "Planlanan tarih gecersiz." });
+                return;
+            }
+
+            const assignedTechId = req.body.assignedTechId === undefined
+                ? (current as any).assignedTechId
+                : (req.body.assignedTechId || null);
+            const alternativeTechId = req.body.alternativeTechId === undefined
+                ? (current as any).alternativeTechId || null
+                : (req.body.alternativeTechId || null);
+            const normalizedAlternativeTechId = alternativeTechId && alternativeTechId !== assignedTechId
+                ? alternativeTechId
+                : null;
+
+            if (assignedTechId) {
+                const tenantIds = await getServiceTenantScope(tenantId);
+                const sameDayTasks = await this.maintenanceRepo.getTasksByDateRange(tenantIds, startOfDay(nextPlannedDate), endOfDay(nextPlannedDate));
+                const conflict = sameDayTasks.find((task: any) =>
+                    task.id !== taskId &&
+                    task.assignedTechId === assignedTechId &&
+                    task.status !== "CANCELLED"
+                );
+
+                if (conflict) {
+                    res.status(409).json({ error: "Teknisyen icin ayni gunde aktif bir bakim gorevi bulunuyor.", conflict });
+                    return;
+                }
+            }
+
+            const assignmentHistory = Array.isArray((current as any).assignmentHistoryJson)
+                ? [...(current as any).assignmentHistoryJson]
+                : [];
+
+            if (
+                req.body.assignedTechId !== undefined ||
+                req.body.alternativeTechId !== undefined ||
+                req.body.plannedDate !== undefined
+            ) {
+                assignmentHistory.push({
+                    assignedTechId,
+                    alternativeTechId: normalizedAlternativeTechId,
+                    plannedDate: nextPlannedDate.toISOString(),
+                    at: new Date().toISOString(),
+                    action: "TASK_UPDATED",
+                    byEmployeeId: (req as any).user!.id,
+                });
+            }
+
+            const patch: any = {
+                plannedDate: nextPlannedDate,
+                assignedTechId,
+                assignmentHistoryJson: assignmentHistory,
+            };
+
+            if (req.body.alternativeTechId !== undefined) patch.alternativeTechId = normalizedAlternativeTechId;
+            if (req.body.siteName !== undefined) patch.siteName = req.body.siteName || null;
+            if (req.body.status !== undefined) patch.status = req.body.status;
+
+            const updated = await this.maintenanceRepo.updateTask(taskId, patch);
+            res.status(200).json(updated);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async listReports(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const tenantIds = await getServiceTenantScope(tenantId);
+            const reports = await this.maintenanceRepo.listReports(tenantIds);
+            res.status(200).json(reports);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async submitReport(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const techId = (req as any).user!.id;
+            const task = await this.maintenanceRepo.getTaskById(req.body.taskId);
+            if (!task || !(await isTenantInServiceTenantScope((task as any).contract?.tenantId, tenantId))) {
+                res.status(403).json({ error: "Bu gorev icin yetkiniz yok." });
+                return;
+            }
+
+            const report = await this.reportUseCase.submitReport({ ...req.body, tenantId: (task as any).contract.tenantId, techId });
+            res.status(201).json({ message: "Bakim raporu kaydedildi. Imza bekleniyor.", report });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async signReport(req: Request, res: Response) {
+        try {
+            const reportId = String(req.params.reportId || "");
+            const { signatureBase64 } = req.body as { signatureBase64?: string };
+
+            if (typeof reportId !== "string" || !reportId) {
+                res.status(400).json({ error: "Rapor ID zorunludur." });
+                return;
+            }
+
+            if (typeof signatureBase64 !== "string" || !signatureBase64) {
+                res.status(400).json({ error: "Imza zorunludur." });
+                return;
+            }
+
+            const signedReport = await this.reportUseCase.signReport(reportId, signatureBase64);
+            res.status(200).json({ message: "Rapor imzalandi ve kilitlendi.", report: signedReport });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+}
+
+
+============================================================
 DOSYA: .\src\presentation\controllers\ProjectController.ts
 ============================================================
 
@@ -10780,6 +12976,277 @@ export class ProjectController {
 
 
 ============================================================
+DOSYA: .\src\presentation\controllers\RegieController.ts
+============================================================
+
+import { Request, Response } from 'express';
+import { CreateServiceCallUseCase } from '../../application/use-cases/regie/CreateServiceCallUseCase';
+import { CreateServiceReportUseCase } from '../../application/use-cases/regie/CreateServiceReportUseCase';
+import { SignAndBillRegieUseCase } from '../../application/use-cases/regie/SignAndBillRegieUseCase';
+import { IRegieRepository } from '../../domain/repositories/IRegieRepository';
+import { getCustomerInServiceTenantScope, getServiceTenantScope, isTenantInServiceTenantScope } from './serviceTenantScope';
+
+export class RegieController {
+    constructor(
+        private createCallUseCase: CreateServiceCallUseCase,
+        private createReportUseCase: CreateServiceReportUseCase,
+        private signAndBillUseCase: SignAndBillRegieUseCase,
+        private regieRepo: IRegieRepository
+    ) {}
+
+    async createCall(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const customer = await getCustomerInServiceTenantScope(req.body.customerId, tenantId);
+            if (!customer) {
+                res.status(400).json({ error: "Secili musteri bu sirket kapsaminda bulunamadi." });
+                return;
+            }
+
+            const call = await this.createCallUseCase.execute({
+                tenantId: customer.tenantId,
+                customerId: req.body.customerId,
+                reportedIssue: req.body.reportedIssue,
+                assignedTechId: req.body.assignedTechId,
+                alternativeTechId: req.body.alternativeTechId,
+                siteName: req.body.siteName,
+                priority: req.body.priority,
+            });
+            res.status(201).json({ message: "Ariza/Regie kaydi olusturuldu.", call });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async listCalls(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const tenantIds = await getServiceTenantScope(tenantId);
+            const calls = await this.regieRepo.listCalls(tenantIds, req.query.status as any);
+            res.status(200).json(calls);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async updateCall(req: Request, res: Response) {
+        try {
+            const callId = String(req.params.callId || "");
+            if (!callId) {
+                res.status(400).json({ error: "Cagri ID zorunludur." });
+                return;
+            }
+            const tenantId = (req as any).user!.tenantId;
+            const current = await this.regieRepo.getCallById(callId);
+            if (!current) {
+                res.status(404).json({ error: "Cagri bulunamadi." });
+                return;
+            }
+            if (!(await isTenantInServiceTenantScope((current as any).tenantId, tenantId))) {
+                res.status(403).json({ error: "Bu cagri icin yetkiniz yok." });
+                return;
+            }
+
+            const assignmentHistory = Array.isArray((current as any).assignmentHistoryJson)
+                ? [...(current as any).assignmentHistoryJson]
+                : [];
+
+            if (req.body.assignedTechId !== undefined || req.body.alternativeTechId !== undefined) {
+                const assignedTechId = req.body.assignedTechId === undefined ? (current as any).assignedTechId : req.body.assignedTechId || null;
+                const alternativeTechId = req.body.alternativeTechId === undefined ? (current as any).alternativeTechId : req.body.alternativeTechId || null;
+                const normalizedAlternativeTechId = alternativeTechId && alternativeTechId !== assignedTechId ? alternativeTechId : null;
+
+                assignmentHistory.push({
+                    assignedTechId,
+                    alternativeTechId: normalizedAlternativeTechId,
+                    at: new Date().toISOString(),
+                    action: "CALL_UPDATED",
+                    byEmployeeId: (req as any).user!.id,
+                });
+            }
+
+            const assignedTechId = req.body.assignedTechId === undefined ? (current as any).assignedTechId : req.body.assignedTechId || null;
+            const alternativeTechId = req.body.alternativeTechId === undefined ? (current as any).alternativeTechId : req.body.alternativeTechId || null;
+            const normalizedAlternativeTechId = alternativeTechId && alternativeTechId !== assignedTechId ? alternativeTechId : null;
+
+            const updated = await this.regieRepo.updateCall(callId, {
+                assignedTechId,
+                alternativeTechId: normalizedAlternativeTechId,
+                siteName: req.body.siteName === undefined ? (current as any).siteName : req.body.siteName || null,
+                priority: req.body.priority === undefined ? (current as any).priority : req.body.priority || null,
+                status: req.body.status === undefined ? (current as any).status : req.body.status,
+                assignmentHistoryJson: assignmentHistory,
+            } as any);
+
+            res.status(200).json(updated);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async listReports(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const tenantIds = await getServiceTenantScope(tenantId);
+            const reports = await this.regieRepo.listReports(tenantIds);
+            res.status(200).json(reports);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async submitReport(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const call = await this.regieRepo.getCallById(req.body.callId);
+            if (!call || !(await isTenantInServiceTenantScope((call as any).tenantId, tenantId))) {
+                res.status(403).json({ error: "Bu cagri icin yetkiniz yok." });
+                return;
+            }
+
+            const report = await this.createReportUseCase.execute({
+                tenantId: (call as any).tenantId,
+                employeeId,
+                callId: req.body.callId,
+                workDone: req.body.workDone,
+                workingMinutes: req.body.workingMinutes,
+                gasAmount: req.body.gasAmount,
+                isWarranty: req.body.isWarranty,
+                materials: req.body.materials,
+                observations: req.body.observations,
+                recommendations: req.body.recommendations,
+                beforePhotoUrls: req.body.beforePhotoUrls,
+                afterPhotoUrls: req.body.afterPhotoUrls,
+                fileUrls: req.body.fileUrls,
+            });
+
+            res.status(201).json({ message: "Ariza raporu kaydedildi. Imza bekleniyor.", report });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async signReport(req: Request, res: Response) {
+        try {
+            const reportId = String(req.params.reportId || "");
+            const { signatureBase64 } = req.body as { signatureBase64?: string };
+
+            if (typeof reportId !== "string" || !reportId) {
+                res.status(400).json({ error: "Rapor ID zorunludur." });
+                return;
+            }
+
+            if (typeof signatureBase64 !== "string" || !signatureBase64) {
+                res.status(400).json({ error: "Imza zorunludur." });
+                return;
+            }
+
+            const report = await this.regieRepo.getReportById(reportId);
+            const reportTenantId = (report as any)?.call?.tenantId;
+            if (!report || !(await isTenantInServiceTenantScope(reportTenantId, (req as any).user!.tenantId))) {
+                res.status(403).json({ error: "Bu rapor icin yetkiniz yok." });
+                return;
+            }
+
+            const result = await this.signAndBillUseCase.signReport(reportId, signatureBase64);
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async generateBill(req: Request, res: Response) {
+        try {
+            const reportId = String(req.params.reportId || "");
+            const tenantId = (req as any).user!.tenantId;
+
+            if (typeof reportId !== "string" || !reportId) {
+                res.status(400).json({ error: "Rapor ID zorunludur." });
+                return;
+            }
+
+            const report = await this.regieRepo.getReportById(reportId);
+            const reportTenantId = (report as any)?.call?.tenantId;
+            if (!report || !(await isTenantInServiceTenantScope(reportTenantId, tenantId))) {
+                res.status(403).json({ error: "Bu rapor icin yetkiniz yok." });
+                return;
+            }
+
+            const workOrder = await this.signAndBillUseCase.createWorkOrderForReport(reportId, reportTenantId);
+            res.status(201).json({ message: "Is emri (Auftrag) basariyla olusturuldu.", workOrder });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+}
+
+
+============================================================
+DOSYA: .\src\presentation\controllers\serviceTenantScope.ts
+============================================================
+
+import prisma from '../../infrastructure/database/prisma.client';
+
+type TenantLite = {
+    id: string;
+    parentTenantId: string | null;
+    isActive: boolean;
+};
+
+const getDescendantTenantIds = (tenants: TenantLite[], rootId: string) => {
+    const result = new Set<string>([rootId]);
+    let changed = true;
+
+    while (changed) {
+        changed = false;
+        for (const tenant of tenants) {
+            if (tenant.parentTenantId && result.has(tenant.parentTenantId) && !result.has(tenant.id)) {
+                result.add(tenant.id);
+                changed = true;
+            }
+        }
+    }
+
+    return Array.from(result);
+};
+
+export async function getServiceTenantScope(selectedTenantId: string): Promise<string[]> {
+    const tenants = await prisma.tenant.findMany({
+        select: { id: true, parentTenantId: true, isActive: true },
+    });
+    const selectedTenant = tenants.find((tenant) => tenant.id === selectedTenantId);
+
+    if (!selectedTenant?.isActive) return [];
+    if (selectedTenant.parentTenantId) return [selectedTenant.id];
+
+    return getDescendantTenantIds(
+        tenants.filter((tenant) => tenant.isActive),
+        selectedTenant.id
+    );
+}
+
+export async function getCustomerInServiceTenantScope(customerId: string, selectedTenantId: string) {
+    const tenantIds = await getServiceTenantScope(selectedTenantId);
+    return prisma.customer.findFirst({
+        where: {
+            id: customerId,
+            tenantId: { in: tenantIds },
+        },
+        select: {
+            id: true,
+            tenantId: true,
+        },
+    });
+}
+
+export const isTenantInServiceTenantScope = async (tenantId: string, selectedTenantId: string) => {
+    const tenantIds = await getServiceTenantScope(selectedTenantId);
+    return tenantIds.includes(tenantId);
+};
+
+
+============================================================
 DOSYA: .\src\presentation\controllers\TenantController.ts
 ============================================================
 
@@ -10913,10 +13380,10 @@ export class TenderArticleController {
             const mappedArticle = result.mapping?.article;
             const targetPosition = await prisma.position.findUnique({
                 where: { id: positionId as string },
-                select: { positionNumber: true, shortDescription: true },
+                select: { shortDescription: true },
             });
             const positionLabel = targetPosition
-                ? `${targetPosition.positionNumber} - ${targetPosition.shortDescription}`
+                ? targetPosition.shortDescription
                 : positionId;
             const unit = mappedArticle?.unit || 'adet';
 
@@ -10931,7 +13398,7 @@ export class TenderArticleController {
                 fieldName: "quantityMultiplier",
                 oldValue: null,
                 newValue: String(quantityMultiplier),
-                description: `${mappedArticle?.name ?? 'ÃœrÃ¼n'} Ã¼rÃ¼nÃ¼ ${positionLabel} pozisyonuna ${quantityMultiplier} ${unit} olarak eklendi.${autoConsumeStock ? ' SeÃ§ilen lokasyondan stoktan dÃ¼ÅŸÃ¼ldÃ¼.' : ''}${discount ? ` Ä°ndirim: %${discount}.` : ''}`,
+                description: `${mappedArticle?.name ?? 'Ürün'} ürünü ${positionLabel} satırına ${quantityMultiplier} ${unit} olarak eklendi.${autoConsumeStock ? ' Seçilen lokasyondan stoktan düşüldü.' : ''}${discount ? ` İndirim: %${discount}.` : ''}`,
             }).catch((error) => {
                 console.error('[mapArticle] log write failed:', error);
             });
@@ -11090,7 +13557,6 @@ export class TenderArticleController {
                     position: {
                         select: {
                             tenderId: true,
-                            positionNumber: true,
                             shortDescription: true,
                             calculation: true,
                             tender: { select: { status: true } },
@@ -11114,7 +13580,7 @@ export class TenderArticleController {
             });
 
             if (before) {
-                const positionLabel = `${before.position.positionNumber} - ${before.position.shortDescription}`;
+                const positionLabel = before.position.shortDescription;
                 void this.tenderLogRepo.create({
                     tenantId,
                     tenderId,
@@ -11126,7 +13592,7 @@ export class TenderArticleController {
                     fieldName: null,
                     oldValue: before.article?.name ?? before.articleId,
                     newValue: null,
-                    description: `${before.article?.name ?? 'Ürün'} ürünü ${positionLabel} pozisyonundan kaldırıldı. ${before.quantityMultiplier} ${before.article?.unit ?? 'adet'} için iade/silme işlemi tamamlandı.`
+                    description: `${before.article?.name ?? 'Ürün'} ürünü ${positionLabel} satırından kaldırıldı. ${before.quantityMultiplier} ${before.article?.unit ?? 'adet'} için iade/silme işlemi tamamlandı.`
                 }).catch((error) => {
                     console.error('[removeArticleMapping] log write failed:', error);
                 });
@@ -11347,6 +13813,81 @@ export class TenderController {
         private tenderLogRepo: TenderActivityLogRepository
     ) {}
 
+    private normalizeTenderRef(value?: string) {
+        const raw = String(value || '').trim();
+        try {
+            return decodeURIComponent(raw).trim();
+        } catch {
+            return raw;
+        }
+    }
+
+    private async tenantRootId(tenantId: string): Promise<string | null> {
+        let current = await (prisma as any).tenant.findUnique({
+            where: { id: tenantId },
+            select: { id: true, parentTenantId: true, isActive: true }
+        });
+        if (!current?.isActive) return null;
+
+        for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
+            const parent = await (prisma as any).tenant.findUnique({
+                where: { id: current.parentTenantId },
+                select: { id: true, parentTenantId: true, isActive: true }
+            });
+            if (!parent?.isActive) return null;
+            current = parent;
+        }
+
+        return current.id;
+    }
+
+    private async canAccessTenant(targetTenantId: string, requestTenantId: string) {
+        if (targetTenantId === requestTenantId) return true;
+        const [targetRootId, requestRootId] = await Promise.all([
+            this.tenantRootId(targetTenantId),
+            this.tenantRootId(requestTenantId)
+        ]);
+        return Boolean(targetRootId && requestRootId && targetRootId === requestRootId);
+    }
+
+    private async findTenderForTenant(rawRef: string, tenantId: string) {
+        const tenderRef = this.normalizeTenderRef(rawRef);
+        if (!tenderRef) return null;
+
+        const byId = await this.tenderRepository.findById(tenderRef);
+        if (byId && await this.canAccessTenant(byId.tenantId, tenantId)) return byId;
+
+        const byNumber = await (prisma as any).tender.findMany({
+            where: { tenderNumber: tenderRef },
+            take: 50,
+            select: { id: true, tenantId: true }
+        });
+        for (const candidate of byNumber) {
+            if (await this.canAccessTenant(candidate.tenantId, tenantId)) {
+                return this.tenderRepository.findById(candidate.id);
+            }
+        }
+        return null;
+    }
+
+    private async findCustomerForTenant(customerId: string, tenantId: string) {
+        const customer = await (prisma as any).customer.findUnique({
+            where: { id: customerId },
+            select: {
+                id: true,
+                tenantId: true,
+                companyName: true,
+                address: true,
+                mainEmail: true,
+                mainPhone: true,
+                taxNumber: true
+            }
+        });
+        if (!customer) return null;
+        if (!await this.canAccessTenant(customer.tenantId, tenantId)) return null;
+        return customer;
+    }
+
     async list(req: Request, res: Response) {
         try {
             const tenantId = (req as any).user!.tenantId;
@@ -11370,17 +13911,21 @@ export class TenderController {
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
 
-            if (!customerId || !tenderNumber || !format) {
-                return res.status(400).json({ error: "Müşteri ID, teklif numarası ve format zorunludur." });
+            if (!tenderNumber || !format) {
+                return res.status(400).json({ error: "Teklif numarası ve format zorunludur." });
             }
             if (format !== 'SIA451' && format !== 'CRBX') {
                 return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
+            }
+            if (customerId) {
+                const customer = await this.findCustomerForTenant(customerId, tenantId);
+                if (!customer) return res.status(404).json({ error: "Müşteri bulunamadı." });
             }
 
             const tender = await this.tenderRepository.create({
                 id: nanoid(10),
                 tenantId,
-                customerId,
+                customerId: customerId || null,
                 tenderNumber,
                 version: 1,
                 format,
@@ -11389,13 +13934,26 @@ export class TenderController {
                 validUntil: validUntil ? new Date(validUntil) : null
             });
 
-            await this.customerActivityRepo.create({
-                customerId,
+            if (customerId) {
+                await this.customerActivityRepo.create({
+                    customerId,
+                    employeeId,
+                    activityType: "TENDER_CREATED",
+                    description: `${tenderNumber} numaralı yeni teklif oluşturuldu (manuel). Versiyon: 1`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
+
+            await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId: tender.id,
                 employeeId,
-                activityType: "TENDER_CREATED",
-                description: `${tenderNumber} numaralı yeni teklif oluşturuldu (manuel). Versiyon: 1`,
-                referenceId: tender.id,
-                activityDate: new Date()
+                actionType: "TENDER_CREATED",
+                fieldName: null,
+                oldValue: null,
+                newValue: tenderNumber,
+                description: `${tenderNumber} numaralı teklif oluşturuldu.`
             });
 
             res.status(201).json(tender);
@@ -11410,33 +13968,117 @@ export class TenderController {
             const tenantId = (req as any).user!.tenantId;
             const {
                 positionNumber, shortDescription, longDescription,
-                quantity, unit, npkCode, hierarchyLevel, parentPositionId
+                quantity, unit, npkCode, parentPositionId,
+                rowType, sourceArticleId, displayOrder, unitPrice, discount, taxRate, imageUrl
             } = req.body;
-
-            if (!positionNumber || !shortDescription) {
-                return res.status(400).json({ error: "Pozisyon numarası ve kısa açıklama zorunludur." });
-            }
 
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
+            if (tender.tenantId !== tenantId) return res.status(404).json({ error: "Teklif bulunamadı." });
             if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak (Draft) teklifler üzerinde pozisyon eklenebilir." });
+                return res.status(403).json({ error: "Sadece taslak teklifler üzerinde satır eklenebilir." });
             }
+
+            const normalizedRowType = String(rowType || 'SECTION').toUpperCase();
+            const allowedRowTypes = new Set(['SECTION', 'TITLE', 'DESCRIPTION', 'PRODUCT', 'CUSTOM']);
+            const safeRowType = allowedRowTypes.has(normalizedRowType) ? normalizedRowType : 'SECTION';
+            const requestedParentPositionId = parentPositionId || null;
+            const parent = requestedParentPositionId
+                ? await (prisma as any).position.findFirst({
+                    where: { id: requestedParentPositionId, tenderId, tenantId },
+                    select: { id: true, positionNumber: true, hierarchyLevel: true }
+                })
+                : null;
+            if (requestedParentPositionId && !parent) {
+                return res.status(404).json({ error: "Üst satır bulunamadı." });
+            }
+            const effectiveParentPositionId = parent?.id || null;
+            const effectiveHierarchyLevel = parent ? Number(parent.hierarchyLevel || 0) + 1 : 0;
+
+            const siblingMax = await (prisma as any).position.aggregate({
+                where: { tenderId, parentPositionId: effectiveParentPositionId },
+                _max: { displayOrder: true }
+            });
+            const nextDisplayOrder = displayOrder !== undefined
+                ? Number(displayOrder) || 0
+                : Number(siblingMax._max.displayOrder ?? 0) + 1000;
+            const siblingCount = await (prisma as any).position.count({
+                where: { tenderId, parentPositionId: effectiveParentPositionId }
+            });
+            const internalPositionNumber = positionNumber
+                || (parent ? `${parent.positionNumber}.${siblingCount + 1}` : String((siblingCount + 1) * 100));
+
+            const sourceArticle = safeRowType === 'PRODUCT' && sourceArticleId
+                ? await (prisma as any).article.findFirst({
+                    where: { id: sourceArticleId, tenantId },
+                    select: {
+                        id: true,
+                        articleCode: true,
+                        name: true,
+                        description: true,
+                        baseCost: true,
+                        unit: true,
+                        imageUrl: true,
+                    }
+                })
+                : null;
+            if (safeRowType === 'PRODUCT' && sourceArticleId && !sourceArticle) {
+                return res.status(404).json({ error: "Stok ürünü bulunamadı." });
+            }
+
+            const defaults: Record<string, string> = {
+                SECTION: "Yeni bölüm",
+                TITLE: "Başlık",
+                DESCRIPTION: "Yeni satır",
+                PRODUCT: sourceArticle?.name || "Ürün",
+                CUSTOM: "Yeni satır",
+            };
+            const isProduct = safeRowType === 'PRODUCT';
+            const isPricedRow = safeRowType === 'PRODUCT' || safeRowType === 'CUSTOM';
+            const canHaveImage = isPricedRow || safeRowType === 'DESCRIPTION';
+            const hasExplicitShortDescription = shortDescription !== undefined && shortDescription !== null;
+            const cleanedShortDescription = hasExplicitShortDescription ? String(shortDescription).trim() : "";
+            const resolvedShortDescription = isProduct
+                ? (sourceArticle?.name || cleanedShortDescription || defaults.PRODUCT)
+                : (hasExplicitShortDescription ? cleanedShortDescription : defaults[safeRowType]);
+            const resolvedLongDescription = isProduct
+                ? (sourceArticle?.description || longDescription || null)
+                : (longDescription !== undefined ? (longDescription || null) : null);
+            const resolvedUnit = isPricedRow
+                ? (isProduct ? (sourceArticle?.unit || unit || null) : (unit || null))
+                : null;
+            const resolvedUnitPrice = !isPricedRow
+                ? null
+                : (isProduct && sourceArticle
+                    ? Number(sourceArticle.baseCost || 0)
+                    : (unitPrice !== undefined ? (unitPrice === null ? null : Number(unitPrice)) : null));
+            const resolvedImageUrl = canHaveImage
+                ? (isProduct
+                    ? (sourceArticle?.imageUrl || imageUrl || null)
+                    : (imageUrl !== undefined ? (imageUrl || null) : null))
+                : null;
 
             const newPosId = nanoid(10);
             await this.positionRepository.createMany([{
                 id: newPosId,
                 tenantId,
                 tenderId,
-                parentPositionId: parentPositionId || null,
-                positionNumber,
-                shortDescription,
-                longDescription: longDescription || null,
-                quantity: Number(quantity ?? 0),
-                unit: unit || null,
+                parentPositionId: effectiveParentPositionId,
+                rowType: safeRowType,
+                sourceArticleId: isProduct ? (sourceArticle?.id || sourceArticleId || null) : null,
+                displayOrder: nextDisplayOrder,
+                positionNumber: internalPositionNumber,
+                shortDescription: resolvedShortDescription,
+                longDescription: resolvedLongDescription,
+                quantity: isPricedRow ? Number(quantity ?? (isProduct ? 1 : 0)) : 0,
+                unit: resolvedUnit,
                 npkCode: npkCode || null,
-                hierarchyLevel: Number(hierarchyLevel ?? 0)
-            }]);
+                hierarchyLevel: effectiveHierarchyLevel,
+                unitPrice: resolvedUnitPrice,
+                discount: isPricedRow && discount !== undefined ? Number(discount || 0) : 0,
+                taxRate: isPricedRow && taxRate !== undefined ? Number(taxRate || 0) : 0,
+                imageUrl: resolvedImageUrl,
+            } as any]);
 
             await this.tenderLogRepo.create({
                 tenantId,
@@ -11446,11 +14088,94 @@ export class TenderController {
                 actionType: "POSITION_CREATED",
                 fieldName: null,
                 oldValue: null,
-                newValue: shortDescription,
-                description: `${positionNumber} pozisyonu eklendi: ${shortDescription}`
+                newValue: resolvedShortDescription || defaults[safeRowType],
+                description: `${isProduct ? 'Ürün' : 'Satır'} eklendi: ${resolvedShortDescription || defaults[safeRowType]}`
             });
 
-            res.status(201).json({ message: "Pozisyon eklendi.", positionId: newPosId });
+            const created = await this.positionRepository.findById(newPosId, { includeImages: true });
+            res.status(201).json({ message: "Satır eklendi.", positionId: newPosId, position: created });
+        } catch (error: any) {
+            console.error('[addPosition] error:', error);
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async updateMeta(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const { customerId, format, validUntil } = req.body;
+
+            const tender = await this.tenderRepository.findById(tenderId);
+            if (!tender || !await this.canAccessTenant(tender.tenantId, tenantId)) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+            if (tender.status !== "Draft") {
+                return res.status(403).json({ error: "Sadece taslak teklif bilgileri düzenlenebilir." });
+            }
+
+            const data: any = {};
+            if (format !== undefined) {
+                if (format !== "SIA451" && format !== "CRBX") {
+                    return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
+                }
+                data.format = format;
+            }
+            if (validUntil !== undefined) {
+                data.validUntil = validUntil ? new Date(validUntil) : null;
+            }
+            if (customerId !== undefined) {
+                if (customerId) {
+                    const customer = await this.findCustomerForTenant(customerId, tenantId);
+                    if (!customer) return res.status(404).json({ error: "Müşteri bulunamadı." });
+                    data.customerId = customer.id;
+                } else {
+                    data.customerId = null;
+                }
+            }
+            if (Object.keys(data).length === 0) {
+                return res.status(400).json({ error: "Güncellenecek alan bulunamadı." });
+            }
+
+            await (prisma as any).tender.update({
+                where: { id: tender.id },
+                data
+            });
+
+            if (data.customerId) {
+                await (prisma as any).offerScheduleSlot.updateMany({
+                    where: { tenderId: tender.id },
+                    data: { customerId: data.customerId }
+                });
+            }
+
+            if (data.customerId && data.customerId !== tender.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: data.customerId,
+                    employeeId,
+                    activityType: "TENDER_CUSTOMER_CHANGED",
+                    description: `${tender.tenderNumber} numaralı taslak teklif bu müşteriye bağlandı.`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
+
+            if (customerId !== undefined && data.customerId !== tender.customerId) {
+                await this.tenderLogRepo.create({
+                    tenantId: tender.tenantId,
+                    tenderId: tender.id,
+                    employeeId,
+                    actionType: "TENDER_META_UPDATED",
+                    fieldName: "customerId",
+                    oldValue: tender.customerId || null,
+                    newValue: data.customerId || null,
+                    description: "Teklif müşterisi güncellendi."
+                });
+            }
+
+            const updated = await this.tenderRepository.findById(tender.id);
+            res.status(200).json(updated);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -11465,36 +14190,61 @@ export class TenderController {
             const {
                 shortDescription, longDescription, quantity, unit,
                 unitPrice, discount, taxRate, imageUrl, npkCode,
+                rowType, sourceArticleId, displayOrder,
             } = req.body;
 
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak tekliflerdeki pozisyonlar güncellenebilir." });
+                return res.status(403).json({ error: "Sadece taslak tekliflerdeki satırlar güncellenebilir." });
             }
 
             const before = await this.positionRepository.findById(positionId);
-            if (!before) return res.status(404).json({ error: "Pozisyon bulunamadı." });
+            if (!before) return res.status(404).json({ error: "Satır bulunamadı." });
+            if (before.tenderId !== tenderId || before.tenantId !== tenantId) {
+                return res.status(404).json({ error: "Satır bu teklife ait değil." });
+            }
+
+            const targetRowType = rowType !== undefined
+                ? String(rowType || '').toUpperCase()
+                : String((before as any).rowType || 'SECTION').toUpperCase();
+            const targetCanPrice = targetRowType === 'PRODUCT' || targetRowType === 'CUSTOM';
+            const targetCanHaveImage = targetCanPrice || targetRowType === 'DESCRIPTION';
 
             const patch: any = {};
             if (shortDescription !== undefined) patch.shortDescription = shortDescription;
             if (longDescription !== undefined) patch.longDescription = longDescription;
-            if (quantity !== undefined) patch.quantity = Number(quantity);
-            if (unit !== undefined) patch.unit = unit;
-            if (unitPrice !== undefined) patch.unitPrice = unitPrice === null ? null : Number(unitPrice);
-            if (discount !== undefined) patch.discount = discount === null ? null : Number(discount);
-            if (taxRate !== undefined) patch.taxRate = taxRate === null ? null : Number(taxRate);
-            if (imageUrl !== undefined) patch.imageUrl = imageUrl;
+            if (targetCanPrice) {
+                if (quantity !== undefined) patch.quantity = Number(quantity);
+                if (unit !== undefined) patch.unit = unit;
+                if (unitPrice !== undefined) patch.unitPrice = unitPrice === null ? null : Number(unitPrice);
+                if (discount !== undefined) patch.discount = discount === null ? null : Number(discount);
+                if (taxRate !== undefined) patch.taxRate = taxRate === null ? null : Number(taxRate);
+            } else {
+                patch.quantity = 0;
+                patch.unit = null;
+                patch.unitPrice = null;
+                patch.discount = 0;
+                patch.taxRate = 0;
+            }
+            if (imageUrl !== undefined) patch.imageUrl = targetCanHaveImage ? (imageUrl || null) : null;
+            if (rowType !== undefined && !targetCanHaveImage) patch.imageUrl = null;
             if (npkCode !== undefined) patch.npkCode = npkCode;
+            if (rowType !== undefined) patch.rowType = targetRowType;
+            if (sourceArticleId !== undefined || !targetCanPrice) {
+                patch.sourceArticleId = targetRowType === 'PRODUCT' ? (sourceArticleId || null) : null;
+            }
+            if (displayOrder !== undefined) patch.displayOrder = Number(displayOrder);
 
             const updated = await this.positionRepository.updatePosition(positionId, patch);
 
             // When manual pricing is set, sync totalCalculatedPrice
             // without overwriting existing cost breakdown (material/labor/overhead/risk/profit).
-            const pricingChanged =
+            const pricingChanged = targetCanPrice && (
                 quantity !== undefined ||
                 unitPrice !== undefined ||
-                discount !== undefined;
+                discount !== undefined
+            );
 
             if (pricingChanged) {
                 const qty = Number(updated.quantity ?? 0);
@@ -11533,14 +14283,17 @@ export class TenderController {
 
             const labels: Record<string, string> = {
                 shortDescription: "Açıklama",
-                longDescription: "Uzun açıklama",
+                longDescription: "Satır içeriği",
                 quantity: "Miktar",
                 unit: "Birim",
                 unitPrice: "Birim fiyat",
                 discount: "İndirim",
                 taxRate: "KDV",
                 imageUrl: "Görsel",
-                npkCode: "NPK kodu",
+                npkCode: "Eski kod",
+                rowType: "Satır tipi",
+                sourceArticleId: "Kaynak ürün",
+                displayOrder: "Sıra",
             };
             const priceFields = ['quantity', 'unitPrice', 'discount', 'taxRate'];
             const changedLogs = Object.keys(patch)
@@ -11604,7 +14357,7 @@ export class TenderController {
             const costs = req.body; 
 
             if (!tenderId || !positionId) {
-                return res.status(400).json({ error: "İhale ID ve Pozisyon ID zorunludur." });
+                return res.status(400).json({ error: "İhale ID ve satır ID zorunludur." });
             }
 
             const result = await this.calculatePositionCostUseCase.execute(positionId, tenderId, costs);
@@ -11641,13 +14394,26 @@ export class TenderController {
             const approvedTender = await this.tenderRepository.updateStatus(tenderId, 'Approved');
             
             // CRM Zaman Çizelgesine Otomatik Düş!
-            await this.customerActivityRepo.create({
-                customerId: tender.customerId,
-                employeeId: employeeId,
-                activityType: "TENDER_APPROVED",
-                description: `${tender.tenderNumber} numaralı teklif onaylandı ve fiyatları kilitlendi.`,
-                referenceId: tender.id,
-                activityDate: new Date()
+            if (tender.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: tender.customerId,
+                    employeeId: employeeId,
+                    activityType: "TENDER_APPROVED",
+                    description: `${tender.tenderNumber} numaralı teklif onaylandı ve fiyatları kilitlendi.`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
+
+            await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId,
+                employeeId,
+                actionType: "TENDER_APPROVED",
+                fieldName: null,
+                oldValue: tender.status,
+                newValue: "Approved",
+                description: `${tender.tenderNumber} numaralı teklif onaylandı.`
             });
 
             res.status(200).json({ message: "İhale onaylandı.", tender: approvedTender });
@@ -11662,6 +14428,9 @@ export class TenderController {
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender || tender.tenantId !== (req as any).user!.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+            if (!tender.customerId) {
+                return res.status(400).json({ error: "Saat planı eklemeden önce müşteri seçin." });
             }
 
             const slots = await (prisma as any).offerScheduleSlot.findMany({
@@ -11842,14 +14611,16 @@ export class TenderController {
                 }
             });
 
-            await this.customerActivityRepo.create({
-                customerId: tender.customerId,
-                employeeId: (req as any).user!.id,
-                activityType: "OFFER_MAIL_SENT",
-                description: `${tender.tenderNumber} teklif PDF'i randevu saatleriyle birlikte ${to} adresine gönderildi.`,
-                referenceId: tender.id,
-                activityDate: new Date()
-            });
+            if (tender.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: tender.customerId,
+                    employeeId: (req as any).user!.id,
+                    activityType: "OFFER_MAIL_SENT",
+                    description: `${tender.tenderNumber} teklif PDF'i randevu saatleriyle birlikte ${to} adresine gönderildi.`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
 
             res.status(200).json({
                 message: result.preview ? "SMTP ayarı olmadığı için teklif maili önizleme olarak hazırlandı." : "Teklif maili gönderildi.",
@@ -11956,7 +14727,7 @@ export class TenderController {
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak tekliflerdeki pozisyonlar silinebilir." });
+                return res.status(403).json({ error: "Sadece taslak tekliflerdeki satırlar silinebilir." });
             }
 
             const before = await this.positionRepository.findById(positionId);
@@ -11970,9 +14741,9 @@ export class TenderController {
                 fieldName: null,
                 oldValue: before?.shortDescription ?? positionId,
                 newValue: null,
-                description: `${before?.positionNumber ?? ''} ${before?.shortDescription ?? 'Pozisyon'} silindi.`
+                description: `${before?.shortDescription ?? 'Satır'} silindi.`
             });
-            res.status(200).json({ message: "Pozisyon silindi." });
+            res.status(200).json({ message: "Satır silindi." });
         } catch (error: any) {
             console.error('[deletePosition] error:', error);
             res.status(400).json({ error: error.message });
@@ -11994,6 +14765,142 @@ export class TenderController {
             const tenderId = req.params.id as string;
             const logs = await this.tenderLogRepo.findByTender(tenderId);
             res.status(200).json(logs);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getChatterSummary(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const [noteCount, documentCount, logCount] = await prisma.$transaction([
+                prisma.tenderActivityLog.count({
+                    where: { tenderId: tender.id, actionType: "TENDER_NOTE" }
+                }),
+                prisma.document.count({
+                    where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: "TENDER" }
+                }),
+                prisma.tenderActivityLog.count({
+                    where: { tenderId: tender.id }
+                })
+            ]);
+
+            res.status(200).json({ noteCount, documentCount, logCount });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async addNote(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const noteText = String(req.body.noteText || "").trim();
+
+            if (!noteText) return res.status(400).json({ error: "Not içeriği boş olamaz." });
+
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const log = await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId: tender.id,
+                employeeId,
+                actionType: "TENDER_NOTE",
+                fieldName: "note",
+                oldValue: null,
+                newValue: noteText,
+                description: noteText
+            });
+
+            res.status(201).json(log);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getDocuments(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const documents = await prisma.document.findMany({
+                where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: "TENDER" },
+                orderBy: { fileName: "asc" }
+            });
+            res.status(200).json(documents);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async addDocument(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const fileName = String(req.body.fileName || "").trim();
+            const fileUrl = String(req.body.fileUrl || "").trim();
+            const fileType = String(req.body.fileType || "").trim().toLowerCase();
+            const category = String(req.body.category || "tender").trim() || "tender";
+
+            if (!fileName || !fileUrl || !fileType) {
+                return res.status(400).json({ error: "Dosya adı, URL ve tür zorunludur." });
+            }
+            const allowed = fileType === "application/pdf"
+                || fileType === "image/png"
+                || fileType === "image/jpeg"
+                || /\.pdf$/i.test(fileName)
+                || /\.png$/i.test(fileName)
+                || /\.jpe?g$/i.test(fileName);
+            if (!allowed) {
+                return res.status(400).json({ error: "Sadece PDF, PNG veya JPG dosyası eklenebilir." });
+            }
+
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const document = await prisma.document.create({
+                data: {
+                    id: nanoid(8),
+                    tenantId: tender.tenantId,
+                    relatedEntityId: tender.id,
+                    entityType: "TENDER",
+                    fileName,
+                    fileUrl,
+                    fileType,
+                    category,
+                    uploadedByEmployeeId: employeeId
+                }
+            });
+
+            await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId: tender.id,
+                employeeId,
+                actionType: "TENDER_ATTACHMENT",
+                fieldName: "attachment",
+                oldValue: null,
+                newValue: fileName,
+                description: `Ek dosya eklendi: ${fileName}`
+            });
+
+            res.status(201).json(document);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -12196,6 +15103,40 @@ export const requirePermission = (requiredPermission: string) => {
         }
     };
 };
+
+export const requireAnyPermission = (requiredPermissions: string[]) => {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            if (!req.user) {
+                res.status(401).json({ error: 'Kimlik dogrulanmamis kullanici.' });
+                return;
+            }
+
+            const userPermissions = await getPermissionsUseCase.execute(req.user.id);
+
+            if (userPermissions.length === 0) {
+                next();
+                return;
+            }
+
+            if (!requiredPermissions.some((permission) => userPermissions.includes(permission))) {
+                res.status(403).json({
+                    error: `Erisim Engellendi: Bu islem icin ${requiredPermissions.join(', ')} yetkilerinden biri gereklidir.`
+                });
+                return;
+            }
+
+            next();
+        } catch (error: any) {
+            console.error('[RbacMiddleware] error while checking any permission:', requiredPermissions, error);
+            res.status(500).json({
+                error: 'Yetki kontrolu sirasinda bir hata olustu.',
+                detail: error?.message,
+            });
+        }
+    };
+};
+
 
 ============================================================
 DOSYA: .\src\presentation\routes\article.routes.ts
@@ -13769,6 +16710,183 @@ export default router;
 
 
 ============================================================
+DOSYA: .\src\presentation\routes\maintenance.routes.ts
+============================================================
+
+import { Router } from 'express';
+import { MaintenanceController } from '../controllers/MaintenanceController';
+import { CreateMaintenanceContractUseCase } from '../../application/use-cases/maintenance/CreateMaintenanceContract';
+import { MaintenanceReportUseCase } from '../../application/use-cases/maintenance/MaintenanceReportUseCase';
+import { MaintenanceRepository } from '../../infrastructure/repositories/MaintenanceRepository';
+import { InventoryRepository } from '../../infrastructure/repositories/InventoryRepository';
+import { requireAuth } from '../middlewares/AuthMiddleware';
+import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
+
+const router = Router();
+
+const maintenanceRepo = new MaintenanceRepository();
+const inventoryRepo = new InventoryRepository();
+
+const createContractUseCase = new CreateMaintenanceContractUseCase(maintenanceRepo);
+const reportUseCase = new MaintenanceReportUseCase(maintenanceRepo, inventoryRepo);
+
+const controller = new MaintenanceController(createContractUseCase, reportUseCase, maintenanceRepo);
+
+const serviceOptionPermissions = [
+    'maintenance.contracts.manage',
+    'maintenance.reports.manage',
+    'regie.calls.manage',
+    'regie.reports.manage',
+];
+
+/**
+ * @swagger
+ * /maintenance/options/customers:
+ *   get:
+ *     tags: [Maintenance]
+ *     summary: Bakim/regie formlari icin musterileri listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/options/customers',
+    requireAuth,
+    requireAnyPermission(serviceOptionPermissions),
+    (req, res) => controller.listOptionCustomers(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/options/technicians:
+ *   get:
+ *     tags: [Maintenance]
+ *     summary: Rolu veya unvani Teknisyen olan personeli listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/options/technicians',
+    requireAuth,
+    requireAnyPermission(serviceOptionPermissions),
+    (req, res) => controller.listTechnicians(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/contracts:
+ *   post:
+ *     tags: [Maintenance]
+ *     summary: Yeni bir periyodik bakım sözleşmesi oluştur
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/contracts',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.createContract(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/contracts:
+ *   get:
+ *     tags: [Maintenance]
+ *     summary: Bakım sözleşmelerini listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/contracts',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.listContracts(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/tasks:
+ *   get:
+ *     tags: [Maintenance]
+ *     summary: Bakim gorevlerini tarih araligina gore listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/tasks',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.listTasks(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/tasks/{taskId}:
+ *   patch:
+ *     tags: [Maintenance]
+ *     summary: Bakim gorevinin tarih, durum veya teknisyen atamasini guncelle
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+    '/tasks/:taskId',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.updateTask(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/reports:
+ *   get:
+ *     tags: [Maintenance]
+ *     summary: Bakim raporlarini listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/reports',
+    requireAuth,
+    requirePermission('maintenance.reports.manage'),
+    (req, res) => controller.listReports(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/reports:
+ *   post:
+ *     tags: [Maintenance]
+ *     summary: Teknisyenin sahadaki bakım raporunu kaydetmesi (Stok düşümü otomatik yapılır)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/reports',
+    requireAuth,
+    requirePermission('maintenance.reports.manage'),
+    (req, res) => controller.submitReport(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/reports/{reportId}/sign:
+ *   post:
+ *     tags: [Maintenance]
+ *     summary: Müşterinin bakım raporunu imzalaması
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/reports/:reportId/sign',
+    requireAuth,
+    requirePermission('maintenance.reports.manage'),
+    (req, res) => controller.signReport(req, res)
+);
+
+export default router;
+
+
+============================================================
 DOSYA: .\src\presentation\routes\project.routes.ts
 ============================================================
 
@@ -13851,6 +16969,154 @@ router.post('/:id/variations', requirePermission('projects.report'), (req, res) 
 router.patch('/variations/:variationId/approve', requirePermission('projects.approveVariation'), (req, res) => controller.approveVariation(req, res));
 
 router.post('/:id/expenses', requirePermission('projects.manage'), (req, res) => controller.addExpense(req, res));
+
+export default router;
+
+
+============================================================
+DOSYA: .\src\presentation\routes\regie.routes.ts
+============================================================
+
+
+import { Router } from 'express';
+import { RegieController } from '../controllers/RegieController';
+import { CreateServiceCallUseCase } from '../../application/use-cases/regie/CreateServiceCallUseCase';
+import { CreateServiceReportUseCase } from '../../application/use-cases/regie/CreateServiceReportUseCase';
+import { SignAndBillRegieUseCase } from '../../application/use-cases/regie/SignAndBillRegieUseCase';
+import { RegieRepository } from '../../infrastructure/repositories/RegieRepository';
+import { InventoryRepository } from '../../infrastructure/repositories/InventoryRepository';
+import { WorkOrderRepository } from '../../infrastructure/repositories/WorkOrderRepository';
+import { requireAuth } from '../middlewares/AuthMiddleware';
+import { requirePermission } from '../middlewares/RbacMiddleware';
+
+const router = Router();
+
+const regieRepo = new RegieRepository();
+const inventoryRepo = new InventoryRepository();
+const workOrderRepo = new WorkOrderRepository();
+
+const createCallUseCase = new CreateServiceCallUseCase(regieRepo);
+const createReportUseCase = new CreateServiceReportUseCase(regieRepo, inventoryRepo);
+const signAndBillUseCase = new SignAndBillRegieUseCase(regieRepo, workOrderRepo);
+
+const controller = new RegieController(
+    createCallUseCase, 
+    createReportUseCase, 
+    signAndBillUseCase, 
+    regieRepo
+);
+
+/**
+ * @swagger
+ * /regie/calls:
+ *   post:
+ *     tags: [Regie/Arıza]
+ *     summary: Müşteri arızası / Çağrı kaydı oluştur
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/calls',
+    requireAuth,
+    requirePermission('regie.calls.manage'),
+    (req, res) => controller.createCall(req, res)
+);
+
+/**
+ * @swagger
+ * /regie/calls:
+ *   get:
+ *     tags: [Regie/Arıza]
+ *     summary: Arıza çağrılarını listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/calls',
+    requireAuth,
+    requirePermission('regie.calls.manage'),
+    (req, res) => controller.listCalls(req, res)
+);
+
+/**
+ * @swagger
+ * /regie/calls/{callId}:
+ *   patch:
+ *     tags: [Regie/Ariza]
+ *     summary: Regie cagrisi atama, oncelik veya durum guncelle
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+    '/calls/:callId',
+    requireAuth,
+    requirePermission('regie.calls.manage'),
+    (req, res) => controller.updateCall(req, res)
+);
+
+/**
+ * @swagger
+ * /regie/reports:
+ *   get:
+ *     tags: [Regie/Ariza]
+ *     summary: Regie raporlarini listele
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/reports',
+    requireAuth,
+    requirePermission('regie.reports.manage'),
+    (req, res) => controller.listReports(req, res)
+);
+
+/**
+ * @swagger
+ * /regie/reports:
+ *   post:
+ *     tags: [Regie/Arıza]
+ *     summary: Arıza müdahale raporunu kaydet
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/reports',
+    requireAuth,
+    requirePermission('regie.reports.manage'),
+    (req, res) => controller.submitReport(req, res)
+);
+
+/**
+ * @swagger
+ * /regie/reports/{reportId}/sign:
+ *   post:
+ *     tags: [Regie/Arıza]
+ *     summary: Raporu imzala (Garanti dışıysa fatura uyarısı döner)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/reports/:reportId/sign',
+    requireAuth,
+    requirePermission('regie.reports.manage'),
+    (req, res) => controller.signReport(req, res)
+);
+
+/**
+ * @swagger
+ * /regie/reports/{reportId}/bill:
+ *   post:
+ *     tags: [Regie/Arıza]
+ *     summary: Fatura (Auftrag/İş Emri) oluştur (Kullanıcı imzadan sonra EVET derse)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/reports/:reportId/bill',
+    requireAuth,
+    requirePermission('workorders.manage'),
+    (req, res) => controller.generateBill(req, res)
+);
 
 export default router;
 
@@ -14187,7 +17453,7 @@ router.delete(
  * /tenders/{id}/positions:
  *   post:
  *     tags: [Tender]
- *     summary: Teklif içerisine manuel pozisyon ekle
+ *     summary: Teklif içerisine esnek satır ekle
  *     security:
  *       - bearerAuth: []
  */
@@ -14203,7 +17469,7 @@ router.post(
  * /tenders/{id}/positions/{positionId}:
  *   patch:
  *     tags: [Tender]
- *     summary: Pozisyon açıklaması, miktar ve birimini güncelle
+ *     summary: Satır açıklaması, miktar, fiyat ve tipini güncelle
  *     security:
  *       - bearerAuth: []
  */
@@ -14240,7 +17506,7 @@ router.get(
  * /tenders/{id}/positions/{positionId}/calculate:
  *   post:
  *     tags: [Tender]
- *     summary: Bir pozisyonun maliyetlerini hesapla ve kaydet
+ *     summary: Bir satırın maliyetlerini hesapla ve kaydet
  *     security:
  *       - bearerAuth: []
  */
@@ -14281,6 +17547,20 @@ router.patch(
     requireAuth,
     requirePermission('tenders.approve'), // Sadece Yönetici / Project Manager
     (req, res) => tenderController.approve(req, res)
+);
+
+router.patch(
+    '/:id/meta',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.updateMeta(req, res)
+);
+
+router.patch(
+    '/:id',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.updateMeta(req, res)
 );
 
 router.get(
@@ -14346,7 +17626,7 @@ router.post(
  * /tenders/{id}:
  *   get:
  *     tags: [Tender]
- *     summary: İhale detaylarını ve hiyerarşik pozisyonlarını getir
+ *     summary: İhale detaylarını ve esnek teklif satırlarını getir
  *     security:
  *       - bearerAuth: []
  */
@@ -14362,7 +17642,7 @@ router.get(
  * /tenders/{id}/positions/{positionId}:
  *   delete:
  *     tags: [Tender]
- *     summary: Taslak teklifteki pozisyonu ve alt pozisyonlarını sil
+ *     summary: Taslak teklifteki satırı ve alt satırlarını sil
  *     security:
  *       - bearerAuth: []
  */
@@ -14378,7 +17658,7 @@ router.delete(
  * /tenders/{id}/positions/{positionId}/articles:
  *   post:
  *     tags: [Tender]
- *     summary: İhale pozisyonuna dahili ürün (BOM) bağlar ve malzeme maliyetini otomatik hesaplar.
+ *     summary: Eski ürün eşleştirme kaydını satıra ekler.
  *     security:
  *       - bearerAuth: []
  */
@@ -14394,7 +17674,7 @@ router.post(
  * /tenders/{id}/positions/{positionId}/articles/{mappingId}:
  *   delete:
  *     tags: [Tender]
- *     summary: Pozisyondan ürün eşleştirmesini kaldırır ve malzeme maliyetini yeniden hesaplar
+ *     summary: Satırdan eski ürün eşleştirme kaydını kaldırır
  *     security:
  *       - bearerAuth: []
  */
@@ -14438,7 +17718,7 @@ router.delete(
  * /tenders/{id}/report:
  *   get:
  *     tags: [Tender]
- *     summary: İhale için BKP / NPK bazlı kârlılık ve maliyet özet raporunu getirir
+ *     summary: İhale için kârlılık ve maliyet özet raporunu getirir
  *     security:
  *       - bearerAuth: []
  */
@@ -14454,7 +17734,7 @@ router.get(
  * /tenders/{id}/export:
  *   get:
  *     tags: [Tender]
- *     summary: Teklifi PDF veya XML çıktısı için hiyerarşik formatta dışa aktarır
+ *     summary: Teklifi PDF veya XML çıktısı için satır formatında dışa aktarır
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -14492,6 +17772,34 @@ router.get(
     requireAuth,
     requirePermission('tenders.view'),
     (req, res) => tenderController.getLogs(req, res)
+);
+
+router.get(
+    '/:id/chatter-summary',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getChatterSummary(req, res)
+);
+
+router.post(
+    '/:id/notes',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.addNote(req, res)
+);
+
+router.get(
+    '/:id/documents',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getDocuments(req, res)
+);
+
+router.post(
+    '/:id/documents',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.addDocument(req, res)
 );
 
 

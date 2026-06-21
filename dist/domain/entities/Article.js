@@ -19,7 +19,9 @@ class Article {
     criticalStockLevel;
     maxStockLevel;
     lastPurchaseDate;
-    constructor(id, tenantId, articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status = 'ACTIVE', isActive = true, minStockLevel = 0, criticalStockLevel = 0, maxStockLevel, lastPurchaseDate) {
+    salePrice;
+    defaultSupplierId;
+    constructor(id, tenantId, articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status = 'ACTIVE', isActive = true, minStockLevel = 0, criticalStockLevel = 0, maxStockLevel, lastPurchaseDate, salePrice = 0, defaultSupplierId) {
         this.id = id;
         this.tenantId = tenantId;
         this.articleCode = articleCode;
@@ -37,6 +39,8 @@ class Article {
         this.criticalStockLevel = criticalStockLevel;
         this.maxStockLevel = maxStockLevel;
         this.lastPurchaseDate = lastPurchaseDate;
+        this.salePrice = salePrice;
+        this.defaultSupplierId = defaultSupplierId;
     }
 }
 exports.Article = Article;

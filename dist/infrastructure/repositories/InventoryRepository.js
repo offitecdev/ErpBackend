@@ -8,6 +8,49 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Inventory_1 = require("../../domain/entities/Inventory");
 const Article_1 = require("../../domain/entities/Article");
 const nanoid_1 = require("nanoid");
+const inboundCostMovementTypes = new Set(['IN', 'RETURN', 'ADJUSTMENT']);
+const computeArticleCostSummary = (article) => {
+    const suppliers = Array.isArray(article.articleSuppliers) ? article.articleSuppliers : [];
+    const balances = Array.isArray(article.stockBalances) ? article.stockBalances : [];
+    const movements = Array.isArray(article.stockMovements) ? article.stockMovements : [];
+    const supplierIds = new Set(suppliers.map((row) => row.id));
+    const supplierCostQuantity = suppliers.reduce((sum, row) => sum + Math.max(0, Number(row.quantity || 0)), 0);
+    const supplierCostValue = suppliers.reduce((sum, row) => sum + Math.max(0, Number(row.quantity || 0)) * Math.max(0, Number(row.purchasePrice || 0)), 0);
+    const totalQuantity = balances.reduce((sum, row) => sum + Number(row.currentQuantity || 0), 0);
+    const manualUnitCost = Math.max(0, Number(article.baseCost || 0));
+    // Manuel stok girişleri: her hareket kendi birim maliyetini taşır (yoksa ürün kartı maliyetine düşer).
+    const manualMovements = movements
+        .filter((movement) => inboundCostMovementTypes.has(String(movement.movementType)))
+        .filter((movement) => !movement.referenceId || !supplierIds.has(movement.referenceId))
+        .filter((movement) => !String(movement.description || '').toLocaleLowerCase('tr-TR').startsWith('tedarik'));
+    let manualCostQuantity = manualMovements.reduce((sum, movement) => sum + Math.max(0, Number(movement.quantity || 0)), 0);
+    let manualCostValue = manualMovements.reduce((sum, movement) => {
+        const qty = Math.max(0, Number(movement.quantity || 0));
+        const unitCost = movement.unitCost != null && Number(movement.unitCost) > 0
+            ? Number(movement.unitCost)
+            : manualUnitCost;
+        return sum + qty * unitCost;
+    }, 0);
+    // Hareket kaydı olmayan eski/açılış stoğu varsa, kalanı ürün kartı maliyetiyle değerle.
+    if (manualCostQuantity <= 0 && totalQuantity > supplierCostQuantity) {
+        manualCostQuantity = totalQuantity - supplierCostQuantity;
+        manualCostValue = manualCostQuantity * manualUnitCost;
+    }
+    const costBasisQuantity = supplierCostQuantity + manualCostQuantity;
+    const costBasisValue = supplierCostValue + manualCostValue;
+    const weightedAverageCost = costBasisQuantity > 0
+        ? costBasisValue / costBasisQuantity
+        : manualUnitCost;
+    return {
+        weightedAverageCost,
+        costBasisQuantity,
+        costBasisValue,
+        supplierCostQuantity,
+        supplierCostValue,
+        manualCostQuantity,
+        manualCostValue,
+    };
+};
 class InventoryRepository {
     async createLocation(locationData) {
         const data = await prisma_client_1.default.location.create({
@@ -41,7 +84,7 @@ class InventoryRepository {
         return await prisma_client_1.default.stockBalance.findMany({
             where,
             include: {
-                article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
+                article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, salePrice: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
                 location: { select: { locationName: true, locationType: true } }
             }
         });
@@ -52,35 +95,61 @@ class InventoryRepository {
             include: {
                 stockBalances: {
                     include: { location: { select: { locationName: true, locationType: true } } }
-                }
+                },
+                articleSuppliers: {
+                    include: {
+                        supplier: true,
+                        location: { select: { id: true, locationName: true, locationType: true } }
+                    },
+                    orderBy: [{ isPreferred: 'desc' }, { lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }]
+                },
+                stockMovements: {
+                    select: {
+                        id: true,
+                        movementType: true,
+                        quantity: true,
+                        unitCost: true,
+                        referenceId: true,
+                        transactionDate: true,
+                        description: true,
+                    }
+                },
             }
         });
-        return articles.map((a) => ({
-            id: a.id,
-            articleCode: a.articleCode,
-            name: a.name,
-            unit: a.unit,
-            baseCost: a.baseCost,
-            imageUrl: a.imageUrl,
-            systemBarcode: a.systemBarcode,
-            supplierBarcode: a.supplierBarcode,
-            isActive: a.isActive,
-            status: a.status,
-            category: a.category,
-            minStockLevel: a.minStockLevel,
-            criticalStockLevel: a.criticalStockLevel,
-            maxStockLevel: a.maxStockLevel,
-            lastPurchaseDate: a.lastPurchaseDate,
-            totalQuantity: a.stockBalances.reduce((s, b) => s + (b.currentQuantity || 0), 0),
-            totalReserved: a.stockBalances.reduce((s, b) => s + (b.reservedQuantity || 0), 0),
-            balances: a.stockBalances.map((b) => ({
-                locationId: b.locationId,
-                locationName: b.location?.locationName,
-                locationType: b.location?.locationType,
-                currentQuantity: b.currentQuantity,
-                reservedQuantity: b.reservedQuantity,
-            })),
-        }));
+        return articles.map((a) => {
+            const costSummary = computeArticleCostSummary(a);
+            return {
+                id: a.id,
+                articleCode: a.articleCode,
+                name: a.name,
+                description: a.description,
+                unit: a.unit,
+                baseCost: a.baseCost,
+                salePrice: a.salePrice ?? 0,
+                defaultSupplierId: a.defaultSupplierId,
+                imageUrl: a.imageUrl,
+                systemBarcode: a.systemBarcode,
+                supplierBarcode: a.supplierBarcode,
+                isActive: a.isActive,
+                status: a.status,
+                category: a.category,
+                minStockLevel: a.minStockLevel,
+                criticalStockLevel: a.criticalStockLevel,
+                maxStockLevel: a.maxStockLevel,
+                lastPurchaseDate: a.lastPurchaseDate,
+                totalQuantity: a.stockBalances.reduce((s, b) => s + (b.currentQuantity || 0), 0),
+                totalReserved: a.stockBalances.reduce((s, b) => s + (b.reservedQuantity || 0), 0),
+                balances: a.stockBalances.map((b) => ({
+                    locationId: b.locationId,
+                    locationName: b.location?.locationName,
+                    locationType: b.location?.locationType,
+                    currentQuantity: b.currentQuantity,
+                    reservedQuantity: b.reservedQuantity,
+                })),
+                suppliers: a.articleSuppliers,
+                ...costSummary,
+            };
+        });
     }
     async findArticleByBarcodeOrCode(tenantId, codeOrBarcode) {
         const data = await prisma_client_1.default.article.findFirst({
@@ -95,7 +164,7 @@ class InventoryRepository {
         });
         if (!data)
             return null;
-        return new Article_1.Article(data.id, data.tenantId, data.articleCode, data.name, data.baseCost, data.unit, data.description, data.systemBarcode, data.supplierBarcode, data.imageUrl, data.category, data.status ?? 'ACTIVE', data.isActive, data.minStockLevel, data.criticalStockLevel, data.maxStockLevel, data.lastPurchaseDate);
+        return new Article_1.Article(data.id, data.tenantId, data.articleCode, data.name, data.baseCost, data.unit, data.description, data.systemBarcode, data.supplierBarcode, data.imageUrl, data.category, data.status ?? 'ACTIVE', data.isActive, data.minStockLevel, data.criticalStockLevel, data.maxStockLevel, data.lastPurchaseDate, data.salePrice ?? 0, data.defaultSupplierId ?? null);
     }
     async processMovement(movementData, articleId, sourceLocationId, destLocationId, quantity) {
         const result = await prisma_client_1.default.$transaction(async (tx) => {
@@ -121,6 +190,11 @@ class InventoryRepository {
                     create: { id: (0, nanoid_1.nanoid)(10), tenantId: movementData.tenantId, articleId, locationId: destLocationId, currentQuantity: quantity }
                 });
             }
+            // Birim maliyet yalnızca stok girişi yapan hareketlerde anlamlıdır (ağırlıklı ortalama için).
+            const rawUnitCost = movementData.unitCost;
+            const unitCost = inboundCostMovementTypes.has(String(movementData.movementType)) && rawUnitCost != null && Number(rawUnitCost) > 0
+                ? Number(rawUnitCost)
+                : null;
             const movement = await tx.stockMovement.create({
                 data: {
                     id: (0, nanoid_1.nanoid)(12),
@@ -128,6 +202,7 @@ class InventoryRepository {
                     articleId,
                     movementType: movementData.movementType,
                     quantity,
+                    unitCost,
                     sourceLocationId,
                     destinationLocationId: destLocationId,
                     employeeId: movementData.employeeId,
@@ -137,7 +212,7 @@ class InventoryRepository {
             });
             return movement;
         });
-        return new Inventory_1.StockMovement(result.id, result.tenantId, result.articleId, result.movementType, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined);
+        return new Inventory_1.StockMovement(result.id, result.tenantId, result.articleId, result.movementType, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined, result.unitCost ?? undefined);
     }
     async getMovements(articleId) {
         const data = await prisma_client_1.default.stockMovement.findMany({
@@ -145,7 +220,7 @@ class InventoryRepository {
             orderBy: { transactionDate: 'desc' },
             include: { employee: { select: { firstName: true, lastName: true } } }
         });
-        return data.map(d => new Inventory_1.StockMovement(d.id, d.tenantId, d.articleId, d.movementType, d.quantity, d.employeeId, d.transactionDate, d.sourceLocationId, d.destinationLocationId, d.referenceId || undefined, d.description || undefined));
+        return data.map(d => new Inventory_1.StockMovement(d.id, d.tenantId, d.articleId, d.movementType, d.quantity, d.employeeId, d.transactionDate, d.sourceLocationId, d.destinationLocationId, d.referenceId || undefined, d.description || undefined, d.unitCost ?? undefined));
     }
     async createPurchaseProposal(proposal) {
         const data = await prisma_client_1.default.purchaseProposal.create({

@@ -1,0 +1,42 @@
+CREATE TABLE IF NOT EXISTS `Invoice` (
+  `id` VARCHAR(191) NOT NULL,
+  `tenantId` VARCHAR(191) NOT NULL,
+  `customerId` VARCHAR(191) NULL,
+  `projectId` VARCHAR(191) NULL,
+  `salesOrderId` VARCHAR(191) NULL,
+  `invoiceNumber` VARCHAR(191) NOT NULL,
+  `billingType` VARCHAR(191) NOT NULL DEFAULT 'FULL',
+  `billedPercent` DOUBLE NOT NULL DEFAULT 100,
+  `baseAmount` DOUBLE NOT NULL DEFAULT 0,
+  `amount` DOUBLE NOT NULL DEFAULT 0,
+  `status` VARCHAR(191) NOT NULL DEFAULT 'ISSUED',
+  `notes` TEXT NULL,
+  `issuedByEmployeeId` VARCHAR(191) NOT NULL,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  INDEX `Invoice_tenantId_idx` (`tenantId`),
+  INDEX `Invoice_customerId_idx` (`customerId`),
+  INDEX `Invoice_projectId_idx` (`projectId`),
+  INDEX `Invoice_salesOrderId_idx` (`salesOrderId`),
+  INDEX `Invoice_issuedByEmployeeId_idx` (`issuedByEmployeeId`),
+  CONSTRAINT `Invoice_tenantId_fkey` FOREIGN KEY (`tenantId`) REFERENCES `Tenant`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `Invoice_customerId_fkey` FOREIGN KEY (`customerId`) REFERENCES `Customer`(`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `Invoice_projectId_fkey` FOREIGN KEY (`projectId`) REFERENCES `Project`(`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `Invoice_salesOrderId_fkey` FOREIGN KEY (`salesOrderId`) REFERENCES `SalesOrder`(`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `Invoice_issuedByEmployeeId_fkey` FOREIGN KEY (`issuedByEmployeeId`) REFERENCES `Employee`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `InvoiceLineItem` (
+  `id` VARCHAR(191) NOT NULL,
+  `invoiceId` VARCHAR(191) NOT NULL,
+  `description` TEXT NOT NULL,
+  `sourceType` VARCHAR(191) NOT NULL,
+  `sourceId` VARCHAR(191) NULL,
+  `quantity` DOUBLE NOT NULL DEFAULT 1,
+  `unitAmount` DOUBLE NOT NULL DEFAULT 0,
+  `lineTotal` DOUBLE NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  INDEX `InvoiceLineItem_invoiceId_idx` (`invoiceId`),
+  CONSTRAINT `InvoiceLineItem_invoiceId_fkey` FOREIGN KEY (`invoiceId`) REFERENCES `Invoice`(`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

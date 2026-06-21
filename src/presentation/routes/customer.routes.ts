@@ -159,6 +159,33 @@ router.patch(
 
 /**
  * @swagger
+ * /customers/{id}:
+ *   delete:
+ *     tags: [CRM]
+ *     summary: Müşteriyi sil
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       204:
+ *         description: Müşteri silindi
+ *       400:
+ *         description: Müşteri silinemedi (bağlı kayıtlar mevcut)
+ */
+router.delete(
+    '/:id',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.delete(req, res)
+);
+
+/**
+ * @swagger
  * /customers/{id}/dashboard:
  *   get:
  *     tags: [CRM]

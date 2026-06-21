@@ -24,6 +24,21 @@ const serviceOptionPermissions = [
     'regie.reports.manage',
 ];
 
+router.get(
+    '/public/booking/:token',
+    (req, res) => controller.getPublicAppointmentOptions(req, res)
+);
+
+router.post(
+    '/public/booking/:token/confirm',
+    (req, res) => controller.confirmPublicAppointment(req, res)
+);
+
+router.post(
+    '/public/booking/:token/disapprove',
+    (req, res) => controller.disapprovePublicAppointment(req, res)
+);
+
 /**
  * @swagger
  * /maintenance/options/customers:
@@ -88,6 +103,20 @@ router.get(
     (req, res) => controller.listContracts(req, res)
 );
 
+router.patch(
+    '/contracts/:contractId',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.updateContract(req, res)
+);
+
+router.delete(
+    '/contracts/:contractId',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.archiveContract(req, res)
+);
+
 /**
  * @swagger
  * /maintenance/tasks:
@@ -104,6 +133,27 @@ router.get(
     (req, res) => controller.listTasks(req, res)
 );
 
+router.get(
+    '/tasks/:taskId',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.getTask(req, res)
+);
+
+router.get(
+    '/technician/tasks',
+    requireAuth,
+    requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    (req, res) => controller.listMyTasks(req, res)
+);
+
+router.get(
+    '/technician/tasks/:taskId',
+    requireAuth,
+    requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    (req, res) => controller.getMyTask(req, res)
+);
+
 /**
  * @swagger
  * /maintenance/tasks/{taskId}:
@@ -118,6 +168,27 @@ router.patch(
     requireAuth,
     requirePermission('maintenance.contracts.manage'),
     (req, res) => controller.updateTask(req, res)
+);
+
+router.put(
+    '/tasks/:taskId/appointment-options/draft',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.saveAppointmentOptionsDraft(req, res)
+);
+
+router.post(
+    '/tasks/:taskId/appointment-options',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.sendAppointmentOptions(req, res)
+);
+
+router.post(
+    '/tasks/:taskId/appointment-options/:optionId/approve',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.approveAppointmentOption(req, res)
 );
 
 /**
@@ -154,6 +225,22 @@ router.post(
 
 /**
  * @swagger
+ * /maintenance/reports/{reportId}:
+ *   patch:
+ *     tags: [Maintenance]
+ *     summary: Bakim raporunu duzenle (imzasiz raporlar icin)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+    '/reports/:reportId',
+    requireAuth,
+    requirePermission('maintenance.reports.manage'),
+    (req, res) => controller.updateReport(req, res)
+);
+
+/**
+ * @swagger
  * /maintenance/reports/{reportId}/sign:
  *   post:
  *     tags: [Maintenance]
@@ -166,6 +253,38 @@ router.post(
     requireAuth,
     requirePermission('maintenance.reports.manage'),
     (req, res) => controller.signReport(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/reports/{reportId}/signature-request:
+ *   post:
+ *     tags: [Maintenance]
+ *     summary: Bakim raporu icin teknisyene veya musteriye imza istegi gonder
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/reports/:reportId/signature-request',
+    requireAuth,
+    requirePermission('maintenance.reports.manage'),
+    (req, res) => controller.requestReportSignature(req, res)
+);
+
+/**
+ * @swagger
+ * /maintenance/reports/{reportId}/send-to-manager:
+ *   post:
+ *     tags: [Maintenance]
+ *     summary: Teknisyenin bakim raporunu imzali veya imzasiz yoneticiye gondermesi
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/reports/:reportId/send-to-manager',
+    requireAuth,
+    requirePermission('maintenance.reports.manage'),
+    (req, res) => controller.sendReportToManager(req, res)
 );
 
 export default router;

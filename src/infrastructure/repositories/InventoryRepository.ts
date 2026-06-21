@@ -4,6 +4,64 @@ import { Location, StockBalance, StockMovement, PurchaseProposal } from "../../d
 import { Article } from "../../domain/entities/Article";
 import { nanoid } from "nanoid";
 
+const inboundCostMovementTypes = new Set(['IN', 'RETURN', 'ADJUSTMENT']);
+
+const computeArticleCostSummary = (article: any) => {
+    const suppliers = Array.isArray(article.articleSuppliers) ? article.articleSuppliers : [];
+    const balances = Array.isArray(article.stockBalances) ? article.stockBalances : [];
+    const movements = Array.isArray(article.stockMovements) ? article.stockMovements : [];
+    const supplierIds = new Set(suppliers.map((row: any) => row.id));
+
+    const supplierCostQuantity = suppliers.reduce((sum: number, row: any) => sum + Math.max(0, Number(row.quantity || 0)), 0);
+    const supplierCostValue = suppliers.reduce(
+        (sum: number, row: any) => sum + Math.max(0, Number(row.quantity || 0)) * Math.max(0, Number(row.purchasePrice || 0)),
+        0
+    );
+    const totalQuantity = balances.reduce((sum: number, row: any) => sum + Number(row.currentQuantity || 0), 0);
+
+    const manualUnitCost = Math.max(0, Number(article.baseCost || 0));
+
+    // Manuel stok girişleri: her hareket kendi birim maliyetini taşır (yoksa ürün kartı maliyetine düşer).
+    const manualMovements = movements
+        .filter((movement: any) => inboundCostMovementTypes.has(String(movement.movementType)))
+        .filter((movement: any) => !movement.referenceId || !supplierIds.has(movement.referenceId))
+        .filter((movement: any) => !String(movement.description || '').toLocaleLowerCase('tr-TR').startsWith('tedarik'));
+
+    let manualCostQuantity = manualMovements.reduce(
+        (sum: number, movement: any) => sum + Math.max(0, Number(movement.quantity || 0)),
+        0
+    );
+    let manualCostValue = manualMovements.reduce((sum: number, movement: any) => {
+        const qty = Math.max(0, Number(movement.quantity || 0));
+        const unitCost = movement.unitCost != null && Number(movement.unitCost) > 0
+            ? Number(movement.unitCost)
+            : manualUnitCost;
+        return sum + qty * unitCost;
+    }, 0);
+
+    // Hareket kaydı olmayan eski/açılış stoğu varsa, kalanı ürün kartı maliyetiyle değerle.
+    if (manualCostQuantity <= 0 && totalQuantity > supplierCostQuantity) {
+        manualCostQuantity = totalQuantity - supplierCostQuantity;
+        manualCostValue = manualCostQuantity * manualUnitCost;
+    }
+
+    const costBasisQuantity = supplierCostQuantity + manualCostQuantity;
+    const costBasisValue = supplierCostValue + manualCostValue;
+    const weightedAverageCost = costBasisQuantity > 0
+        ? costBasisValue / costBasisQuantity
+        : manualUnitCost;
+
+    return {
+        weightedAverageCost,
+        costBasisQuantity,
+        costBasisValue,
+        supplierCostQuantity,
+        supplierCostValue,
+        manualCostQuantity,
+        manualCostValue,
+    };
+};
+
 export class InventoryRepository implements IInventoryRepository {
     
     async createLocation(locationData: Partial<Location>): Promise<Location> {
@@ -37,50 +95,76 @@ export class InventoryRepository implements IInventoryRepository {
         const where: any = { tenantId };
         if (locationId) where.locationId = locationId;
 
-        return await prisma.stockBalance.findMany({
+        return await (prisma as any).stockBalance.findMany({
             where,
             include: {
-                article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
+                article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, salePrice: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
                 location: { select: { locationName: true, locationType: true } }
             }
         });
     }
 
     async getArticleStockSummary(tenantId: string): Promise<any[]> {
-        const articles = await prisma.article.findMany({
+        const articles = await (prisma as any).article.findMany({
             where: { tenantId },
             include: {
                 stockBalances: {
                     include: { location: { select: { locationName: true, locationType: true } } }
-                }
+                },
+                articleSuppliers: {
+                    include: {
+                        supplier: true,
+                        location: { select: { id: true, locationName: true, locationType: true } }
+                    },
+                    orderBy: [{ isPreferred: 'desc' }, { lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }]
+                },
+                stockMovements: {
+                    select: {
+                        id: true,
+                        movementType: true,
+                        quantity: true,
+                        unitCost: true,
+                        referenceId: true,
+                        transactionDate: true,
+                        description: true,
+                    }
+                },
             }
         });
-        return articles.map((a: any) => ({
-            id: a.id,
-            articleCode: a.articleCode,
-            name: a.name,
-            unit: a.unit,
-            baseCost: a.baseCost,
-            imageUrl: a.imageUrl,
-            systemBarcode: a.systemBarcode,
-            supplierBarcode: a.supplierBarcode,
-            isActive: a.isActive,
-            status: a.status,
-            category: a.category,
-            minStockLevel: a.minStockLevel,
-            criticalStockLevel: a.criticalStockLevel,
-            maxStockLevel: a.maxStockLevel,
-            lastPurchaseDate: a.lastPurchaseDate,
-            totalQuantity: a.stockBalances.reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0),
-            totalReserved: a.stockBalances.reduce((s: number, b: any) => s + (b.reservedQuantity || 0), 0),
-            balances: a.stockBalances.map((b: any) => ({
-                locationId: b.locationId,
-                locationName: b.location?.locationName,
-                locationType: b.location?.locationType,
-                currentQuantity: b.currentQuantity,
-                reservedQuantity: b.reservedQuantity,
-            })),
-        }));
+        return articles.map((a: any) => {
+            const costSummary = computeArticleCostSummary(a);
+            return {
+                id: a.id,
+                articleCode: a.articleCode,
+                name: a.name,
+                description: a.description,
+                unit: a.unit,
+                baseCost: a.baseCost,
+                salePrice: a.salePrice ?? 0,
+                defaultSupplierId: a.defaultSupplierId,
+                imageUrl: a.imageUrl,
+                systemBarcode: a.systemBarcode,
+                supplierBarcode: a.supplierBarcode,
+                isActive: a.isActive,
+                status: a.status,
+                category: a.category,
+                minStockLevel: a.minStockLevel,
+                criticalStockLevel: a.criticalStockLevel,
+                maxStockLevel: a.maxStockLevel,
+                lastPurchaseDate: a.lastPurchaseDate,
+                totalQuantity: a.stockBalances.reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0),
+                totalReserved: a.stockBalances.reduce((s: number, b: any) => s + (b.reservedQuantity || 0), 0),
+                balances: a.stockBalances.map((b: any) => ({
+                    locationId: b.locationId,
+                    locationName: b.location?.locationName,
+                    locationType: b.location?.locationType,
+                    currentQuantity: b.currentQuantity,
+                    reservedQuantity: b.reservedQuantity,
+                })),
+                suppliers: a.articleSuppliers,
+                ...costSummary,
+            };
+        });
     }
 
     async findArticleByBarcodeOrCode(tenantId: string, codeOrBarcode: string): Promise<Article | null> {
@@ -113,7 +197,9 @@ export class InventoryRepository implements IInventoryRepository {
             data.minStockLevel,
             data.criticalStockLevel,
             data.maxStockLevel,
-            (data as any).lastPurchaseDate
+            (data as any).lastPurchaseDate,
+            (data as any).salePrice ?? 0,
+            (data as any).defaultSupplierId ?? null
         );
     }
 
@@ -152,6 +238,12 @@ export class InventoryRepository implements IInventoryRepository {
                 });
             }
 
+            // Birim maliyet yalnızca stok girişi yapan hareketlerde anlamlıdır (ağırlıklı ortalama için).
+            const rawUnitCost = (movementData as any).unitCost;
+            const unitCost = inboundCostMovementTypes.has(String(movementData.movementType)) && rawUnitCost != null && Number(rawUnitCost) > 0
+                ? Number(rawUnitCost)
+                : null;
+
             const movement = await tx.stockMovement.create({
                 data: {
                     id: nanoid(12),
@@ -159,6 +251,7 @@ export class InventoryRepository implements IInventoryRepository {
                     articleId,
                     movementType: movementData.movementType as any,
                     quantity,
+                    unitCost,
                     sourceLocationId,
                     destinationLocationId: destLocationId,
                     employeeId: movementData.employeeId!,
@@ -170,7 +263,7 @@ export class InventoryRepository implements IInventoryRepository {
             return movement;
         });
 
-        return new StockMovement(result.id, result.tenantId, result.articleId, result.movementType as any, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined);
+        return new StockMovement(result.id, result.tenantId, result.articleId, result.movementType as any, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined, (result as any).unitCost ?? undefined);
     }
 
     async getMovements(articleId: string): Promise<StockMovement[]> {
@@ -179,7 +272,7 @@ export class InventoryRepository implements IInventoryRepository {
             orderBy: { transactionDate: 'desc' },
             include: { employee: { select: { firstName: true, lastName: true } } }
         });
-        return data.map(d => new StockMovement(d.id, d.tenantId, d.articleId, d.movementType as any, d.quantity, d.employeeId, d.transactionDate, d.sourceLocationId, d.destinationLocationId, d.referenceId || undefined, d.description || undefined));
+        return data.map(d => new StockMovement(d.id, d.tenantId, d.articleId, d.movementType as any, d.quantity, d.employeeId, d.transactionDate, d.sourceLocationId, d.destinationLocationId, d.referenceId || undefined, d.description || undefined, (d as any).unitCost ?? undefined));
     }
 
     async createPurchaseProposal(proposal: Partial<PurchaseProposal>): Promise<PurchaseProposal> {

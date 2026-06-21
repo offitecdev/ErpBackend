@@ -73,7 +73,7 @@ export class InventoryController {
             ]);
             const critical = summary.filter((a: any) => a.criticalStockLevel > 0 && a.totalQuantity <= a.criticalStockLevel);
             const belowMin = summary.filter((a: any) => a.minStockLevel > 0 && a.totalQuantity <= a.minStockLevel);
-            const totalValue = summary.reduce((s: number, a: any) => s + (a.totalQuantity * (a.baseCost || 0)), 0);
+            const totalValue = summary.reduce((s: number, a: any) => s + (a.totalQuantity * (a.weightedAverageCost ?? a.baseCost ?? 0)), 0);
             res.status(200).json({
                 kpis: {
                     totalArticles: summary.length,
@@ -97,7 +97,7 @@ export class InventoryController {
         try {
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { codeOrBarcode, movementType, quantity, sourceLocationId, destLocationId, referenceId, description } = req.body;
+            const { codeOrBarcode, movementType, quantity, unitCost, sourceLocationId, destLocationId, referenceId, description } = req.body;
 
             const movement = await this.processMovementUseCase.execute({
                 tenantId,
@@ -105,6 +105,7 @@ export class InventoryController {
                 codeOrBarcode,
                 movementType,
                 quantity: Number(quantity),
+                unitCost: unitCost === null || unitCost === undefined || unitCost === '' ? null : Number(unitCost),
                 sourceLocationId,
                 destLocationId,
                 referenceId,

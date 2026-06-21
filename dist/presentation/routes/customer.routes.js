@@ -127,6 +127,27 @@ router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermi
 router.patch('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.update(req, res));
 /**
  * @swagger
+ * /customers/{id}:
+ *   delete:
+ *     tags: [CRM]
+ *     summary: Müşteriyi sil
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       204:
+ *         description: Müşteri silindi
+ *       400:
+ *         description: Müşteri silinemedi (bağlı kayıtlar mevcut)
+ */
+router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.delete(req, res));
+/**
+ * @swagger
  * /customers/{id}/dashboard:
  *   get:
  *     tags: [CRM]

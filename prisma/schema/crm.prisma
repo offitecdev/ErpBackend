@@ -21,8 +21,46 @@ model Customer {
   maintenanceContracts MaintenanceContract[]
   serviceCalls ServiceCall[]
   workOrders WorkOrder[]
+  salesOrders SalesOrder[]
+  invoices Invoice[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
+}
+
+model SalesOrder {
+  id                  String   @id
+  tenantId            String
+  customerId          String?
+  tenderId            String?  @unique
+  projectId           String?
+  parentSalesOrderId  String?
+  revisionNumber      Int?
+  orderNumber         String
+  orderType           String
+  status              String   @default("ORDERED")
+  totalAmount         Float    @default(0)
+  createdByEmployeeId String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  customer  Customer? @relation(fields: [customerId], references: [id])
+  tender    Tender?   @relation(fields: [tenderId], references: [id])
+  project   Project?  @relation(fields: [projectId], references: [id])
+  parentSalesOrder SalesOrder? @relation("SalesOrderAddons", fields: [parentSalesOrderId], references: [id])
+  addonSalesOrders SalesOrder[] @relation("SalesOrderAddons")
+  createdBy Employee  @relation(fields: [createdByEmployeeId], references: [id])
+  reports   ProjectReport[]
+  expenses  ProjectExpense[]
+  appointments Appointment[]
+  extraMaterials ProjectExtraMaterial[]
+  invoices Invoice[]
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([projectId])
+  @@index([parentSalesOrderId])
+  @@index([createdByEmployeeId])
 }
 
 model CustomerContact {
@@ -64,7 +102,7 @@ model Document {
   relatedEntityId      String
   entityType           String
   fileName             String
-  fileUrl              String
+  fileUrl              String   @db.LongText
   fileType             String
   category             String?
   uploadedByEmployeeId String

@@ -7,6 +7,7 @@ export interface MovementInput {
     codeOrBarcode: string;
     movementType: 'IN' | 'OUT' | 'TRANSFER' | 'RETURN' | 'ADJUSTMENT';
     quantity: number;
+    unitCost?: number | null;
     sourceLocationId?: string | null;
     destLocationId?: string | null;
     referenceId?: string | null;

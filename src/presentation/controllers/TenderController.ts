@@ -3,6 +3,7 @@
 import { Request, Response } from 'express';
 import { nanoid } from 'nanoid';
 import { ImportTenderUseCase } from '../../application/use-cases/tender/ImportTenderUseCase';
+import { ImportSalesOrderCsvUseCase } from '../../application/use-cases/tender/ImportSalesOrderCsvUseCase';
 import { CalculatePositionCostUseCase } from '../../application/use-cases/tender/CalculatePositionCostUseCase';
 import { ITenderRepository } from '../../domain/repositories/ITenderRepository';
 import { IPositionRepository } from '../../domain/repositories/IPositionRepository';
@@ -16,12 +17,88 @@ const smtp = new SmtpMailService();
 export class TenderController {
     constructor(
         private importTenderUseCase: ImportTenderUseCase,
+        private importSalesOrderCsvUseCase: ImportSalesOrderCsvUseCase,
         private calculatePositionCostUseCase: CalculatePositionCostUseCase,
         private tenderRepository: ITenderRepository,
         private positionRepository: IPositionRepository,
         private customerActivityRepo: ICustomerActivityRepository,
         private tenderLogRepo: TenderActivityLogRepository
     ) {}
+
+    private normalizeTenderRef(value?: string) {
+        const raw = String(value || '').trim();
+        try {
+            return decodeURIComponent(raw).trim();
+        } catch {
+            return raw;
+        }
+    }
+
+    private async tenantRootId(tenantId: string): Promise<string | null> {
+        let current = await (prisma as any).tenant.findUnique({
+            where: { id: tenantId },
+            select: { id: true, parentTenantId: true, isActive: true }
+        });
+        if (!current?.isActive) return null;
+
+        for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
+            const parent = await (prisma as any).tenant.findUnique({
+                where: { id: current.parentTenantId },
+                select: { id: true, parentTenantId: true, isActive: true }
+            });
+            if (!parent?.isActive) return null;
+            current = parent;
+        }
+
+        return current.id;
+    }
+
+    private async canAccessTenant(targetTenantId: string, requestTenantId: string) {
+        if (targetTenantId === requestTenantId) return true;
+        const [targetRootId, requestRootId] = await Promise.all([
+            this.tenantRootId(targetTenantId),
+            this.tenantRootId(requestTenantId)
+        ]);
+        return Boolean(targetRootId && requestRootId && targetRootId === requestRootId);
+    }
+
+    private async findTenderForTenant(rawRef: string, tenantId: string) {
+        const tenderRef = this.normalizeTenderRef(rawRef);
+        if (!tenderRef) return null;
+
+        const byId = await this.tenderRepository.findById(tenderRef);
+        if (byId && await this.canAccessTenant(byId.tenantId, tenantId)) return byId;
+
+        const byNumber = await (prisma as any).tender.findMany({
+            where: { tenderNumber: tenderRef },
+            take: 50,
+            select: { id: true, tenantId: true }
+        });
+        for (const candidate of byNumber) {
+            if (await this.canAccessTenant(candidate.tenantId, tenantId)) {
+                return this.tenderRepository.findById(candidate.id);
+            }
+        }
+        return null;
+    }
+
+    private async findCustomerForTenant(customerId: string, tenantId: string) {
+        const customer = await (prisma as any).customer.findUnique({
+            where: { id: customerId },
+            select: {
+                id: true,
+                tenantId: true,
+                companyName: true,
+                address: true,
+                mainEmail: true,
+                mainPhone: true,
+                taxNumber: true
+            }
+        });
+        if (!customer) return null;
+        if (!await this.canAccessTenant(customer.tenantId, tenantId)) return null;
+        return customer;
+    }
 
     async list(req: Request, res: Response) {
         try {
@@ -46,17 +123,21 @@ export class TenderController {
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
 
-            if (!customerId || !tenderNumber || !format) {
-                return res.status(400).json({ error: "Müşteri ID, teklif numarası ve format zorunludur." });
+            if (!tenderNumber || !format) {
+                return res.status(400).json({ error: "Teklif numarası ve format zorunludur." });
             }
             if (format !== 'SIA451' && format !== 'CRBX') {
                 return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
+            }
+            if (customerId) {
+                const customer = await this.findCustomerForTenant(customerId, tenantId);
+                if (!customer) return res.status(404).json({ error: "Müşteri bulunamadı." });
             }
 
             const tender = await this.tenderRepository.create({
                 id: nanoid(10),
                 tenantId,
-                customerId,
+                customerId: customerId || null,
                 tenderNumber,
                 version: 1,
                 format,
@@ -65,13 +146,26 @@ export class TenderController {
                 validUntil: validUntil ? new Date(validUntil) : null
             });
 
-            await this.customerActivityRepo.create({
-                customerId,
+            if (customerId) {
+                await this.customerActivityRepo.create({
+                    customerId,
+                    employeeId,
+                    activityType: "TENDER_CREATED",
+                    description: `${tenderNumber} numaralı yeni teklif oluşturuldu (manuel). Versiyon: 1`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
+
+            await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId: tender.id,
                 employeeId,
-                activityType: "TENDER_CREATED",
-                description: `${tenderNumber} numaralı yeni teklif oluşturuldu (manuel). Versiyon: 1`,
-                referenceId: tender.id,
-                activityDate: new Date()
+                actionType: "TENDER_CREATED",
+                fieldName: null,
+                oldValue: null,
+                newValue: tenderNumber,
+                description: `${tenderNumber} numaralı teklif oluşturuldu.`
             });
 
             res.status(201).json(tender);
@@ -86,33 +180,120 @@ export class TenderController {
             const tenantId = (req as any).user!.tenantId;
             const {
                 positionNumber, shortDescription, longDescription,
-                quantity, unit, npkCode, hierarchyLevel, parentPositionId
+                quantity, unit, npkCode, parentPositionId,
+                rowType, sourceArticleId, displayOrder, unitPrice, discount, taxRate, imageUrl
             } = req.body;
-
-            if (!positionNumber || !shortDescription) {
-                return res.status(400).json({ error: "Pozisyon numarası ve kısa açıklama zorunludur." });
-            }
 
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
+            if (tender.tenantId !== tenantId) return res.status(404).json({ error: "Teklif bulunamadı." });
             if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak (Draft) teklifler üzerinde pozisyon eklenebilir." });
+                return res.status(403).json({ error: "Sadece taslak teklifler üzerinde satır eklenebilir." });
             }
+
+            const normalizedRowType = String(rowType || 'SECTION').toUpperCase();
+            const allowedRowTypes = new Set(['SECTION', 'TITLE', 'DESCRIPTION', 'PRODUCT', 'CUSTOM']);
+            const safeRowType = allowedRowTypes.has(normalizedRowType) ? normalizedRowType : 'SECTION';
+            const requestedParentPositionId = parentPositionId || null;
+            const parent = requestedParentPositionId
+                ? await (prisma as any).position.findFirst({
+                    where: { id: requestedParentPositionId, tenderId, tenantId },
+                    select: { id: true, positionNumber: true, hierarchyLevel: true }
+                })
+                : null;
+            if (requestedParentPositionId && !parent) {
+                return res.status(404).json({ error: "Üst satır bulunamadı." });
+            }
+            const effectiveParentPositionId = parent?.id || null;
+            const effectiveHierarchyLevel = parent ? Number(parent.hierarchyLevel || 0) + 1 : 0;
+
+            const siblingMax = await (prisma as any).position.aggregate({
+                where: { tenderId, parentPositionId: effectiveParentPositionId },
+                _max: { displayOrder: true }
+            });
+            const nextDisplayOrder = displayOrder !== undefined
+                ? Number(displayOrder) || 0
+                : Number(siblingMax._max.displayOrder ?? 0) + 1000;
+            const siblingCount = await (prisma as any).position.count({
+                where: { tenderId, parentPositionId: effectiveParentPositionId }
+            });
+            const internalPositionNumber = positionNumber
+                || (parent ? `${parent.positionNumber}.${siblingCount + 1}` : String((siblingCount + 1) * 100));
+
+            const sourceArticle = safeRowType === 'PRODUCT' && sourceArticleId
+                ? await (prisma as any).article.findFirst({
+                    where: { id: sourceArticleId, tenantId },
+                    select: {
+                        id: true,
+                        articleCode: true,
+                        name: true,
+                        description: true,
+                        baseCost: true,
+                        salePrice: true,
+                        unit: true,
+                        imageUrl: true,
+                    }
+                })
+                : null;
+            if (safeRowType === 'PRODUCT' && sourceArticleId && !sourceArticle) {
+                return res.status(404).json({ error: "Stok ürünü bulunamadı." });
+            }
+
+            const defaults: Record<string, string> = {
+                SECTION: "Yeni bölüm",
+                TITLE: "Başlık",
+                DESCRIPTION: "Yeni satır",
+                PRODUCT: sourceArticle?.name || "Ürün",
+                CUSTOM: "Yeni satır",
+            };
+            const isProduct = safeRowType === 'PRODUCT';
+            const isPricedRow = safeRowType === 'PRODUCT' || safeRowType === 'CUSTOM';
+            const canHaveImage = isPricedRow || safeRowType === 'DESCRIPTION';
+            const hasExplicitShortDescription = shortDescription !== undefined && shortDescription !== null;
+            const cleanedShortDescription = hasExplicitShortDescription ? String(shortDescription).trim() : "";
+            const resolvedShortDescription = isProduct
+                ? (sourceArticle?.name || cleanedShortDescription || defaults.PRODUCT)
+                : (hasExplicitShortDescription ? cleanedShortDescription : defaults[safeRowType]);
+            const resolvedLongDescription = isProduct
+                ? (sourceArticle?.description || longDescription || null)
+                : (longDescription !== undefined ? (longDescription || null) : null);
+            const resolvedUnit = isPricedRow
+                ? (isProduct ? (sourceArticle?.unit || unit || null) : (unit || null))
+                : null;
+            const resolvedUnitPrice = !isPricedRow
+                ? null
+                : (isProduct && sourceArticle
+                    ? (unitPrice !== undefined && unitPrice !== null
+                        ? Number(unitPrice)
+                        : (Number(sourceArticle.salePrice || 0) > 0 ? Number(sourceArticle.salePrice || 0) : Number(sourceArticle.baseCost || 0)))
+                    : (unitPrice !== undefined ? (unitPrice === null ? null : Number(unitPrice)) : null));
+            const resolvedImageUrl = canHaveImage
+                ? (isProduct
+                    ? (sourceArticle?.imageUrl || imageUrl || null)
+                    : (imageUrl !== undefined ? (imageUrl || null) : null))
+                : null;
 
             const newPosId = nanoid(10);
             await this.positionRepository.createMany([{
                 id: newPosId,
                 tenantId,
                 tenderId,
-                parentPositionId: parentPositionId || null,
-                positionNumber,
-                shortDescription,
-                longDescription: longDescription || null,
-                quantity: Number(quantity ?? 0),
-                unit: unit || null,
+                parentPositionId: effectiveParentPositionId,
+                rowType: safeRowType,
+                sourceArticleId: isProduct ? (sourceArticle?.id || sourceArticleId || null) : null,
+                displayOrder: nextDisplayOrder,
+                positionNumber: internalPositionNumber,
+                shortDescription: resolvedShortDescription,
+                longDescription: resolvedLongDescription,
+                quantity: isPricedRow ? Number(quantity ?? (isProduct ? 1 : 0)) : 0,
+                unit: resolvedUnit,
                 npkCode: npkCode || null,
-                hierarchyLevel: Number(hierarchyLevel ?? 0)
-            }]);
+                hierarchyLevel: effectiveHierarchyLevel,
+                unitPrice: resolvedUnitPrice,
+                discount: isPricedRow && discount !== undefined ? Number(discount || 0) : 0,
+                taxRate: isPricedRow && taxRate !== undefined ? Number(taxRate || 0) : 0,
+                imageUrl: resolvedImageUrl,
+            } as any]);
 
             await this.tenderLogRepo.create({
                 tenantId,
@@ -122,11 +303,94 @@ export class TenderController {
                 actionType: "POSITION_CREATED",
                 fieldName: null,
                 oldValue: null,
-                newValue: shortDescription,
-                description: `${positionNumber} pozisyonu eklendi: ${shortDescription}`
+                newValue: resolvedShortDescription || defaults[safeRowType],
+                description: `${isProduct ? 'Ürün' : 'Satır'} eklendi: ${resolvedShortDescription || defaults[safeRowType]}`
             });
 
-            res.status(201).json({ message: "Pozisyon eklendi.", positionId: newPosId });
+            const created = await this.positionRepository.findById(newPosId, { includeImages: true });
+            res.status(201).json({ message: "Satır eklendi.", positionId: newPosId, position: created });
+        } catch (error: any) {
+            console.error('[addPosition] error:', error);
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async updateMeta(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const { customerId, format, validUntil } = req.body;
+
+            const tender = await this.tenderRepository.findById(tenderId);
+            if (!tender || !await this.canAccessTenant(tender.tenantId, tenantId)) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+            if (tender.status !== "Draft") {
+                return res.status(403).json({ error: "Sadece taslak teklif bilgileri düzenlenebilir." });
+            }
+
+            const data: any = {};
+            if (format !== undefined) {
+                if (format !== "SIA451" && format !== "CRBX") {
+                    return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
+                }
+                data.format = format;
+            }
+            if (validUntil !== undefined) {
+                data.validUntil = validUntil ? new Date(validUntil) : null;
+            }
+            if (customerId !== undefined) {
+                if (customerId) {
+                    const customer = await this.findCustomerForTenant(customerId, tenantId);
+                    if (!customer) return res.status(404).json({ error: "Müşteri bulunamadı." });
+                    data.customerId = customer.id;
+                } else {
+                    data.customerId = null;
+                }
+            }
+            if (Object.keys(data).length === 0) {
+                return res.status(400).json({ error: "Güncellenecek alan bulunamadı." });
+            }
+
+            await (prisma as any).tender.update({
+                where: { id: tender.id },
+                data
+            });
+
+            if (data.customerId) {
+                await (prisma as any).offerScheduleSlot.updateMany({
+                    where: { tenderId: tender.id },
+                    data: { customerId: data.customerId }
+                });
+            }
+
+            if (data.customerId && data.customerId !== tender.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: data.customerId,
+                    employeeId,
+                    activityType: "TENDER_CUSTOMER_CHANGED",
+                    description: `${tender.tenderNumber} numaralı taslak teklif bu müşteriye bağlandı.`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
+
+            if (customerId !== undefined && data.customerId !== tender.customerId) {
+                await this.tenderLogRepo.create({
+                    tenantId: tender.tenantId,
+                    tenderId: tender.id,
+                    employeeId,
+                    actionType: "TENDER_META_UPDATED",
+                    fieldName: "customerId",
+                    oldValue: tender.customerId || null,
+                    newValue: data.customerId || null,
+                    description: "Teklif müşterisi güncellendi."
+                });
+            }
+
+            const updated = await this.tenderRepository.findById(tender.id);
+            res.status(200).json(updated);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -141,36 +405,61 @@ export class TenderController {
             const {
                 shortDescription, longDescription, quantity, unit,
                 unitPrice, discount, taxRate, imageUrl, npkCode,
+                rowType, sourceArticleId, displayOrder,
             } = req.body;
 
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak tekliflerdeki pozisyonlar güncellenebilir." });
+                return res.status(403).json({ error: "Sadece taslak tekliflerdeki satırlar güncellenebilir." });
             }
 
             const before = await this.positionRepository.findById(positionId);
-            if (!before) return res.status(404).json({ error: "Pozisyon bulunamadı." });
+            if (!before) return res.status(404).json({ error: "Satır bulunamadı." });
+            if (before.tenderId !== tenderId || before.tenantId !== tenantId) {
+                return res.status(404).json({ error: "Satır bu teklife ait değil." });
+            }
+
+            const targetRowType = rowType !== undefined
+                ? String(rowType || '').toUpperCase()
+                : String((before as any).rowType || 'SECTION').toUpperCase();
+            const targetCanPrice = targetRowType === 'PRODUCT' || targetRowType === 'CUSTOM';
+            const targetCanHaveImage = targetCanPrice || targetRowType === 'DESCRIPTION';
 
             const patch: any = {};
             if (shortDescription !== undefined) patch.shortDescription = shortDescription;
             if (longDescription !== undefined) patch.longDescription = longDescription;
-            if (quantity !== undefined) patch.quantity = Number(quantity);
-            if (unit !== undefined) patch.unit = unit;
-            if (unitPrice !== undefined) patch.unitPrice = unitPrice === null ? null : Number(unitPrice);
-            if (discount !== undefined) patch.discount = discount === null ? null : Number(discount);
-            if (taxRate !== undefined) patch.taxRate = taxRate === null ? null : Number(taxRate);
-            if (imageUrl !== undefined) patch.imageUrl = imageUrl;
+            if (targetCanPrice) {
+                if (quantity !== undefined) patch.quantity = Number(quantity);
+                if (unit !== undefined) patch.unit = unit;
+                if (unitPrice !== undefined) patch.unitPrice = unitPrice === null ? null : Number(unitPrice);
+                if (discount !== undefined) patch.discount = discount === null ? null : Number(discount);
+                if (taxRate !== undefined) patch.taxRate = taxRate === null ? null : Number(taxRate);
+            } else {
+                patch.quantity = 0;
+                patch.unit = null;
+                patch.unitPrice = null;
+                patch.discount = 0;
+                patch.taxRate = 0;
+            }
+            if (imageUrl !== undefined) patch.imageUrl = targetCanHaveImage ? (imageUrl || null) : null;
+            if (rowType !== undefined && !targetCanHaveImage) patch.imageUrl = null;
             if (npkCode !== undefined) patch.npkCode = npkCode;
+            if (rowType !== undefined) patch.rowType = targetRowType;
+            if (sourceArticleId !== undefined || !targetCanPrice) {
+                patch.sourceArticleId = targetRowType === 'PRODUCT' ? (sourceArticleId || null) : null;
+            }
+            if (displayOrder !== undefined) patch.displayOrder = Number(displayOrder);
 
             const updated = await this.positionRepository.updatePosition(positionId, patch);
 
             // When manual pricing is set, sync totalCalculatedPrice
             // without overwriting existing cost breakdown (material/labor/overhead/risk/profit).
-            const pricingChanged =
+            const pricingChanged = targetCanPrice && (
                 quantity !== undefined ||
                 unitPrice !== undefined ||
-                discount !== undefined;
+                discount !== undefined
+            );
 
             if (pricingChanged) {
                 const qty = Number(updated.quantity ?? 0);
@@ -209,14 +498,17 @@ export class TenderController {
 
             const labels: Record<string, string> = {
                 shortDescription: "Açıklama",
-                longDescription: "Uzun açıklama",
+                longDescription: "Satır içeriği",
                 quantity: "Miktar",
                 unit: "Birim",
                 unitPrice: "Birim fiyat",
                 discount: "İndirim",
                 taxRate: "KDV",
                 imageUrl: "Görsel",
-                npkCode: "NPK kodu",
+                npkCode: "Eski kod",
+                rowType: "Satır tipi",
+                sourceArticleId: "Kaynak ürün",
+                displayOrder: "Sıra",
             };
             const priceFields = ['quantity', 'unitPrice', 'discount', 'taxRate'];
             const changedLogs = Object.keys(patch)
@@ -280,7 +572,7 @@ export class TenderController {
             const costs = req.body; 
 
             if (!tenderId || !positionId) {
-                return res.status(400).json({ error: "İhale ID ve Pozisyon ID zorunludur." });
+                return res.status(400).json({ error: "İhale ID ve satır ID zorunludur." });
             }
 
             const result = await this.calculatePositionCostUseCase.execute(positionId, tenderId, costs);
@@ -317,13 +609,26 @@ export class TenderController {
             const approvedTender = await this.tenderRepository.updateStatus(tenderId, 'Approved');
             
             // CRM Zaman Çizelgesine Otomatik Düş!
-            await this.customerActivityRepo.create({
-                customerId: tender.customerId,
-                employeeId: employeeId,
-                activityType: "TENDER_APPROVED",
-                description: `${tender.tenderNumber} numaralı teklif onaylandı ve fiyatları kilitlendi.`,
-                referenceId: tender.id,
-                activityDate: new Date()
+            if (tender.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: tender.customerId,
+                    employeeId: employeeId,
+                    activityType: "TENDER_APPROVED",
+                    description: `${tender.tenderNumber} numaralı teklif onaylandı ve fiyatları kilitlendi.`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
+
+            await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId,
+                employeeId,
+                actionType: "TENDER_APPROVED",
+                fieldName: null,
+                oldValue: tender.status,
+                newValue: "Approved",
+                description: `${tender.tenderNumber} numaralı teklif onaylandı.`
             });
 
             res.status(200).json({ message: "İhale onaylandı.", tender: approvedTender });
@@ -338,6 +643,9 @@ export class TenderController {
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender || tender.tenantId !== (req as any).user!.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+            if (!tender.customerId) {
+                return res.status(400).json({ error: "Saat planı eklemeden önce müşteri seçin." });
             }
 
             const slots = await (prisma as any).offerScheduleSlot.findMany({
@@ -518,14 +826,16 @@ export class TenderController {
                 }
             });
 
-            await this.customerActivityRepo.create({
-                customerId: tender.customerId,
-                employeeId: (req as any).user!.id,
-                activityType: "OFFER_MAIL_SENT",
-                description: `${tender.tenderNumber} teklif PDF'i randevu saatleriyle birlikte ${to} adresine gönderildi.`,
-                referenceId: tender.id,
-                activityDate: new Date()
-            });
+            if (tender.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: tender.customerId,
+                    employeeId: (req as any).user!.id,
+                    activityType: "OFFER_MAIL_SENT",
+                    description: `${tender.tenderNumber} teklif PDF'i randevu saatleriyle birlikte ${to} adresine gönderildi.`,
+                    referenceId: tender.id,
+                    activityDate: new Date()
+                });
+            }
 
             res.status(200).json({
                 message: result.preview ? "SMTP ayarı olmadığı için teklif maili önizleme olarak hazırlandı." : "Teklif maili gönderildi.",
@@ -632,7 +942,7 @@ export class TenderController {
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak tekliflerdeki pozisyonlar silinebilir." });
+                return res.status(403).json({ error: "Sadece taslak tekliflerdeki satırlar silinebilir." });
             }
 
             const before = await this.positionRepository.findById(positionId);
@@ -646,9 +956,9 @@ export class TenderController {
                 fieldName: null,
                 oldValue: before?.shortDescription ?? positionId,
                 newValue: null,
-                description: `${before?.positionNumber ?? ''} ${before?.shortDescription ?? 'Pozisyon'} silindi.`
+                description: `${before?.shortDescription ?? 'Satır'} silindi.`
             });
-            res.status(200).json({ message: "Pozisyon silindi." });
+            res.status(200).json({ message: "Satır silindi." });
         } catch (error: any) {
             console.error('[deletePosition] error:', error);
             res.status(400).json({ error: error.message });
@@ -670,6 +980,169 @@ export class TenderController {
             const tenderId = req.params.id as string;
             const logs = await this.tenderLogRepo.findByTender(tenderId);
             res.status(200).json(logs);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async importSalesOrderCsv(req: Request, res: Response) {
+        try {
+            const { csvContent, fileName } = req.body;
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+
+            if (!csvContent || typeof csvContent !== "string") {
+                return res.status(400).json({ error: "CSV içeriği zorunludur." });
+            }
+
+            const result = await this.importSalesOrderCsvUseCase.execute({
+                tenantId,
+                employeeId,
+                csvContent,
+                fileName: fileName || null,
+            });
+            res.status(201).json({
+                message: "Satış siparişi CSV dosyası içe aktarıldı.",
+                tender: result.tenders[0] || null,
+                tenders: result.tenders,
+                summary: result.summary,
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getChatterSummary(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const [noteCount, documentCount, logCount] = await prisma.$transaction([
+                prisma.tenderActivityLog.count({
+                    where: { tenderId: tender.id, actionType: "TENDER_NOTE" }
+                }),
+                prisma.document.count({
+                    where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: "TENDER" }
+                }),
+                prisma.tenderActivityLog.count({
+                    where: { tenderId: tender.id }
+                })
+            ]);
+
+            res.status(200).json({ noteCount, documentCount, logCount });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async addNote(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const noteText = String(req.body.noteText || "").trim();
+
+            if (!noteText) return res.status(400).json({ error: "Not içeriği boş olamaz." });
+
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const log = await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId: tender.id,
+                employeeId,
+                actionType: "TENDER_NOTE",
+                fieldName: "note",
+                oldValue: null,
+                newValue: noteText,
+                description: noteText
+            });
+
+            res.status(201).json(log);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getDocuments(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const documents = await prisma.document.findMany({
+                where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: "TENDER" },
+                orderBy: { fileName: "asc" }
+            });
+            res.status(200).json(documents);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async addDocument(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const fileName = String(req.body.fileName || "").trim();
+            const fileUrl = String(req.body.fileUrl || "").trim();
+            const fileType = String(req.body.fileType || "").trim().toLowerCase();
+            const category = String(req.body.category || "tender").trim() || "tender";
+
+            if (!fileName || !fileUrl || !fileType) {
+                return res.status(400).json({ error: "Dosya adı, URL ve tür zorunludur." });
+            }
+            const allowed = fileType === "application/pdf"
+                || fileType === "image/png"
+                || fileType === "image/jpeg"
+                || /\.pdf$/i.test(fileName)
+                || /\.png$/i.test(fileName)
+                || /\.jpe?g$/i.test(fileName);
+            if (!allowed) {
+                return res.status(400).json({ error: "Sadece PDF, PNG veya JPG dosyası eklenebilir." });
+            }
+
+            const tender = await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+
+            const document = await prisma.document.create({
+                data: {
+                    id: nanoid(8),
+                    tenantId: tender.tenantId,
+                    relatedEntityId: tender.id,
+                    entityType: "TENDER",
+                    fileName,
+                    fileUrl,
+                    fileType,
+                    category,
+                    uploadedByEmployeeId: employeeId
+                }
+            });
+
+            await this.tenderLogRepo.create({
+                tenantId: tender.tenantId,
+                tenderId: tender.id,
+                employeeId,
+                actionType: "TENDER_ATTACHMENT",
+                fieldName: "attachment",
+                oldValue: null,
+                newValue: fileName,
+                description: `Ek dosya eklendi: ${fileName}`
+            });
+
+            res.status(201).json(document);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

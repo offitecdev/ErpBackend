@@ -9,9 +9,40 @@ import { ProjectReportRepository } from '../../infrastructure/repositories/Proje
 import { MaterialRepository } from '../../infrastructure/repositories/MaterialRepository';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
+import { getServiceTenantScope } from './serviceTenantScope';
 import { nanoid } from 'nanoid';
 
 const smtp = new SmtpMailService();
+
+type NotificationPayload = {
+    type: string;
+    title: string;
+    message: string;
+    linkUrl?: string | null;
+    metadata?: unknown;
+};
+
+const startOfDay = (date: Date) => {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+};
+
+const endOfDay = (date: Date) => {
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999);
+    return d;
+};
+
+const normalizeIdList = (value: unknown) =>
+    Array.isArray(value)
+        ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
+        : [];
+
+const formatDateTime = (date: Date) =>
+    date.toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
+
+const PROJECT_EXPENSE_TYPES = ["Nakliye", "Ekipman Kiralama", "Dış hizmetler", "Taşeron", "Diğer"];
 
 export class ProjectController {
     constructor(
@@ -24,6 +55,215 @@ export class ProjectController {
         private reportRepository: ProjectReportRepository,
         private materialRepository: MaterialRepository
     ) {}
+
+    private async resolveProjectSalesOrderId(projectId: string, tenantId: string, rawSalesOrderId?: any): Promise<string | null> {
+        const salesOrderId = String(rawSalesOrderId || '').trim();
+        if (!salesOrderId) return null;
+
+        const salesOrder = await (prisma as any).salesOrder.findFirst({
+            where: { id: salesOrderId, projectId, tenantId },
+            select: { id: true },
+        });
+        if (!salesOrder) throw new Error("Sipariş bu projeye ait değil.");
+        return salesOrder.id;
+    }
+
+    private async notify(input: {
+        tenantId: string;
+        recipientEmployeeId?: string | null;
+        type: string;
+        title: string;
+        message: string;
+        linkUrl?: string | null;
+        metadata?: unknown;
+    }) {
+        await (prisma as any).notification.create({
+            data: {
+                id: nanoid(12),
+                tenantId: input.tenantId,
+                recipientEmployeeId: input.recipientEmployeeId || null,
+                type: input.type,
+                title: input.title,
+                message: input.message,
+                linkUrl: input.linkUrl || null,
+                metadata: input.metadata as any,
+            },
+        });
+    }
+
+    private async notifyMany(tenantId: string, recipientEmployeeIds: string[], payload: NotificationPayload) {
+        for (const recipientEmployeeId of [...new Set(recipientEmployeeIds.filter(Boolean))]) {
+            await this.notify({ tenantId, recipientEmployeeId, ...payload });
+        }
+    }
+
+    private async validateProjectTechnician(technicianId: string | null | undefined, tenantId: string) {
+        const id = String(technicianId || "").trim();
+        if (!id) return null;
+        const tenantIds = await getServiceTenantScope(tenantId);
+        const employee = await (prisma as any).employee.findFirst({
+            where: {
+                id,
+                tenantId: { in: tenantIds },
+                isActive: true,
+                OR: [
+                    { roleName: "Teknisyen" },
+                    { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
+                ],
+            },
+            select: {
+                id: true,
+                tenantId: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+                roleName: true,
+                title: true,
+                employeeRoles: {
+                    select: { role: { select: { roleName: true } } },
+                },
+            },
+        });
+        if (!employee) throw new Error("Seçilen teknisyen bulunamadı.");
+        return employee;
+    }
+
+    private async validateProjectTechnicians(technicianIds: string[], tenantId: string) {
+        const ids = [...new Set(technicianIds.filter(Boolean))];
+        if (!ids.length) return [];
+        const tenantIds = await getServiceTenantScope(tenantId);
+        const employees = await (prisma as any).employee.findMany({
+            where: {
+                id: { in: ids },
+                tenantId: { in: tenantIds },
+                isActive: true,
+                OR: [
+                    { roleName: "Teknisyen" },
+                    { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
+                ],
+            },
+            select: {
+                id: true,
+                tenantId: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+                roleName: true,
+                title: true,
+            },
+        });
+        const found = new Set(employees.map((employee: any) => employee.id));
+        const missing = ids.filter((id) => !found.has(id));
+        if (missing.length) throw new Error("Seçilen teknisyenlerden biri bulunamadı.");
+        const byId = new Map(employees.map((employee: any) => [employee.id, employee]));
+        return ids.map((id) => byId.get(id)).filter(Boolean);
+    }
+
+    private async projectManagerRecipients(project: any) {
+        const ids = [project.managerId].filter(Boolean) as string[];
+        if (ids.length) return ids;
+        const managers = await (prisma as any).employee.findMany({
+            where: {
+                tenantId: project.tenantId,
+                isActive: true,
+                employeeRoles: {
+                    some: {
+                        role: {
+                            permissions: {
+                                some: { permission: { permissionName: "projects.manage" } },
+                            },
+                        },
+                    },
+                },
+            },
+            take: 20,
+            select: { id: true },
+        });
+        return managers.map((employee: any) => employee.id);
+    }
+
+    private async notifyProjectManagers(project: any, payload: NotificationPayload) {
+        const recipientIds = await this.projectManagerRecipients(project);
+        if (recipientIds.length) {
+            await this.notifyMany(project.tenantId, recipientIds, payload);
+        } else {
+            await this.notify({ tenantId: project.tenantId, ...payload });
+        }
+    }
+
+    private async createAddonOrderForParent(project: any, parentSalesOrderId: string, employeeId: string) {
+        const tenantId = project.tenantId;
+        const parentOrder: any = await (prisma as any).salesOrder.findFirst({ where: { id: parentSalesOrderId, projectId: project.id, tenantId } });
+        if (!parentOrder) return null;
+
+        const addons: any[] = await (prisma as any).salesOrder.findMany({
+            where: { parentSalesOrderId, projectId: project.id, tenantId },
+            orderBy: [{ revisionNumber: "desc" }, { createdAt: "desc" }],
+        });
+        const previousAddon = addons[0] || null;
+        const nextRevision = Math.max(0, ...addons.map((order) => Number(order.revisionNumber || 0))) + 1;
+        const createdAtFilter = previousAddon?.createdAt ? { gt: previousAddon.createdAt } : undefined;
+
+        const [expenses, extraMaterials, reports] = await Promise.all([
+            (prisma as any).projectExpense.findMany({
+                where: {
+                    projectId: project.id,
+                    salesOrderId: parentSalesOrderId,
+                    ...(createdAtFilter ? { expenseDate: createdAtFilter } : {}),
+                },
+            }),
+            (prisma as any).projectExtraMaterial.findMany({
+                where: {
+                    projectId: project.id,
+                    salesOrderId: parentSalesOrderId,
+                    ...(createdAtFilter ? { addedAt: createdAtFilter } : {}),
+                },
+            }),
+            (prisma as any).projectReport.findMany({
+                where: {
+                    projectId: project.id,
+                    salesOrderId: parentSalesOrderId,
+                    ...(createdAtFilter ? { reportDate: createdAtFilter } : {}),
+                },
+            }),
+        ]);
+
+        const expenseTotal = expenses.reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0);
+        const materialTotal = extraMaterials.reduce((sum: number, item: any) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0);
+        const overtimeTotal = reports.reduce((sum: number, item: any) => sum + Number(item.overtimeCost || 0), 0);
+        const totalAmount = expenseTotal + materialTotal + overtimeTotal;
+        if (totalAmount <= 0) return null;
+
+        const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
+        const addonOrder = await (prisma as any).salesOrder.create({
+            data: {
+                id: nanoid(10),
+                tenantId,
+                customerId: parentOrder.customerId || project.customerId,
+                tenderId: null,
+                projectId: project.id,
+                parentSalesOrderId,
+                revisionNumber: nextRevision,
+                orderNumber,
+                orderType: "PROJECT_ADDON",
+                status: "ORDERED",
+                totalAmount,
+                createdByEmployeeId: employeeId,
+            },
+            include: {
+                customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
+                tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+            },
+        });
+
+        return {
+            salesOrder: addonOrder,
+            totals: { expenses: expenseTotal, extraMaterials: materialTotal, overtime: overtimeTotal, total: totalAmount },
+        };
+    }
 
     async list(req: Request, res: Response) {
         try {
@@ -39,11 +279,209 @@ export class ProjectController {
         }
     }
 
+    async listTechnicians(req: Request, res: Response) {
+        try {
+            const tenantIds = await getServiceTenantScope(req.user!.tenantId);
+            const technicians = await (prisma as any).employee.findMany({
+                where: {
+                    tenantId: { in: tenantIds },
+                    isActive: true,
+                    OR: [
+                        { roleName: "Teknisyen" },
+                        { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
+                    ],
+                },
+                orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+                select: {
+                    id: true,
+                    tenantId: true,
+                    firstName: true,
+                    lastName: true,
+                    email: true,
+                    phone: true,
+                    title: true,
+                    roleName: true,
+                    employeeRoles: {
+                        select: { role: { select: { roleName: true } } },
+                    },
+                },
+            });
+            res.status(200).json(technicians.map((employee: any) => ({
+                id: employee.id,
+                tenantId: employee.tenantId,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                phone: employee.phone,
+                title: employee.title,
+                roleName: employee.employeeRoles.find((employeeRole: any) =>
+                    employeeRole.role.roleName === "Teknisyen"
+                )?.role.roleName || employee.roleName,
+            })));
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    private tenderMaterialInclude() {
+        return {
+            select: {
+                id: true,
+                tenderNumber: true,
+                status: true,
+                projectId: true,
+                usedMaterials: {
+                    orderBy: { createdAt: "desc" as const },
+                    include: { material: true },
+                },
+                positions: {
+                    select: {
+                        id: true,
+                        positionNumber: true,
+                        shortDescription: true,
+                        materialMappings: {
+                            select: {
+                                id: true,
+                                materialId: true,
+                                quantityMultiplier: true,
+                                discount: true,
+                                material: {
+                                    select: {
+                                        id: true,
+                                        serialId: true,
+                                        name: true,
+                                        stockQuantity: true,
+                                        unitCost: true,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+    }
+
+    private projectInstallationInclude() {
+        return {
+            assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+            technicianAssignments: { orderBy: { assignedAt: "asc" as const }, include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } } },
+            salesOrder: { select: { id: true, orderNumber: true, totalAmount: true, parentSalesOrderId: true, revisionNumber: true, tenderId: true, tender: this.tenderMaterialInclude() } },
+            project: {
+                include: {
+                    customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true, address: true } },
+                    manager: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    tender: this.tenderMaterialInclude(),
+                    salesOrders: {
+                        orderBy: { createdAt: "asc" as const },
+                        select: { id: true, orderNumber: true, totalAmount: true, parentSalesOrderId: true, revisionNumber: true, createdAt: true },
+                    },
+                    reports: {
+                        orderBy: { reportDate: "desc" as const },
+                        include: {
+                            employee: { select: { id: true, firstName: true, lastName: true, email: true } },
+                            images: { orderBy: { createdAt: "asc" as const } },
+                        },
+                    },
+                    expenses: { orderBy: { expenseDate: "desc" as const } },
+                    extraMaterials: { orderBy: { addedAt: "desc" as const }, include: { material: true } },
+                },
+            },
+        };
+    }
+
+    async listMyInstallations(req: Request, res: Response) {
+        try {
+            const now = new Date();
+            const rawStart = req.query.start ? new Date(String(req.query.start)) : new Date(now.getFullYear(), now.getMonth(), 1);
+            const rawEnd = req.query.end ? new Date(String(req.query.end)) : new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59, 999);
+            if (Number.isNaN(rawStart.getTime()) || Number.isNaN(rawEnd.getTime())) {
+                return res.status(400).json({ error: "Geçerli tarih aralığı girin." });
+            }
+            // Date-only params (e.g. "2026-06-17") parse to midnight; widen to cover
+            // the full first/last day so single-day (day view) ranges are not empty.
+            const start = startOfDay(rawStart);
+            const end = endOfDay(rawEnd);
+
+            const appointments = await (prisma as any).appointment.findMany({
+                where: {
+                    tenantId: req.user!.tenantId,
+                    OR: [
+                        { assignedTechId: req.user!.id },
+                        { technicianAssignments: { some: { technicianId: req.user!.id } } },
+                    ],
+                    projectId: { not: null },
+                    status: { in: ["BOOKED", "COMPLETED"] },
+                    startTime: { gte: start },
+                    endTime: { lte: end },
+                },
+                orderBy: { startTime: "asc" },
+                include: this.projectInstallationInclude(),
+            });
+            res.status(200).json(appointments);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Manager-facing list of every order appointment in the tenant for the range
+    // (technicians use listMyInstallations, which scopes to their own assignments).
+    async listAppointments(req: Request, res: Response) {
+        try {
+            const now = new Date();
+            const rawStart = req.query.start ? new Date(String(req.query.start)) : new Date(now.getFullYear(), now.getMonth(), 1);
+            const rawEnd = req.query.end ? new Date(String(req.query.end)) : new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59, 999);
+            if (Number.isNaN(rawStart.getTime()) || Number.isNaN(rawEnd.getTime())) {
+                return res.status(400).json({ error: "Geçerli tarih aralığı girin." });
+            }
+            // Date-only params (e.g. "2026-06-17") parse to midnight; widen to cover
+            // the full first/last day so single-day (day view) ranges are not empty.
+            const start = startOfDay(rawStart);
+            const end = endOfDay(rawEnd);
+
+            const appointments = await (prisma as any).appointment.findMany({
+                where: {
+                    tenantId: req.user!.tenantId,
+                    projectId: { not: null },
+                    status: { in: ["BOOKED", "COMPLETED"] },
+                    startTime: { gte: start },
+                    endTime: { lte: end },
+                },
+                orderBy: { startTime: "asc" },
+                include: this.projectInstallationInclude(),
+            });
+            res.status(200).json(appointments);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getMyInstallation(req: Request, res: Response) {
+        try {
+            const appointment = await (prisma as any).appointment.findFirst({
+                where: {
+                    id: String(req.params.appointmentId || ""),
+                    tenantId: req.user!.tenantId,
+                    OR: [
+                        { assignedTechId: req.user!.id },
+                        { technicianAssignments: { some: { technicianId: req.user!.id } } },
+                    ],
+                    projectId: { not: null },
+                },
+                include: this.projectInstallationInclude(),
+            });
+            if (!appointment) return res.status(404).json({ error: "Montaj randevusu bulunamadı." });
+            res.status(200).json(appointment);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     async getById(req: Request, res: Response) {
         try {
-            const project = await this.projectRepository.findById(req.params.id as string);
-            if (!project || (project as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: "Proje bulunamadi." });
+            const project = await this.projectRepository.findById(req.params.id as string, req.user!.tenantId);
+            if (!project) {
+                return res.status(404).json({ error: "Proje bulunamadı veya seçili şirkette değil." });
             }
             res.status(200).json(project);
         } catch (error: any) {
@@ -55,7 +493,7 @@ export class ProjectController {
         try {
             const project = await this.projectRepository.findById(req.params.id as string);
             if (!project || (project as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: "Proje bulunamadi." });
+                return res.status(404).json({ error: "Proje bulunamadı." });
             }
 
             const allowed = ['projectName', 'managerId', 'status', 'startDate', 'endDate', 'plannedBudget', 'overtimeHourlyRate'];
@@ -79,7 +517,7 @@ export class ProjectController {
         try {
             const project = await this.projectRepository.findById(req.params.id as string);
             if (!project || (project as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: "Proje bulunamadi." });
+                return res.status(404).json({ error: "Proje bulunamadı." });
             }
             if (project.status !== 'AWAITING_APPROVAL') {
                 return res.status(400).json({ error: "Sadece onay bekleyen projeler aktiflestirilebilir." });
@@ -89,6 +527,48 @@ export class ProjectController {
                 startDate: req.body.startDate ? new Date(req.body.startDate) : new Date()
             });
             res.status(200).json({ message: "Proje aktiflestirildi.", project: updated });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Flat list of every field report in the tenant, for the Services > Reports module.
+    async listAllReports(req: Request, res: Response) {
+        try {
+            const tenantId = req.user!.tenantId;
+            const search = String(req.query.search || "").trim();
+            const startRaw = req.query.start ? new Date(String(req.query.start)) : null;
+            const endRaw = req.query.end ? new Date(String(req.query.end)) : null;
+
+            const where: any = { project: { tenantId } };
+            if (startRaw && !Number.isNaN(startRaw.getTime())) {
+                where.workDate = { ...(where.workDate || {}), gte: startOfDay(startRaw) };
+            }
+            if (endRaw && !Number.isNaN(endRaw.getTime())) {
+                where.workDate = { ...(where.workDate || {}), lte: endOfDay(endRaw) };
+            }
+            if (search) {
+                where.OR = [
+                    { project: { is: { projectName: { contains: search } } } },
+                    { project: { is: { customer: { is: { companyName: { contains: search } } } } } },
+                    { operationsDone: { contains: search } },
+                ];
+            }
+
+            const reports = await (prisma as any).projectReport.findMany({
+                where,
+                orderBy: { reportDate: "desc" },
+                take: 500,
+                include: {
+                    project: { select: { id: true, projectName: true, customer: { select: { id: true, companyName: true } } } },
+                    salesOrder: { select: { id: true, orderNumber: true } },
+                    appointment: { select: { id: true, startTime: true, endTime: true } },
+                    employee: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    usedMaterials: { include: { material: true } },
+                    images: { select: { id: true } },
+                },
+            });
+            res.status(200).json(reports);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -109,12 +589,13 @@ export class ProjectController {
             const serialId = String(req.body.serialId || '').trim();
             const unitCost = Number(req.body.unitCost || 0);
             const stockQuantity = Number(req.body.stockQuantity || 0);
+            const imageUrl = req.body.imageUrl ? String(req.body.imageUrl) : null;
 
             if (!name) return res.status(400).json({ error: "Malzeme adi zorunludur." });
             if (!serialId) return res.status(400).json({ error: "Seri kodu zorunludur." });
             if (unitCost < 0 || stockQuantity < 0) return res.status(400).json({ error: "Fiyat ve stok negatif olamaz." });
 
-            const material = await this.materialRepository.createMaterial(req.user!.tenantId, name, serialId, unitCost, stockQuantity);
+            const material = await this.materialRepository.createMaterial(req.user!.tenantId, name, serialId, unitCost, stockQuantity, imageUrl);
             res.status(201).json(material);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
@@ -125,7 +606,7 @@ export class ProjectController {
         try {
             const material = await this.materialRepository.findById(req.params.materialId as string);
             if (!material || (material as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: "Malzeme bulunamadi." });
+                return res.status(404).json({ error: "Malzeme bulunamadı." });
             }
 
             const patch: any = {};
@@ -133,6 +614,7 @@ export class ProjectController {
             if (req.body.serialId !== undefined) patch.serialId = String(req.body.serialId).trim();
             if (req.body.unitCost !== undefined) patch.unitCost = Number(req.body.unitCost);
             if (req.body.stockQuantity !== undefined) patch.stockQuantity = Number(req.body.stockQuantity);
+            if (req.body.imageUrl !== undefined) patch.imageUrl = req.body.imageUrl ? String(req.body.imageUrl) : null;
             if (req.body.isActive !== undefined) patch.isActive = Boolean(req.body.isActive);
 
             if (patch.name === '') return res.status(400).json({ error: "Malzeme adi zorunludur." });
@@ -150,7 +632,7 @@ export class ProjectController {
         try {
             const material = await this.materialRepository.findById(req.params.materialId as string);
             if (!material || (material as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: "Malzeme bulunamadi." });
+                return res.status(404).json({ error: "Malzeme bulunamadı." });
             }
 
             await this.materialRepository.softDeleteMaterial(material.id);
@@ -185,10 +667,10 @@ export class ProjectController {
         try {
             const project = await this.projectRepository.findById(req.params.id as string);
             if (!project || (project as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: "Proje bulunamadi." });
+                return res.status(404).json({ error: "Proje bulunamadı." });
             }
             if (!project.bookingToken) {
-                return res.status(400).json({ error: "Bu proje icin randevu tokeni yok." });
+                return res.status(400).json({ error: "Bu proje için randevu tokeni yok." });
             }
 
             const settings = await prisma.mailSetting.findUnique({ where: { tenantId: req.user!.tenantId } });
@@ -199,7 +681,7 @@ export class ProjectController {
             const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user!.email || "").trim();
             const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";
             const subject = String(req.body.subject || `${project.projectName} - Montaj randevusu`).trim();
-            const message = req.body.message || "Lutfen size uygun montaj saatini secin.";
+            const message = req.body.message || "Lütfen size uygun montaj saatini seçin.";
 
             if (!to) return res.status(400).json({ error: "Alıcı e-posta adresi zorunludur." });
             if (!fromEmail) return res.status(400).json({ error: "Gönderici e-posta adresi zorunludur." });
@@ -207,7 +689,7 @@ export class ProjectController {
             const html = `
                 <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
                     <p>${message}</p>
-                    <p><a href="${bookingLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Randevu saatini sec</a></p>
+                    <p><a href="${bookingLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Randevu saatini seç</a></p>
                     <p style="font-size:12px;color:#64748b">${bookingLink}</p>
                 </div>
             `;
@@ -224,8 +706,8 @@ export class ProjectController {
 
             res.status(200).json({
                 message: result.preview
-                    ? "SMTP ayari olmadigi icin randevu maili onizleme olarak hazirlandi."
-                    : "Randevu maili gonderildi.",
+                    ? "SMTP ayarı olmadığı için randevu maili önizleme olarak hazırlandı."
+                    : "Randevu maili gönderildi.",
                 bookingLink,
                 ...result
             });
@@ -236,14 +718,17 @@ export class ProjectController {
 
     async addReport(req: Request, res: Response) {
         try {
+            const salesOrderId = await this.resolveProjectSalesOrderId(req.params.id as string, req.user!.tenantId, req.body.salesOrderId);
             const input: ReportInput = {
                 projectId: req.params.id as string,
+                salesOrderId,
                 employeeId: (req as any).user!.id,
                 workDate: req.body.workDate,
                 startedAt: req.body.startedAt,
                 endedAt: req.body.endedAt,
                 operationsDone: req.body.operationsDone,
-                technicalNotes: req.body.technicalNotes
+                technicalNotes: req.body.technicalNotes,
+                images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined
             };
 
             const report = await this.addReportUseCase.execute(input);
@@ -265,16 +750,53 @@ export class ProjectController {
 
             const input: ReportInput = {
                 projectId: (report as any).projectId,
+                salesOrderId: await this.resolveProjectSalesOrderId((report as any).projectId, req.user!.tenantId, req.body.salesOrderId || (report as any).salesOrderId),
                 employeeId: (req as any).user!.id,
                 workDate: req.body.workDate,
                 startedAt: req.body.startedAt,
                 endedAt: req.body.endedAt,
                 operationsDone: req.body.operationsDone,
-                technicalNotes: req.body.technicalNotes
+                technicalNotes: req.body.technicalNotes,
+                images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined
             };
 
             const updated = await (this.addReportUseCase as any).update(req.params.reportId as string, input);
             res.status(200).json({ message: "Saha raporu güncellendi.", report: updated });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Append used materials (reportMaterial rows) to an existing field report — used by the inline
+    // "Saha" editor when adding used materials to a report that already exists.
+    async addReportMaterials(req: Request, res: Response) {
+        try {
+            const reportId = req.params.reportId as string;
+            const report: any = await (prisma as any).projectReport.findFirst({
+                where: { id: reportId, project: { tenantId: req.user!.tenantId } },
+                select: { id: true },
+            });
+            if (!report) return res.status(404).json({ error: "Saha raporu bulunamadı." });
+
+            const items = Array.isArray(req.body.materials) ? req.body.materials : [];
+            const rows: any[] = [];
+            for (const item of items) {
+                const quantity = Number(item.quantity || 0);
+                if (!item.materialId || quantity <= 0) continue;
+                const material: any = await this.materialRepository.findById(String(item.materialId));
+                if (!material || material.tenantId !== req.user!.tenantId) continue;
+                rows.push({
+                    id: nanoid(10),
+                    reportId: report.id,
+                    materialId: material.id,
+                    quantity,
+                    costAtTime: Number(material.unitCost || 0),
+                });
+            }
+            if (rows.length) {
+                await (prisma as any).reportMaterial.createMany({ data: rows });
+            }
+            res.status(201).json({ message: "Kullanılan malzemeler eklendi.", count: rows.length });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -291,13 +813,240 @@ export class ProjectController {
         }
     }
 
+    async requestReportSignature(req: Request, res: Response) {
+        try {
+            const reportId = req.params.reportId as string;
+            const channel = String(req.body.channel || "technician");
+            const report: any = await (prisma as any).projectReport.findFirst({
+                where: { id: reportId, project: { tenantId: req.user!.tenantId } },
+                include: {
+                    employee: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    project: { include: { customer: true } },
+                    salesOrder: { select: { orderNumber: true } },
+                },
+            });
+            if (!report) return res.status(404).json({ error: "Saha raporu bulunamadı." });
+
+            const frontendUrl = process.env.OFFITEC_FRONTEND_URL || "http://localhost:5173";
+            const reportLink = `${frontendUrl}/projects/${report.projectId}`;
+            const sent: string[] = [];
+
+            if ((channel === "technician" || channel === "both") && report.employeeId) {
+                await this.notify({
+                    tenantId: req.user!.tenantId,
+                    recipientEmployeeId: report.employeeId,
+                    type: "PROJECT_REPORT_SIGNATURE_REQUEST",
+                    title: "Müşteri imzası tekrar istendi",
+                    message: `${report.project?.projectName || "Proje"} saha raporu için imza alınması gerekiyor.`,
+                    linkUrl: "/projects/installation/tasks",
+                    metadata: { projectId: report.projectId, reportId },
+                });
+                sent.push("technician");
+            }
+
+            if (channel === "mail" || channel === "both") {
+                const settings = await prisma.mailSetting.findUnique({ where: { tenantId: req.user!.tenantId } });
+                const to = String(req.body.to || report.project?.customer?.mainEmail || "").trim();
+                const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user!.email || "").trim();
+                const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";
+                const subject = String(req.body.subject || `${report.project?.projectName || "Proje"} - saha raporu imzası`).trim();
+                const message = String(req.body.message || "Saha raporunuz imza için hazır. Lütfen Offitec ekibiyle birlikte raporu kontrol edip imzalayın.").trim();
+                if (!to) return res.status(400).json({ error: "Müşteri e-posta adresi bulunamadı." });
+                if (!fromEmail) return res.status(400).json({ error: "Gönderici e-posta adresi zorunludur." });
+                await smtp.send(settings || {}, {
+                    fromEmail,
+                    fromName,
+                    to,
+                    subject,
+                    text: `${message}\n\n${reportLink}`,
+                    html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6"><p>${message}</p><p><a href="${reportLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Raporu goruntule</a></p><p style="font-size:12px;color:#64748b">${reportLink}</p></div>`,
+                    replyTo: req.body.replyTo || settings?.replyTo || null,
+                });
+                sent.push("mail");
+            }
+
+            res.status(200).json({ message: "İmza isteği gönderildi.", sent });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async completeInstallation(req: Request, res: Response, options: { allowManagerComplete?: boolean } = {}) {
+        try {
+            const appointmentId = String(req.params.appointmentId || req.body.appointmentId || "");
+            const isManagerCompletion = Boolean(options.allowManagerComplete);
+            const appointment: any = await (prisma as any).appointment.findFirst({
+                where: {
+                    id: appointmentId,
+                    tenantId: req.user!.tenantId,
+                    ...(isManagerCompletion ? {} : {
+                        OR: [
+                            { assignedTechId: req.user!.id },
+                            { technicianAssignments: { some: { technicianId: req.user!.id } } },
+                        ],
+                    }),
+                    projectId: { not: null },
+                },
+                include: {
+                    salesOrder: true,
+                    project: { include: { salesOrders: { orderBy: { createdAt: "asc" } }, customer: true, manager: true } },
+                },
+            });
+            if (!appointment?.project) return res.status(404).json({ error: "Montaj randevusu bulunamadı." });
+            if (startOfDay(new Date(appointment.startTime)).getTime() > startOfDay(new Date()).getTime()) {
+                return res.status(400).json({ error: "Montaj gunu gelmeden rapor kapatilamaz." });
+            }
+
+            const operationItems = Array.isArray(req.body.operationsDoneItems)
+                ? req.body.operationsDoneItems.map(String).map((item: string) => item.trim()).filter(Boolean)
+                : [];
+            const operationsDone = operationItems.length
+                ? operationItems.map((item: string) => `- ${item}`).join("\n")
+                : String(req.body.operationsDone || "").trim()
+                    // Managers can finish directly without filling anything in; record a standard note.
+                    || (isManagerCompletion ? "Saha çalışması yönetici tarafından tamamlandı." : "");
+            if (!operationsDone) return res.status(400).json({ error: "Yapilan isler zorunludur." });
+
+            const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user!.tenantId, appointment.salesOrderId);
+            // Field work belongs to its day: the report may end at the latest by midnight of the appointment day.
+            const dayEnd = endOfDay(new Date(appointment.startTime));
+            let endedAt = req.body.endedAt ? new Date(req.body.endedAt) : new Date();
+            const startedAt = req.body.startedAt ? new Date(req.body.startedAt) : new Date(appointment.startTime);
+            if (Number.isNaN(endedAt.getTime()) || Number.isNaN(startedAt.getTime())) {
+                return res.status(400).json({ error: "Geçerli başlangıç ve bitiş zamanı girin." });
+            }
+            if (endedAt > dayEnd) endedAt = dayEnd;
+
+            const reportEmployeeId = isManagerCompletion ? (appointment.assignedTechId || req.user!.id) : req.user!.id;
+            const workDate = startOfDay(new Date(appointment.startTime));
+            // A day can only hold one field report per order. If one already exists, reuse it and just
+            // close the appointment instead of failing with "a report already exists".
+            const isPrimaryOrder = (appointment.project.salesOrders?.[0]?.id || null) === (salesOrderId || null);
+            const existingReport: any = await this.reportRepository.findByProjectAndWorkDate(
+                appointment.projectId,
+                workDate,
+                salesOrderId ?? undefined,
+                isPrimaryOrder
+            );
+            const reportResult: any = existingReport
+                ? (await this.reportRepository.findById(existingReport.id) || existingReport)
+                : await this.addReportUseCase.execute({
+                    projectId: appointment.projectId,
+                    salesOrderId,
+                    appointmentId: appointment.id,
+                    employeeId: reportEmployeeId,
+                    workDate: workDate.toISOString(),
+                    startedAt: startedAt.toISOString(),
+                    endedAt: endedAt.toISOString(),
+                    operationsDone,
+                    technicalNotes: req.body.technicalNotes,
+                    images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
+                });
+
+            const cleanUsedMaterials = Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : [];
+            const usedMaterialRows: any[] = [];
+            for (const material of cleanUsedMaterials) {
+                const quantity = Number(material.quantity || 0);
+                if (!material.materialId || quantity <= 0) continue;
+                const materialRecord: any = await this.materialRepository.findById(String(material.materialId));
+                if (!materialRecord || materialRecord.tenantId !== req.user!.tenantId) continue;
+                usedMaterialRows.push({
+                    id: nanoid(10),
+                    reportId: reportResult.id,
+                    materialId: materialRecord.id,
+                    quantity,
+                    costAtTime: Number(materialRecord.unitCost || 0),
+                });
+            }
+            if (usedMaterialRows.length) {
+                await (prisma as any).reportMaterial.createMany({ data: usedMaterialRows });
+            }
+
+            const cleanExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+            for (const expense of cleanExpenses) {
+                const amount = Number(expense.amount || 0);
+                if (!expense.expenseType || amount <= 0) continue;
+                await this.addExpenseUseCase.execute(
+                    appointment.projectId,
+                    String(expense.expenseType).trim(),
+                    amount,
+                    expense.description ? String(expense.description).trim() : "",
+                    salesOrderId,
+                    appointment.id
+                );
+            }
+
+            const cleanMaterials = Array.isArray(req.body.materials) ? req.body.materials : [];
+            for (const material of cleanMaterials) {
+                const quantity = Number(material.quantity || 0);
+                if (!material.materialId || quantity <= 0) continue;
+                await this.requestVariationUseCase.execute(
+                    appointment.projectId,
+                    req.user!.id,
+                    String(material.materialId),
+                    quantity,
+                    material.description ? String(material.description).trim() : "",
+                    salesOrderId,
+                    appointment.id
+                );
+            }
+
+            let report = reportResult;
+            const signatureBase64 = typeof req.body.signatureBase64 === "string" ? req.body.signatureBase64 : "";
+            if (signatureBase64) {
+                await this.reportRepository.signReport(reportResult.id, signatureBase64);
+                report = await this.reportRepository.findById(reportResult.id) || reportResult;
+            }
+
+            await (prisma as any).appointment.update({
+                where: { id: appointment.id },
+                data: { status: "COMPLETED" },
+            });
+
+            // Finishing as administrator also approves the report's worked-hours / overtime.
+            if (isManagerCompletion) {
+                await (prisma as any).projectReport.update({
+                    where: { id: reportResult.id },
+                    data: { hoursApprovedAt: new Date(), hoursApprovedById: req.user!.id, autoApproved: false },
+                });
+            }
+
+            const parentSalesOrderId = appointment.salesOrder?.parentSalesOrderId || salesOrderId || appointment.project.salesOrders?.[0]?.id || null;
+            const addon = parentSalesOrderId
+                ? await this.createAddonOrderForParent(appointment.project, parentSalesOrderId, req.user!.id)
+                : null;
+
+            await this.notifyProjectManagers(appointment.project, {
+                type: isManagerCompletion ? "PROJECT_INSTALLATION_MANAGER_COMPLETED" : signatureBase64 ? "PROJECT_INSTALLATION_COMPLETED" : "PROJECT_INSTALLATION_UNSIGNED",
+                title: isManagerCompletion ? "Montaj yönetici tarafından bitirildi" : signatureBase64 ? "Montaj tamamlandı" : "Montaj imzasız geldi",
+                message: isManagerCompletion
+                    ? `${appointment.project.projectName} montajı yönetici tarafından bitirildi.`
+                    : `${appointment.project.projectName} montajı teknisyen tarafından bitirildi${signatureBase64 ? "." : ", müşteri imzası yok."}`,
+                linkUrl: `/projects/${appointment.projectId}`,
+                metadata: { projectId: appointment.projectId, appointmentId: appointment.id, reportId: reportResult.id, addonSalesOrderId: addon?.salesOrder?.id || null },
+            });
+
+            res.status(201).json({
+                message: isManagerCompletion ? "Montaj yönetici tarafından bitirildi." : signatureBase64 ? "Montaj tamamlandı ve imza alındı." : "Montaj imzasız tamamlandı.",
+                report,
+                addonOrder: addon?.salesOrder || null,
+                addonTotals: addon?.totals || null,
+                overtimeWarning: reportResult.overtimeWarning || null,
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     async requestExtraMaterial(req: Request, res: Response) {
         try {
             const projectId = req.params.id as string;
             const employeeId = (req as any).user!.id;
             const { materialId, quantity, description } = req.body;
+            const salesOrderId = await this.resolveProjectSalesOrderId(projectId, req.user!.tenantId, req.body.salesOrderId);
+            const appointmentId = req.body.appointmentId ? String(req.body.appointmentId) : null;
 
-            const extraMaterial = await this.requestVariationUseCase.execute(projectId, employeeId, materialId, quantity, description);
+            const extraMaterial = await this.requestVariationUseCase.execute(projectId, employeeId, materialId, quantity, description, salesOrderId, appointmentId);
             res.status(201).json({ message: "Ek malzeme projeye eklendi.", extraMaterial });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
@@ -321,9 +1070,269 @@ export class ProjectController {
         try {
             const projectId = req.params.id as string;
             const { expenseType, amount, description } = req.body;
+            const salesOrderId = await this.resolveProjectSalesOrderId(projectId, req.user!.tenantId, req.body.salesOrderId);
+            const appointmentId = req.body.appointmentId ? String(req.body.appointmentId) : null;
 
-            const expense = await this.addExpenseUseCase.execute(projectId, expenseType, amount, description);
+            const expense = await this.addExpenseUseCase.execute(projectId, expenseType, amount, description, salesOrderId, appointmentId);
             res.status(201).json({ message: "Harici gider eklendi.", expense });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async updateExpense(req: Request, res: Response) {
+        try {
+            const expense: any = await (prisma as any).projectExpense.findUnique({
+                where: { id: req.params.expenseId as string },
+                include: { project: true },
+            });
+            if (!expense?.project || expense.project.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: "Harici gider bulunamadı." });
+            }
+
+            const patch: any = {};
+            if (req.body.expenseType !== undefined) {
+                const expenseType = String(req.body.expenseType || "").trim();
+                if (!PROJECT_EXPENSE_TYPES.includes(expenseType)) {
+                    return res.status(400).json({ error: "Geçersiz harici gider türü." });
+                }
+                patch.expenseType = expenseType;
+            }
+            if (req.body.amount !== undefined) {
+                const amount = Number(req.body.amount || 0);
+                if (amount <= 0) return res.status(400).json({ error: "Tutar sıfırdan büyük olmalıdır." });
+                patch.amount = amount;
+            }
+            if (req.body.description !== undefined) {
+                patch.description = String(req.body.description || "").trim() || null;
+            }
+            if (req.body.salesOrderId !== undefined) {
+                patch.salesOrderId = await this.resolveProjectSalesOrderId(expense.projectId, req.user!.tenantId, req.body.salesOrderId);
+            }
+
+            const updated = await (prisma as any).projectExpense.update({
+                where: { id: expense.id },
+                data: patch,
+            });
+            res.status(200).json({ message: "Harici gider güncellendi.", expense: updated });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async deleteExpense(req: Request, res: Response) {
+        try {
+            const expense: any = await (prisma as any).projectExpense.findUnique({
+                where: { id: req.params.expenseId as string },
+                include: { project: true },
+            });
+            if (!expense?.project || expense.project.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: "Harici gider bulunamadı." });
+            }
+
+            await (prisma as any).projectExpense.delete({ where: { id: expense.id } });
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async updateExtraMaterial(req: Request, res: Response) {
+        try {
+            const existing: any = await (prisma as any).projectExtraMaterial.findUnique({
+                where: { id: req.params.extraMaterialId as string },
+                include: { project: true, material: true },
+            });
+            if (!existing?.project || existing.project.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: "Ek malzeme bulunamadı." });
+            }
+
+            const materialId = req.body.materialId !== undefined
+                ? String(req.body.materialId || "").trim()
+                : existing.materialId;
+            if (!materialId) return res.status(400).json({ error: "Malzeme seçimi zorunludur." });
+
+            const quantity = req.body.quantity !== undefined ? Number(req.body.quantity || 0) : Number(existing.quantity || 0);
+            if (quantity <= 0) return res.status(400).json({ error: "Miktar sıfırdan büyük olmalıdır." });
+
+            const material: any = await this.materialRepository.findById(materialId);
+            if (!material || material.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: "Malzeme bulunamadı." });
+            }
+
+            const availableQuantity = Number(material.stockQuantity || 0) + (material.id === existing.materialId ? Number(existing.quantity || 0) : 0);
+            if (availableQuantity < quantity) {
+                return res.status(400).json({ error: `[Stok uyarısı] ${material.name} için kayıtlı miktar yetersiz.` });
+            }
+
+            const salesOrderId = req.body.salesOrderId !== undefined
+                ? await this.resolveProjectSalesOrderId(existing.projectId, req.user!.tenantId, req.body.salesOrderId)
+                : existing.salesOrderId;
+            const unitPrice = req.body.unitPrice !== undefined
+                ? Number(req.body.unitPrice || 0)
+                : material.id === existing.materialId
+                    ? Number(existing.unitPrice || 0)
+                    : Number(material.unitCost || 0);
+            if (unitPrice < 0) return res.status(400).json({ error: "Birim fiyat negatif olamaz." });
+            const description = req.body.description !== undefined
+                ? String(req.body.description || "").trim() || null
+                : existing.description;
+
+            const updated = await (prisma as any).$transaction(async (tx: any) => {
+                const previousQuantity = Number(existing.quantity || 0);
+                if (existing.materialId !== material.id) {
+                    await tx.material.update({
+                        where: { id: existing.materialId },
+                        data: { stockQuantity: { increment: previousQuantity } },
+                    });
+                    await tx.material.update({
+                        where: { id: material.id },
+                        data: { stockQuantity: { decrement: quantity } },
+                    });
+                } else {
+                    const diff = quantity - previousQuantity;
+                    if (diff > 0) {
+                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: diff } } });
+                    } else if (diff < 0) {
+                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { increment: Math.abs(diff) } } });
+                    }
+                }
+
+                return await tx.projectExtraMaterial.update({
+                    where: { id: existing.id },
+                    data: {
+                        materialId: material.id,
+                        salesOrderId,
+                        quantity,
+                        unitPrice,
+                        description,
+                    },
+                    include: { material: true },
+                });
+            });
+
+            res.status(200).json({ message: "Ek malzeme güncellendi.", extraMaterial: updated });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async deleteExtraMaterial(req: Request, res: Response) {
+        try {
+            const existing: any = await (prisma as any).projectExtraMaterial.findUnique({
+                where: { id: req.params.extraMaterialId as string },
+                include: { project: true },
+            });
+            if (!existing?.project || existing.project.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: "Ek malzeme bulunamadı." });
+            }
+
+            await (prisma as any).$transaction(async (tx: any) => {
+                await tx.material.update({
+                    where: { id: existing.materialId },
+                    data: { stockQuantity: { increment: Number(existing.quantity || 0) } },
+                });
+                await tx.projectExtraMaterial.delete({ where: { id: existing.id } });
+            });
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async createAddonOrder(req: Request, res: Response) {
+        try {
+            const projectId = req.params.id as string;
+            const tenantId = req.user!.tenantId;
+            const employeeId = req.user!.id;
+            const rawParentSalesOrderId = String(req.body.parentSalesOrderId || req.body.salesOrderId || "").trim();
+            if (!rawParentSalesOrderId) return res.status(400).json({ error: "Bağlı sipariş seçimi zorunludur." });
+
+            const project: any = await this.projectRepository.findById(projectId);
+            if (!project || project.tenantId !== tenantId) {
+                return res.status(404).json({ error: "Proje bulunamadı." });
+            }
+
+            const selectedOrder: any = await (prisma as any).salesOrder.findFirst({
+                where: { id: rawParentSalesOrderId, projectId, tenantId },
+            });
+            if (!selectedOrder) return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
+
+            const parentSalesOrderId = selectedOrder.parentSalesOrderId || selectedOrder.id;
+            const parentOrder: any = selectedOrder.parentSalesOrderId
+                ? await (prisma as any).salesOrder.findFirst({ where: { id: parentSalesOrderId, projectId, tenantId } })
+                : selectedOrder;
+            if (!parentOrder) return res.status(404).json({ error: "Ana sipariş bulunamadı." });
+
+            const addons: any[] = await (prisma as any).salesOrder.findMany({
+                where: { parentSalesOrderId, projectId, tenantId },
+                orderBy: [{ revisionNumber: 'desc' }, { createdAt: 'desc' }],
+            });
+            const previousAddon = addons[0] || null;
+            const nextRevision = Math.max(0, ...addons.map((order) => Number(order.revisionNumber || 0))) + 1;
+            const previousCreatedAt = previousAddon?.createdAt || null;
+            const createdAtFilter = previousCreatedAt ? { gt: previousCreatedAt } : undefined;
+
+            const [expenses, extraMaterials, reports] = await Promise.all([
+                (prisma as any).projectExpense.findMany({
+                    where: {
+                        projectId,
+                        salesOrderId: parentSalesOrderId,
+                        ...(createdAtFilter ? { expenseDate: createdAtFilter } : {}),
+                    },
+                }),
+                (prisma as any).projectExtraMaterial.findMany({
+                    where: {
+                        projectId,
+                        salesOrderId: parentSalesOrderId,
+                        ...(createdAtFilter ? { addedAt: createdAtFilter } : {}),
+                    },
+                }),
+                (prisma as any).projectReport.findMany({
+                    where: {
+                        projectId,
+                        salesOrderId: parentSalesOrderId,
+                        ...(createdAtFilter ? { reportDate: createdAtFilter } : {}),
+                    },
+                }),
+            ]);
+
+            const expenseTotal = expenses.reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0);
+            const materialTotal = extraMaterials.reduce((sum: number, item: any) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0);
+            const overtimeTotal = reports.reduce((sum: number, item: any) => sum + Number(item.overtimeCost || 0), 0);
+            const totalAmount = expenseTotal + materialTotal + overtimeTotal;
+            if (totalAmount <= 0) {
+                return res.status(400).json({ error: "Ek sipariş oluşturmak için son ek siparişten sonra harici gider, ek malzeme veya ek işçilik maliyeti bulunamadı." });
+            }
+
+            const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
+            const addonOrder = await (prisma as any).salesOrder.create({
+                data: {
+                    id: nanoid(10),
+                    tenantId,
+                    customerId: parentOrder.customerId || project.customerId,
+                    tenderId: null,
+                    projectId,
+                    parentSalesOrderId,
+                    revisionNumber: nextRevision,
+                    orderNumber,
+                    orderType: 'PROJECT_ADDON',
+                    status: 'ORDERED',
+                    totalAmount,
+                    createdByEmployeeId: employeeId,
+                },
+                include: {
+                    customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
+                    tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                },
+            });
+
+            res.status(201).json({
+                message: `${orderNumber} ek siparişi oluşturuldu.`,
+                salesOrder: addonOrder,
+                totals: { expenses: expenseTotal, extraMaterials: materialTotal, overtime: overtimeTotal, total: totalAmount },
+            });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -342,13 +1351,120 @@ export class ProjectController {
         };
     }
 
-    private async findProjectAppointmentConflict(projectId: string, startTime: Date, endTime: Date, appointmentId?: string) {
+    // A customer may receive at most one field appointment per calendar day, regardless of project/order.
+    private async findCustomerSameDayAppointment(customerId: string, day: Date, excludeAppointmentId?: string) {
+        if (!customerId) return null;
+        return await (prisma as any).appointment.findFirst({
+            where: {
+                customerId,
+                projectId: { not: null },
+                status: { in: ["BOOKED", "COMPLETED"] },
+                ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
+                startTime: { gte: startOfDay(day), lte: endOfDay(day) },
+            },
+        });
+    }
+
+    private async findProjectAppointmentConflict(projectId: string, startTime: Date, endTime: Date, appointmentId?: string, salesOrderId?: string | null) {
         return await (prisma as any).appointment.findFirst({
             where: {
                 projectId,
+                ...(salesOrderId !== undefined ? { salesOrderId } : {}),
                 ...(appointmentId ? { id: { not: appointmentId } } : {}),
                 startTime: { lt: endTime },
                 endTime: { gt: startTime }
+            }
+        });
+    }
+
+    private async findTechnicianScheduleConflict(technicianIds: string[], startTime: Date, endTime: Date, tenantId: string, appointmentId?: string) {
+        const ids = [...new Set(technicianIds.filter(Boolean))];
+        if (!ids.length) return null;
+        const employeeLabel = (employee: any) => employee ? `${employee.firstName || ""} ${employee.lastName || ""}`.trim() || employee.email || "Teknisyen" : "Teknisyen";
+        const tenantIds = await getServiceTenantScope(tenantId);
+
+        const projectConflict = await (prisma as any).appointment.findFirst({
+            where: {
+                tenantId: tenantIds.length ? { in: tenantIds } : undefined,
+                status: { in: ["BOOKED", "COMPLETED"] },
+                ...(appointmentId ? { id: { not: appointmentId } } : {}),
+                startTime: { lt: endTime },
+                endTime: { gt: startTime },
+                OR: [
+                    { assignedTechId: { in: ids } },
+                    { technicianAssignments: { some: { technicianId: { in: ids } } } },
+                ],
+            },
+            include: {
+                assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true } },
+                technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true } } } },
+                project: { select: { projectName: true } },
+            },
+        });
+        if (projectConflict) {
+            const technicians = [
+                projectConflict.assignedTechnician,
+                ...((projectConflict.technicianAssignments || []).map((assignment: any) => assignment.technician)),
+            ].filter(Boolean);
+            const conflicted = technicians.find((employee: any) => ids.includes(employee.id)) || technicians[0];
+            return {
+                type: "project",
+                message: `${employeeLabel(conflicted)} ${formatDateTime(projectConflict.startTime)} - ${formatDateTime(projectConflict.endTime)} arasında montajda: ${projectConflict.project?.projectName || "Proje montajı"}.`,
+            };
+        }
+
+        const maintenanceConflict = await (prisma as any).maintenanceTask.findFirst({
+            where: {
+                status: { not: "CANCELLED" },
+                scheduledStartTime: { lt: endTime },
+                scheduledEndTime: { gt: startTime },
+                OR: [
+                    { assignedTechId: { in: ids } },
+                    { alternativeTechId: { in: ids } },
+                    { assignments: { some: { technicianId: { in: ids } } } },
+                ],
+            },
+            include: {
+                technician: { select: { id: true, firstName: true, lastName: true, email: true } },
+                alternativeTechnician: { select: { id: true, firstName: true, lastName: true, email: true } },
+                assignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true } } } },
+                contract: { include: { customer: { select: { companyName: true } } } },
+            },
+        });
+        if (maintenanceConflict) {
+            const technicians = [
+                maintenanceConflict.technician,
+                maintenanceConflict.alternativeTechnician,
+                ...((maintenanceConflict.assignments || []).map((assignment: any) => assignment.technician)),
+            ].filter(Boolean);
+            const conflicted = technicians.find((employee: any) => ids.includes(employee.id)) || technicians[0];
+            return {
+                type: "maintenance",
+                message: `${employeeLabel(conflicted)} ${formatDateTime(maintenanceConflict.scheduledStartTime)} - ${formatDateTime(maintenanceConflict.scheduledEndTime)} arasında bakımda: ${maintenanceConflict.contract?.customer?.companyName || maintenanceConflict.contract?.title || "Bakım görevi"}.`,
+            };
+        }
+        return null;
+    }
+
+    private appointmentTechnicianIdsFromBody(body: any, fallbackIds: string[] = []) {
+        if (body.technicianIds !== undefined) return normalizeIdList(body.technicianIds);
+        if (body.assignedTechId !== undefined) return normalizeIdList([body.assignedTechId]);
+        return [...new Set(fallbackIds.filter(Boolean))];
+    }
+
+    private async replaceProjectAppointmentAssignments(appointmentId: string, technicianIds: string[]) {
+        const ids = [...new Set(technicianIds.filter(Boolean))];
+        await (prisma as any).$transaction(async (tx: any) => {
+            await tx.projectAppointmentAssignment.deleteMany({ where: { appointmentId } });
+            if (ids.length) {
+                await tx.projectAppointmentAssignment.createMany({
+                    data: ids.map((technicianId) => ({
+                        id: nanoid(10),
+                        appointmentId,
+                        technicianId,
+                    })),
+                    skipDuplicates: true,
+                });
             }
         });
     }
@@ -361,22 +1477,48 @@ export class ProjectController {
             }
 
             const parsed = this.parseAppointmentBody(req.body);
-            const conflict = await this.findProjectAppointmentConflict(project.id, parsed.startTime, parsed.endTime);
+            const salesOrderId = await this.resolveProjectSalesOrderId(project.id, req.user!.tenantId, req.body.salesOrderId);
+            const sameDayForCustomer = await this.findCustomerSameDayAppointment((project as any).customerId, parsed.startTime);
+            if (sameDayForCustomer) return res.status(409).json({ error: "Bu müşteri için aynı güne ait başka bir randevu var. Bir günde tek randevu verilebilir." });
+            const conflict = await this.findProjectAppointmentConflict(project.id, parsed.startTime, parsed.endTime, undefined, salesOrderId);
             if (conflict) return res.status(409).json({ error: "Bu proje için saat planı çakışıyor." });
+
+            const technicians = await this.validateProjectTechnicians(this.appointmentTechnicianIdsFromBody(req.body), req.user!.tenantId) as any[];
+            const technicianIds = technicians.map((technician: any) => technician.id);
+            const responsibleTechnician = technicians[0] || null;
+            const techConflict = await this.findTechnicianScheduleConflict(technicianIds, parsed.startTime, parsed.endTime, req.user!.tenantId);
+            if (techConflict) return res.status(409).json({ error: techConflict.message });
 
             const appointment = await (prisma as any).appointment.create({
                 data: {
                     id: nanoid(10),
                     tenantId: (project as any).tenantId,
                     projectId: project.id,
+                    salesOrderId,
+                    assignedTechId: responsibleTechnician?.id || null,
                     customerId: (project as any).customerId,
                     startTime: parsed.startTime,
                     endTime: parsed.endTime,
                     notes: parsed.notes ?? null,
                     status: "BOOKED",
                     isLocked: true
+                },
+                include: {
+                    assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+                    technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } } },
                 }
             });
+            await this.replaceProjectAppointmentAssignments(appointment.id, technicianIds);
+
+            if (technicianIds.length) {
+                await this.notifyMany((project as any).tenantId, technicianIds, {
+                    type: "PROJECT_INSTALLATION_ASSIGNED",
+                    title: "Yeni montaj randevusu",
+                    message: `${(project as any).projectName} montajı size atandı.`,
+                    linkUrl: "/projects/installation/calendar",
+                    metadata: { projectId: project.id, appointmentId: appointment.id, salesOrderId },
+                });
+            }
 
             res.status(201).json(appointment);
         } catch (error: any) {
@@ -388,26 +1530,58 @@ export class ProjectController {
         try {
             const appointment = await (prisma as any).appointment.findUnique({
                 where: { id: req.params.appointmentId as string },
-                include: { project: true }
+                include: { project: true, technicianAssignments: true }
             });
             if (!appointment?.project || appointment.project.tenantId !== req.user!.tenantId) {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
 
             const parsed = this.parseAppointmentBody(req.body);
-            const conflict = await this.findProjectAppointmentConflict(appointment.projectId, parsed.startTime, parsed.endTime, appointment.id);
+            const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user!.tenantId, req.body.salesOrderId || appointment.salesOrderId);
+            const sameDayForCustomer = await this.findCustomerSameDayAppointment(appointment.customerId || appointment.project.customerId, parsed.startTime, appointment.id);
+            if (sameDayForCustomer) return res.status(409).json({ error: "Bu müşteri için aynı güne ait başka bir randevu var. Bir günde tek randevu verilebilir." });
+            const conflict = await this.findProjectAppointmentConflict(appointment.projectId, parsed.startTime, parsed.endTime, appointment.id, salesOrderId);
             if (conflict) return res.status(409).json({ error: "Bu proje için saat planı çakışıyor." });
+
+            const fallbackTechnicianIds = [
+                appointment.assignedTechId,
+                ...((appointment.technicianAssignments || []).map((assignment: any) => assignment.technicianId)),
+            ].filter(Boolean);
+            const technicians = await this.validateProjectTechnicians(this.appointmentTechnicianIdsFromBody(req.body, fallbackTechnicianIds), req.user!.tenantId) as any[];
+            const technicianIds = technicians.map((technician: any) => technician.id);
+            const responsibleTechnician = technicians[0] || null;
+            const techConflict = await this.findTechnicianScheduleConflict(technicianIds, parsed.startTime, parsed.endTime, req.user!.tenantId, appointment.id);
+            if (techConflict) return res.status(409).json({ error: techConflict.message });
 
             const updated = await (prisma as any).appointment.update({
                 where: { id: appointment.id },
                 data: {
                     startTime: parsed.startTime,
                     endTime: parsed.endTime,
+                    salesOrderId,
+                    assignedTechId: responsibleTechnician?.id || null,
                     notes: parsed.notes ?? appointment.notes,
                     status: "BOOKED",
                     isLocked: true
+                },
+                include: {
+                    assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+                    technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } } },
                 }
             });
+            await this.replaceProjectAppointmentAssignments(appointment.id, technicianIds);
+
+            const previousIds = new Set(fallbackTechnicianIds);
+            const addedIds = technicianIds.filter((id) => !previousIds.has(id));
+            if (addedIds.length) {
+                await this.notifyMany(appointment.project.tenantId, addedIds, {
+                    type: "PROJECT_INSTALLATION_ASSIGNED",
+                    title: "Montaj randevusu size atandı",
+                    message: `${appointment.project.projectName} montajı için görevlendirildiniz.`,
+                    linkUrl: "/projects/installation/calendar",
+                    metadata: { projectId: appointment.projectId, appointmentId: appointment.id, salesOrderId },
+                });
+            }
 
             res.status(200).json(updated);
         } catch (error: any) {
@@ -425,7 +1599,60 @@ export class ProjectController {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
 
-            await (prisma as any).appointment.delete({ where: { id: appointment.id } });
+            const dayStart = startOfDay(new Date(appointment.startTime));
+            const dayEnd = endOfDay(new Date(appointment.startTime));
+            const fallbackScope = {
+                projectId: appointment.projectId,
+                salesOrderId: appointment.salesOrderId || null,
+                appointmentId: null,
+            };
+
+            await (prisma as any).$transaction(async (tx: any) => {
+                const reports: any[] = await tx.projectReport.findMany({
+                    where: {
+                        OR: [
+                            { appointmentId: appointment.id },
+                            { ...fallbackScope, workDate: { gte: dayStart, lte: dayEnd } },
+                        ],
+                    },
+                    select: { id: true },
+                });
+                const reportIds = reports.map((report) => report.id);
+                if (reportIds.length) {
+                    await tx.reportMaterial.deleteMany({ where: { reportId: { in: reportIds } } });
+                    await tx.projectReport.deleteMany({ where: { id: { in: reportIds } } });
+                }
+
+                await tx.projectExpense.deleteMany({
+                    where: {
+                        OR: [
+                            { appointmentId: appointment.id },
+                            { ...fallbackScope, expenseDate: { gte: dayStart, lte: dayEnd } },
+                        ],
+                    },
+                });
+
+                const extraMaterials: any[] = await tx.projectExtraMaterial.findMany({
+                    where: {
+                        OR: [
+                            { appointmentId: appointment.id },
+                            { ...fallbackScope, addedAt: { gte: dayStart, lte: dayEnd } },
+                        ],
+                    },
+                    select: { id: true, materialId: true, quantity: true },
+                });
+                for (const row of extraMaterials) {
+                    await tx.material.update({
+                        where: { id: row.materialId },
+                        data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                    });
+                }
+                if (extraMaterials.length) {
+                    await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((row) => row.id) } } });
+                }
+
+                await tx.appointment.delete({ where: { id: appointment.id } });
+            });
             res.status(204).send();
         } catch (error: any) {
             res.status(400).json({ error: error.message });

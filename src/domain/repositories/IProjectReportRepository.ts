@@ -6,4 +6,5 @@ export interface IProjectReportRepository {
     getReportsByProjectId(projectId: string): Promise<ProjectReport[]>;
     signReport(reportId: string, signatureBase64: string): Promise<void>;
     addMaterialsToReport(reportId: string, materials: Partial<ReportMaterial>[]): Promise<void>;
+    replaceImages(reportId: string, images: string[], uploadedById?: string | null): Promise<void>;
 }
