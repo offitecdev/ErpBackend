@@ -10,6 +10,7 @@ import { MaterialRepository } from '../../infrastructure/repositories/MaterialRe
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { getServiceTenantScope } from './serviceTenantScope';
+import { findTechnicianScheduleConflict, validateTechnicians } from './technicianSchedule';
 import { nanoid } from 'nanoid';
 
 const smtp = new SmtpMailService();
@@ -130,35 +131,7 @@ export class ProjectController {
     }
 
     private async validateProjectTechnicians(technicianIds: string[], tenantId: string) {
-        const ids = [...new Set(technicianIds.filter(Boolean))];
-        if (!ids.length) return [];
-        const tenantIds = await getServiceTenantScope(tenantId);
-        const employees = await (prisma as any).employee.findMany({
-            where: {
-                id: { in: ids },
-                tenantId: { in: tenantIds },
-                isActive: true,
-                OR: [
-                    { roleName: "Teknisyen" },
-                    { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
-                ],
-            },
-            select: {
-                id: true,
-                tenantId: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-                phone: true,
-                roleName: true,
-                title: true,
-            },
-        });
-        const found = new Set(employees.map((employee: any) => employee.id));
-        const missing = ids.filter((id) => !found.has(id));
-        if (missing.length) throw new Error("Seçilen teknisyenlerden biri bulunamadı.");
-        const byId = new Map(employees.map((employee: any) => [employee.id, employee]));
-        return ids.map((id) => byId.get(id)).filter(Boolean);
+        return validateTechnicians(technicianIds, tenantId);
     }
 
     private async projectManagerRecipients(project: any) {
@@ -1378,72 +1351,7 @@ export class ProjectController {
     }
 
     private async findTechnicianScheduleConflict(technicianIds: string[], startTime: Date, endTime: Date, tenantId: string, appointmentId?: string) {
-        const ids = [...new Set(technicianIds.filter(Boolean))];
-        if (!ids.length) return null;
-        const employeeLabel = (employee: any) => employee ? `${employee.firstName || ""} ${employee.lastName || ""}`.trim() || employee.email || "Teknisyen" : "Teknisyen";
-        const tenantIds = await getServiceTenantScope(tenantId);
-
-        const projectConflict = await (prisma as any).appointment.findFirst({
-            where: {
-                tenantId: tenantIds.length ? { in: tenantIds } : undefined,
-                status: { in: ["BOOKED", "COMPLETED"] },
-                ...(appointmentId ? { id: { not: appointmentId } } : {}),
-                startTime: { lt: endTime },
-                endTime: { gt: startTime },
-                OR: [
-                    { assignedTechId: { in: ids } },
-                    { technicianAssignments: { some: { technicianId: { in: ids } } } },
-                ],
-            },
-            include: {
-                assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true } },
-                technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true } } } },
-                project: { select: { projectName: true } },
-            },
-        });
-        if (projectConflict) {
-            const technicians = [
-                projectConflict.assignedTechnician,
-                ...((projectConflict.technicianAssignments || []).map((assignment: any) => assignment.technician)),
-            ].filter(Boolean);
-            const conflicted = technicians.find((employee: any) => ids.includes(employee.id)) || technicians[0];
-            return {
-                type: "project",
-                message: `${employeeLabel(conflicted)} ${formatDateTime(projectConflict.startTime)} - ${formatDateTime(projectConflict.endTime)} arasında montajda: ${projectConflict.project?.projectName || "Proje montajı"}.`,
-            };
-        }
-
-        const maintenanceConflict = await (prisma as any).maintenanceTask.findFirst({
-            where: {
-                status: { not: "CANCELLED" },
-                scheduledStartTime: { lt: endTime },
-                scheduledEndTime: { gt: startTime },
-                OR: [
-                    { assignedTechId: { in: ids } },
-                    { alternativeTechId: { in: ids } },
-                    { assignments: { some: { technicianId: { in: ids } } } },
-                ],
-            },
-            include: {
-                technician: { select: { id: true, firstName: true, lastName: true, email: true } },
-                alternativeTechnician: { select: { id: true, firstName: true, lastName: true, email: true } },
-                assignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true } } } },
-                contract: { include: { customer: { select: { companyName: true } } } },
-            },
-        });
-        if (maintenanceConflict) {
-            const technicians = [
-                maintenanceConflict.technician,
-                maintenanceConflict.alternativeTechnician,
-                ...((maintenanceConflict.assignments || []).map((assignment: any) => assignment.technician)),
-            ].filter(Boolean);
-            const conflicted = technicians.find((employee: any) => ids.includes(employee.id)) || technicians[0];
-            return {
-                type: "maintenance",
-                message: `${employeeLabel(conflicted)} ${formatDateTime(maintenanceConflict.scheduledStartTime)} - ${formatDateTime(maintenanceConflict.scheduledEndTime)} arasında bakımda: ${maintenanceConflict.contract?.customer?.companyName || maintenanceConflict.contract?.title || "Bakım görevi"}.`,
-            };
-        }
-        return null;
+        return findTechnicianScheduleConflict(technicianIds, startTime, endTime, tenantId, { appointmentId });
     }
 
     private appointmentTechnicianIdsFromBody(body: any, fallbackIds: string[] = []) {
