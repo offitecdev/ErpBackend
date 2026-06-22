@@ -5,6 +5,10 @@ const Module = require('module');
 const { execFileSync } = require('child_process');
 
 const distEntry = path.join(__dirname, 'dist', 'main.js');
+const prismaClientEntry = path.join(__dirname, 'node_modules', '.prisma', 'client', 'index.js');
+const prismaClientDefaultEntry = path.join(__dirname, 'node_modules', '.prisma', 'client', 'default.js');
+const prismaPackageEntry = path.join(__dirname, 'node_modules', '@prisma', 'client', 'default.js');
+const prismaGenerateLock = path.join(__dirname, '.prisma-generate.lock');
 
 function registerNodePaths() {
     const paths = [];
@@ -32,15 +36,99 @@ function registerNodePaths() {
     }
 }
 
-function ensurePrismaClient() {
+function sleep(ms) {
+    const buffer = new SharedArrayBuffer(4);
+    const view = new Int32Array(buffer);
+    Atomics.wait(view, 0, 0, ms);
+}
+
+function hasGeneratedPrismaClient() {
+    return (
+        fs.existsSync(prismaPackageEntry) &&
+        fs.existsSync(prismaClientEntry) &&
+        fs.existsSync(prismaClientDefaultEntry)
+    );
+}
+
+function isMissingPrismaClientError(error) {
+    const message = error && error.message ? error.message : '';
+    const code = error && error.code ? error.code : '';
+
+    return (
+        code === 'MODULE_NOT_FOUND' &&
+        (message.includes('.prisma/client') ||
+            message.includes('.prisma\\client') ||
+            message.includes('@prisma/client') ||
+            message.includes('@prisma\\client'))
+    );
+}
+
+function waitForPrismaClient(timeoutMs = 120000) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+        if (hasGeneratedPrismaClient()) {
+            return true;
+        }
+
+        sleep(500);
+    }
+
+    return hasGeneratedPrismaClient();
+}
+
+function acquirePrismaGenerateLock() {
     try {
-        require('@prisma/client');
+        const lockHandle = fs.openSync(prismaGenerateLock, 'wx');
+        fs.writeFileSync(lockHandle, `${process.pid}\n${new Date().toISOString()}\n`);
+        fs.closeSync(lockHandle);
+        return true;
     } catch (error) {
-        const message = error && error.message ? error.message : '';
-        if (!message.includes('.prisma/client') && !message.includes('@prisma/client') && !message.includes('@prisma\\client')) {
+        if (error && error.code !== 'EEXIST') {
             throw error;
         }
 
+        try {
+            const lockAgeMs = Date.now() - fs.statSync(prismaGenerateLock).mtimeMs;
+            if (lockAgeMs > 120000) {
+                fs.unlinkSync(prismaGenerateLock);
+                return acquirePrismaGenerateLock();
+            }
+        } catch (statError) {
+            if (statError && statError.code === 'ENOENT') {
+                return acquirePrismaGenerateLock();
+            }
+            throw statError;
+        }
+
+        return false;
+    }
+}
+
+function releasePrismaGenerateLock() {
+    try {
+        fs.unlinkSync(prismaGenerateLock);
+    } catch (error) {
+        if (!error || error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+}
+
+function generatePrismaClient() {
+    if (hasGeneratedPrismaClient()) {
+        return;
+    }
+
+    if (!acquirePrismaGenerateLock()) {
+        console.error('[OFFITEC] Prisma Client uretiliyor; mevcut islem bekleniyor...');
+        if (!waitForPrismaClient()) {
+            throw new Error('[OFFITEC] Prisma Client uretilirken zaman asimi olustu.');
+        }
+        return;
+    }
+
+    try {
         console.error('[OFFITEC] Prisma Client bulunamadi. "prisma generate" calistiriliyor...');
         const prismaCli = require.resolve('prisma/build/index.js');
         execFileSync(process.execPath, [prismaCli, 'generate'], {
@@ -48,6 +136,27 @@ function ensurePrismaClient() {
             stdio: 'inherit',
             env: process.env,
         });
+
+        if (!hasGeneratedPrismaClient()) {
+            throw new Error('[OFFITEC] "prisma generate" tamamlandi ancak Prisma Client dosyalari bulunamadi.');
+        }
+
+        console.error('[OFFITEC] Prisma Client olusturuldu.');
+    } finally {
+        releasePrismaGenerateLock();
+    }
+}
+
+function ensurePrismaClient() {
+    try {
+        require('@prisma/client');
+    } catch (error) {
+        if (!isMissingPrismaClientError(error)) {
+            throw error;
+        }
+
+        generatePrismaClient();
+        require('@prisma/client');
     }
 }
 
