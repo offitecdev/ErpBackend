@@ -190,7 +190,7 @@ export async function findTechnicianScheduleConflict(
             ...(exclude.slotId ? { id: { not: exclude.slotId } } : {}),
             startTime: { lt: endTime },
             endTime: { gt: startTime },
-            tender: { is: { project: { is: null } } },
+            tender: { project: { is: null } },
             OR: [
                 { assignedTechId: { in: ids } },
                 { technicianAssignments: { some: { technicianId: { in: ids } } } },
