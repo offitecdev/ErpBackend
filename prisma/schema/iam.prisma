@@ -31,12 +31,9 @@ model Tenant {
   salesOrders            SalesOrder[]
   notifications          Notification[]
   invoices               Invoice[]
-<<<<<<< HEAD
   checklistTemplates     ChecklistTemplate[]
   deliveryReports        DeliveryReport[]
   signatureRequests      SignatureRequest[]
-=======
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 
   @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
 }

@@ -305,7 +305,6 @@ class MaintenanceController {
             const tenantId = req.user.tenantId;
             const employeeId = req.user.id;
             const fallback = defaultRange();
-<<<<<<< HEAD
             const rawStart = req.query.start ? new Date(req.query.start) : fallback.start;
             const rawEnd = req.query.end ? new Date(req.query.end) : fallback.end;
             const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(tenantId);
@@ -317,15 +316,6 @@ class MaintenanceController {
             // so single-day (day view) ranges are not empty.
             const start = startOfDay(rawStart);
             const end = endOfDay(rawEnd);
-=======
-            const start = req.query.start ? new Date(req.query.start) : fallback.start;
-            const end = req.query.end ? new Date(req.query.end) : fallback.end;
-            const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(tenantId);
-            if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-                res.status(400).json({ error: "Tarih araligi gecersiz." });
-                return;
-            }
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
             const tasks = await this.maintenanceRepo.getTasksAssignedToTechnician(tenantIds, employeeId, start, end);
             const approvedTasks = tasks.filter(t => t.managerApprovedAt);
             res.status(200).json(approvedTasks);
@@ -727,7 +717,6 @@ class MaintenanceController {
             res.status(409).json({ error: error.message });
         }
     }
-<<<<<<< HEAD
     async disapprovePublicAppointment(req, res) {
         try {
             const token = String(req.params.token || "");
@@ -762,8 +751,6 @@ class MaintenanceController {
             res.status(400).json({ error: error.message });
         }
     }
-=======
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     async approveAppointmentOption(req, res) {
         try {
             const tenantId = req.user.tenantId;

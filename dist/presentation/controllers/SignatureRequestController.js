@@ -55,24 +55,45 @@ class SignatureRequestController {
             if (!body.snapshot || typeof body.snapshot !== "object") {
                 return res.status(400).json({ error: "Rapor özeti (snapshot) zorunludur." });
             }
+            // A signature may be supplied inline (admin captured it in-app on the
+            // Project Details signature pad) — in that case the request is stored as
+            // already SIGNED and written back to the underlying report.
+            const inlineSignature = body.signatureBase64 ? String(body.signatureBase64) : null;
+            const now = new Date();
+            const reportId = body.reportId ? String(body.reportId) : null;
             const token = (0, nanoid_1.nanoid)(32);
             const request = await prisma_client_1.default.signatureRequest.create({
                 data: {
                     id: (0, nanoid_1.nanoid)(12),
                     tenantId,
                     reportType,
-                    reportId: body.reportId ? String(body.reportId) : null,
+                    reportId,
                     projectId: body.projectId ? String(body.projectId) : null,
                     token,
                     customerEmail: body.customerEmail ? String(body.customerEmail) : null,
                     title: body.title ? String(body.title) : null,
                     snapshot: body.snapshot,
-                    status: "PENDING",
+                    status: inlineSignature ? "SIGNED" : "PENDING",
+                    signatureBase64: inlineSignature,
+                    signedAt: inlineSignature ? now : null,
                 },
             });
+            if (inlineSignature && reportId) {
+                try {
+                    if (reportType === "FIELD") {
+                        await prisma_client_1.default.projectReport.update({ where: { id: reportId }, data: { isSigned: true, customerSignature: inlineSignature, signedAt: now } });
+                    }
+                    else if (reportType === "DELIVERY") {
+                        await prisma_client_1.default.deliveryReport.update({ where: { id: reportId }, data: { isSigned: true, customerSignature: inlineSignature, signedAt: now } });
+                    }
+                }
+                catch (writeErr) {
+                    console.warn("[SignatureRequest] inline write-back failed:", writeErr?.message);
+                }
+            }
             const link = `${frontendUrl()}/report-sign/${token}`;
             let emailed = false;
-            if (body.sendEmail && request.customerEmail) {
+            if (!inlineSignature && body.sendEmail && request.customerEmail) {
                 try {
                     const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId } });
                     const fromEmail = String(body.fromEmail || settings?.fromEmail || req.user.email || "").trim();
@@ -97,7 +118,47 @@ class SignatureRequestController {
                     console.warn("[SignatureRequest] email failed:", mailErr?.message);
                 }
             }
-            res.status(201).json({ ...request, link, emailed });
+            // Optionally notify the assigned technician in-app so they can capture
+            // the customer signature on the technician screen.
+            let notified = false;
+            if (!inlineSignature && body.notifyTechnician) {
+                try {
+                    let techId = null;
+                    if (reportType === "FIELD" && reportId) {
+                        techId = (await prisma_client_1.default.projectReport.findUnique({ where: { id: reportId }, select: { employeeId: true } }))?.employeeId ?? null;
+                    }
+                    else if (reportType === "DELIVERY" && reportId) {
+                        techId = (await prisma_client_1.default.deliveryReport.findUnique({ where: { id: reportId }, select: { employeeId: true } }))?.employeeId ?? null;
+                    }
+                    if (!techId && request.projectId) {
+                        const appt = await prisma_client_1.default.appointment.findFirst({
+                            where: { projectId: request.projectId, assignedTechId: { not: null } },
+                            orderBy: { startTime: "desc" },
+                            select: { assignedTechId: true },
+                        });
+                        techId = appt?.assignedTechId ?? null;
+                    }
+                    if (techId) {
+                        await prisma_client_1.default.notification.create({
+                            data: {
+                                id: (0, nanoid_1.nanoid)(12),
+                                tenantId,
+                                recipientEmployeeId: techId,
+                                type: "REPORT_SIGNATURE_REQUEST",
+                                title: "İmza talebi",
+                                message: `${request.title || "Rapor"} için müşteri imzası alınması gerekiyor.`,
+                                linkUrl: "/projects/installation/tasks",
+                                metadata: { signatureRequestId: request.id, reportType, reportId, projectId: request.projectId },
+                            },
+                        });
+                        notified = true;
+                    }
+                }
+                catch (notifyErr) {
+                    console.warn("[SignatureRequest] technician notify failed:", notifyErr?.message);
+                }
+            }
+            res.status(201).json({ ...request, link, emailed, notified });
         }
         catch (error) {
             res.status(400).json({ error: error.message });

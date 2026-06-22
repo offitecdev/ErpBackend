@@ -31,10 +31,7 @@ const logistics_routes_1 = __importDefault(require("./presentation/routes/logist
 const regie_routes_1 = __importDefault(require("./presentation/routes/regie.routes"));
 const maintenance_routes_1 = __importDefault(require("./presentation/routes/maintenance.routes"));
 const sales_order_routes_1 = __importDefault(require("./presentation/routes/sales-order.routes"));
-<<<<<<< HEAD
 const billing_routes_1 = __importDefault(require("./presentation/routes/billing.routes"));
-=======
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
 const notification_routes_1 = __importDefault(require("./presentation/routes/notification.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const AuthMiddleware_1 = require("./presentation/middlewares/AuthMiddleware");
@@ -278,10 +275,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/tenants`, tenant_routes_1.default);
     app.use(`${prefix}/customers`, customer_routes_1.default);
     app.use(`${prefix}/sales-orders`, sales_order_routes_1.default);
-<<<<<<< HEAD
     app.use(`${prefix}/billing`, billing_routes_1.default);
-=======
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     app.use(`${prefix}/attendance`, attendance_routes_1.default);
     app.use(`${prefix}/roles`, role_routes_1.default);
     app.use(`${prefix}/tenders`, tender_routes_1.default);

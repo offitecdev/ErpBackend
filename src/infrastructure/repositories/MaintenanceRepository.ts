@@ -406,7 +406,6 @@ export class MaintenanceRepository implements IMaintenanceRepository {
         return task as unknown as MaintenanceTask;
     }
 
-<<<<<<< HEAD
     async disapproveAppointmentOptions(taskToken: string): Promise<MaintenanceTask> {
         const task = await prisma.$transaction(async (tx) => {
             const current = await tx.maintenanceTask.findUnique({
@@ -428,8 +427,6 @@ export class MaintenanceRepository implements IMaintenanceRepository {
         return task as unknown as MaintenanceTask;
     }
 
-=======
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
     async approveAppointmentOptionForTask(taskId: string, optionId: string, managerId: string): Promise<MaintenanceTask> {
         const task = await prisma.$transaction(async (tx) => {
             const current = await tx.maintenanceTask.findUnique({

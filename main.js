@@ -34,10 +34,10 @@ function registerNodePaths() {
 
 function ensurePrismaClient() {
     try {
-        require('@prisma/client/default');
+        require('@prisma/client');
     } catch (error) {
         const message = error && error.message ? error.message : '';
-        if (!message.includes('.prisma/client') && !message.includes('@prisma/client')) {
+        if (!message.includes('.prisma/client') && !message.includes('@prisma/client') && !message.includes('@prisma\\client')) {
             throw error;
         }
 

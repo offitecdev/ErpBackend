@@ -113,18 +113,53 @@ class DeliveryReportController {
             }
             const signature = body.signatureBase64 ? String(body.signatureBase64) : null;
             const now = new Date();
+            const projectId = body.projectId ? String(body.projectId) : null;
+            const salesOrderId = body.salesOrderId ? String(body.salesOrderId) : null;
+            const appointmentId = body.appointmentId ? String(body.appointmentId) : null;
+            const checklistTemplateId = body.checklistTemplateId ? String(body.checklistTemplateId) : null;
+            const checklistName = body.checklistName ? String(body.checklistName) : null;
+            const notes = body.notes ? String(body.notes) : null;
+            // One delivery report per order: the technician owns it and re-submitting
+            // updates the existing report instead of creating a duplicate. Scope by
+            // order when available, otherwise by appointment.
+            const dedupeWhere = salesOrderId
+                ? { tenantId, salesOrderId }
+                : appointmentId
+                    ? { tenantId, appointmentId }
+                    : null;
+            const existing = dedupeWhere
+                ? await prisma_client_1.default.deliveryReport.findFirst({ where: dedupeWhere, orderBy: { createdAt: "desc" } })
+                : null;
+            if (existing) {
+                const report = await prisma_client_1.default.deliveryReport.update({
+                    where: { id: existing.id },
+                    data: {
+                        employeeId,
+                        projectId: projectId ?? existing.projectId,
+                        appointmentId: appointmentId ?? existing.appointmentId,
+                        checklistTemplateId,
+                        checklistName,
+                        responses,
+                        notes,
+                        // Only overwrite the signature when a fresh one is supplied.
+                        ...(signature ? { customerSignature: signature, isSigned: true, signedAt: now } : {}),
+                        sentAt: now,
+                    },
+                });
+                return res.status(200).json(report);
+            }
             const report = await prisma_client_1.default.deliveryReport.create({
                 data: {
                     id: (0, nanoid_1.nanoid)(10),
                     tenantId,
                     employeeId,
-                    projectId: body.projectId ? String(body.projectId) : null,
-                    salesOrderId: body.salesOrderId ? String(body.salesOrderId) : null,
-                    appointmentId: body.appointmentId ? String(body.appointmentId) : null,
-                    checklistTemplateId: body.checklistTemplateId ? String(body.checklistTemplateId) : null,
-                    checklistName: body.checklistName ? String(body.checklistName) : null,
+                    projectId,
+                    salesOrderId,
+                    appointmentId,
+                    checklistTemplateId,
+                    checklistName,
                     responses,
-                    notes: body.notes ? String(body.notes) : null,
+                    notes,
                     customerSignature: signature,
                     isSigned: Boolean(signature),
                     signedAt: signature ? now : null,
@@ -132,6 +167,28 @@ class DeliveryReportController {
                 },
             });
             res.status(201).json(report);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /** Admin: edit a delivery report's checklist answers / notes after the technician sent it. */
+    async update(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const body = req.body || {};
+            const existing = await prisma_client_1.default.deliveryReport.findFirst({ where: { id: String(req.params.id), tenantId } });
+            if (!existing)
+                return res.status(404).json({ error: "Teslim raporu bulunamadı." });
+            const report = await prisma_client_1.default.deliveryReport.update({
+                where: { id: existing.id },
+                data: {
+                    responses: body.responses !== undefined ? normalizeResponses(body.responses) : existing.responses,
+                    notes: body.notes !== undefined ? (body.notes ? String(body.notes) : null) : existing.notes,
+                    checklistName: body.checklistName !== undefined ? (body.checklistName ? String(body.checklistName) : null) : existing.checklistName,
+                },
+            });
+            res.status(200).json(report);
         }
         catch (error) {
             res.status(400).json({ error: error.message });

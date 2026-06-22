@@ -222,10 +222,7 @@ class TenderController {
                         name: true,
                         description: true,
                         baseCost: true,
-<<<<<<< HEAD
                         salePrice: true,
-=======
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
                         unit: true,
                         imageUrl: true,
                     }
@@ -258,13 +255,9 @@ class TenderController {
             const resolvedUnitPrice = !isPricedRow
                 ? null
                 : (isProduct && sourceArticle
-<<<<<<< HEAD
                     ? (unitPrice !== undefined && unitPrice !== null
                         ? Number(unitPrice)
                         : (Number(sourceArticle.salePrice || 0) > 0 ? Number(sourceArticle.salePrice || 0) : Number(sourceArticle.baseCost || 0)))
-=======
-                    ? Number(sourceArticle.baseCost || 0)
->>>>>>> 16c911768b897682a1f0e461e228a105fcd606ae
                     : (unitPrice !== undefined ? (unitPrice === null ? null : Number(unitPrice)) : null));
             const resolvedImageUrl = canHaveImage
                 ? (isProduct
