@@ -11,8 +11,22 @@ import { ICustomerActivityRepository } from '../../domain/repositories/ICustomer
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
+import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 
 const smtp = new SmtpMailService();
+
+const normalizeIdList = (value: unknown) =>
+    Array.isArray(value)
+        ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
+        : [];
+
+// Technicians (responsible + additional) are returned the same way the project
+// appointment endpoints return them, so the proposal and project screens render
+// the same shape.
+const OFFER_SLOT_TECHNICIAN_INCLUDE = {
+    assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+    technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } } },
+} as const;
 
 export class TenderController {
     constructor(
@@ -637,6 +651,37 @@ export class TenderController {
         }
     }
 
+    async listTechnicians(req: Request, res: Response) {
+        try {
+            res.status(200).json(await listTechnicianOptions((req as any).user!.tenantId));
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    private offerSlotTechnicianIdsFromBody(body: any, fallbackIds: string[] = []) {
+        if (body.technicianIds !== undefined) return normalizeIdList(body.technicianIds);
+        if (body.assignedTechId !== undefined) return normalizeIdList([body.assignedTechId]);
+        return [...new Set(fallbackIds.filter(Boolean))];
+    }
+
+    private async replaceOfferSlotAssignments(slotId: string, technicianIds: string[]) {
+        const ids = [...new Set(technicianIds.filter(Boolean))];
+        await (prisma as any).$transaction(async (tx: any) => {
+            await tx.offerScheduleSlotAssignment.deleteMany({ where: { slotId } });
+            if (ids.length) {
+                await tx.offerScheduleSlotAssignment.createMany({
+                    data: ids.map((technicianId) => ({
+                        id: nanoid(10),
+                        slotId,
+                        technicianId,
+                    })),
+                    skipDuplicates: true,
+                });
+            }
+        });
+    }
+
     async getScheduleSlots(req: Request, res: Response) {
         try {
             const tenderId = req.params.id as string;
@@ -650,7 +695,8 @@ export class TenderController {
 
             const slots = await (prisma as any).offerScheduleSlot.findMany({
                 where: { tenderId },
-                orderBy: { startTime: 'asc' }
+                orderBy: { startTime: 'asc' },
+                include: OFFER_SLOT_TECHNICIAN_INCLUDE,
             });
             res.status(200).json(slots);
         } catch (error: any) {
@@ -664,6 +710,12 @@ export class TenderController {
             const tender: any = await this.tenderRepository.findById(tenderId);
             if (!tender || tender.tenantId !== (req as any).user!.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+            if (tender.projectId) {
+                return res.status(400).json({ error: "Projeye dönüşmüş teklifin saat planı teklif ekranından güncellenemez. Lütfen proje randevu ekranını kullanın." });
+            }
+            if (!tender.customerId) {
+                return res.status(400).json({ error: "Saat planı eklemeden önce müşteri seçin." });
             }
 
             const startTime = new Date(req.body.startTime);
@@ -683,18 +735,32 @@ export class TenderController {
                 return res.status(409).json({ error: "Bu teklif için saat planı çakışıyor." });
             }
 
+            // Same technician rules and conflict checks as the project module.
+            const technicians = await validateTechnicians(this.offerSlotTechnicianIdsFromBody(req.body), tender.tenantId);
+            const technicianIds = technicians.map((technician: any) => technician.id);
+            const responsibleTechnician = technicians[0] || null;
+            const techConflict = await findTechnicianScheduleConflict(technicianIds, startTime, endTime, tender.tenantId);
+            if (techConflict) return res.status(409).json({ error: techConflict.message });
+
             const slot = await (prisma as any).offerScheduleSlot.create({
                 data: {
                     id: nanoid(10),
                     tenantId: tender.tenantId,
                     tenderId,
                     customerId: tender.customerId,
+                    assignedTechId: responsibleTechnician?.id || null,
                     startTime,
                     endTime,
                     notes: req.body.notes || null
                 }
             });
-            res.status(201).json(slot);
+            await this.replaceOfferSlotAssignments(slot.id, technicianIds);
+
+            const created = await (prisma as any).offerScheduleSlot.findUnique({
+                where: { id: slot.id },
+                include: OFFER_SLOT_TECHNICIAN_INCLUDE,
+            });
+            res.status(201).json(created);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -712,7 +778,10 @@ export class TenderController {
                 return res.status(400).json({ error: "Projeye dönüşmüş teklifin saat planı teklif ekranından güncellenemez. Lütfen proje randevu ekranını kullanın." });
             }
 
-            const slot = await (prisma as any).offerScheduleSlot.findUnique({ where: { id: slotId } });
+            const slot = await (prisma as any).offerScheduleSlot.findUnique({
+                where: { id: slotId },
+                include: { technicianAssignments: true },
+            });
             if (!slot || slot.tenderId !== tenderId) return res.status(404).json({ error: "Saat planı bulunamadı." });
 
             const startTime = new Date(req.body.startTime);
@@ -733,13 +802,31 @@ export class TenderController {
                 return res.status(409).json({ error: "Bu teklif için saat planı çakışıyor." });
             }
 
-            const updated = await (prisma as any).offerScheduleSlot.update({
+            // Same technician rules and conflict checks as the project module.
+            const fallbackTechnicianIds = [
+                slot.assignedTechId,
+                ...((slot.technicianAssignments || []).map((assignment: any) => assignment.technicianId)),
+            ].filter(Boolean);
+            const technicians = await validateTechnicians(this.offerSlotTechnicianIdsFromBody(req.body, fallbackTechnicianIds), tender.tenantId);
+            const technicianIds = technicians.map((technician: any) => technician.id);
+            const responsibleTechnician = technicians[0] || null;
+            const techConflict = await findTechnicianScheduleConflict(technicianIds, startTime, endTime, tender.tenantId, { slotId });
+            if (techConflict) return res.status(409).json({ error: techConflict.message });
+
+            await (prisma as any).offerScheduleSlot.update({
                 where: { id: slotId },
                 data: {
                     startTime,
                     endTime,
+                    assignedTechId: responsibleTechnician?.id || null,
                     notes: req.body.notes || null
                 }
+            });
+            await this.replaceOfferSlotAssignments(slotId, technicianIds);
+
+            const updated = await (prisma as any).offerScheduleSlot.findUnique({
+                where: { id: slotId },
+                include: OFFER_SLOT_TECHNICIAN_INCLUDE,
             });
             res.status(200).json(updated);
         } catch (error: any) {

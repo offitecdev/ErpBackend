@@ -42,7 +42,8 @@ export class CreateProjectFromTenderUseCase {
 
         const scheduleSlots = await (prisma as any).offerScheduleSlot.findMany({
             where: { tenderId },
-            orderBy: { startTime: "asc" }
+            orderBy: { startTime: "asc" },
+            include: { technicianAssignments: true }
         });
         if (scheduleSlots.length === 0) {
             throw new Error("[BLOCKED] Sipariş oluşturmadan önce en az bir tarih/saat planı eklenmelidir.");
@@ -90,18 +91,42 @@ export class CreateProjectFromTenderUseCase {
             }
         });
 
-        await (prisma as any).appointment.createMany({
-            data: scheduleSlots.map((slot: any) => ({
-                id: nanoid(10),
-                tenantId: tender.tenantId,
-                projectId: project.id,
-                customerId: tender.customerId,
-                startTime: slot.startTime,
-                endTime: slot.endTime,
-                status: "BOOKED",
-                notes: slot.notes,
-                isLocked: true
-            }))
+        // Mirror each proposal slot into a locked project appointment, carrying the
+        // technician assignment (responsible + additional) forward so the project
+        // calendar reflects exactly what was planned on the proposal.
+        for (const slot of scheduleSlots) {
+            const appointment = await (prisma as any).appointment.create({
+                data: {
+                    id: nanoid(10),
+                    tenantId: tender.tenantId,
+                    projectId: project.id,
+                    customerId: tender.customerId,
+                    assignedTechId: slot.assignedTechId || null,
+                    startTime: slot.startTime,
+                    endTime: slot.endTime,
+                    status: "BOOKED",
+                    notes: slot.notes,
+                    isLocked: true
+                }
+            });
+            const technicianIds = [...new Set((slot.technicianAssignments || []).map((assignment: any) => assignment.technicianId).filter(Boolean))];
+            if (technicianIds.length) {
+                await (prisma as any).projectAppointmentAssignment.createMany({
+                    data: technicianIds.map((technicianId) => ({
+                        id: nanoid(10),
+                        appointmentId: appointment.id,
+                        technicianId,
+                    })),
+                    skipDuplicates: true,
+                });
+            }
+        }
+
+        // Keep the denormalized link in sync so the proposal screen knows it is
+        // converted and proxies technician edits to the project from now on.
+        await (prisma as any).tender.update({
+            where: { id: tender.id },
+            data: { projectId: project.id },
         });
 
         return project;

@@ -227,6 +227,13 @@ router.patch(
 );
 
 router.get(
+    '/options/technicians',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.listTechnicians(req, res)
+);
+
+router.get(
     '/:id/schedule-slots',
     requireAuth,
     requirePermission('tenders.view'),

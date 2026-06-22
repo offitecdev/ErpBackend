@@ -58,6 +58,48 @@ export async function validateTechnicians(technicianIds: string[], tenantId: str
 }
 
 /**
+ * List the active technicians available to the caller's service tenant scope,
+ * shaped identically for the project and tender option pickers.
+ */
+export async function listTechnicianOptions(tenantId: string) {
+    const tenantIds = await getServiceTenantScope(tenantId);
+    const technicians = await (prisma as any).employee.findMany({
+        where: {
+            tenantId: { in: tenantIds },
+            isActive: true,
+            OR: [
+                { roleName: "Teknisyen" },
+                { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
+            ],
+        },
+        orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+        select: {
+            id: true,
+            tenantId: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            title: true,
+            roleName: true,
+            employeeRoles: { select: { role: { select: { roleName: true } } } },
+        },
+    });
+    return technicians.map((employee: any) => ({
+        id: employee.id,
+        tenantId: employee.tenantId,
+        firstName: employee.firstName,
+        lastName: employee.lastName,
+        email: employee.email,
+        phone: employee.phone,
+        title: employee.title,
+        roleName: employee.employeeRoles.find((employeeRole: any) =>
+            employeeRole.role.roleName === "Teknisyen"
+        )?.role.roleName || employee.roleName,
+    }));
+}
+
+/**
  * Find the first scheduling conflict for any of the given technicians within the
  * [startTime, endTime) window. Scans, in order:
  *   1. project appointments (BOOKED / COMPLETED),
@@ -72,7 +114,7 @@ export async function findTechnicianScheduleConflict(
     startTime: Date,
     endTime: Date,
     tenantId: string,
-    exclude: { appointmentId?: string; slotId?: string } = {}
+    exclude: { appointmentId?: string | undefined; slotId?: string | undefined } = {}
 ): Promise<TechnicianConflict | null> {
     const ids = [...new Set(technicianIds.filter(Boolean))];
     if (!ids.length) return null;

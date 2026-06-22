@@ -231,6 +231,7 @@ export class SalesOrderController {
                     scheduleSlots = await (tx as any).offerScheduleSlot.findMany({
                         where: { tenderId },
                         orderBy: { startTime: 'asc' },
+                        include: { technicianAssignments: true },
                     });
                     project = await (tx as any).project.create({
                         data: {
@@ -275,20 +276,36 @@ export class SalesOrderController {
                 });
 
                 if (project?.id && scheduleSlots.length > 0) {
-                    await (tx as any).appointment.createMany({
-                        data: scheduleSlots.map((slot: any) => ({
-                            id: nanoid(10),
-                            tenantId,
-                            projectId: project.id,
-                            salesOrderId: salesOrder.id,
-                            customerId: tender.customerId,
-                            startTime: slot.startTime,
-                            endTime: slot.endTime,
-                            status: 'BOOKED',
-                            notes: slot.notes,
-                            isLocked: true,
-                        })),
-                    });
+                    // Carry each proposal slot's technician assignment forward into
+                    // the project appointment so both screens stay in sync.
+                    for (const slot of scheduleSlots) {
+                        const appointment = await (tx as any).appointment.create({
+                            data: {
+                                id: nanoid(10),
+                                tenantId,
+                                projectId: project.id,
+                                salesOrderId: salesOrder.id,
+                                customerId: tender.customerId,
+                                assignedTechId: slot.assignedTechId || null,
+                                startTime: slot.startTime,
+                                endTime: slot.endTime,
+                                status: 'BOOKED',
+                                notes: slot.notes,
+                                isLocked: true,
+                            },
+                        });
+                        const technicianIds = [...new Set((slot.technicianAssignments || []).map((assignment: any) => assignment.technicianId).filter(Boolean))];
+                        if (technicianIds.length) {
+                            await (tx as any).projectAppointmentAssignment.createMany({
+                                data: technicianIds.map((technicianId) => ({
+                                    id: nanoid(10),
+                                    appointmentId: appointment.id,
+                                    technicianId,
+                                })),
+                                skipDuplicates: true,
+                            });
+                        }
+                    }
                 }
 
                 await (tx as any).tender.update({

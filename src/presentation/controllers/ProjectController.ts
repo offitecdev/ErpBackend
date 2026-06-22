@@ -10,7 +10,7 @@ import { MaterialRepository } from '../../infrastructure/repositories/MaterialRe
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { getServiceTenantScope } from './serviceTenantScope';
-import { findTechnicianScheduleConflict, validateTechnicians } from './technicianSchedule';
+import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import { nanoid } from 'nanoid';
 
 const smtp = new SmtpMailService();
@@ -251,43 +251,7 @@ export class ProjectController {
 
     async listTechnicians(req: Request, res: Response) {
         try {
-            const tenantIds = await getServiceTenantScope(req.user!.tenantId);
-            const technicians = await (prisma as any).employee.findMany({
-                where: {
-                    tenantId: { in: tenantIds },
-                    isActive: true,
-                    OR: [
-                        { roleName: "Teknisyen" },
-                        { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
-                    ],
-                },
-                orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-                select: {
-                    id: true,
-                    tenantId: true,
-                    firstName: true,
-                    lastName: true,
-                    email: true,
-                    phone: true,
-                    title: true,
-                    roleName: true,
-                    employeeRoles: {
-                        select: { role: { select: { roleName: true } } },
-                    },
-                },
-            });
-            res.status(200).json(technicians.map((employee: any) => ({
-                id: employee.id,
-                tenantId: employee.tenantId,
-                firstName: employee.firstName,
-                lastName: employee.lastName,
-                email: employee.email,
-                phone: employee.phone,
-                title: employee.title,
-                roleName: employee.employeeRoles.find((employeeRole: any) =>
-                    employeeRole.role.roleName === "Teknisyen"
-                )?.role.roleName || employee.roleName,
-            })));
+            res.status(200).json(await listTechnicianOptions(req.user!.tenantId));
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
