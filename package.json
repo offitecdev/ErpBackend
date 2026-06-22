@@ -6,9 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node main.js",
-    "build": "prisma generate && tsc -p tsconfig.build.json",
-    "postinstall": "prisma generate",
-    "prisma:generate": "prisma generate",
+    "build": "npm run prisma:generate && tsc -p tsconfig.build.json",
+    "postinstall": "node -e \"const fs=require('fs'),path=require('path'),cp=require('child_process');const roots=[process.env.OFFITEC_APP_ROOT,process.env.INIT_CWD,process.cwd()].filter(Boolean);const root=roots.find((item)=>fs.existsSync(path.join(item,'prisma','schema')));if(!root){console.log('[OFFITEC] Prisma schema bulunamadi; postinstall generate atlandi.');process.exit(0)}cp.execFileSync(process.execPath,[require.resolve('prisma/build/index.js'),'generate','--schema',path.join(root,'prisma','schema')],{cwd:root,stdio:'inherit',env:process.env});\"",
+    "prisma:generate": "prisma generate --schema prisma/schema",
     "dev": "ts-node-dev --respawn src/main.ts",
     "swagger": "ts-node swagger.ts",
     "generate:swagger": "ts-node scripts/export-swagger.ts",

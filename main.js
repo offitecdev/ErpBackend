@@ -5,9 +5,6 @@ const Module = require('module');
 const { execFileSync } = require('child_process');
 
 const distEntry = path.join(__dirname, 'dist', 'main.js');
-const prismaClientEntry = path.join(__dirname, 'node_modules', '.prisma', 'client', 'index.js');
-const prismaClientDefaultEntry = path.join(__dirname, 'node_modules', '.prisma', 'client', 'default.js');
-const prismaPackageEntry = path.join(__dirname, 'node_modules', '@prisma', 'client', 'default.js');
 const prismaGenerateLock = path.join(__dirname, '.prisma-generate.lock');
 
 function registerNodePaths() {
@@ -42,11 +39,34 @@ function sleep(ms) {
     Atomics.wait(view, 0, 0, ms);
 }
 
+function getPrismaNodeModulesDir() {
+    try {
+        const prismaClientEntry = require.resolve('@prisma/client/default.js', {
+            paths: [__dirname],
+        });
+        return path.resolve(prismaClientEntry, '..', '..', '..');
+    } catch {
+        return path.join(__dirname, 'node_modules');
+    }
+}
+
+function getPrismaClientPaths() {
+    const nodeModulesDir = getPrismaNodeModulesDir();
+
+    return {
+        packageEntry: path.join(nodeModulesDir, '@prisma', 'client', 'default.js'),
+        generatedEntry: path.join(nodeModulesDir, '.prisma', 'client', 'index.js'),
+        generatedDefaultEntry: path.join(nodeModulesDir, '.prisma', 'client', 'default.js'),
+    };
+}
+
 function hasGeneratedPrismaClient() {
+    const prismaClientPaths = getPrismaClientPaths();
+
     return (
-        fs.existsSync(prismaPackageEntry) &&
-        fs.existsSync(prismaClientEntry) &&
-        fs.existsSync(prismaClientDefaultEntry)
+        fs.existsSync(prismaClientPaths.packageEntry) &&
+        fs.existsSync(prismaClientPaths.generatedEntry) &&
+        fs.existsSync(prismaClientPaths.generatedDefaultEntry)
     );
 }
 
@@ -130,8 +150,10 @@ function generatePrismaClient() {
 
     try {
         console.error('[OFFITEC] Prisma Client bulunamadi. "prisma generate" calistiriliyor...');
-        const prismaCli = require.resolve('prisma/build/index.js');
-        execFileSync(process.execPath, [prismaCli, 'generate'], {
+        const prismaCli = require.resolve('prisma/build/index.js', {
+            paths: [__dirname, getPrismaNodeModulesDir()],
+        });
+        execFileSync(process.execPath, [prismaCli, 'generate', '--schema', path.join(__dirname, 'prisma', 'schema')], {
             cwd: __dirname,
             stdio: 'inherit',
             env: process.env,
