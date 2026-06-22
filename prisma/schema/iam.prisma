@@ -71,6 +71,8 @@ model Employee {
   projects               Project[]          @relation("ProjectManager")
   projectAppointments    Appointment[]      @relation("ProjectAppointmentTechnician")
   projectAppointmentAssignments ProjectAppointmentAssignment[] @relation("ProjectAppointmentAssignmentTech")
+  offerScheduleSlots     OfferScheduleSlot[] @relation("OfferScheduleSlotTechnician")
+  offerScheduleSlotAssignments OfferScheduleSlotAssignment[] @relation("OfferScheduleSlotAssignmentTech")
   projectReports         ProjectReport[]
   assignedMaintenanceTasks MaintenanceTask[] @relation("MaintenanceTech")
   alternativeMaintenanceTasks MaintenanceTask[] @relation("MaintenanceAltTech")

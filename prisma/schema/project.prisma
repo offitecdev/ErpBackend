@@ -204,6 +204,7 @@ model OfferScheduleSlot {
   tenantId    String
   tenderId    String
   customerId  String
+  assignedTechId String?
   startTime   DateTime
   endTime     DateTime
   notes       String?  @db.Text
@@ -212,11 +213,28 @@ model OfferScheduleSlot {
   tenant   Tenant   @relation(fields: [tenantId], references: [id])
   tender   Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
   customer Customer @relation(fields: [customerId], references: [id])
+  assignedTechnician Employee? @relation("OfferScheduleSlotTechnician", fields: [assignedTechId], references: [id])
+  technicianAssignments OfferScheduleSlotAssignment[]
 
   @@index([tenantId])
   @@index([tenderId])
   @@index([customerId])
+  @@index([assignedTechId])
   @@index([startTime, endTime])
+}
+
+model OfferScheduleSlotAssignment {
+  id            String   @id
+  slotId        String
+  technicianId  String
+  assignedAt    DateTime @default(now())
+
+  slot          OfferScheduleSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  technician    Employee          @relation("OfferScheduleSlotAssignmentTech", fields: [technicianId], references: [id])
+
+  @@unique([slotId, technicianId])
+  @@index([slotId])
+  @@index([technicianId])
 }
 
 model ProjectExtraMaterial {

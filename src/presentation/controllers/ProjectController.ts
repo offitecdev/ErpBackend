@@ -40,9 +40,6 @@ const normalizeIdList = (value: unknown) =>
         ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
         : [];
 
-const formatDateTime = (date: Date) =>
-    date.toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
-
 const PROJECT_EXPENSE_TYPES = ["Nakliye", "Ekipman Kiralama", "Dış hizmetler", "Taşeron", "Diğer"];
 
 export class ProjectController {
