@@ -7,12 +7,14 @@ import { ListCustomersUseCase } from '../../application/use-cases/crm/ListCustom
 import { LogCustomerActivityUseCase } from '../../application/use-cases/crm/LogCustomerActivityUseCase';
 import { UploadDocumentUseCase } from '../../application/use-cases/crm/UploadDocumentUseCase';
 import { AddCustomerContactUseCase } from '../../application/use-cases/crm/AddCustomerContactUseCase';
+import { AddCustomerLocationUseCase } from '../../application/use-cases/crm/AddCustomerLocationUseCase';
 
 import { CustomerRepository } from '../../infrastructure/repositories/CustomerRepository';
 import { CustomerNoteRepository } from '../../infrastructure/repositories/CustomerNoteRepository';
 import { CustomerActivityRepository } from '../../infrastructure/repositories/CustomerActivityRepository';
 import { DocumentRepository } from '../../infrastructure/repositories/DocumentRepository';
 import { CustomerContactRepository } from '../../infrastructure/repositories/CustomerContactRepository';
+import { CustomerLocationRepository } from '../../infrastructure/repositories/CustomerLocationRepository';
 import { TenderRepository } from '../../infrastructure/repositories/TenderRepository';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
@@ -24,6 +26,7 @@ const customerNoteRepo      = new CustomerNoteRepository();
 const customerActivityRepo  = new CustomerActivityRepository();
 const documentRepo          = new DocumentRepository();
 const customerContactRepo   = new CustomerContactRepository();
+const customerLocationRepo  = new CustomerLocationRepository();
 
 const createCustomerUseCase         = new CreateCustomerUseCase(customerRepo);
 const getCustomerDashboardUseCase   = new GetCustomerDashboardUseCase(customerRepo);
@@ -32,6 +35,7 @@ const listCustomersUseCase          = new ListCustomersUseCase(customerRepo);
 const logCustomerActivityUseCase    = new LogCustomerActivityUseCase(customerActivityRepo);
 const uploadDocumentUseCase         = new UploadDocumentUseCase(documentRepo);
 const addCustomerContactUseCase     = new AddCustomerContactUseCase(customerContactRepo);
+const addCustomerLocationUseCase    = new AddCustomerLocationUseCase(customerLocationRepo);
 const tenderRepoForCustomer = new TenderRepository();
 
 const customerController = new CustomerController(
@@ -43,7 +47,11 @@ const customerController = new CustomerController(
     uploadDocumentUseCase,
     addCustomerContactUseCase,
     customerRepo,
-    customerContactRepo
+    customerContactRepo,
+    customerNoteRepo,
+    customerActivityRepo,
+    addCustomerLocationUseCase,
+    customerLocationRepo
 );
 
 /**
@@ -321,6 +329,80 @@ router.post(
     (req, res) => customerController.uploadDocument(req, res)
 );
 
+
+/* ----------------------------- Contact persons (Kontaktpersonen) ----------------------------- */
+router.post(
+    '/:id/contacts',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.addContact(req, res)
+);
+router.patch(
+    '/:id/contacts/:contactId',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.updateContact(req, res)
+);
+router.delete(
+    '/:id/contacts/:contactId',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.deleteContact(req, res)
+);
+
+/* ----------------------------- Locations (Standorte) ----------------------------- */
+router.get(
+    '/:id/locations',
+    requireAuth,
+    requirePermission('crm.customers.view'),
+    (req, res) => customerController.listLocations(req, res)
+);
+router.post(
+    '/:id/locations',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.addLocation(req, res)
+);
+router.patch(
+    '/:id/locations/:locationId',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.updateLocation(req, res)
+);
+router.delete(
+    '/:id/locations/:locationId',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.deleteLocation(req, res)
+);
+
+/* ----------------------------- Notes edit/delete ----------------------------- */
+router.patch(
+    '/:id/notes/:noteId',
+    requireAuth,
+    requirePermission('crm.customers.addNote'),
+    (req, res) => customerController.updateNote(req, res)
+);
+router.delete(
+    '/:id/notes/:noteId',
+    requireAuth,
+    requirePermission('crm.customers.addNote'),
+    (req, res) => customerController.deleteNote(req, res)
+);
+
+/* ----------------------------- Activities (logs) edit/delete ----------------------------- */
+router.patch(
+    '/:id/activities/:activityId',
+    requireAuth,
+    requirePermission('crm.activities.create'),
+    (req, res) => customerController.updateActivity(req, res)
+);
+router.delete(
+    '/:id/activities/:activityId',
+    requireAuth,
+    requirePermission('crm.activities.create'),
+    (req, res) => customerController.deleteActivity(req, res)
+);
 
 /**
  * @swagger

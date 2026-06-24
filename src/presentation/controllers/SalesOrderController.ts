@@ -33,6 +33,9 @@ export class SalesOrderController {
         try {
             const tenantId = req.user!.tenantId;
             const where: any = { tenantId };
+            if (req.query.customerId) {
+                where.customerId = String(req.query.customerId);
+            }
             if (req.query.search) {
                 const search = String(req.query.search);
                 where.OR = [

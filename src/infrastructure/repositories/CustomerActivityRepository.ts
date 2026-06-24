@@ -85,4 +85,22 @@ export class CustomerActivityRepository implements ICustomerActivityRepository{
 
         return data.map((activity) => this.mapToEntity(activity));
     }
+
+    async findById(id: string): Promise<CustomerActivity | null> {
+        const data = await prisma.customerActivity.findUnique({ where: { id } });
+        return data ? this.mapToEntity(data) : null;
+    }
+
+    async update(id: string, activity: Partial<CustomerActivity>): Promise<CustomerActivity> {
+        const data: any = {};
+        if (activity.activityType !== undefined) data.activityType = activity.activityType;
+        if (activity.description !== undefined) data.description = activity.description;
+        if (activity.activityDate !== undefined) data.activityDate = activity.activityDate;
+        const updated = await prisma.customerActivity.update({ where: { id }, data });
+        return this.mapToEntity(updated);
+    }
+
+    async delete(id: string): Promise<void> {
+        await prisma.customerActivity.delete({ where: { id } });
+    }
 }

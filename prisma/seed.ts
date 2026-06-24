@@ -465,6 +465,63 @@ async function main() {
     });
     console.log('Proje Sorumlusu (Engin) hazir:', enginUser.email);
 
+    // ── Projektmanager: Engin ile AYNI menuleri gorur, fakat o alanlarda TAM yetki ─
+    // Menu gorunurlugu frontend'de (access.ts) projectOfficer profili ile birebir ayni:
+    //   Takvim, CRM (musteriler + teklifler), Stok kartlari (urunler/tedarikci/
+    //   malzeme/lokasyon), Proje yonetimi + siparisler, Servis raporlari.
+    // Engin'den farki: bu alanlar salt-okunur degil; tam CRUD/yonetim yetkisi var.
+    // Bu role atanan HER kisi ayni etkiyi gorur (kisiye ozel hardcode yok).
+    const projectManagerPermissions = [
+      // CRM (full)
+      'crm.customers.view',
+      'crm.customers.create',
+      'crm.customers.addNote',
+      'crm.activities.create',
+      'crm.documents.upload',
+      // Tenders / teklifler (full)
+      'tenders.view',
+      'tenders.import',
+      'tenders.calculate',
+      'tenders.manage',
+      'tenders.approve',
+      'tenders.export',
+      'tenders.create',
+      'tenders.update',
+      // Inventory / stok (full)
+      'inventory.view',
+      'inventory.manage',
+      'inventory.transfer',
+      'inventory.proposals.manage',
+      'inventory.articles.create',
+      'inventory.articles.update',
+      'inventory.articles.delete',
+      // Projects + orders (full) — servis raporlari da projects.view ile acilir
+      'projects.view',
+      'projects.create',
+      'projects.createAddonOrder',
+      'projects.manage',
+      'projects.approve',
+      'projects.report',
+      'projects.approveVariation',
+      'projects.bookings.manage',
+      'projects.mail',
+    ];
+
+    const projectManagerRole = await prisma.role.upsert({
+      where: { id: 'project-manager-role' },
+      update: {
+        tenantId: swissTenant.id,
+        roleName: 'Projektmanager',
+      },
+      create: {
+        id: 'project-manager-role',
+        tenantId: swissTenant.id,
+        roleName: 'Projektmanager',
+      },
+    });
+    await assignPermissionsToRole(projectManagerRole.id, projectManagerPermissions);
+    console.log('Projektmanager rolu hazir (Engin alanlari + tam yetki):', projectManagerRole.roleName);
+
     const turkeyServiceManagerRole = await prisma.role.upsert({
       where: { id: 'service-manager-role-tr' },
       update: {

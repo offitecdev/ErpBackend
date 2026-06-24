@@ -77,6 +77,7 @@ export class CustomerRepository implements ICustomerRepository {
             prisma.customerNote.deleteMany({ where: { customerId: id } }),
             prisma.customerActivity.deleteMany({ where: { customerId: id } }),
             prisma.customerContact.deleteMany({ where: { customerId: id } }),
+            prisma.customerLocation.deleteMany({ where: { customerId: id } }),
             prisma.appointment.deleteMany({ where: { customerId: id } }),
             prisma.offerScheduleSlot.deleteMany({ where: { customerId: id } }),
             prisma.document.deleteMany({ where: { entityType: 'customer', relatedEntityId: id } }),
@@ -160,6 +161,9 @@ export class CustomerRepository implements ICustomerRepository {
             where: whereClause,
             include: {
                 contacts: true,
+                locations: {
+                    orderBy: [{ isPrimary: 'desc' }, { name: 'asc' }]
+                },
                 notes: {
                     orderBy: { createdAt: 'desc' },
                     include: { createdBy: { select: { firstName: true, lastName: true } } }

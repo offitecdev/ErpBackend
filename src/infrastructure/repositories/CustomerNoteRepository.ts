@@ -55,4 +55,22 @@ export class CustomerNoteRepository implements ICustomerNoteRepository{
         return data.map(this.maptoEntity.bind(this));
  }
 
+ async findById(id: string): Promise<CustomerNote | null> {
+    const data = await prisma.customerNote.findUnique({ where: { id } });
+    return data ? this.maptoEntity(data) : null;
+ }
+
+ async update(id: string, note: Partial<CustomerNote>): Promise<CustomerNote> {
+    const data: any = {};
+    if (note.noteText !== undefined) data.noteText = note.noteText;
+    if (note.noteType !== undefined) data.noteType = note.noteType;
+    if (note.isHighlight !== undefined) data.isHighlight = note.isHighlight;
+    const updated = await prisma.customerNote.update({ where: { id }, data });
+    return this.maptoEntity(updated);
+ }
+
+ async delete(id: string): Promise<void> {
+    await prisma.customerNote.delete({ where: { id } });
+ }
+
 }

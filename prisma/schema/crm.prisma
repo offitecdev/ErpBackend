@@ -13,6 +13,7 @@ model Customer {
   activities   CustomerActivity[]
   contacts     CustomerContact[]
   notes        CustomerNote[]
+  locations    CustomerLocation[]
   tenders      Tender[]
   projects     Project[]
   appointments Appointment[]
@@ -122,4 +123,24 @@ model CustomerActivity {
   customer     Customer @relation(fields: [customerId], references: [id])
 
   @@index([customerId], map: "CustomerActivity_customerId_fkey")
+}
+
+model CustomerLocation {
+  id            String   @id
+  customerId    String
+  name          String
+  address       String?
+  city          String?
+  postalCode    String?
+  country       String?
+  phone         String?
+  email         String?
+  contactPerson String?
+  isPrimary     Boolean  @default(false)
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  customer      Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId], map: "CustomerLocation_customerId_fkey")
 }

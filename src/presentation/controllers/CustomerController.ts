@@ -7,8 +7,12 @@ import { ListCustomersUseCase } from '../../application/use-cases/crm/ListCustom
 import { LogCustomerActivityUseCase } from '../../application/use-cases/crm/LogCustomerActivityUseCase';
 import { UploadDocumentUseCase } from '../../application/use-cases/crm/UploadDocumentUseCase';
 import { AddCustomerContactUseCase } from '../../application/use-cases/crm/AddCustomerContactUseCase';
+import { AddCustomerLocationUseCase } from '../../application/use-cases/crm/AddCustomerLocationUseCase';
 import { ICustomerRepository } from '../../domain/repositories/ICustomerRepository';
 import { ICustomerContactRepository } from '../../domain/repositories/ICustomerContactRepository';
+import { ICustomerNoteRepository } from '../../domain/repositories/ICustomerNoteRepository';
+import { ICustomerActivityRepository } from '../../domain/repositories/ICustomerActivityRepository';
+import { ICustomerLocationRepository } from '../../domain/repositories/ICustomerLocationRepository';
 
 export class CustomerController {
     constructor(
@@ -20,7 +24,11 @@ export class CustomerController {
         private uploadDocumentUseCase: UploadDocumentUseCase,
         private addCustomerContactUseCase: AddCustomerContactUseCase,
         private customerRepository: ICustomerRepository,
-        private contactRepository: ICustomerContactRepository
+        private contactRepository: ICustomerContactRepository,
+        private noteRepository: ICustomerNoteRepository,
+        private activityRepository: ICustomerActivityRepository,
+        private addCustomerLocationUseCase: AddCustomerLocationUseCase,
+        private locationRepository: ICustomerLocationRepository
     ) {}
 
     async create(req: Request, res: Response) {
@@ -146,6 +154,90 @@ export class CustomerController {
         }
     }
 
+    async updateContact(req: Request, res: Response) {
+        try {
+            const contactId = (Array.isArray(req.params.contactId) ? req.params.contactId[0] : req.params.contactId) as string;
+            const result = await this.contactRepository.update(contactId, req.body);
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Yetkili kişi güncellenemedi.' });
+        }
+    }
+
+    async deleteContact(req: Request, res: Response) {
+        try {
+            const contactId = (Array.isArray(req.params.contactId) ? req.params.contactId[0] : req.params.contactId) as string;
+            await this.contactRepository.delete(contactId);
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Yetkili kişi silinemedi.' });
+        }
+    }
+
+    async updateNote(req: Request, res: Response) {
+        try {
+            const noteId = (Array.isArray(req.params.noteId) ? req.params.noteId[0] : req.params.noteId) as string;
+            const result = await this.noteRepository.update(noteId, {
+                noteText: req.body.noteText,
+                noteType: req.body.noteType,
+                isHighlight: req.body.isHighlight ?? req.body.isHighlighted,
+            });
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Not güncellenemedi.' });
+        }
+    }
+
+    async deleteNote(req: Request, res: Response) {
+        try {
+            const noteId = (Array.isArray(req.params.noteId) ? req.params.noteId[0] : req.params.noteId) as string;
+            await this.noteRepository.delete(noteId);
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Not silinemedi.' });
+        }
+    }
+
+    async addLocation(req: Request, res: Response) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
+            const result = await this.addCustomerLocationUseCase.execute({ ...req.body, customerId });
+            res.status(201).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Standort eklenemedi.' });
+        }
+    }
+
+    async updateLocation(req: Request, res: Response) {
+        try {
+            const locationId = (Array.isArray(req.params.locationId) ? req.params.locationId[0] : req.params.locationId) as string;
+            const result = await this.locationRepository.update(locationId, req.body);
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Standort güncellenemedi.' });
+        }
+    }
+
+    async deleteLocation(req: Request, res: Response) {
+        try {
+            const locationId = (Array.isArray(req.params.locationId) ? req.params.locationId[0] : req.params.locationId) as string;
+            await this.locationRepository.delete(locationId);
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Standort silinemedi.' });
+        }
+    }
+
+    async listLocations(req: Request, res: Response) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
+            const result = await this.locationRepository.findByCustomerId(customerId);
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Standorte konnten nicht geladen werden.' });
+        }
+    }
+
     async logActivity(req: Request, res: Response) {
         try {
             const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
@@ -165,7 +257,31 @@ export class CustomerController {
         }
     }
 
-    async uploadDocument(req: Request, res: Response) {  
+    async updateActivity(req: Request, res: Response) {
+        try {
+            const activityId = (Array.isArray(req.params.activityId) ? req.params.activityId[0] : req.params.activityId) as string;
+            const payload: { activityType?: string; description?: string; activityDate?: Date } = {};
+            if (req.body.activityType !== undefined) payload.activityType = req.body.activityType;
+            if (req.body.description !== undefined) payload.description = req.body.description;
+            if (req.body.activityDate !== undefined) payload.activityDate = new Date(req.body.activityDate);
+            const result = await this.activityRepository.update(activityId, payload);
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || "Aktivite güncellenemedi." });
+        }
+    }
+
+    async deleteActivity(req: Request, res: Response) {
+        try {
+            const activityId = (Array.isArray(req.params.activityId) ? req.params.activityId[0] : req.params.activityId) as string;
+            await this.activityRepository.delete(activityId);
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || "Aktivite silinemedi." });
+        }
+    }
+
+    async uploadDocument(req: Request, res: Response) {
         try {
             const relatedEntityId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
             const documentData: { tenantId: string; relatedEntityId: string; entityType: string; fileUrl: string; uploadedByEmployeeId: string; fileName?: string; fileType?: string; category?: string } = {

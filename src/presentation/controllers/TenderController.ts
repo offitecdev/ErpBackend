@@ -334,7 +334,7 @@ export class TenderController {
             const tenderId = req.params.id as string;
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { customerId, format, validUntil } = req.body;
+            const { customerId, format, validUntil, billingAddress, deliveryAddress, internalDeliveryDate } = req.body;
 
             const tender = await this.tenderRepository.findById(tenderId);
             if (!tender || !await this.canAccessTenant(tender.tenantId, tenantId)) {
@@ -345,6 +345,15 @@ export class TenderController {
             }
 
             const data: any = {};
+            if (billingAddress !== undefined) {
+                data.billingAddress = billingAddress ? String(billingAddress) : null;
+            }
+            if (deliveryAddress !== undefined) {
+                data.deliveryAddress = deliveryAddress ? String(deliveryAddress) : null;
+            }
+            if (internalDeliveryDate !== undefined) {
+                data.internalDeliveryDate = internalDeliveryDate ? new Date(internalDeliveryDate) : null;
+            }
             if (format !== undefined) {
                 if (format !== "SIA451" && format !== "CRBX") {
                     return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
