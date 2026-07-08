@@ -55,7 +55,9 @@ router.use(requireAuth, requireProjectModule);
 router.get('/', requirePermission('projects.view'), (req, res) => controller.list(req, res));
 router.get('/options/technicians', requireAnyPermission(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
 router.get('/appointments', requireAnyPermission(['projects.view', 'projects.manage']), (req, res) => controller.listAppointments(req, res));
+router.get('/appointments/:appointmentId/detail', requireAnyPermission(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentDetail(req, res));
 router.get('/technician/installations', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
+router.get('/technician/installations/:appointmentId/detail', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
 router.get('/technician/installations/:appointmentId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
 router.get('/materials', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
@@ -93,5 +95,10 @@ router.delete('/expenses/:expenseId', requirePermission('projects.manage'), (req
 router.patch('/extra-materials/:extraMaterialId', requirePermission('projects.manage'), (req, res) => controller.updateExtraMaterial(req, res));
 router.delete('/extra-materials/:extraMaterialId', requirePermission('projects.manage'), (req, res) => controller.deleteExtraMaterial(req, res));
 router.post('/:id/addon-orders', requirePermission('projects.createAddonOrder'), (req, res) => controller.createAddonOrder(req, res));
+router.delete('/:id/sales-orders/:salesOrderId', requirePermission('projects.manage'), (req, res) => controller.deleteSalesOrder(req, res));
+
+// Technicians raise an addon-order request (they cannot create the order); managers resolve/dismiss it.
+router.post('/:id/addon-order-requests', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.requestAddonOrder(req, res));
+router.patch('/addon-order-requests/:requestId', requirePermission('projects.createAddonOrder'), (req, res) => controller.resolveAddonRequest(req, res));
 
 export default router;

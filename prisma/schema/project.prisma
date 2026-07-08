@@ -3,6 +3,9 @@ enum ProjectStatus {
   ACTIVE
   ON_HOLD
   COMPLETED
+  // Manager-only "Sonderabschluss": the project is force-closed by a project
+  // manager, kept distinct from a regular COMPLETED so the UI can flag it.
+  SPECIALLY_CLOSED
   CANCELLED
 }
 
@@ -45,6 +48,7 @@ model Project {
   appointments      Appointment[]
   projectVariations ProjectVariation[]
   extraMaterials    ProjectExtraMaterial[]
+  addonRequests     ProjectAddonRequest[]
   shipments         Shipment[]
   salesOrders       SalesOrder[]
   invoices          Invoice[]
@@ -279,15 +283,49 @@ model ProjectVariation {
   @@index([projectId])
 }
 
+/// A technician's request that the manager turn the accumulated extra work
+/// (extra materials / external expenses / overtime logged during installation)
+/// into a Zusatzauftrag (addon order). Technicians can no longer create addon
+/// orders directly — they raise a PENDING request that surfaces in the manager's
+/// "additional order" section (and as a notification); the manager creates the
+/// actual addon order, which marks matching requests HANDLED.
+/// status: 'PENDING' | 'HANDLED' | 'DISMISSED'
+model ProjectAddonRequest {
+  id              String    @id
+  tenantId        String
+  projectId       String
+  salesOrderId    String?
+  appointmentId   String?
+  requestedById   String
+  requestedByName String?
+  status          String    @default("PENDING")
+  note            String?   @db.Text
+  expenseTotal    Float     @default(0)
+  materialTotal   Float     @default(0)
+  overtimeTotal   Float     @default(0)
+  total           Float     @default(0)
+  createdAt       DateTime  @default(now())
+  resolvedById    String?
+  resolvedAt      DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([projectId])
+  @@index([status])
+}
+
 model Material {
-  id            String  @id
-  tenantId      String
-  serialId      String  @unique
-  name          String
-  stockQuantity Float   @default(0)
-  unitCost      Float   @default(0)
-  imageUrl      String? @db.Text
-  isActive      Boolean @default(true)
+  id                 String  @id
+  tenantId           String
+  serialId           String  @unique
+  name               String
+  stockQuantity      Float   @default(0)
+  unitCost           Float   @default(0)
+  minStockLevel      Float   @default(0)
+  criticalStockLevel Float   @default(0)
+  imageUrl           String? @db.Text
+  isActive           Boolean @default(true)
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 

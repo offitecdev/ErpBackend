@@ -309,6 +309,30 @@ router.get(
 
 /**
  * @swagger
+ * /tenders/{id}/product-images:
+ *   post:
+ *     tags: [Tender]
+ *     summary: PDF için yalnızca verilen ürün id'lerinin görsellerini getir (aşırı veri çekmeden)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ids: { type: array, items: { type: string } }
+ */
+router.post(
+    '/:id/product-images',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getPdfImages(req, res)
+);
+
+/**
+ * @swagger
  * /tenders/{id}/positions/{positionId}:
  *   delete:
  *     tags: [Tender]

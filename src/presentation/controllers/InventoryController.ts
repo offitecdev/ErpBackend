@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { IInventoryRepository } from '../../domain/repositories/IInventoryRepository';
 import { ProcessStockMovementUseCase } from '../../application/use-cases/inventory/ProcessStockMovementUseCase';
 import { ManagePurchaseProposalsUseCase } from '../../application/use-cases/inventory/ManagePurchaseProposalsUseCase';
+import prisma from '../../infrastructure/database/prisma.client';
 import { nanoid } from 'nanoid';
 
 export class InventoryController {
@@ -56,8 +57,37 @@ export class InventoryController {
     async getArticleStockSummary(req: Request, res: Response) {
         try {
             const tenantId = (req as any).user!.tenantId;
-            const summary = await this.inventoryRepository.getArticleStockSummary(tenantId);
+            const includeImages = req.query.includeImages === 'true';
+            const summary = await this.inventoryRepository.getArticleStockSummary(tenantId, includeImages);
             res.status(200).json(summary);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getArticleStockInfo(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const articleId = req.params.id as string;
+            const info = await this.inventoryRepository.getArticleStockInfo(tenantId, articleId);
+            if (!info) return res.status(404).json({ error: 'Ürün bulunamadı.' });
+            res.status(200).json(info);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async getArticleStockSummaryPaged(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const result = await this.inventoryRepository.getArticleStockSummaryPaged(tenantId, {
+                page: req.query.page ? Number(req.query.page) : 1,
+                pageSize: req.query.pageSize ? Number(req.query.pageSize) : 15,
+                search: req.query.search ? String(req.query.search) : undefined,
+                status: req.query.status ? String(req.query.status) : undefined,
+                itemType: req.query.itemType ? String(req.query.itemType) : undefined,
+            });
+            res.status(200).json(result);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -97,7 +127,20 @@ export class InventoryController {
         try {
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { codeOrBarcode, movementType, quantity, unitCost, sourceLocationId, destLocationId, referenceId, description } = req.body;
+            const { codeOrBarcode, movementType, quantity, unitCost, supplierId, itemKind, materialId, sourceLocationId, destLocationId, referenceId, description } = req.body;
+
+            // Malzeme (Material) hareketleri ayrı tabloda; tek satış fiyatı + basit stok güncellemesi.
+            if (itemKind === 'MATERIAL' || materialId) {
+                const movement = await this.scanMaterialMovement({
+                    tenantId,
+                    materialId,
+                    codeOrBarcode,
+                    movementType,
+                    quantity: Number(quantity),
+                    salePrice: unitCost === null || unitCost === undefined || unitCost === '' ? null : Number(unitCost),
+                });
+                return res.status(201).json({ message: "Malzeme hareketi başarıyla kaydedildi.", data: movement });
+            }
 
             const movement = await this.processMovementUseCase.execute({
                 tenantId,
@@ -106,6 +149,7 @@ export class InventoryController {
                 movementType,
                 quantity: Number(quantity),
                 unitCost: unitCost === null || unitCost === undefined || unitCost === '' ? null : Number(unitCost),
+                supplierId: supplierId ? String(supplierId) : null,
                 sourceLocationId,
                 destLocationId,
                 referenceId,
@@ -117,6 +161,52 @@ export class InventoryController {
             // Eksi bakiye veya barkod bulunamadı hataları burada 400 döner
             res.status(400).json({ error: error.message });
         }
+    }
+
+    private async scanMaterialMovement(input: {
+        tenantId: string;
+        materialId?: string;
+        codeOrBarcode?: string;
+        movementType: string;
+        quantity: number;
+        salePrice: number | null;
+    }) {
+        if (input.quantity <= 0) throw new Error("Miktar 0'dan büyük olmalıdır.");
+
+        const material = input.materialId
+            ? await prisma.material.findFirst({ where: { id: input.materialId, tenantId: input.tenantId } })
+            : await prisma.material.findFirst({ where: { tenantId: input.tenantId, serialId: String(input.codeOrBarcode || '') } });
+
+        if (!material) throw new Error(`Malzeme bulunamadı: ${input.materialId || input.codeOrBarcode}`);
+
+        const isInbound = input.movementType === 'IN' || input.movementType === 'RETURN';
+        const delta = isInbound ? input.quantity : -input.quantity;
+        const nextStock = Number(material.stockQuantity || 0) + delta;
+        if (nextStock < 0) {
+            throw new Error(`[BLOCKED] Malzeme stoğu yetersiz. Mevcut: ${material.stockQuantity}, İstenen: ${input.quantity}`);
+        }
+
+        const updated = await prisma.material.update({
+            where: { id: material.id },
+            data: {
+                stockQuantity: nextStock,
+                // Malzemelerde yalnızca satış fiyatı girilir (unitCost alanında tutulur).
+                ...(input.salePrice != null && input.salePrice > 0 ? { unitCost: input.salePrice } : {}),
+            },
+        });
+
+        return {
+            id: nanoid(12),
+            materialId: updated.id,
+            itemKind: 'MATERIAL',
+            name: updated.name,
+            serialId: updated.serialId,
+            movementType: input.movementType,
+            quantity: input.quantity,
+            stockQuantity: updated.stockQuantity,
+            salePrice: updated.unitCost,
+            transactionDate: new Date(),
+        };
     }
 
     async getMovements(req: Request, res: Response) {

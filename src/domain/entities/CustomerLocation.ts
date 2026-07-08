@@ -4,6 +4,7 @@ export class CustomerLocation {
         public customerId: string,
         public name: string,
         public isPrimary: boolean,
+        public kind: string = "INSTALLATION",
         public address?: string | null,
         public city?: string | null,
         public postalCode?: string | null,

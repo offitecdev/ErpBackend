@@ -61,7 +61,7 @@ export class ArticleController {
             const tenantId = (req as any).user!.tenantId;
             const {
                 articleCode, name, baseCost, unit, description,
-                systemBarcode, supplierBarcode, imageUrl, category,
+                systemBarcode, supplierBarcode, imageUrl, category, itemType,
                 status, isActive,
                 minStockLevel, criticalStockLevel, maxStockLevel,
                 lastPurchaseDate, salePrice, defaultSupplierId,
@@ -85,6 +85,7 @@ export class ArticleController {
                 supplierBarcode: supplierBarcode ?? null,
                 imageUrl: imageUrl ?? null,
                 category: category ?? null,
+                itemType: itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
                 status: status ?? 'ACTIVE',
                 isActive: isActive ?? true,
                 minStockLevel: Number(minStockLevel ?? 0),

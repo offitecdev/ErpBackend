@@ -1,0 +1,4 @@
+-- Add customer type classification.
+-- Categories: PRIVATE, COMPANY, PROPERTY_MGMT, COMMERCIAL_DEALER, ARCHITECT_PLANNER.
+ALTER TABLE `Customer`
+    ADD COLUMN `customerType` VARCHAR(191) NOT NULL DEFAULT 'PRIVATE';

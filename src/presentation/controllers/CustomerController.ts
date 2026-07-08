@@ -46,11 +46,12 @@ export class CustomerController {
 
     async list(req: Request, res: Response) {
         try {
-            const filter: { tenantId: string; isActive?: boolean; segment?: string; search?: string; page?: number; pageSize?: number } = {
+            const filter: { tenantId: string; isActive?: boolean; segment?: string; status?: string; search?: string; page?: number; pageSize?: number } = {
                 tenantId: req.user!.tenantId,
             };
             if (req.query.isActive !== undefined) filter.isActive = req.query.isActive === 'true';
             if (req.query.segment) filter.segment = req.query.segment as string;
+            if (req.query.status) filter.status = req.query.status as string;
             if (req.query.search) filter.search = req.query.search as string;
             if (req.query.page) filter.page = Math.max(1, Number(req.query.page) || 1);
             if (req.query.pageSize) filter.pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
@@ -144,6 +145,8 @@ export class CustomerController {
                 title: req.body.title,
                 email: req.body.email,
                 phone: req.body.phone,
+                mobilePhone: req.body.mobilePhone,
+                notes: req.body.notes,
                 isPrimaryContact: req.body.isPrimaryContact
             };
 

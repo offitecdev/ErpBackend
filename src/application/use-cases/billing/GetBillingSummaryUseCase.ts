@@ -56,6 +56,44 @@ export class GetBillingSummaryUseCase {
             projectId: projectId || undefined,
         });
 
+        return this.buildSummary(baseAmount, invoices);
+    }
+
+    /**
+     * Computes billing summaries for many sales orders with a single invoice query
+     * instead of one query per order (avoids the N+1 fan-out on list endpoints).
+     * `baseAmount` is taken from the already-loaded order so no extra lookups are needed.
+     */
+    async executeBatch(
+        tenantId: string,
+        targets: Array<{ salesOrderId: string; baseAmount: number }>
+    ): Promise<Map<string, BillingSummary>> {
+        const result = new Map<string, BillingSummary>();
+        const ids = [...new Set(targets.map((t) => t.salesOrderId).filter(Boolean))];
+        if (ids.length === 0) return result;
+
+        const invoices = await this.invoiceRepository.listForOrders(tenantId, ids);
+
+        const byOrder = new Map<string, typeof invoices>();
+        for (const inv of invoices) {
+            const key = (inv as any).salesOrderId ?? (inv as any).salesOrder?.id;
+            if (!key) continue;
+            const bucket = byOrder.get(key);
+            if (bucket) bucket.push(inv);
+            else byOrder.set(key, [inv]);
+        }
+
+        for (const { salesOrderId, baseAmount } of targets) {
+            if (result.has(salesOrderId)) continue;
+            result.set(salesOrderId, this.buildSummary(baseAmount, byOrder.get(salesOrderId) || []));
+        }
+        return result;
+    }
+
+    private buildSummary(
+        baseAmount: number,
+        invoices: Array<{ id: string; invoiceNumber: string; billingType: string; billedPercent: number; amount: number; status: string; createdAt: Date }>
+    ): BillingSummary {
         const active = invoices.filter((inv) => inv.status !== "CANCELLED");
         const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));

@@ -8,6 +8,8 @@ export class CustomerContact{
         public title? : string | null ,
         public phone? : string | null ,
         public email? : string | null ,
+        public mobilePhone? : string | null ,
+        public notes? : string | null ,
     ) {}
 
 

@@ -70,6 +70,15 @@ export class InvoiceRepository implements IInvoiceRepository {
         })) as unknown as Invoice[];
     }
 
+    async listForOrders(tenantId: string, salesOrderIds: string[]): Promise<Invoice[]> {
+        if (salesOrderIds.length === 0) return [];
+        return (await (prisma as any).invoice.findMany({
+            where: { tenantId, salesOrderId: { in: salesOrderIds } },
+            orderBy: { createdAt: "desc" },
+            include: invoiceInclude,
+        })) as unknown as Invoice[];
+    }
+
     async countForTenant(tenantId: string): Promise<number> {
         return (prisma as any).invoice.count({ where: { tenantId } });
     }

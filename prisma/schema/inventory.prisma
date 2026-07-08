@@ -68,6 +68,7 @@ model StockMovement {
   destinationLocationId String?
   transactionDate       DateTime     @default(now())
   employeeId            String
+  supplierId            String? // Hareketin tedarikçisi (giriş/alış hareketlerinde)
   referenceId           String? // Proje ID, İhale ID veya Üretim Emri ID
   description           String?      @db.Text
 
@@ -75,10 +76,12 @@ model StockMovement {
   sourceLocation      Location? @relation("SourceLocation", fields: [sourceLocationId], references: [id])
   destinationLocation Location? @relation("DestLocation", fields: [destinationLocationId], references: [id])
   employee            Employee  @relation(fields: [employeeId], references: [id])
+  supplier            Supplier? @relation(fields: [supplierId], references: [id])
 
   @@index([tenantId])
   @@index([articleId])
   @@index([employeeId])
+  @@index([supplierId])
 }
 
 model PurchaseProposal {
@@ -117,9 +120,43 @@ model Supplier {
   tenant            Tenant            @relation(fields: [tenantId], references: [id])
   articleSuppliers  ArticleSupplier[]
   purchaseProposals PurchaseProposal[]
+  stockMovements    StockMovement[]
 
   @@unique([tenantId, companyName])
   @@index([tenantId])
+}
+
+/// Tedarik talebi (Supply Request). Bir ürün/malzeme minimum ya da kritik stok
+/// seviyesine düştüğünde kullanıcının bir tedarikçiye açtığı talep. Ürün/tedarikçi
+/// bilgileri anlık görüntü (snapshot) olarak saklanır; ilişki join'i gerekmeden
+/// listelenebilir (aşırı veri çekmemek için). articleId/materialId/supplierId
+/// yalnızca "stoğa ekle" ekranını doldurmak ve talebi teslim almak için tutulur.
+model SupplyRequest {
+  id                String    @id
+  tenantId          String
+  itemType          String    @default("PRODUCT") // PRODUCT | MATERIAL
+  articleId         String?
+  materialId        String?
+  itemName          String
+  itemCode          String?
+  unit              String?
+  supplierId        String?
+  supplierName      String?
+  supplierEmail     String?
+  requestedQuantity Float     @default(0)
+  emailSubject      String?   @db.Text
+  emailBody         String?   @db.Text
+  emailSent         Boolean   @default(false)
+  status            String    @default("PENDING") // PENDING | RECEIVED | CANCELLED
+  createdByEmpId    String?
+  createdAt         DateTime  @default(now())
+  receivedAt        DateTime?
+  receivedByEmpId   String?
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([articleId])
+  @@index([supplierId])
 }
 
 model ArticleSupplier {

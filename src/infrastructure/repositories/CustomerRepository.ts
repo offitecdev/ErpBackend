@@ -3,6 +3,11 @@ import { ICustomerRepository, ICustomerFilter, PaginatedResult } from "../../dom
 import { Customer } from "../../domain/entities/Customer";
 import { nanoid } from "nanoid";
 
+// Lifecycle statuses that count as "inactive" for the legacy isActive flag.
+// Active, Potential and Problematic customers remain active relationships.
+const INACTIVE_CUSTOMER_STATUSES = new Set(["PASSIVE", "BLOCKED"]);
+const deriveIsActive = (status: string) => !INACTIVE_CUSTOMER_STATUSES.has(status);
+
 export class CustomerRepository implements ICustomerRepository {
     private mapToEntity(data: any): Customer {
         return new Customer(
@@ -15,23 +20,43 @@ export class CustomerRepository implements ICustomerRepository {
             data.taxNumber,
             data.address,
             data.mainPhone,
-            data.mainEmail
+            data.mainEmail,
+            data.customerType ?? "PRIVATE",
+            data.mobilePhone,
+            data.website,
+            data.language,
+            data.vatNumber,
+            data.customerSource,
+            data.responsibleFirstName,
+            data.responsibleLastName,
+            data.status ?? "ACTIVE"
         )
-    }   
+    }
 
     async createCustomer(customerData: Partial<Customer>): Promise<Customer> {
+        const status = customerData.status ?? "ACTIVE";
         const data = await prisma.customer.create({
             data: {
                 id: customerData.id || nanoid(8),
                 tenantId: customerData.tenantId!,
                 companyName: customerData.companyName!,
                 segment: customerData.segment ?? null,
+                customerType: customerData.customerType ?? "PRIVATE",
                 taxOffice: customerData.taxOffice ?? null,
                 taxNumber: customerData.taxNumber ?? null,
                 address: customerData.address ?? null,
                 mainPhone: customerData.mainPhone ?? null,
+                mobilePhone: customerData.mobilePhone ?? null,
                 mainEmail: customerData.mainEmail ?? null,
-                isActive: customerData.isActive ?? true,
+                website: customerData.website ?? null,
+                language: customerData.language ?? null,
+                vatNumber: customerData.vatNumber ?? null,
+                customerSource: customerData.customerSource ?? null,
+                responsibleFirstName: customerData.responsibleFirstName ?? null,
+                responsibleLastName: customerData.responsibleLastName ?? null,
+                status,
+                // Keep the legacy boolean in sync with the lifecycle status.
+                isActive: customerData.isActive ?? deriveIsActive(status),
             }
         });
         return this.mapToEntity(data);
@@ -39,6 +64,10 @@ export class CustomerRepository implements ICustomerRepository {
 
     async update(id: string, customerData: Partial<Customer>): Promise<Customer> {
         const { id: _id, tenantId: _tid, ...safeData } = customerData;
+        // When the status changes, keep the legacy isActive boolean consistent.
+        if (typeof (safeData as any).status === "string" && (safeData as any).isActive === undefined) {
+            (safeData as any).isActive = deriveIsActive((safeData as any).status);
+        }
         const data = await prisma.customer.update({
             where: { id },
             data: safeData as any
@@ -105,6 +134,10 @@ export class CustomerRepository implements ICustomerRepository {
             whereClause.segment = filter.segment;
         }
 
+        if (filter.status) {
+            whereClause.status = filter.status;
+        }
+
         if (filter.search) {
             whereClause.OR = [
                 { companyName: { contains: filter.search } },
@@ -124,11 +157,20 @@ export class CustomerRepository implements ICustomerRepository {
                     companyName: true,
                     isActive: true,
                     segment: true,
+                    customerType: true,
                     taxOffice: true,
                     taxNumber: true,
                     address: true,
                     mainPhone: true,
+                    mobilePhone: true,
                     mainEmail: true,
+                    website: true,
+                    language: true,
+                    vatNumber: true,
+                    customerSource: true,
+                    responsibleFirstName: true,
+                    responsibleLastName: true,
+                    status: true,
                 },
                 orderBy: { companyName: 'asc' },
                 ...(page && pageSize ? { skip: (page - 1) * pageSize, take: pageSize } : {}),

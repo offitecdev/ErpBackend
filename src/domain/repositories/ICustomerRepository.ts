@@ -4,6 +4,7 @@ export interface ICustomerFilter {
     tenantId: string;
     search?: string;
     segment?: string;
+    status?: string;
     isActive?: boolean;
     page?: number;
     pageSize?: number;

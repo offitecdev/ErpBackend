@@ -23,11 +23,12 @@ export interface IMaintenanceRepository {
     
     createTask(task: Partial<MaintenanceTask>): Promise<MaintenanceTask>;
     getTaskById(id: string): Promise<MaintenanceTask | null>;
+    getTaskCalendarDetailById(id: string): Promise<MaintenanceTask | null>;
     getTaskByBookingToken(token: string): Promise<MaintenanceTask | null>;
     updateTask(id: string, patch: Partial<MaintenanceTask>): Promise<MaintenanceTask>;
     updateTaskStatus(id: string, status: TaskStatus): Promise<MaintenanceTask>;
-    getTasksByDateRange(tenantId: TenantScope, startDate: Date, endDate: Date): Promise<MaintenanceTask[]>;
-    getTasksAssignedToTechnician(tenantId: TenantScope, technicianId: string, startDate: Date, endDate: Date): Promise<MaintenanceTask[]>;
+    getTasksByDateRange(tenantId: TenantScope, startDate: Date, endDate: Date, lite?: boolean): Promise<MaintenanceTask[]>;
+    getTasksAssignedToTechnician(tenantId: TenantScope, technicianId: string, startDate: Date, endDate: Date, lite?: boolean): Promise<MaintenanceTask[]>;
     replaceTaskAssignments(taskId: string, technicianIds: string[], createdById?: string): Promise<MaintenanceTaskAssignment[]>;
     findAssignmentConflict(technicianIds: string[], startTime: Date, endTime: Date, excludeTaskId?: string): Promise<MaintenanceTask | null>;
     findAppointmentOptionConflict(technicianIds: string[], startTime: Date, endTime: Date, excludeTaskId?: string, excludeOptionId?: string): Promise<MaintenanceAppointmentOption | null>;

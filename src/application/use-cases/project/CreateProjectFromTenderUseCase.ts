@@ -20,11 +20,11 @@ export class CreateProjectFromTenderUseCase {
         activeTenantId?: string,
         overtimeHourlyRate = 0
     ): Promise<Project> {
-        const tender: any = await this.tenderRepository.findById(tenderId);
+        // Tenant-scoped lookup: a project can only be created from a tender the
+        // active tenant owns.
+        if (!activeTenantId) throw new Error("Seçili şirkette bu teklif bulunamadı.");
+        const tender: any = await this.tenderRepository.findById(tenderId, activeTenantId);
         if (!tender) throw new Error("Teklif bulunamadı.");
-        if (activeTenantId && tender.tenantId !== activeTenantId) {
-            throw new Error("Seçili şirkette bu teklif bulunamadı.");
-        }
 
         if (tender.status !== "Approved" && tender.status !== "Exported") {
             throw new Error("[BLOCKED] Sadece onaylanmış teklifler sipariş/projeye dönüştürülebilir.");
@@ -94,10 +94,13 @@ export class CreateProjectFromTenderUseCase {
         // Mirror each proposal slot into a locked project appointment, carrying the
         // technician assignment (responsible + additional) forward so the project
         // calendar reflects exactly what was planned on the proposal.
-        for (const slot of scheduleSlots) {
-            const appointment = await (prisma as any).appointment.create({
-                data: {
-                    id: nanoid(10),
+        // Pre-generate appointment ids so the whole batch can be inserted with two
+        // bulk writes (appointments + assignments) instead of two queries per slot.
+        const slotAppointments = scheduleSlots.map((slot: any) => ({ appointmentId: nanoid(10), slot }));
+        if (slotAppointments.length) {
+            await (prisma as any).appointment.createMany({
+                data: slotAppointments.map(({ appointmentId, slot }: any) => ({
+                    id: appointmentId,
                     tenantId: tender.tenantId,
                     projectId: project.id,
                     customerId: tender.customerId,
@@ -106,17 +109,21 @@ export class CreateProjectFromTenderUseCase {
                     endTime: slot.endTime,
                     status: "BOOKED",
                     notes: slot.notes,
-                    isLocked: true
-                }
+                    isLocked: true,
+                })),
             });
-            const technicianIds = [...new Set((slot.technicianAssignments || []).map((assignment: any) => assignment.technicianId).filter(Boolean))];
-            if (technicianIds.length) {
+
+            const assignmentRows = slotAppointments.flatMap(({ appointmentId, slot }: any) => {
+                const technicianIds = [...new Set((slot.technicianAssignments || []).map((assignment: any) => assignment.technicianId).filter(Boolean))];
+                return technicianIds.map((technicianId) => ({
+                    id: nanoid(10),
+                    appointmentId,
+                    technicianId,
+                }));
+            });
+            if (assignmentRows.length) {
                 await (prisma as any).projectAppointmentAssignment.createMany({
-                    data: technicianIds.map((technicianId) => ({
-                        id: nanoid(10),
-                        appointmentId: appointment.id,
-                        technicianId,
-                    })),
+                    data: assignmentRows,
                     skipDuplicates: true,
                 });
             }

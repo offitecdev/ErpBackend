@@ -48,4 +48,20 @@ export class AppointmentRepository {
             where: { projectId: projectId }
         }) as any;
     }
+
+    // The project's actual scheduled installations (everything except cancelled),
+    // with the assigned/collaborating technicians resolved so the public booking
+    // link can present them to the customer read-only.
+    async getScheduledAppointmentsByProject(projectId: string) {
+        return await prisma.appointment.findMany({
+            where: { projectId, status: { not: 'CANCELLED' } },
+            orderBy: { startTime: 'asc' },
+            include: {
+                assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
+                technicianAssignments: {
+                    include: { technician: { select: { id: true, firstName: true, lastName: true } } },
+                },
+            },
+        }) as any;
+    }
 }

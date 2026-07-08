@@ -55,6 +55,15 @@ export class ShipmentRepository implements IShipmentRepository {
         return this.mapToEntity(updated);
     }
 
+    async markManyDelayed(ids: string[]): Promise<number> {
+        if (ids.length === 0) return 0;
+        const result = await prisma.shipment.updateMany({
+            where: { id: { in: ids } },
+            data: { status: 'DELAYED' },
+        });
+        return result.count;
+    }
+
     async findById(id: string): Promise<Shipment | null> {
         const data = await prisma.shipment.findUnique({
             where: { id },

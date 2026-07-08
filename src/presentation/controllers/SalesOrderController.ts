@@ -7,11 +7,16 @@ import { InvoiceRepository } from '../../infrastructure/repositories/InvoiceRepo
 
 const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository());
 
-const safeBillingSummary = async (tenantId: string, salesOrderId: string) => {
+// Resolve billing summaries for a set of orders with one invoice query (no N+1).
+// `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
+const safeBatchSummaries = async (
+    tenantId: string,
+    targets: Array<{ salesOrderId: string; baseAmount: number }>
+) => {
     try {
-        return await billingSummaryUseCase.execute({ tenantId, salesOrderId });
+        return await billingSummaryUseCase.executeBatch(tenantId, targets);
     } catch {
-        return null;
+        return new Map<string, Awaited<ReturnType<typeof billingSummaryUseCase.execute>>>();
     }
 };
 
@@ -85,24 +90,29 @@ export class SalesOrderController {
                     project: { select: { id: true, projectName: true, status: true, plannedBudget: true, actualCost: true } },
                     addonSalesOrders: {
                         orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true },
+                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true, orderDate: true },
                     },
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                 },
             });
 
-            const enriched = await Promise.all(
-                orders.map(async (order: any) => {
-                    const billingSummary = await safeBillingSummary(tenantId, order.id);
-                    const addonSalesOrders = await Promise.all(
-                        (order.addonSalesOrders || []).map(async (addon: any) => ({
-                            ...addon,
-                            billingSummary: await safeBillingSummary(tenantId, addon.id),
-                        }))
-                    );
-                    return { ...order, billingSummary, addonSalesOrders };
-                })
-            );
+            const targets = orders.flatMap((order: any) => [
+                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0) },
+                ...(order.addonSalesOrders || []).map((addon: any) => ({
+                    salesOrderId: addon.id,
+                    baseAmount: Number(addon.totalAmount || 0),
+                })),
+            ]);
+            const summaries = await safeBatchSummaries(tenantId, targets);
+
+            const enriched = orders.map((order: any) => ({
+                ...order,
+                billingSummary: summaries.get(order.id) ?? null,
+                addonSalesOrders: (order.addonSalesOrders || []).map((addon: any) => ({
+                    ...addon,
+                    billingSummary: summaries.get(addon.id) ?? null,
+                })),
+            }));
 
             res.status(200).json(enriched);
         } catch (error: any) {
@@ -130,7 +140,7 @@ export class SalesOrderController {
                     parentSalesOrder: { select: { id: true, orderNumber: true } },
                     addonSalesOrders: {
                         orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true },
+                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true, orderDate: true },
                     },
                     reports: {
                         orderBy: { workDate: 'asc' },
@@ -153,13 +163,18 @@ export class SalesOrderController {
 
             if (!order) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
 
-            const billingSummary = await safeBillingSummary(tenantId, order.id);
-            const addonSalesOrders = await Promise.all(
-                (order.addonSalesOrders || []).map(async (addon: any) => ({
-                    ...addon,
-                    billingSummary: await safeBillingSummary(tenantId, addon.id),
-                }))
-            );
+            const summaries = await safeBatchSummaries(tenantId, [
+                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0) },
+                ...(order.addonSalesOrders || []).map((addon: any) => ({
+                    salesOrderId: addon.id,
+                    baseAmount: Number(addon.totalAmount || 0),
+                })),
+            ]);
+            const billingSummary = summaries.get(order.id) ?? null;
+            const addonSalesOrders = (order.addonSalesOrders || []).map((addon: any) => ({
+                ...addon,
+                billingSummary: summaries.get(addon.id) ?? null,
+            }));
 
             const expensesTotal = (order.expenses || []).reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
             const extraMaterialsTotal = (order.extraMaterials || []).reduce((sum: number, m: any) => sum + Number(m.quantity || 0) * Number(m.unitPrice || 0), 0);

@@ -134,6 +134,13 @@ router.get(
 );
 
 router.get(
+    '/tasks/:taskId/detail',
+    requireAuth,
+    requirePermission('maintenance.contracts.manage'),
+    (req, res) => controller.getTaskCalendarDetail(req, res)
+);
+
+router.get(
     '/tasks/:taskId',
     requireAuth,
     requirePermission('maintenance.contracts.manage'),
@@ -145,6 +152,13 @@ router.get(
     requireAuth,
     requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
     (req, res) => controller.listMyTasks(req, res)
+);
+
+router.get(
+    '/technician/tasks/:taskId/detail',
+    requireAuth,
+    requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    (req, res) => controller.getMyTaskCalendarDetail(req, res)
 );
 
 router.get(

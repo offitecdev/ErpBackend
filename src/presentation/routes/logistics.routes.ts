@@ -9,7 +9,6 @@ import { requirePermission } from '../middlewares/RbacMiddleware';
 
 const router = Router();
 
-// Bağımlılıkların (Dependencies) oluşturulması
 const shipmentRepo = new ShipmentRepository();
 const createUseCase = new CreateShipmentUseCase(shipmentRepo);
 const updateUseCase = new UpdateShipmentUseCase(shipmentRepo);

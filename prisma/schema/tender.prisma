@@ -22,6 +22,7 @@ model Tender {
   orderDate           DateTime?
   billingAddress      String?      @db.Text
   deliveryAddress     String?      @db.Text
+  billingSameAsInstallation Boolean? @default(false)
   internalDeliveryDate DateTime?
   priceList           String?
   paymentTerms        String?
@@ -104,8 +105,6 @@ model CalculationItem {
   additionalCost       Float  @default(0)
   profitMargin         Float  @default(0)
   totalCalculatedPrice Float  @default(0)
-
-  // İlişkiler
   position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
 }
 
@@ -123,9 +122,8 @@ model Article {
   unit               String
   imageUrl           String?   @db.LongText
   category           String?
-  /// ACTIVE | INACTIVE | IN_SUPPLY | IN_PRODUCTION
+  itemType           String    @default("PRODUCT")
   status             String    @default("ACTIVE")
-  /// Son satın alma / sipariş tarihi
   lastPurchaseDate   DateTime?
   isActive           Boolean   @default(true)
   minStockLevel      Float     @default(0)

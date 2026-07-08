@@ -21,7 +21,9 @@ export class Article {
         public maxStockLevel?: number | null,
         public lastPurchaseDate?: Date | null,
         public salePrice: number = 0,
-        public defaultSupplierId?: string | null
+        public defaultSupplierId?: string | null,
+        /** PRODUCT | MATERIAL — envanter kalemi tipi */
+        public itemType: string = 'PRODUCT'
     ) {}
 }
 

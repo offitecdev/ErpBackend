@@ -214,25 +214,24 @@ export class PositionRepository implements IPositionRepository {
 
     async deletePosition(positionId: string): Promise<void> {
         await prisma.$transaction(async (tx) => {
-            const collectIds = async (parentId: string): Promise<string[]> => {
+            // Collect the whole subtree breadth-first: one query per depth level
+            // instead of one query per node (avoids the N+1 tree walk).
+            const allIds: string[] = [positionId];
+            let frontier: string[] = [positionId];
+            while (frontier.length > 0) {
                 const children = await tx.position.findMany({
-                    where: { parentPositionId: parentId },
+                    where: { parentPositionId: { in: frontier } },
                     select: { id: true }
                 });
-                let ids: string[] = [];
-                for (const child of children) {
-                    ids = ids.concat(await collectIds(child.id));
-                }
-                ids.push(parentId);
-                return ids;
-            };
+                frontier = children.map((child) => child.id);
+                allIds.push(...frontier);
+            }
 
-            const allIds = await collectIds(positionId);
             await tx.positionArticleMapping.deleteMany({ where: { positionId: { in: allIds } } });
             await tx.calculationItem.deleteMany({ where: { positionId: { in: allIds } } });
-            for (const id of allIds) {
-                await tx.position.delete({ where: { id } });
-            }
+            // The parentPosition relation is optional (onDelete: SetNull), so a single
+            // bulk delete is FK-safe regardless of parent/child ordering.
+            await tx.position.deleteMany({ where: { id: { in: allIds } } });
         });
     }
 

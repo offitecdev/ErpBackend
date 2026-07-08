@@ -122,7 +122,13 @@ export class AddProjectReportUseCase {
     async execute(input: ReportInput) {
         const payload = await this.buildReportPayload(input);
         const project: any = await this.projectRepository.findById(input.projectId);
-        const existing = await (this.reportRepository as any).findByProjectAndWorkDate(input.projectId, payload.workDate, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
+        // A report stamped with an appointmentId is scoped to that appointment only, so
+        // uniqueness is per-appointment — a sibling appointment on the same order/day may
+        // still carry its own report. Reports without an appointmentId keep the legacy
+        // one-per-order-day rule.
+        const existing = input.appointmentId
+            ? await (this.reportRepository as any).findByAppointmentId(input.appointmentId)
+            : await (this.reportRepository as any).findByProjectAndWorkDate(input.projectId, payload.workDate, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
         if (existing) throw new Error("Bu proje için aynı güne ait saha raporu zaten var. Lütfen mevcut raporu düzenleyin.");
 
         const report = await this.reportRepository.createReport({

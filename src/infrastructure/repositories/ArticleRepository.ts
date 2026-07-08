@@ -45,7 +45,8 @@ export class ArticleRepository implements IArticleRepository {
             d.maxStockLevel,
             d.lastPurchaseDate,
             d.salePrice ?? 0,
-            d.defaultSupplierId ?? null
+            d.defaultSupplierId ?? null,
+            d.itemType ?? 'PRODUCT'
         );
     }
 
@@ -77,6 +78,7 @@ export class ArticleRepository implements IArticleRepository {
                 supplierBarcode: articleData.supplierBarcode ?? null,
                 imageUrl: articleData.imageUrl ?? null,
                 category: articleData.category ?? null,
+                itemType: (articleData as any).itemType ?? 'PRODUCT',
                 status: articleData.status ?? 'ACTIVE',
                 isActive: articleData.isActive ?? true,
                 minStockLevel: articleData.minStockLevel ?? 0,
@@ -94,7 +96,8 @@ export class ArticleRepository implements IArticleRepository {
             'articleCode', 'name', 'baseCost', 'unit', 'description',
             'systemBarcode', 'supplierBarcode', 'imageUrl', 'category',
             'status', 'isActive', 'minStockLevel', 'criticalStockLevel',
-            'maxStockLevel', 'lastPurchaseDate', 'salePrice', 'defaultSupplierId'
+            'maxStockLevel', 'lastPurchaseDate', 'salePrice', 'defaultSupplierId',
+            'itemType'
         ];
         for (const f of fields) {
             if (patch[f] !== undefined) updateData[f] = patch[f];

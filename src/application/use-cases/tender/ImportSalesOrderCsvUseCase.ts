@@ -316,13 +316,17 @@ const employeeScore = (employee: any, rawNameOrEmail: string) => {
     return 0;
 };
 
-const findEmployeeForName = async (tx: any, tenantId: string, rawNameOrEmail: string, fallbackId: string) => {
-    const raw = String(rawNameOrEmail || "").trim();
-    if (!raw) return { id: fallbackId, name: null };
-    const employees = await tx.employee.findMany({
+// Load the tenant's active employee directory once so name/email matching during
+// an import is done in memory instead of re-querying every row (avoids N+1).
+const loadActiveEmployees = (tx: any, tenantId: string) =>
+    tx.employee.findMany({
         where: { tenantId, isActive: true },
         select: { id: true, firstName: true, lastName: true, email: true },
     });
+
+const resolveEmployeeForName = (employees: any[], rawNameOrEmail: string, fallbackId: string) => {
+    const raw = String(rawNameOrEmail || "").trim();
+    if (!raw) return { id: fallbackId, name: null };
     const ranked = employees
         .map((employee: any) => ({ employee, score: employeeScore(employee, raw) }))
         .sort((a: any, b: any) => b.score - a.score);
@@ -338,6 +342,7 @@ const createMessageLogs = async (tx: any, input: {
     tenantId: string;
     tenderId: string;
     fallbackEmployeeId: string;
+    employees: any[];
     headers: HeaderInfo[];
     rows: CsvRow[];
 }) => {
@@ -352,7 +357,7 @@ const createMessageLogs = async (tx: any, input: {
         const key = `${author}|${messageDate?.toISOString() || ""}|${body}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const employee = await findEmployeeForName(tx, input.tenantId, author, input.fallbackEmployeeId);
+        const employee = resolveEmployeeForName(input.employees, author, input.fallbackEmployeeId);
         await tx.tenderActivityLog.create({
             data: {
                 id: nanoid(12),
@@ -406,6 +411,8 @@ export class ImportSalesOrderCsvUseCase {
             let createdArticles = 0;
             let createdPositions = 0;
 
+            const employees = await loadActiveEmployees(tx, input.tenantId);
+
             for (const group of groups.values()) {
                 const firstRow = group.rows[0]!;
                 const customerName = firstValue(headers, group.rows, "customerName")
@@ -435,7 +442,7 @@ export class ImportSalesOrderCsvUseCase {
                 }
 
                 const salespersonName = firstValue(headers, group.rows, "salesperson");
-                const salespersonEmployee = await findEmployeeForName(tx, input.tenantId, salespersonName, input.employeeId);
+                const salespersonEmployee = resolveEmployeeForName(employees, salespersonName, input.employeeId);
 
                 const existingVersions = await (tx as any).tender.aggregate({
                     where: { tenantId: input.tenantId, tenderNumber: group.orderReference },

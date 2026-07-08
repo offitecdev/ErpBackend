@@ -321,7 +321,8 @@ export class MaintenanceController {
             const start = startOfDay(rawStart);
             const end = endOfDay(rawEnd);
 
-            const tasks = await this.maintenanceRepo.getTasksByDateRange(tenantIds, start, end);
+            const lite = String(req.query.view || "") === "calendar";
+            const tasks = await this.maintenanceRepo.getTasksByDateRange(tenantIds, start, end, lite);
             res.status(200).json(tasks);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
@@ -361,7 +362,8 @@ export class MaintenanceController {
             const start = startOfDay(rawStart);
             const end = endOfDay(rawEnd);
 
-            const tasks = await this.maintenanceRepo.getTasksAssignedToTechnician(tenantIds, employeeId, start, end);
+            const lite = String(req.query.view || "") === "calendar";
+            const tasks = await this.maintenanceRepo.getTasksAssignedToTechnician(tenantIds, employeeId, start, end, lite);
             const approvedTasks = (tasks as any[]).filter(t => t.managerApprovedAt);
             res.status(200).json(approvedTasks);
         } catch (error: any) {
@@ -375,6 +377,49 @@ export class MaintenanceController {
             const employeeId = (req as any).user!.id;
             const taskId = String(req.params.taskId || "");
             const task = await this.maintenanceRepo.getTaskById(taskId);
+            if (!task || !(await isTenantInServiceTenantScope((task as any).contract?.tenantId, tenantId))) {
+                res.status(404).json({ error: "Gorev bulunamadi." });
+                return;
+            }
+            if (!(task as any).managerApprovedAt) {
+                res.status(403).json({ error: "Bu bakım görevi henüz yönetici tarafından onaylanmadı." });
+                return;
+            }
+            const technicianIds = this.taskTechnicianIds(task as any);
+            if (technicianIds.length && !technicianIds.includes(employeeId)) {
+                res.status(403).json({ error: "Bu bakim gorevi size atanmamis." });
+                return;
+            }
+            res.status(200).json(task);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Manager-facing lazy detail for the calendar popup (light include).
+    async getTaskCalendarDetail(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const taskId = String(req.params.taskId || "");
+            const task = await this.maintenanceRepo.getTaskCalendarDetailById(taskId);
+            if (!task || !(await isTenantInServiceTenantScope((task as any).contract?.tenantId, tenantId))) {
+                res.status(404).json({ error: "Gorev bulunamadi." });
+                return;
+            }
+            res.status(200).json(task);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Technician-facing lazy detail for the calendar popup: scoped to approved
+    // tasks the technician is assigned to (mirrors getMyTask).
+    async getMyTaskCalendarDetail(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const taskId = String(req.params.taskId || "");
+            const task = await this.maintenanceRepo.getTaskCalendarDetailById(taskId);
             if (!task || !(await isTenantInServiceTenantScope((task as any).contract?.tenantId, tenantId))) {
                 res.status(404).json({ error: "Gorev bulunamadi." });
                 return;

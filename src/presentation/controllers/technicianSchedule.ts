@@ -102,7 +102,9 @@ export async function listTechnicianOptions(tenantId: string) {
 /**
  * Find the first scheduling conflict for any of the given technicians within the
  * [startTime, endTime) window. Scans, in order:
- *   1. project appointments (BOOKED / COMPLETED),
+ *   1. project appointments (BOOKED only — once an install is COMPLETED the
+ *      technician has finished and is free to take another task, even within the
+ *      originally booked window if they wrapped up early),
  *   2. maintenance tasks (not CANCELLED),
  *   3. un-converted proposal schedule slots (tenders that have no project yet).
  *
@@ -123,7 +125,9 @@ export async function findTechnicianScheduleConflict(
     const projectConflict = await (prisma as any).appointment.findFirst({
         where: {
             tenantId: tenantIds.length ? { in: tenantIds } : undefined,
-            status: { in: ["BOOKED", "COMPLETED"] },
+            // Only an active (still BOOKED) install reserves the technician; a
+            // COMPLETED one means they finished, so it no longer blocks assignment.
+            status: "BOOKED",
             ...(exclude.appointmentId ? { id: { not: exclude.appointmentId } } : {}),
             startTime: { lt: endTime },
             endTime: { gt: startTime },

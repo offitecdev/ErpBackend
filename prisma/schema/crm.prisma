@@ -3,11 +3,20 @@ model Customer {
   tenantId     String
   companyName  String
   segment      String?
+  customerType String             @default("PRIVATE")
   taxOffice    String?
   taxNumber    String?
   address      String?
   mainPhone    String?
+  mobilePhone  String?
   mainEmail    String?
+  website      String?
+  language     String?
+  vatNumber    String?
+  customerSource String?
+  responsibleFirstName String?
+  responsibleLastName  String?
+  status       String             @default("ACTIVE")
   isActive     Boolean            @default(true)
   tenant       Tenant             @relation(fields: [tenantId], references: [id])
   activities   CustomerActivity[]
@@ -43,6 +52,11 @@ model SalesOrder {
   createdByEmployeeId String
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+  // Business date shown to the user. For addon (Zusatzauftrag) orders this is the
+  // original appointment date the extra work belongs to, which may predate createdAt
+  // when the entry is made days later. createdAt stays the internal "unbilled since"
+  // slice boundary; orderDate is display-only. Null falls back to createdAt.
+  orderDate           DateTime?
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id])
   customer  Customer? @relation(fields: [customerId], references: [id])
@@ -71,7 +85,9 @@ model CustomerContact {
   lastName         String
   title            String?
   phone            String?
+  mobilePhone      String?
   email            String?
+  notes            String?  @db.Text
   isPrimaryContact Boolean  @default(false)
   customer         Customer @relation(fields: [customerId], references: [id])
 
@@ -129,6 +145,8 @@ model CustomerLocation {
   id            String   @id
   customerId    String
   name          String
+  // Address list this entry belongs to: INSTALLATION (Montage/Lieferung) or BILLING (Rechnung).
+  kind          String   @default("INSTALLATION")
   address       String?
   city          String?
   postalCode    String?

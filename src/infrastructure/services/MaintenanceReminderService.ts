@@ -50,24 +50,32 @@ const runReminderPass = async () => {
         take: 100,
     });
 
+    const notifications: any[] = [];
+    const taskIds: string[] = [];
     for (const task of tasks) {
         const technicianIds = [...new Set(taskTechnicianIds(task))];
         for (const technicianId of technicianIds) {
-            await (prisma as any).notification.create({
-                data: {
-                    id: nanoid(12),
-                    tenantId: task.contract.tenantId,
-                    recipientEmployeeId: technicianId,
-                    type: "MAINTENANCE_REMINDER",
-                    title: "Yarın bakım randevunuz var",
-                    message: `${task.contract.contractCode} ${task.contract.customer?.companyName || ""} bakım randevusu yaklaşıyor.`,
-                    linkUrl: "/maintenance/technician",
-                    metadata: { taskId: task.id },
-                },
+            notifications.push({
+                id: nanoid(12),
+                tenantId: task.contract.tenantId,
+                recipientEmployeeId: technicianId,
+                type: "MAINTENANCE_REMINDER",
+                title: "Yarın bakım randevunuz var",
+                message: `${task.contract.contractCode} ${task.contract.customer?.companyName || ""} bakım randevusu yaklaşıyor.`,
+                linkUrl: "/maintenance/technician",
+                metadata: { taskId: task.id },
             });
         }
-        await (prisma as any).maintenanceTask.update({
-            where: { id: task.id },
+        taskIds.push(task.id);
+    }
+
+    // One bulk insert + one bulk update instead of a query per technician/task.
+    if (notifications.length) {
+        await (prisma as any).notification.createMany({ data: notifications });
+    }
+    if (taskIds.length) {
+        await (prisma as any).maintenanceTask.updateMany({
+            where: { id: { in: taskIds } },
             data: { reminderSentAt: new Date() },
         });
     }
@@ -92,21 +100,25 @@ const runProjectInstallationReminderPass = async () => {
         take: 100,
     });
 
-    for (const appointment of appointments) {
-        await (prisma as any).notification.create({
-            data: {
-                id: nanoid(12),
-                tenantId: appointment.tenantId,
-                recipientEmployeeId: appointment.assignedTechId,
-                type: "PROJECT_INSTALLATION_REMINDER",
-                title: "Yarin montaj randevunuz var",
-                message: `${appointment.project?.projectName || "Proje"} ${appointment.salesOrder?.orderNumber || ""} montaji yaklasiyor.`,
-                linkUrl: "/projects/installation/calendar",
-                metadata: { projectId: appointment.projectId, appointmentId: appointment.id, salesOrderId: appointment.salesOrderId },
-            },
-        });
-        await (prisma as any).appointment.update({
-            where: { id: appointment.id },
+    const notifications = appointments.map((appointment: any) => ({
+        id: nanoid(12),
+        tenantId: appointment.tenantId,
+        recipientEmployeeId: appointment.assignedTechId,
+        type: "PROJECT_INSTALLATION_REMINDER",
+        title: "Yarin montaj randevunuz var",
+        message: `${appointment.project?.projectName || "Proje"} ${appointment.salesOrder?.orderNumber || ""} montaji yaklasiyor.`,
+        linkUrl: "/projects/installation/calendar",
+        metadata: { projectId: appointment.projectId, appointmentId: appointment.id, salesOrderId: appointment.salesOrderId },
+    }));
+    const appointmentIds = appointments.map((appointment: any) => appointment.id);
+
+    // One bulk insert + one bulk update instead of a query per appointment.
+    if (notifications.length) {
+        await (prisma as any).notification.createMany({ data: notifications });
+    }
+    if (appointmentIds.length) {
+        await (prisma as any).appointment.updateMany({
+            where: { id: { in: appointmentIds } },
             data: { installationReminderSentAt: new Date() },
         });
     }

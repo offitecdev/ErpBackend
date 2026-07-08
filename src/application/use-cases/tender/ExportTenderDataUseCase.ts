@@ -7,8 +7,8 @@ export class ExportTenderDataUseCase {
         private positionRepository: IPositionRepository
     ) {}
 
-    async execute(tenderId: string, format: 'PDF' | 'CRBX' | 'SIA451') {
-        const tender = await this.tenderRepository.findById(tenderId);
+    async execute(tenderId: string, format: 'PDF' | 'CRBX' | 'SIA451', tenantId: string) {
+        const tender = await this.tenderRepository.findById(tenderId, tenantId);
         if (!tender) throw new Error("İhale bulunamadı.");
 
         // Dışa Aktarım Blokaj Kuralı (Blocker): Onaysız teklif dışarı çıkartılamaz!
@@ -31,7 +31,7 @@ export class ExportTenderDataUseCase {
 
         // Statüyü Güncelle
         if (tender.status === 'Approved') {
-            await this.tenderRepository.updateStatus(tenderId, 'Exported');
+            await this.tenderRepository.updateStatus(tenderId, 'Exported', tenantId);
         }
 
      

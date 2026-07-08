@@ -72,6 +72,11 @@ const customerController = new CustomerController(
  *         schema:
  *           type: string
  *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [ACTIVE, POTENTIAL, PASSIVE, BLOCKED, PROBLEMATIC]
+ *       - in: query
  *         name: search
  *         schema:
  *           type: string
@@ -148,8 +153,25 @@ router.post(
  *                 type: string
  *               mainPhone:
  *                 type: string
+ *               mobilePhone:
+ *                 type: string
  *               mainEmail:
  *                 type: string
+ *               website:
+ *                 type: string
+ *               language:
+ *                 type: string
+ *               vatNumber:
+ *                 type: string
+ *               customerSource:
+ *                 type: string
+ *               responsibleFirstName:
+ *                 type: string
+ *               responsibleLastName:
+ *                 type: string
+ *               status:
+ *                 type: string
+ *                 enum: [ACTIVE, POTENTIAL, PASSIVE, BLOCKED, PROBLEMATIC]
  *               isActive:
  *                 type: boolean
  *     responses:

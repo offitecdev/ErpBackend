@@ -13,7 +13,9 @@ export class CustomerContactRepository implements ICustomerContactRepository {
             data.isPrimaryContact,
             data.title,
             data.phone,
-            data.email
+            data.email,
+            data.mobilePhone,
+            data.notes
         );
     }
 
@@ -26,7 +28,9 @@ export class CustomerContactRepository implements ICustomerContactRepository {
                 lastName: contactData.lastName!,
                 title: contactData.title || null,
                 phone: contactData.phone || null,
+                mobilePhone: contactData.mobilePhone || null,
                 email: contactData.email || null,
+                notes: contactData.notes || null,
                 isPrimaryContact: contactData.isPrimaryContact ?? false
             }
         });

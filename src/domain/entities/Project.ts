@@ -1,4 +1,4 @@
-export type ProjectStatus = 'AWAITING_APPROVAL' | 'ACTIVE' | 'ON_HOLD' | 'COMPLETED' | 'CANCELLED';
+export type ProjectStatus = 'AWAITING_APPROVAL' | 'ACTIVE' | 'ON_HOLD' | 'COMPLETED' | 'SPECIALLY_CLOSED' | 'CANCELLED';
 export type AppointmentStatus = 'AVAILABLE' | 'BOOKED' | 'COMPLETED' | 'CANCELLED';
 
 export class Project {
@@ -8,7 +8,7 @@ export class Project {
         public customerId: string,
         public projectName: string,
         public status: ProjectStatus,
-        public plannedBudget: number,
+    public plannedBudget: number,
         public actualCost: number,
         public createdAt: Date,
         public tenderId?: string | null,

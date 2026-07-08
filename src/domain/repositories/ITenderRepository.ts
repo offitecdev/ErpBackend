@@ -25,9 +25,11 @@ export interface PaginatedResult<T> {
 
 export interface ITenderRepository{
     create(tender: Partial<Tender>): Promise<Tender>;
-    findById(id:string): Promise<Tender | null>;
+    // tenantId is required: tenant isolation is enforced in the query layer so a
+    // forgotten controller check can no longer leak/mutate another tenant's data.
+    findById(id:string, tenantId:string): Promise<Tender | null>;
     findAll(filter: ITenderFilter): Promise<TenderListItem[] | PaginatedResult<TenderListItem>>;
-    updateStatus(id:string , status:'Draft' | 'Approved' | 'Exported'): Promise<Tender>;
-    createNextVersion(tenderId:string , newCreatedBy:string): Promise<Tender>;
-    delete(id: string): Promise<void>;
+    updateStatus(id:string , status:'Draft' | 'Approved' | 'Exported', tenantId:string): Promise<Tender>;
+    createNextVersion(tenderId:string , newCreatedBy:string, tenantId:string): Promise<Tender>;
+    delete(id: string, tenantId: string): Promise<void>;
 }

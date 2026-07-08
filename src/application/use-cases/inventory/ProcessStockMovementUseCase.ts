@@ -8,6 +8,7 @@ export interface MovementInput {
     movementType: 'IN' | 'OUT' | 'TRANSFER' | 'RETURN' | 'ADJUSTMENT';
     quantity: number;
     unitCost?: number | null;
+    supplierId?: string | null;
     sourceLocationId?: string | null;
     destLocationId?: string | null;
     referenceId?: string | null;
@@ -28,11 +29,25 @@ export class ProcessStockMovementUseCase {
         }
 
         if (input.movementType === 'IN' || input.movementType === 'RETURN') {
-            if (!input.destLocationId) throw new Error("Giriş/İade işlemleri için Hedef Lokasyon (Nereye) zorunludur.");
+            // Lokasyon UI'dan kaldırıldı: hedef verilmezse tek global ana depoya yazılır.
+            if (!input.destLocationId) {
+                const defaultLocation = await this.inventoryRepository.ensureDefaultLocation(input.tenantId);
+                input.destLocationId = defaultLocation.id;
+            }
             input.sourceLocationId = null;
         } else if (input.movementType === 'OUT') {
-            if (!input.sourceLocationId) throw new Error("Çıkış işlemleri için Kaynak Lokasyon (Nereden) zorunludur.");
+            // Lokasyon UI'dan kaldırıldı: kaynak verilmezse tek global ana depodan düşülür.
+            if (!input.sourceLocationId) {
+                const defaultLocation = await this.inventoryRepository.ensureDefaultLocation(input.tenantId);
+                input.sourceLocationId = defaultLocation.id;
+            }
             input.destLocationId = null;
+        } else if (input.movementType === 'ADJUSTMENT') {
+            // Düzeltme tek global ana depo üzerinde yapılır (hedef verilmezse).
+            if (!input.sourceLocationId && !input.destLocationId) {
+                const defaultLocation = await this.inventoryRepository.ensureDefaultLocation(input.tenantId);
+                input.destLocationId = defaultLocation.id;
+            }
         } else if (input.movementType === 'TRANSFER') {
             if (!input.sourceLocationId || !input.destLocationId) throw new Error("Transfer için hem Kaynak hem de Hedef lokasyon zorunludur.");
             if (input.sourceLocationId === input.destLocationId) throw new Error("Kaynak ve Hedef lokasyon aynı olamaz.");

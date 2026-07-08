@@ -17,6 +17,7 @@ export interface IInvoiceRepository {
     findActiveByOrder(salesOrderId: string, tenantId: string): Promise<Invoice | null>;
     findActiveByProject(projectId: string, tenantId: string): Promise<Invoice | null>;
     list(filter: IInvoiceFilter): Promise<Invoice[]>;
+    listForOrders(tenantId: string, salesOrderIds: string[]): Promise<Invoice[]>;
     countForTenant(tenantId: string): Promise<number>;
     sumBilledPercentForOrder(salesOrderId: string): Promise<number>;
     sumBilledPercentForProject(projectId: string): Promise<number>;

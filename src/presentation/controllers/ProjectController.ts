@@ -163,7 +163,41 @@ export class ProjectController {
         }
     }
 
-    private async createAddonOrderForParent(project: any, parentSalesOrderId: string, employeeId: string) {
+    // The business date an addon order should carry: the original appointment date the
+    // billed extra work belongs to. Extra-work rows (expenses/materials/reports) carry
+    // an appointmentId, so we take the latest such appointment's startTime — even when
+    // the entry itself was made days later. Falls back to the rows' own dates, then now.
+    private async resolveAddonOrderDate(
+        tenantId: string,
+        slice: { expenses?: any[]; extraMaterials?: any[]; reports?: any[] },
+    ): Promise<Date> {
+        const appointmentIds = Array.from(new Set(
+            [...(slice.expenses || []), ...(slice.extraMaterials || []), ...(slice.reports || [])]
+                .map((row) => row?.appointmentId)
+                .filter((id): id is string => Boolean(id)),
+        ));
+        if (appointmentIds.length) {
+            const appointments: any[] = await (prisma as any).appointment.findMany({
+                where: { id: { in: appointmentIds }, tenantId },
+                select: { startTime: true },
+            });
+            const times = appointments
+                .map((appointment) => new Date(appointment.startTime).getTime())
+                .filter((time) => !Number.isNaN(time));
+            if (times.length) return new Date(Math.max(...times));
+        }
+        // No appointment link (legacy rows): use the most recent row date in the slice.
+        const rowTimes = [
+            ...(slice.reports || []).map((row) => row?.workDate || row?.reportDate),
+            ...(slice.expenses || []).map((row) => row?.expenseDate),
+            ...(slice.extraMaterials || []).map((row) => row?.addedAt),
+        ]
+            .map((value) => (value ? new Date(value).getTime() : NaN))
+            .filter((time) => !Number.isNaN(time));
+        return rowTimes.length ? new Date(Math.max(...rowTimes)) : new Date();
+    }
+
+    private async createAddonOrderForParent(project: any, parentSalesOrderId: string, employeeId: string, orderDate?: Date | null) {
         const tenantId = project.tenantId;
         const parentOrder: any = await (prisma as any).salesOrder.findFirst({ where: { id: parentSalesOrderId, projectId: project.id, tenantId } });
         if (!parentOrder) return null;
@@ -206,6 +240,10 @@ export class ProjectController {
         const totalAmount = expenseTotal + materialTotal + overtimeTotal;
         if (totalAmount <= 0) return null;
 
+        // Date the addon to the appointment the extra work belongs to (never the
+        // possibly-later entry time). createdAt still bounds the next slice.
+        const resolvedOrderDate = orderDate ?? await this.resolveAddonOrderDate(tenantId, { expenses, extraMaterials, reports });
+
         const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
         const addonOrder = await (prisma as any).salesOrder.create({
             data: {
@@ -220,6 +258,7 @@ export class ProjectController {
                 orderType: "PROJECT_ADDON",
                 status: "ORDERED",
                 totalAmount,
+                orderDate: resolvedOrderDate,
                 createdByEmployeeId: employeeId,
             },
             include: {
@@ -233,6 +272,77 @@ export class ProjectController {
             salesOrder: addonOrder,
             totals: { expenses: expenseTotal, extraMaterials: materialTotal, overtime: overtimeTotal, total: totalAmount },
         };
+    }
+
+    // Pending extra work accrued on `parentSalesOrderId` since its last addon —
+    // the same slice createAddonOrderForParent would bill. Shared by the addon
+    // request flow so the manager sees the totals a technician is flagging.
+    private async computePendingAddonTotals(project: any, parentSalesOrderId: string) {
+        const tenantId = project.tenantId;
+        const addons: any[] = await (prisma as any).salesOrder.findMany({
+            where: { parentSalesOrderId, projectId: project.id, tenantId },
+            orderBy: [{ revisionNumber: "desc" }, { createdAt: "desc" }],
+        });
+        const previousAddon = addons[0] || null;
+        const createdAtFilter = previousAddon?.createdAt ? { gt: previousAddon.createdAt } : undefined;
+
+        const [expenses, extraMaterials, reports] = await Promise.all([
+            (prisma as any).projectExpense.findMany({
+                where: { projectId: project.id, salesOrderId: parentSalesOrderId, ...(createdAtFilter ? { expenseDate: createdAtFilter } : {}) },
+            }),
+            (prisma as any).projectExtraMaterial.findMany({
+                where: { projectId: project.id, salesOrderId: parentSalesOrderId, ...(createdAtFilter ? { addedAt: createdAtFilter } : {}) },
+            }),
+            (prisma as any).projectReport.findMany({
+                where: { projectId: project.id, salesOrderId: parentSalesOrderId, ...(createdAtFilter ? { reportDate: createdAtFilter } : {}) },
+            }),
+        ]);
+
+        const expenseTotal = expenses.reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0);
+        const materialTotal = extraMaterials.reduce((sum: number, item: any) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0);
+        const overtimeTotal = reports.reduce((sum: number, item: any) => sum + Number(item.overtimeCost || 0), 0);
+        return { expenseTotal, materialTotal, overtimeTotal, total: expenseTotal + materialTotal + overtimeTotal };
+    }
+
+    // Records (or refreshes) a PENDING addon-order request for the parent order and
+    // notifies the project managers. Returns null when there is nothing to bill.
+    private async createAddonRequestForParent(project: any, parentSalesOrderId: string, requesterId: string, appointmentId?: string | null, note?: string | null) {
+        const totals = await this.computePendingAddonTotals(project, parentSalesOrderId);
+        if (totals.total <= 0) return null;
+
+        const requester: any = await (prisma as any).employee.findUnique({ where: { id: requesterId }, select: { firstName: true, lastName: true } });
+        const requestedByName = [requester?.firstName, requester?.lastName].filter(Boolean).join(" ").trim() || null;
+        const existing: any = await (prisma as any).projectAddonRequest.findFirst({
+            where: { projectId: project.id, tenantId: project.tenantId, salesOrderId: parentSalesOrderId, status: "PENDING" },
+        });
+
+        const data = {
+            salesOrderId: parentSalesOrderId,
+            appointmentId: appointmentId || null,
+            requestedById: requesterId,
+            requestedByName,
+            note: note ? String(note).trim() : null,
+            expenseTotal: totals.expenseTotal,
+            materialTotal: totals.materialTotal,
+            overtimeTotal: totals.overtimeTotal,
+            total: totals.total,
+        };
+
+        // One open request per parent order: refresh the existing one instead of
+        // stacking duplicates each time a technician finishes another montaj.
+        const request = existing
+            ? await (prisma as any).projectAddonRequest.update({ where: { id: existing.id }, data: { ...data, createdAt: new Date() } })
+            : await (prisma as any).projectAddonRequest.create({ data: { id: nanoid(12), tenantId: project.tenantId, projectId: project.id, ...data } });
+
+        await this.notifyProjectManagers(project, {
+            type: "PROJECT_ADDON_ORDER_REQUESTED",
+            title: "Ek sipariş talebi",
+            message: `${requestedByName || "Teknisyen"}, ${project.projectName} projesi için ek sipariş talep etti.`,
+            linkUrl: `/projects/${project.id}`,
+            metadata: { projectId: project.id, salesOrderId: parentSalesOrderId, addonRequestId: request.id, total: totals.total },
+        });
+
+        return { request, totals };
     }
 
     async list(req: Request, res: Response) {
@@ -308,7 +418,7 @@ export class ProjectController {
                     tender: this.tenderMaterialInclude(),
                     salesOrders: {
                         orderBy: { createdAt: "asc" as const },
-                        select: { id: true, orderNumber: true, totalAmount: true, parentSalesOrderId: true, revisionNumber: true, createdAt: true },
+                        select: { id: true, orderNumber: true, totalAmount: true, parentSalesOrderId: true, revisionNumber: true, createdAt: true, orderDate: true },
                     },
                     reports: {
                         orderBy: { reportDate: "desc" as const },
@@ -319,6 +429,53 @@ export class ProjectController {
                     },
                     expenses: { orderBy: { expenseDate: "desc" as const } },
                     extraMaterials: { orderBy: { addedAt: "desc" as const }, include: { material: true } },
+                },
+            },
+        };
+    }
+
+    // Trimmed include for the calendar grid: only the fields the month/week/day
+    // blocks render (title, technician names, order number, navigation ids). It
+    // deliberately drops the tender material trees, project reports/images,
+    // expenses and extra materials that projectInstallationInclude carries so the
+    // range query stays cheap even with many appointments. The popup fetches the
+    // richer detail on click via projectCalendarDetailInclude.
+    private projectCalendarListInclude() {
+        return {
+            assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
+            technicianAssignments: {
+                orderBy: { assignedAt: "asc" as const },
+                select: { technician: { select: { id: true, firstName: true, lastName: true } } },
+            },
+            salesOrder: { select: { id: true, orderNumber: true } },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    customer: { select: { id: true, companyName: true } },
+                },
+            },
+        };
+    }
+
+    // Single-appointment include for the calendar detail popup: customer contacts,
+    // participants with contact details, order/tender numbers and the manager —
+    // everything the popup shows, and nothing more (still no material/report trees).
+    private projectCalendarDetailInclude() {
+        return {
+            assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+            technicianAssignments: {
+                orderBy: { assignedAt: "asc" as const },
+                include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } },
+            },
+            salesOrder: { select: { id: true, orderNumber: true, totalAmount: true, tender: { select: { id: true, tenderNumber: true } } } },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true, address: true } },
+                    manager: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    tender: { select: { id: true, tenderNumber: true } },
                 },
             },
         };
@@ -350,7 +507,11 @@ export class ProjectController {
                     endTime: { lte: end },
                 },
                 orderBy: { startTime: "asc" },
-                include: this.projectInstallationInclude(),
+                // The calendar asks for the trimmed grid include; the installation
+                // screens (which derive their detail from this list) keep the full one.
+                include: String(req.query.view || "") === "calendar"
+                    ? this.projectCalendarListInclude()
+                    : this.projectInstallationInclude(),
             });
             res.status(200).json(appointments);
         } catch (error: any) {
@@ -382,7 +543,9 @@ export class ProjectController {
                     endTime: { lte: end },
                 },
                 orderBy: { startTime: "asc" },
-                include: this.projectInstallationInclude(),
+                include: String(req.query.view || "") === "calendar"
+                    ? this.projectCalendarListInclude()
+                    : this.projectInstallationInclude(),
             });
             res.status(200).json(appointments);
         } catch (error: any) {
@@ -411,13 +574,51 @@ export class ProjectController {
         }
     }
 
+    // Detail for the calendar popup, fetched lazily when an appointment block is
+    // clicked. `technicianScope` mirrors the two list endpoints: managers may open
+    // any appointment in the tenant, technicians only their own assignments.
+    async getAppointmentDetail(req: Request, res: Response, opts: { technicianScope?: boolean } = {}) {
+        try {
+            const where: any = {
+                id: String(req.params.appointmentId || ""),
+                tenantId: req.user!.tenantId,
+                projectId: { not: null },
+            };
+            if (opts.technicianScope) {
+                where.OR = [
+                    { assignedTechId: req.user!.id },
+                    { technicianAssignments: { some: { technicianId: req.user!.id } } },
+                ];
+            }
+            const appointment = await (prisma as any).appointment.findFirst({
+                where,
+                include: this.projectCalendarDetailInclude(),
+            });
+            if (!appointment) return res.status(404).json({ error: "Randevu bulunamadı." });
+            res.status(200).json(appointment);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     async getById(req: Request, res: Response) {
         try {
             const project = await this.projectRepository.findById(req.params.id as string, req.user!.tenantId);
             if (!project) {
                 return res.status(404).json({ error: "Proje bulunamadı veya seçili şirkette değil." });
             }
-            res.status(200).json(project);
+            // Attached separately (not via the shared findById include) so the
+            // project keeps loading even if the addon-request table is absent.
+            let addonRequests: any[] = [];
+            try {
+                addonRequests = await (prisma as any).projectAddonRequest.findMany({
+                    where: { projectId: (project as any).id, tenantId: req.user!.tenantId },
+                    orderBy: { createdAt: "desc" },
+                });
+            } catch (addonError: any) {
+                console.error("[getById] could not load addon requests:", addonError?.message || addonError);
+            }
+            res.status(200).json({ ...(project as any), addonRequests });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -653,9 +854,22 @@ export class ProjectController {
     async addReport(req: Request, res: Response) {
         try {
             const salesOrderId = await this.resolveProjectSalesOrderId(req.params.id as string, req.user!.tenantId, req.body.salesOrderId);
+            // Tie the report to a specific appointment when one is supplied so it never
+            // leaks onto sibling appointments sharing the sales order. Validate it belongs
+            // to this project/tenant before trusting it.
+            let appointmentId: string | null = null;
+            if (req.body.appointmentId) {
+                const appointment: any = await (prisma as any).appointment.findFirst({
+                    where: { id: String(req.body.appointmentId), tenantId: req.user!.tenantId, projectId: req.params.id as string },
+                    select: { id: true },
+                });
+                if (!appointment) return res.status(400).json({ error: "Randevu bu projeye ait değil." });
+                appointmentId = appointment.id;
+            }
             const input: ReportInput = {
                 projectId: req.params.id as string,
                 salesOrderId,
+                appointmentId,
                 employeeId: (req as any).user!.id,
                 workDate: req.body.workDate,
                 startedAt: req.body.startedAt,
@@ -856,26 +1070,42 @@ export class ProjectController {
             // A day can only hold one field report per order. If one already exists, reuse it and just
             // close the appointment instead of failing with "a report already exists".
             const isPrimaryOrder = (appointment.project.salesOrders?.[0]?.id || null) === (salesOrderId || null);
-            const existingReport: any = await this.reportRepository.findByProjectAndWorkDate(
-                appointment.projectId,
-                workDate,
-                salesOrderId ?? undefined,
-                isPrimaryOrder
-            );
+            // Prefer this appointment's own report (e.g. a manager-drafted one) so completing
+            // it reuses that report. Only fall back to the legacy order/day lookup for reports
+            // that carry NO appointmentId — a report already stamped to a sibling appointment
+            // must never be stolen/re-stamped, so this appointment gets its own report instead.
+            const ownReport: any = await (this.reportRepository as any).findByAppointmentId(appointment.id);
+            const legacyDayReport: any = ownReport
+                ? null
+                : await this.reportRepository.findByProjectAndWorkDate(
+                    appointment.projectId,
+                    workDate,
+                    salesOrderId ?? undefined,
+                    isPrimaryOrder
+                );
+            const existingReport: any = ownReport || (legacyDayReport && !legacyDayReport.appointmentId ? legacyDayReport : null);
+            const reportPayload = {
+                projectId: appointment.projectId,
+                salesOrderId,
+                appointmentId: appointment.id,
+                employeeId: reportEmployeeId,
+                workDate: workDate.toISOString(),
+                startedAt: startedAt.toISOString(),
+                endedAt: endedAt.toISOString(),
+                operationsDone,
+                technicalNotes: req.body.technicalNotes,
+                images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
+            };
+            // When a report already exists (e.g. a manager-drafted one), a technician
+            // finishing the montaj applies their own field-report content to it — the
+            // technician did the work, so their entry is the record of truth. A manager
+            // just marking the job done reuses the report untouched, so their explicit
+            // "Finish" never overwrites the report body with a default note.
             const reportResult: any = existingReport
-                ? (await this.reportRepository.findById(existingReport.id) || existingReport)
-                : await this.addReportUseCase.execute({
-                    projectId: appointment.projectId,
-                    salesOrderId,
-                    appointmentId: appointment.id,
-                    employeeId: reportEmployeeId,
-                    workDate: workDate.toISOString(),
-                    startedAt: startedAt.toISOString(),
-                    endedAt: endedAt.toISOString(),
-                    operationsDone,
-                    technicalNotes: req.body.technicalNotes,
-                    images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
-                });
+                ? (isManagerCompletion
+                    ? (await this.reportRepository.findById(existingReport.id) || existingReport)
+                    : await this.addReportUseCase.update(existingReport.id, reportPayload))
+                : await this.addReportUseCase.execute(reportPayload);
 
             const cleanUsedMaterials = Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : [];
             const usedMaterialRows: any[] = [];
@@ -946,25 +1176,39 @@ export class ProjectController {
             }
 
             const parentSalesOrderId = appointment.salesOrder?.parentSalesOrderId || salesOrderId || appointment.project.salesOrders?.[0]?.id || null;
-            const addon = parentSalesOrderId
-                ? await this.createAddonOrderForParent(appointment.project, parentSalesOrderId, req.user!.id)
-                : null;
+            // Addon order/request + manager notification are best-effort side-effects:
+            // the montaj report is already saved, so a failure here (e.g. missing
+            // migration) must never abort the completion the technician just performed.
+            let addon: Awaited<ReturnType<ProjectController["createAddonOrderForParent"]>> = null;
+            let addonRequest: Awaited<ReturnType<ProjectController["createAddonRequestForParent"]>> = null;
+            try {
+                // Managers may finalize the addon order directly; a technician finishing
+                // the montaj only raises a request that the manager acts on.
+                if (parentSalesOrderId && isManagerCompletion) {
+                    addon = await this.createAddonOrderForParent(appointment.project, parentSalesOrderId, req.user!.id, new Date(appointment.startTime));
+                } else if (parentSalesOrderId && !isManagerCompletion) {
+                    addonRequest = await this.createAddonRequestForParent(appointment.project, parentSalesOrderId, req.user!.id, appointment.id);
+                }
 
-            await this.notifyProjectManagers(appointment.project, {
-                type: isManagerCompletion ? "PROJECT_INSTALLATION_MANAGER_COMPLETED" : signatureBase64 ? "PROJECT_INSTALLATION_COMPLETED" : "PROJECT_INSTALLATION_UNSIGNED",
-                title: isManagerCompletion ? "Montaj yönetici tarafından bitirildi" : signatureBase64 ? "Montaj tamamlandı" : "Montaj imzasız geldi",
-                message: isManagerCompletion
-                    ? `${appointment.project.projectName} montajı yönetici tarafından bitirildi.`
-                    : `${appointment.project.projectName} montajı teknisyen tarafından bitirildi${signatureBase64 ? "." : ", müşteri imzası yok."}`,
-                linkUrl: `/projects/${appointment.projectId}`,
-                metadata: { projectId: appointment.projectId, appointmentId: appointment.id, reportId: reportResult.id, addonSalesOrderId: addon?.salesOrder?.id || null },
-            });
+                await this.notifyProjectManagers(appointment.project, {
+                    type: isManagerCompletion ? "PROJECT_INSTALLATION_MANAGER_COMPLETED" : signatureBase64 ? "PROJECT_INSTALLATION_COMPLETED" : "PROJECT_INSTALLATION_UNSIGNED",
+                    title: isManagerCompletion ? "Montaj yönetici tarafından bitirildi" : signatureBase64 ? "Montaj tamamlandı" : "Montaj imzasız geldi",
+                    message: isManagerCompletion
+                        ? `${appointment.project.projectName} montajı yönetici tarafından bitirildi.`
+                        : `${appointment.project.projectName} montajı teknisyen tarafından bitirildi${signatureBase64 ? "." : ", müşteri imzası yok."}`,
+                    linkUrl: `/projects/${appointment.projectId}`,
+                    metadata: { projectId: appointment.projectId, appointmentId: appointment.id, reportId: reportResult.id, addonSalesOrderId: addon?.salesOrder?.id || null, addonRequestId: addonRequest?.request?.id || null },
+                });
+            } catch (sideEffectError: any) {
+                console.error("[completeInstallation] addon/notify side-effect failed:", sideEffectError?.message || sideEffectError);
+            }
 
             res.status(201).json({
                 message: isManagerCompletion ? "Montaj yönetici tarafından bitirildi." : signatureBase64 ? "Montaj tamamlandı ve imza alındı." : "Montaj imzasız tamamlandı.",
                 report,
                 addonOrder: addon?.salesOrder || null,
                 addonTotals: addon?.totals || null,
+                addonRequest: addonRequest?.request || null,
                 overtimeWarning: reportResult.overtimeWarning || null,
             });
         } catch (error: any) {
@@ -1174,6 +1418,81 @@ export class ProjectController {
         }
     }
 
+    // Admin/manager-facing: delete a project sales order. Addon (Zusatzauftrag)
+    // orders are billing snapshots that own no records, so they just drop the row.
+    // A main order underpins its addons and scoped records, so it is guarded: it is
+    // rejected while it still has addons, and any order that has been invoiced is
+    // rejected outright. When a main order is removed its own scoped reports /
+    // expenses / extra materials (restocked) / appointments are cleaned up too.
+    async deleteSalesOrder(req: Request, res: Response) {
+        try {
+            const projectId = req.params.id as string;
+            const salesOrderId = req.params.salesOrderId as string;
+            const tenantId = req.user!.tenantId;
+
+            const order: any = await (prisma as any).salesOrder.findFirst({
+                where: { id: salesOrderId, projectId, tenantId },
+            });
+            if (!order) return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
+
+            // No order may be deleted once it has been billed.
+            const invoiceCount = await (prisma as any).invoice.count({ where: { salesOrderId: order.id } });
+            if (invoiceCount > 0) {
+                return res.status(400).json({ error: "Faturalandırılmış bir sipariş silinemez." });
+            }
+
+            const isAddon = Boolean(order.parentSalesOrderId);
+
+            if (!isAddon) {
+                const addonCount = await (prisma as any).salesOrder.count({
+                    where: { parentSalesOrderId: order.id, projectId, tenantId },
+                });
+                if (addonCount > 0) {
+                    return res.status(400).json({ error: "Ek siparişleri olan bir ana sipariş silinemez. Önce ek siparişleri silin." });
+                }
+            }
+
+            await (prisma as any).$transaction(async (tx: any) => {
+                if (!isAddon) {
+                    // Reports own their materials/images via onDelete: Cascade.
+                    const reports: any[] = await tx.projectReport.findMany({
+                        where: { projectId, salesOrderId: order.id },
+                        select: { id: true },
+                    });
+                    if (reports.length) {
+                        await tx.projectReport.deleteMany({ where: { id: { in: reports.map((r) => r.id) } } });
+                    }
+
+                    // Restock every extra material before removing it.
+                    const extraMaterials: any[] = await tx.projectExtraMaterial.findMany({
+                        where: { projectId, salesOrderId: order.id },
+                        select: { id: true, materialId: true, quantity: true },
+                    });
+                    for (const row of extraMaterials) {
+                        await tx.material.update({
+                            where: { id: row.materialId },
+                            data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                        });
+                    }
+                    if (extraMaterials.length) {
+                        await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((r) => r.id) } } });
+                    }
+
+                    await tx.projectExpense.deleteMany({ where: { projectId, salesOrderId: order.id } });
+
+                    // Appointment assignments cascade on Appointment delete.
+                    await tx.appointment.deleteMany({ where: { projectId, salesOrderId: order.id } });
+                }
+
+                await tx.salesOrder.delete({ where: { id: order.id } });
+            });
+
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     async createAddonOrder(req: Request, res: Response) {
         try {
             const projectId = req.params.id as string;
@@ -1239,6 +1558,10 @@ export class ProjectController {
                 return res.status(400).json({ error: "Ek sipariş oluşturmak için son ek siparişten sonra harici gider, ek malzeme veya ek işçilik maliyeti bulunamadı." });
             }
 
+            // Date the addon to the appointment its billed extra work belongs to, even
+            // when the manager creates it days later. createdAt still bounds the next slice.
+            const resolvedOrderDate = await this.resolveAddonOrderDate(tenantId, { expenses, extraMaterials, reports });
+
             const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
             const addonOrder = await (prisma as any).salesOrder.create({
                 data: {
@@ -1253,6 +1576,7 @@ export class ProjectController {
                     orderType: 'PROJECT_ADDON',
                     status: 'ORDERED',
                     totalAmount,
+                    orderDate: resolvedOrderDate,
                     createdByEmployeeId: employeeId,
                 },
                 include: {
@@ -1262,11 +1586,80 @@ export class ProjectController {
                 },
             });
 
+            // Any open technician requests for this parent are now fulfilled (best-effort).
+            try {
+                await (prisma as any).projectAddonRequest.updateMany({
+                    where: { projectId, tenantId, salesOrderId: parentSalesOrderId, status: "PENDING" },
+                    data: { status: "HANDLED", resolvedById: employeeId, resolvedAt: new Date() },
+                });
+            } catch (markError: any) {
+                console.error("[createAddonOrder] could not mark addon requests handled:", markError?.message || markError);
+            }
+
             res.status(201).json({
                 message: `${orderNumber} ek siparişi oluşturuldu.`,
                 salesOrder: addonOrder,
                 totals: { expenses: expenseTotal, extraMaterials: materialTotal, overtime: overtimeTotal, total: totalAmount },
             });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Technician-facing: raise a request that the manager create an addon order
+    // from the extra work accrued on a parent order. Does not create the order.
+    async requestAddonOrder(req: Request, res: Response) {
+        try {
+            const projectId = req.params.id as string;
+            const tenantId = req.user!.tenantId;
+
+            const project: any = await this.projectRepository.findById(projectId, tenantId);
+            if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
+
+            const rawSalesOrderId = String(req.body.salesOrderId || req.body.parentSalesOrderId || "").trim();
+            let parentSalesOrderId = rawSalesOrderId || null;
+            if (parentSalesOrderId) {
+                const order: any = await (prisma as any).salesOrder.findFirst({ where: { id: parentSalesOrderId, projectId, tenantId } });
+                if (!order) return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
+                parentSalesOrderId = order.parentSalesOrderId || order.id;
+            } else {
+                parentSalesOrderId = project.salesOrders?.find((o: any) => !o.parentSalesOrderId)?.id || project.salesOrders?.[0]?.id || null;
+            }
+            if (!parentSalesOrderId) return res.status(400).json({ error: "Ek sipariş talebi için bağlı bir sipariş bulunamadı." });
+
+            const result = await this.createAddonRequestForParent(project, parentSalesOrderId, req.user!.id, req.body.appointmentId ? String(req.body.appointmentId) : null, req.body.note);
+            if (!result) {
+                return res.status(400).json({ error: "Ek sipariş talebi için harici gider, ek malzeme veya ek işçilik maliyeti bulunamadı." });
+            }
+
+            res.status(201).json({ message: "Ek sipariş talebi yöneticiye iletildi.", addonRequest: result.request, totals: result.totals });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Manager-facing: resolve (HANDLED / DISMISSED) a technician addon request.
+    async resolveAddonRequest(req: Request, res: Response) {
+        try {
+            const requestId = req.params.requestId as string;
+            const tenantId = req.user!.tenantId;
+            const nextStatus = String(req.body.status || "DISMISSED").toUpperCase();
+            if (!["HANDLED", "DISMISSED", "PENDING"].includes(nextStatus)) {
+                return res.status(400).json({ error: "Geçersiz talep durumu." });
+            }
+
+            const request: any = await (prisma as any).projectAddonRequest.findFirst({ where: { id: requestId, tenantId } });
+            if (!request) return res.status(404).json({ error: "Ek sipariş talebi bulunamadı." });
+
+            const updated = await (prisma as any).projectAddonRequest.update({
+                where: { id: request.id },
+                data: {
+                    status: nextStatus,
+                    resolvedById: nextStatus === "PENDING" ? null : req.user!.id,
+                    resolvedAt: nextStatus === "PENDING" ? null : new Date(),
+                },
+            });
+            res.status(200).json({ message: "Ek sipariş talebi güncellendi.", addonRequest: updated });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

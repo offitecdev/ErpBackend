@@ -18,7 +18,8 @@ export class TenderRepository implements ITenderRepository {
             data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms,
             data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature,
             data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount,
-            data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin
+            data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin,
+            data.billingSameAsInstallation
         );
     }
 
@@ -29,9 +30,11 @@ export class TenderRepository implements ITenderRepository {
         return this.mapToEntity(data);
     }
 
-    async findById(id: string): Promise<Tender | null> {
-        const data = await prisma.tender.findUnique({
-            where: { id },
+    async findById(id: string, tenantId: string): Promise<Tender | null> {
+        // Scoped by both id and tenantId (findFirst, since the composite is not a
+        // unique key). Cross-tenant ids simply resolve to null.
+        const data = await prisma.tender.findFirst({
+            where: { id, tenantId },
             include: {
                 customer: { select: { id: true, companyName: true, address: true, mainPhone: true, mainEmail: true, taxNumber: true } },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } }
@@ -82,6 +85,7 @@ export class TenderRepository implements ITenderRepository {
                 orderDate: true,
                 billingAddress: true,
                 deliveryAddress: true,
+                billingSameAsInstallation: true,
                 internalDeliveryDate: true,
                 priceList: true,
                 paymentTerms: true,
@@ -156,8 +160,16 @@ export class TenderRepository implements ITenderRepository {
         return items;
     }
 
-    async delete(id: string): Promise<void> {
+    async delete(id: string, tenantId: string): Promise<void> {
         await prisma.$transaction(async (tx) => {
+            // Only delete when the tender belongs to this tenant.
+            const owned = await tx.tender.findFirst({
+                where: { id, tenantId },
+                select: { id: true }
+            });
+            if (!owned) {
+                throw new Error("Teklif bulunamadı veya bu şirkete ait değil.");
+            }
             const positions = await tx.position.findMany({
                 where: { tenderId: id },
                 select: { id: true }
@@ -172,17 +184,23 @@ export class TenderRepository implements ITenderRepository {
         });
     }
 
-    async updateStatus(id: string, status: 'Draft' | 'Approved' | 'Exported'): Promise<Tender> {
-        const data = await prisma.tender.update({
-            where: { id },
+    async updateStatus(id: string, status: 'Draft' | 'Approved' | 'Exported', tenantId: string): Promise<Tender> {
+        // Update only the row matching id + tenantId; if nothing matched the
+        // tender either doesn't exist or belongs to another tenant.
+        const result = await prisma.tender.updateMany({
+            where: { id, tenantId },
             data: { status }
         });
+        if (result.count === 0) {
+            throw new Error("Teklif bulunamadı veya bu şirkete ait değil.");
+        }
+        const data = await prisma.tender.findUniqueOrThrow({ where: { id } });
         return this.mapToEntity(data);
     }
 
-    async createNextVersion(tenderId: string, newCreatedBy: string): Promise<Tender> {
-        const existingTender = await prisma.tender.findUnique({
-            where: { id: tenderId },
+    async createNextVersion(tenderId: string, newCreatedBy: string, tenantId: string): Promise<Tender> {
+        const existingTender = await prisma.tender.findFirst({
+            where: { id: tenderId, tenantId },
             include: {
                 positions: {
                     include: {

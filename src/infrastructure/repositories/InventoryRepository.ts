@@ -6,6 +6,70 @@ import { nanoid } from "nanoid";
 
 const inboundCostMovementTypes = new Set(['IN', 'RETURN', 'ADJUSTMENT']);
 
+// Relations required to compute the weighted-average cost / stock totals shown in
+// the article summary. Shared by the full and paginated summary queries.
+const articleSummaryInclude = {
+    stockBalances: {
+        include: { location: { select: { locationName: true, locationType: true } } }
+    },
+    articleSuppliers: {
+        include: {
+            supplier: true,
+            location: { select: { id: true, locationName: true, locationType: true } }
+        },
+        orderBy: [{ isPreferred: 'desc' }, { lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }]
+    },
+    stockMovements: {
+        select: {
+            id: true,
+            movementType: true,
+            quantity: true,
+            unitCost: true,
+            referenceId: true,
+            transactionDate: true,
+            description: true,
+        }
+    },
+} as const;
+
+const mapArticleToSummary = (a: any, includeImages: boolean) => {
+    const costSummary = computeArticleCostSummary(a);
+    return {
+        id: a.id,
+        articleCode: a.articleCode,
+        name: a.name,
+        description: a.description,
+        unit: a.unit,
+        baseCost: a.baseCost,
+        salePrice: a.salePrice ?? 0,
+        defaultSupplierId: a.defaultSupplierId,
+        // Base64 images bloat this list response (~1MB+); only embed them
+        // when a consumer that actually renders thumbnails asks for them.
+        imageUrl: includeImages ? a.imageUrl : null,
+        systemBarcode: a.systemBarcode,
+        supplierBarcode: a.supplierBarcode,
+        isActive: a.isActive,
+        status: a.status,
+        category: a.category,
+        itemType: a.itemType ?? 'PRODUCT',
+        minStockLevel: a.minStockLevel,
+        criticalStockLevel: a.criticalStockLevel,
+        maxStockLevel: a.maxStockLevel,
+        lastPurchaseDate: a.lastPurchaseDate,
+        totalQuantity: a.stockBalances.reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0),
+        totalReserved: a.stockBalances.reduce((s: number, b: any) => s + (b.reservedQuantity || 0), 0),
+        balances: a.stockBalances.map((b: any) => ({
+            locationId: b.locationId,
+            locationName: b.location?.locationName,
+            locationType: b.location?.locationType,
+            currentQuantity: b.currentQuantity,
+            reservedQuantity: b.reservedQuantity,
+        })),
+        suppliers: a.articleSuppliers,
+        ...costSummary,
+    };
+};
+
 const computeArticleCostSummary = (article: any) => {
     const suppliers = Array.isArray(article.articleSuppliers) ? article.articleSuppliers : [];
     const balances = Array.isArray(article.stockBalances) ? article.stockBalances : [];
@@ -83,6 +147,29 @@ export class InventoryRepository implements IInventoryRepository {
         return data.map(d => new Location(d.id, d.tenantId, d.locationName, d.locationType as any, d.isActive, d.parentLocationId));
     }
 
+    /**
+     * Tek global stok modeli için varsayılan ana depoyu bulur, yoksa oluşturur.
+     * Lokasyon UI'dan kaldırıldığı için tüm stok hareketleri bu depo üzerinden işlenir.
+     */
+    async ensureDefaultLocation(tenantId: string): Promise<Location> {
+        let data = await prisma.location.findFirst({
+            where: { tenantId, locationType: 'MAIN_WAREHOUSE' },
+            orderBy: { locationName: 'asc' },
+        });
+        if (!data) {
+            data = await prisma.location.create({
+                data: {
+                    id: nanoid(8),
+                    tenantId,
+                    locationName: 'Ana Depo',
+                    locationType: 'MAIN_WAREHOUSE',
+                    isActive: true,
+                },
+            });
+        }
+        return new Location(data.id, data.tenantId, data.locationName, data.locationType as any, data.isActive, data.parentLocationId);
+    }
+
     async getStockBalance(articleId: string, locationId: string): Promise<StockBalance | null> {
         const data = await prisma.stockBalance.findUnique({
             where: { articleId_locationId: { articleId, locationId } }
@@ -104,67 +191,128 @@ export class InventoryRepository implements IInventoryRepository {
         });
     }
 
-    async getArticleStockSummary(tenantId: string): Promise<any[]> {
+    async getArticleStockSummary(tenantId: string, includeImages = false): Promise<any[]> {
         const articles = await (prisma as any).article.findMany({
             where: { tenantId },
-            include: {
-                stockBalances: {
-                    include: { location: { select: { locationName: true, locationType: true } } }
-                },
-                articleSuppliers: {
-                    include: {
-                        supplier: true,
-                        location: { select: { id: true, locationName: true, locationType: true } }
-                    },
-                    orderBy: [{ isPreferred: 'desc' }, { lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }]
-                },
-                stockMovements: {
-                    select: {
-                        id: true,
-                        movementType: true,
-                        quantity: true,
-                        unitCost: true,
-                        referenceId: true,
-                        transactionDate: true,
-                        description: true,
-                    }
-                },
-            }
+            include: articleSummaryInclude,
         });
-        return articles.map((a: any) => {
-            const costSummary = computeArticleCostSummary(a);
-            return {
+        return articles.map((a: any) => mapArticleToSummary(a, includeImages));
+    }
+
+    // Tek ürünün yalın stok bilgisi: yalnızca toplam adet, stok eşikleri ve ağırlıklı
+    // ortalama maliyet dökümü. Lokasyon/depo objeleri, tedarikçi listesi ve görsel
+    // ÇEKİLMEZ — stok hareketi ekranındaki canlı sayaç için gereken en az veri.
+    async getArticleStockInfo(tenantId: string, articleId: string): Promise<any | null> {
+        const article = await (prisma as any).article.findFirst({
+            where: { id: articleId, tenantId },
+            select: {
+                id: true,
+                baseCost: true,
+                minStockLevel: true,
+                criticalStockLevel: true,
+                maxStockLevel: true,
+                stockBalances: { select: { currentQuantity: true } },
+                articleSuppliers: { select: { id: true, quantity: true, purchasePrice: true } },
+                stockMovements: {
+                    select: { movementType: true, quantity: true, unitCost: true, referenceId: true, description: true },
+                },
+            },
+        });
+        if (!article) return null;
+
+        const cost = computeArticleCostSummary(article);
+        return {
+            id: article.id,
+            totalQuantity: article.stockBalances.reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0),
+            minStockLevel: article.minStockLevel,
+            criticalStockLevel: article.criticalStockLevel,
+            maxStockLevel: article.maxStockLevel ?? null,
+            ...cost,
+        };
+    }
+
+    /**
+     * Ürün LİSTE ekranı için yalın, sayfalı sorgu (varsayılan 15). Yalnızca
+     * tabloda gösterilen alanlar + kayda bağlanmak için id döner — görseller,
+     * tedarikçiler, hareketler ve maliyet dökümü ÇEKİLMEZ (aşırı veri çekmemek
+     * için). Ürün detayı ayrı bir uçtan (getById) yüklenir.
+     */
+    async getArticleStockSummaryPaged(
+        tenantId: string,
+        options: {
+            page?: number;
+            pageSize?: number;
+            search?: string | undefined;
+            status?: string | undefined;
+            itemType?: string | undefined;
+        }
+    ): Promise<{ items: any[]; total: number; page: number; pageSize: number }> {
+        const page = Math.max(1, Number(options.page) || 1);
+        const pageSize = Math.min(200, Math.max(1, Number(options.pageSize) || 15));
+
+        const where: any = { tenantId };
+        if (options.itemType) where.itemType = options.itemType;
+        if (options.status) where.status = options.status;
+        const search = String(options.search || '').trim();
+        if (search) {
+            where.OR = [
+                { articleCode: { contains: search } },
+                { name: { contains: search } },
+                { systemBarcode: { contains: search } },
+                { supplierBarcode: { contains: search } },
+                { category: { contains: search } },
+            ];
+        }
+
+        const [total, articles] = await Promise.all([
+            (prisma as any).article.count({ where }),
+            (prisma as any).article.findMany({
+                where,
+                select: {
+                    id: true,
+                    articleCode: true,
+                    name: true,
+                    category: true,
+                    itemType: true,
+                    systemBarcode: true,
+                    supplierBarcode: true,
+                    unit: true,
+                    salePrice: true,
+                    baseCost: true,
+                    status: true,
+                    minStockLevel: true,
+                    criticalStockLevel: true,
+                    // Only the quantity is needed for the "in stock" column — no
+                    // location objects, reservations or movement history.
+                    stockBalances: { select: { currentQuantity: true } },
+                },
+                orderBy: { name: 'asc' },
+                skip: (page - 1) * pageSize,
+                take: pageSize,
+            }),
+        ]);
+
+        return {
+            items: articles.map((a: any) => ({
                 id: a.id,
                 articleCode: a.articleCode,
                 name: a.name,
-                description: a.description,
-                unit: a.unit,
-                baseCost: a.baseCost,
-                salePrice: a.salePrice ?? 0,
-                defaultSupplierId: a.defaultSupplierId,
-                imageUrl: a.imageUrl,
+                category: a.category,
+                itemType: a.itemType ?? 'PRODUCT',
                 systemBarcode: a.systemBarcode,
                 supplierBarcode: a.supplierBarcode,
-                isActive: a.isActive,
+                unit: a.unit,
+                salePrice: a.salePrice ?? 0,
+                baseCost: a.baseCost,
                 status: a.status,
-                category: a.category,
                 minStockLevel: a.minStockLevel,
                 criticalStockLevel: a.criticalStockLevel,
-                maxStockLevel: a.maxStockLevel,
-                lastPurchaseDate: a.lastPurchaseDate,
                 totalQuantity: a.stockBalances.reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0),
-                totalReserved: a.stockBalances.reduce((s: number, b: any) => s + (b.reservedQuantity || 0), 0),
-                balances: a.stockBalances.map((b: any) => ({
-                    locationId: b.locationId,
-                    locationName: b.location?.locationName,
-                    locationType: b.location?.locationType,
-                    currentQuantity: b.currentQuantity,
-                    reservedQuantity: b.reservedQuantity,
-                })),
-                suppliers: a.articleSuppliers,
-                ...costSummary,
-            };
-        });
+            })),
+            total,
+            page,
+            pageSize,
+        };
     }
 
     async findArticleByBarcodeOrCode(tenantId: string, codeOrBarcode: string): Promise<Article | null> {
@@ -255,6 +403,7 @@ export class InventoryRepository implements IInventoryRepository {
                     sourceLocationId,
                     destinationLocationId: destLocationId,
                     employeeId: movementData.employeeId!,
+                    supplierId: (movementData as any).supplierId || null,
                     referenceId: movementData.referenceId || null,
                     description: movementData.description || null,
                 }
@@ -263,16 +412,24 @@ export class InventoryRepository implements IInventoryRepository {
             return movement;
         });
 
-        return new StockMovement(result.id, result.tenantId, result.articleId, result.movementType as any, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined, (result as any).unitCost ?? undefined);
+        return new StockMovement(result.id, result.tenantId, result.articleId, result.movementType as any, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined, (result as any).unitCost ?? undefined, (result as any).supplierId ?? undefined);
     }
 
     async getMovements(articleId: string): Promise<StockMovement[]> {
         const data = await prisma.stockMovement.findMany({
             where: { articleId },
             orderBy: { transactionDate: 'desc' },
-            include: { employee: { select: { firstName: true, lastName: true } } }
+            include: {
+                employee: { select: { firstName: true, lastName: true } },
+                supplier: { select: { companyName: true } },
+            }
         });
-        return data.map(d => new StockMovement(d.id, d.tenantId, d.articleId, d.movementType as any, d.quantity, d.employeeId, d.transactionDate, d.sourceLocationId, d.destinationLocationId, d.referenceId || undefined, d.description || undefined, (d as any).unitCost ?? undefined));
+        return data.map(d => {
+            const m: any = new StockMovement(d.id, d.tenantId, d.articleId, d.movementType as any, d.quantity, d.employeeId, d.transactionDate, d.sourceLocationId, d.destinationLocationId, d.referenceId || undefined, d.description || undefined, (d as any).unitCost ?? undefined, (d as any).supplierId ?? undefined);
+            m.employee = (d as any).employee;
+            m.supplier = (d as any).supplier;
+            return m;
+        });
     }
 
     async createPurchaseProposal(proposal: Partial<PurchaseProposal>): Promise<PurchaseProposal> {

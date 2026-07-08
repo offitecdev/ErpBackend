@@ -7,7 +7,15 @@ import { RoleRepository } from '../../infrastructure/repositories/RoleRepository
 import { BcryptCryptoService } from '../../infrastructure/services/BcryptCryptoService';
 import { JwtTokenService } from '../../infrastructure/services/JwtTokenService';
 import { requireAuth } from '../middlewares/AuthMiddleware';
+import { rateLimit } from '../middlewares/RateLimitMiddleware';
 import { GetMeUseCase } from '../../application/use-cases/auth/GetMeUseCase';
+
+// Throttle credential attempts per IP to blunt brute-force / enumeration.
+const loginRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    message: 'Çok fazla giriş denemesi. Lütfen bir süre sonra tekrar deneyin.',
+});
 
 
 const router = Router();
@@ -48,7 +56,7 @@ const authController = new AuthController(loginUseCase, getUserPermissionsUseCas
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.post('/login', (req, res) => authController.login(req, res));
+router.post('/login', loginRateLimiter, (req, res) => authController.login(req, res));
 
 /**
  * @swagger
