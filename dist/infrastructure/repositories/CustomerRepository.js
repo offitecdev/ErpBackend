@@ -7,29 +7,48 @@ exports.CustomerRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Customer_1 = require("../../domain/entities/Customer");
 const nanoid_1 = require("nanoid");
+// Lifecycle statuses that count as "inactive" for the legacy isActive flag.
+// Active, Potential and Problematic customers remain active relationships.
+const INACTIVE_CUSTOMER_STATUSES = new Set(["PASSIVE", "BLOCKED"]);
+const deriveIsActive = (status) => !INACTIVE_CUSTOMER_STATUSES.has(status);
 class CustomerRepository {
     mapToEntity(data) {
-        return new Customer_1.Customer(data.id, data.tenantId, data.companyName, data.isActive, data.segment, data.taxOffice, data.taxNumber, data.address, data.mainPhone, data.mainEmail);
+        return new Customer_1.Customer(data.id, data.tenantId, data.companyName, data.isActive, data.segment, data.taxOffice, data.taxNumber, data.address, data.mainPhone, data.mainEmail, data.customerType ?? "PRIVATE", data.mobilePhone, data.website, data.language, data.vatNumber, data.customerSource, data.responsibleFirstName, data.responsibleLastName, data.status ?? "ACTIVE");
     }
     async createCustomer(customerData) {
+        const status = customerData.status ?? "ACTIVE";
         const data = await prisma_client_1.default.customer.create({
             data: {
                 id: customerData.id || (0, nanoid_1.nanoid)(8),
                 tenantId: customerData.tenantId,
                 companyName: customerData.companyName,
                 segment: customerData.segment ?? null,
+                customerType: customerData.customerType ?? "PRIVATE",
                 taxOffice: customerData.taxOffice ?? null,
                 taxNumber: customerData.taxNumber ?? null,
                 address: customerData.address ?? null,
                 mainPhone: customerData.mainPhone ?? null,
+                mobilePhone: customerData.mobilePhone ?? null,
                 mainEmail: customerData.mainEmail ?? null,
-                isActive: customerData.isActive ?? true,
+                website: customerData.website ?? null,
+                language: customerData.language ?? null,
+                vatNumber: customerData.vatNumber ?? null,
+                customerSource: customerData.customerSource ?? null,
+                responsibleFirstName: customerData.responsibleFirstName ?? null,
+                responsibleLastName: customerData.responsibleLastName ?? null,
+                status,
+                // Keep the legacy boolean in sync with the lifecycle status.
+                isActive: customerData.isActive ?? deriveIsActive(status),
             }
         });
         return this.mapToEntity(data);
     }
     async update(id, customerData) {
         const { id: _id, tenantId: _tid, ...safeData } = customerData;
+        // When the status changes, keep the legacy isActive boolean consistent.
+        if (typeof safeData.status === "string" && safeData.isActive === undefined) {
+            safeData.isActive = deriveIsActive(safeData.status);
+        }
         const data = await prisma_client_1.default.customer.update({
             where: { id },
             data: safeData
@@ -64,6 +83,7 @@ class CustomerRepository {
             prisma_client_1.default.customerNote.deleteMany({ where: { customerId: id } }),
             prisma_client_1.default.customerActivity.deleteMany({ where: { customerId: id } }),
             prisma_client_1.default.customerContact.deleteMany({ where: { customerId: id } }),
+            prisma_client_1.default.customerLocation.deleteMany({ where: { customerId: id } }),
             prisma_client_1.default.appointment.deleteMany({ where: { customerId: id } }),
             prisma_client_1.default.offerScheduleSlot.deleteMany({ where: { customerId: id } }),
             prisma_client_1.default.document.deleteMany({ where: { entityType: 'customer', relatedEntityId: id } }),
@@ -86,6 +106,9 @@ class CustomerRepository {
         if (filter.segment) {
             whereClause.segment = filter.segment;
         }
+        if (filter.status) {
+            whereClause.status = filter.status;
+        }
         if (filter.search) {
             whereClause.OR = [
                 { companyName: { contains: filter.search } },
@@ -104,11 +127,20 @@ class CustomerRepository {
                     companyName: true,
                     isActive: true,
                     segment: true,
+                    customerType: true,
                     taxOffice: true,
                     taxNumber: true,
                     address: true,
                     mainPhone: true,
+                    mobilePhone: true,
                     mainEmail: true,
+                    website: true,
+                    language: true,
+                    vatNumber: true,
+                    customerSource: true,
+                    responsibleFirstName: true,
+                    responsibleLastName: true,
+                    status: true,
                 },
                 orderBy: { companyName: 'asc' },
                 ...(page && pageSize ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
@@ -135,6 +167,9 @@ class CustomerRepository {
             where: whereClause,
             include: {
                 contacts: true,
+                locations: {
+                    orderBy: [{ isPrimary: 'desc' }, { name: 'asc' }]
+                },
                 notes: {
                     orderBy: { createdAt: 'desc' },
                     include: { createdBy: { select: { firstName: true, lastName: true } } }

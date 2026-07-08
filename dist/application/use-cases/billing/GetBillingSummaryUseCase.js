@@ -43,6 +43,38 @@ class GetBillingSummaryUseCase {
             salesOrderId: salesOrderId || undefined,
             projectId: projectId || undefined,
         });
+        return this.buildSummary(baseAmount, invoices);
+    }
+    /**
+     * Computes billing summaries for many sales orders with a single invoice query
+     * instead of one query per order (avoids the N+1 fan-out on list endpoints).
+     * `baseAmount` is taken from the already-loaded order so no extra lookups are needed.
+     */
+    async executeBatch(tenantId, targets) {
+        const result = new Map();
+        const ids = [...new Set(targets.map((t) => t.salesOrderId).filter(Boolean))];
+        if (ids.length === 0)
+            return result;
+        const invoices = await this.invoiceRepository.listForOrders(tenantId, ids);
+        const byOrder = new Map();
+        for (const inv of invoices) {
+            const key = inv.salesOrderId ?? inv.salesOrder?.id;
+            if (!key)
+                continue;
+            const bucket = byOrder.get(key);
+            if (bucket)
+                bucket.push(inv);
+            else
+                byOrder.set(key, [inv]);
+        }
+        for (const { salesOrderId, baseAmount } of targets) {
+            if (result.has(salesOrderId))
+                continue;
+            result.set(salesOrderId, this.buildSummary(baseAmount, byOrder.get(salesOrderId) || []));
+        }
+        return result;
+    }
+    buildSummary(baseAmount, invoices) {
         const active = invoices.filter((inv) => inv.status !== "CANCELLED");
         const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));

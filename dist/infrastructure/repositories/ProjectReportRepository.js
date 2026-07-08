@@ -46,6 +46,16 @@ class ProjectReportRepository {
             }
         });
     }
+    // A field report belongs to exactly one appointment once stamped. Used to
+    // enforce one-report-per-appointment (instead of the legacy one-per-order-day)
+    // and to reuse an appointment's own draft when it is later completed.
+    async findByAppointmentId(appointmentId) {
+        if (!appointmentId)
+            return null;
+        return await prisma_client_1.default.projectReport.findFirst({
+            where: { appointmentId }
+        });
+    }
     async findByProjectAndWorkDate(projectId, workDate, salesOrderId, includeUnscoped = false) {
         const dayStart = new Date(workDate);
         dayStart.setHours(0, 0, 0, 0);

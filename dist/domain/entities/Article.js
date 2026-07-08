@@ -21,7 +21,10 @@ class Article {
     lastPurchaseDate;
     salePrice;
     defaultSupplierId;
-    constructor(id, tenantId, articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status = 'ACTIVE', isActive = true, minStockLevel = 0, criticalStockLevel = 0, maxStockLevel, lastPurchaseDate, salePrice = 0, defaultSupplierId) {
+    itemType;
+    constructor(id, tenantId, articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status = 'ACTIVE', isActive = true, minStockLevel = 0, criticalStockLevel = 0, maxStockLevel, lastPurchaseDate, salePrice = 0, defaultSupplierId, 
+    /** PRODUCT | MATERIAL — envanter kalemi tipi */
+    itemType = 'PRODUCT') {
         this.id = id;
         this.tenantId = tenantId;
         this.articleCode = articleCode;
@@ -41,6 +44,7 @@ class Article {
         this.lastPurchaseDate = lastPurchaseDate;
         this.salePrice = salePrice;
         this.defaultSupplierId = defaultSupplierId;
+        this.itemType = itemType;
     }
 }
 exports.Article = Article;

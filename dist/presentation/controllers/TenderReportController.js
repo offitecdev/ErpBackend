@@ -13,7 +13,8 @@ class TenderReportController {
             const tenderId = req.params.id;
             if (!tenderId)
                 return res.status(400).json({ error: "İhale ID zorunludur." });
-            const report = await this.reportUseCase.execute(tenderId);
+            const tenantId = req.user.tenantId;
+            const report = await this.reportUseCase.execute(tenderId, tenantId);
             res.status(200).json(report);
         }
         catch (error) {
@@ -26,7 +27,8 @@ class TenderReportController {
             if (!tenderId)
                 return res.status(400).json({ error: "İhale ID zorunludur." });
             const format = req.query.format || 'PDF';
-            const exportData = await this.exportUseCase.execute(tenderId, format);
+            const tenantId = req.user.tenantId;
+            const exportData = await this.exportUseCase.execute(tenderId, format, tenantId);
             res.status(200).json({
                 message: "Dışa aktarım verisi başarıyla hazırlandı.",
                 data: exportData

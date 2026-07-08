@@ -9,11 +9,13 @@ const ListCustomersUseCase_1 = require("../../application/use-cases/crm/ListCust
 const LogCustomerActivityUseCase_1 = require("../../application/use-cases/crm/LogCustomerActivityUseCase");
 const UploadDocumentUseCase_1 = require("../../application/use-cases/crm/UploadDocumentUseCase");
 const AddCustomerContactUseCase_1 = require("../../application/use-cases/crm/AddCustomerContactUseCase");
+const AddCustomerLocationUseCase_1 = require("../../application/use-cases/crm/AddCustomerLocationUseCase");
 const CustomerRepository_1 = require("../../infrastructure/repositories/CustomerRepository");
 const CustomerNoteRepository_1 = require("../../infrastructure/repositories/CustomerNoteRepository");
 const CustomerActivityRepository_1 = require("../../infrastructure/repositories/CustomerActivityRepository");
 const DocumentRepository_1 = require("../../infrastructure/repositories/DocumentRepository");
 const CustomerContactRepository_1 = require("../../infrastructure/repositories/CustomerContactRepository");
+const CustomerLocationRepository_1 = require("../../infrastructure/repositories/CustomerLocationRepository");
 const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepository");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
@@ -23,6 +25,7 @@ const customerNoteRepo = new CustomerNoteRepository_1.CustomerNoteRepository();
 const customerActivityRepo = new CustomerActivityRepository_1.CustomerActivityRepository();
 const documentRepo = new DocumentRepository_1.DocumentRepository();
 const customerContactRepo = new CustomerContactRepository_1.CustomerContactRepository();
+const customerLocationRepo = new CustomerLocationRepository_1.CustomerLocationRepository();
 const createCustomerUseCase = new CreateCustomerUseCase_1.CreateCustomerUseCase(customerRepo);
 const getCustomerDashboardUseCase = new GetCustomerDashboardUseCase_1.GetCustomerDashboardUseCase(customerRepo);
 const addCustomerNoteUseCase = new AddCustomerNoteUseCase_1.AddCustomerNoteUseCase(customerNoteRepo, customerRepo);
@@ -30,8 +33,9 @@ const listCustomersUseCase = new ListCustomersUseCase_1.ListCustomersUseCase(cus
 const logCustomerActivityUseCase = new LogCustomerActivityUseCase_1.LogCustomerActivityUseCase(customerActivityRepo);
 const uploadDocumentUseCase = new UploadDocumentUseCase_1.UploadDocumentUseCase(documentRepo);
 const addCustomerContactUseCase = new AddCustomerContactUseCase_1.AddCustomerContactUseCase(customerContactRepo);
+const addCustomerLocationUseCase = new AddCustomerLocationUseCase_1.AddCustomerLocationUseCase(customerLocationRepo);
 const tenderRepoForCustomer = new TenderRepository_1.TenderRepository();
-const customerController = new CustomerController_1.CustomerController(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepo, customerContactRepo);
+const customerController = new CustomerController_1.CustomerController(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepo, customerContactRepo, customerNoteRepo, customerActivityRepo, addCustomerLocationUseCase, customerLocationRepo);
 /**
  * @swagger
  * /customers:
@@ -49,6 +53,11 @@ const customerController = new CustomerController_1.CustomerController(createCus
  *         name: segment
  *         schema:
  *           type: string
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [ACTIVE, POTENTIAL, PASSIVE, BLOCKED, PROBLEMATIC]
  *       - in: query
  *         name: search
  *         schema:
@@ -114,8 +123,25 @@ router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermi
  *                 type: string
  *               mainPhone:
  *                 type: string
+ *               mobilePhone:
+ *                 type: string
  *               mainEmail:
  *                 type: string
+ *               website:
+ *                 type: string
+ *               language:
+ *                 type: string
+ *               vatNumber:
+ *                 type: string
+ *               customerSource:
+ *                 type: string
+ *               responsibleFirstName:
+ *                 type: string
+ *               responsibleLastName:
+ *                 type: string
+ *               status:
+ *                 type: string
+ *                 enum: [ACTIVE, POTENTIAL, PASSIVE, BLOCKED, PROBLEMATIC]
  *               isActive:
  *                 type: boolean
  *     responses:
@@ -259,6 +285,21 @@ router.post('/:id/activities', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
  *         description: Doküman meta verisi kaydedildi.
  */
 router.post('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.documents.upload'), (req, res) => customerController.uploadDocument(req, res));
+/* ----------------------------- Contact persons (Kontaktpersonen) ----------------------------- */
+router.post('/:id/contacts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.addContact(req, res));
+router.patch('/:id/contacts/:contactId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.updateContact(req, res));
+router.delete('/:id/contacts/:contactId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.deleteContact(req, res));
+/* ----------------------------- Locations (Standorte) ----------------------------- */
+router.get('/:id/locations', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => customerController.listLocations(req, res));
+router.post('/:id/locations', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.addLocation(req, res));
+router.patch('/:id/locations/:locationId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.updateLocation(req, res));
+router.delete('/:id/locations/:locationId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.deleteLocation(req, res));
+/* ----------------------------- Notes edit/delete ----------------------------- */
+router.patch('/:id/notes/:noteId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.addNote'), (req, res) => customerController.updateNote(req, res));
+router.delete('/:id/notes/:noteId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.addNote'), (req, res) => customerController.deleteNote(req, res));
+/* ----------------------------- Activities (logs) edit/delete ----------------------------- */
+router.patch('/:id/activities/:activityId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.activities.create'), (req, res) => customerController.updateActivity(req, res));
+router.delete('/:id/activities/:activityId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.activities.create'), (req, res) => customerController.deleteActivity(req, res));
 /**
  * @swagger
  * /customers/{id}/tenders:

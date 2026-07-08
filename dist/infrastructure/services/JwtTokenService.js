@@ -10,7 +10,7 @@ class JwtTokenService {
         const secret = process.env.OFFITEC_JWT_SECRET;
         if (!secret)
             throw new Error('JWT Secret tanımlanmamış!');
-        return jsonwebtoken_1.default.sign(payload, secret, { expiresIn: '1d' });
+        return jsonwebtoken_1.default.sign(payload, secret, { expiresIn: '1d', algorithm: 'HS256' });
     }
 }
 exports.JwtTokenService = JwtTokenService;

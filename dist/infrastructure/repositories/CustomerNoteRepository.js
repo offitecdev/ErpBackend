@@ -43,6 +43,24 @@ class CustomerNoteRepository {
         });
         return data.map(this.maptoEntity.bind(this));
     }
+    async findById(id) {
+        const data = await prisma_client_1.default.customerNote.findUnique({ where: { id } });
+        return data ? this.maptoEntity(data) : null;
+    }
+    async update(id, note) {
+        const data = {};
+        if (note.noteText !== undefined)
+            data.noteText = note.noteText;
+        if (note.noteType !== undefined)
+            data.noteType = note.noteType;
+        if (note.isHighlight !== undefined)
+            data.isHighlight = note.isHighlight;
+        const updated = await prisma_client_1.default.customerNote.update({ where: { id }, data });
+        return this.maptoEntity(updated);
+    }
+    async delete(id) {
+        await prisma_client_1.default.customerNote.delete({ where: { id } });
+    }
 }
 exports.CustomerNoteRepository = CustomerNoteRepository;
 //# sourceMappingURL=CustomerNoteRepository.js.map

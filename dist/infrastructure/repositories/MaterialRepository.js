@@ -28,7 +28,7 @@ class MaterialRepository {
             }
         });
     }
-    async createMaterial(tenantId, name, serialId, unitCost, initialStock, imageUrl) {
+    async createMaterial(tenantId, name, serialId, unitCost, initialStock, imageUrl, minStockLevel = 0, criticalStockLevel = 0) {
         return await prisma_client_1.default.material.create({
             data: {
                 id: (0, nanoid_1.nanoid)(10),
@@ -37,6 +37,8 @@ class MaterialRepository {
                 serialId,
                 unitCost,
                 stockQuantity: initialStock,
+                minStockLevel,
+                criticalStockLevel,
                 imageUrl: imageUrl || null,
                 isActive: true
             }

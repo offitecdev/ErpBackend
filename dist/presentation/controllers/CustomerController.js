@@ -12,7 +12,11 @@ class CustomerController {
     addCustomerContactUseCase;
     customerRepository;
     contactRepository;
-    constructor(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepository, contactRepository) {
+    noteRepository;
+    activityRepository;
+    addCustomerLocationUseCase;
+    locationRepository;
+    constructor(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepository, contactRepository, noteRepository, activityRepository, addCustomerLocationUseCase, locationRepository) {
         this.createCustomerUseCase = createCustomerUseCase;
         this.getCustomerDashboardUseCase = getCustomerDashboardUseCase;
         this.addCustomerNoteUseCase = addCustomerNoteUseCase;
@@ -22,6 +26,10 @@ class CustomerController {
         this.addCustomerContactUseCase = addCustomerContactUseCase;
         this.customerRepository = customerRepository;
         this.contactRepository = contactRepository;
+        this.noteRepository = noteRepository;
+        this.activityRepository = activityRepository;
+        this.addCustomerLocationUseCase = addCustomerLocationUseCase;
+        this.locationRepository = locationRepository;
     }
     async create(req, res) {
         try {
@@ -45,6 +53,8 @@ class CustomerController {
                 filter.isActive = req.query.isActive === 'true';
             if (req.query.segment)
                 filter.segment = req.query.segment;
+            if (req.query.status)
+                filter.status = req.query.status;
             if (req.query.search)
                 filter.search = req.query.search;
             if (req.query.page)
@@ -135,6 +145,8 @@ class CustomerController {
                 title: req.body.title,
                 email: req.body.email,
                 phone: req.body.phone,
+                mobilePhone: req.body.mobilePhone,
+                notes: req.body.notes,
                 isPrimaryContact: req.body.isPrimaryContact
             };
             const result = await this.addCustomerContactUseCase.execute(contactData);
@@ -142,6 +154,90 @@ class CustomerController {
         }
         catch (error) {
             res.status(400).json({ error: error.message || 'Yetkili kişi eklenemedi.' });
+        }
+    }
+    async updateContact(req, res) {
+        try {
+            const contactId = (Array.isArray(req.params.contactId) ? req.params.contactId[0] : req.params.contactId);
+            const result = await this.contactRepository.update(contactId, req.body);
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Yetkili kişi güncellenemedi.' });
+        }
+    }
+    async deleteContact(req, res) {
+        try {
+            const contactId = (Array.isArray(req.params.contactId) ? req.params.contactId[0] : req.params.contactId);
+            await this.contactRepository.delete(contactId);
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Yetkili kişi silinemedi.' });
+        }
+    }
+    async updateNote(req, res) {
+        try {
+            const noteId = (Array.isArray(req.params.noteId) ? req.params.noteId[0] : req.params.noteId);
+            const result = await this.noteRepository.update(noteId, {
+                noteText: req.body.noteText,
+                noteType: req.body.noteType,
+                isHighlight: req.body.isHighlight ?? req.body.isHighlighted,
+            });
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Not güncellenemedi.' });
+        }
+    }
+    async deleteNote(req, res) {
+        try {
+            const noteId = (Array.isArray(req.params.noteId) ? req.params.noteId[0] : req.params.noteId);
+            await this.noteRepository.delete(noteId);
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Not silinemedi.' });
+        }
+    }
+    async addLocation(req, res) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            const result = await this.addCustomerLocationUseCase.execute({ ...req.body, customerId });
+            res.status(201).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Standort eklenemedi.' });
+        }
+    }
+    async updateLocation(req, res) {
+        try {
+            const locationId = (Array.isArray(req.params.locationId) ? req.params.locationId[0] : req.params.locationId);
+            const result = await this.locationRepository.update(locationId, req.body);
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Standort güncellenemedi.' });
+        }
+    }
+    async deleteLocation(req, res) {
+        try {
+            const locationId = (Array.isArray(req.params.locationId) ? req.params.locationId[0] : req.params.locationId);
+            await this.locationRepository.delete(locationId);
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Standort silinemedi.' });
+        }
+    }
+    async listLocations(req, res) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            const result = await this.locationRepository.findByCustomerId(customerId);
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Standorte konnten nicht geladen werden.' });
         }
     }
     async logActivity(req, res) {
@@ -162,6 +258,33 @@ class CustomerController {
         }
         catch (error) {
             res.status(400).json({ error: error.message || "Aktivite kaydedilemedi." });
+        }
+    }
+    async updateActivity(req, res) {
+        try {
+            const activityId = (Array.isArray(req.params.activityId) ? req.params.activityId[0] : req.params.activityId);
+            const payload = {};
+            if (req.body.activityType !== undefined)
+                payload.activityType = req.body.activityType;
+            if (req.body.description !== undefined)
+                payload.description = req.body.description;
+            if (req.body.activityDate !== undefined)
+                payload.activityDate = new Date(req.body.activityDate);
+            const result = await this.activityRepository.update(activityId, payload);
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || "Aktivite güncellenemedi." });
+        }
+    }
+    async deleteActivity(req, res) {
+        try {
+            const activityId = (Array.isArray(req.params.activityId) ? req.params.activityId[0] : req.params.activityId);
+            await this.activityRepository.delete(activityId);
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || "Aktivite silinemedi." });
         }
     }
     async uploadDocument(req, res) {

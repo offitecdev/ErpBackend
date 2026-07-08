@@ -56,6 +56,30 @@ const taskInclude = {
         }
     },
 };
+// Trimmed include for the calendar grid: enough to render a task block (title,
+// technician names, contract code) without the report/material/appointment-option
+// trees taskInclude carries. The popup fetches richer detail lazily on click.
+const taskCalendarListInclude = {
+    technician: { select: { id: true, firstName: true, lastName: true } },
+    alternativeTechnician: { select: { id: true, firstName: true, lastName: true } },
+    assignments: {
+        orderBy: { assignedAt: 'asc' },
+        select: { technician: { select: { id: true, firstName: true, lastName: true } } },
+    },
+    contract: { select: { id: true, title: true, contractCode: true, customer: { select: { id: true, companyName: true } } } },
+};
+// Single-task include for the calendar detail popup: participants with contacts
+// and the full contract row (customer contacts, period, site) — but still no
+// report/material/appointment-option trees.
+const taskCalendarDetailInclude = {
+    technician: { select: technicianSelect },
+    alternativeTechnician: { select: technicianSelect },
+    assignments: {
+        orderBy: { assignedAt: 'asc' },
+        include: { technician: { select: technicianSelect } },
+    },
+    contract: { include: { customer: { select: customerSelect } } },
+};
 class MaintenanceRepository {
     async createContract(contract) {
         const data = await prisma_client_1.default.maintenanceContract.create({
@@ -164,6 +188,14 @@ class MaintenanceRepository {
         });
         return data ? data : null;
     }
+    // Lazy detail for the calendar popup — the popup fields only, no report trees.
+    async getTaskCalendarDetailById(id) {
+        const data = await prisma_client_1.default.maintenanceTask.findUnique({
+            where: { id },
+            include: taskCalendarDetailInclude,
+        });
+        return data ? data : null;
+    }
     async getTaskByBookingToken(token) {
         const data = await prisma_client_1.default.maintenanceTask.findUnique({
             where: { bookingToken: token },
@@ -187,18 +219,18 @@ class MaintenanceRepository {
         });
         return data;
     }
-    async getTasksByDateRange(tenantId, startDate, endDate) {
+    async getTasksByDateRange(tenantId, startDate, endDate, lite = false) {
         const data = await prisma_client_1.default.maintenanceTask.findMany({
             where: {
                 contract: { tenantId: tenantWhere(tenantId) },
                 plannedDate: { gte: startDate, lte: endDate }
             },
             orderBy: { plannedDate: 'asc' },
-            include: taskInclude,
+            include: lite ? taskCalendarListInclude : taskInclude,
         });
         return data;
     }
-    async getTasksAssignedToTechnician(tenantId, technicianId, startDate, endDate) {
+    async getTasksAssignedToTechnician(tenantId, technicianId, startDate, endDate, lite = false) {
         const data = await prisma_client_1.default.maintenanceTask.findMany({
             where: {
                 contract: { tenantId: tenantWhere(tenantId), deletedAt: null },
@@ -211,7 +243,7 @@ class MaintenanceRepository {
                 ],
             },
             orderBy: [{ scheduledStartTime: 'asc' }, { plannedDate: 'asc' }],
-            include: taskInclude,
+            include: lite ? taskCalendarListInclude : taskInclude,
         });
         return data;
     }

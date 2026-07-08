@@ -142,6 +142,7 @@ router.patch('/:id/approve', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
 (req, res) => tenderController.approve(req, res));
 router.patch('/:id/meta', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
 router.patch('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
+router.get('/options/technicians', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listTechnicians(req, res));
 router.get('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getScheduleSlots(req, res));
 router.post('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.createScheduleSlot(req, res));
 router.patch('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateScheduleSlot(req, res));
@@ -168,6 +169,24 @@ router.post('/:id/export', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
  *       - bearerAuth: []
  */
 router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDetails(req, res));
+/**
+ * @swagger
+ * /tenders/{id}/product-images:
+ *   post:
+ *     tags: [Tender]
+ *     summary: PDF için yalnızca verilen ürün id'lerinin görsellerini getir (aşırı veri çekmeden)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ids: { type: array, items: { type: string } }
+ */
+router.post('/:id/product-images', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getPdfImages(req, res));
 /**
  * @swagger
  * /tenders/{id}/positions/{positionId}:

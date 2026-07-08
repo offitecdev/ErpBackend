@@ -26,7 +26,7 @@ const mappingArticleSelect = {
 };
 class ArticleRepository {
     mapToEntity(d) {
-        return new Article_1.Article(d.id, d.tenantId, d.articleCode, d.name, d.baseCost, d.unit, d.description, d.systemBarcode, d.supplierBarcode, d.imageUrl, d.category, d.status ?? 'ACTIVE', d.isActive ?? true, d.minStockLevel ?? 0, d.criticalStockLevel ?? 0, d.maxStockLevel, d.lastPurchaseDate, d.salePrice ?? 0, d.defaultSupplierId ?? null);
+        return new Article_1.Article(d.id, d.tenantId, d.articleCode, d.name, d.baseCost, d.unit, d.description, d.systemBarcode, d.supplierBarcode, d.imageUrl, d.category, d.status ?? 'ACTIVE', d.isActive ?? true, d.minStockLevel ?? 0, d.criticalStockLevel ?? 0, d.maxStockLevel, d.lastPurchaseDate, d.salePrice ?? 0, d.defaultSupplierId ?? null, d.itemType ?? 'PRODUCT');
     }
     mapToMappingEntity(data) {
         const articleEntity = data.article ? this.mapToEntity(data.article) : undefined;
@@ -48,6 +48,7 @@ class ArticleRepository {
                 supplierBarcode: articleData.supplierBarcode ?? null,
                 imageUrl: articleData.imageUrl ?? null,
                 category: articleData.category ?? null,
+                itemType: articleData.itemType ?? 'PRODUCT',
                 status: articleData.status ?? 'ACTIVE',
                 isActive: articleData.isActive ?? true,
                 minStockLevel: articleData.minStockLevel ?? 0,
@@ -64,7 +65,8 @@ class ArticleRepository {
             'articleCode', 'name', 'baseCost', 'unit', 'description',
             'systemBarcode', 'supplierBarcode', 'imageUrl', 'category',
             'status', 'isActive', 'minStockLevel', 'criticalStockLevel',
-            'maxStockLevel', 'lastPurchaseDate', 'salePrice', 'defaultSupplierId'
+            'maxStockLevel', 'lastPurchaseDate', 'salePrice', 'defaultSupplierId',
+            'itemType'
         ];
         for (const f of fields) {
             if (patch[f] !== undefined)

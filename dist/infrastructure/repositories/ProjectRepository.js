@@ -73,7 +73,7 @@ class ProjectRepository {
                     include: {
                         customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
                         parentSalesOrder: { select: { id: true, orderNumber: true } },
-                        addonSalesOrders: { select: { id: true, orderNumber: true, revisionNumber: true, totalAmount: true, createdAt: true } },
+                        addonSalesOrders: { select: { id: true, orderNumber: true, revisionNumber: true, totalAmount: true, createdAt: true, orderDate: true } },
                         tender: {
                             select: {
                                 id: true,
@@ -184,6 +184,7 @@ class ProjectRepository {
                         parentSalesOrderId: true,
                         revisionNumber: true,
                         createdAt: true,
+                        orderDate: true,
                         parentSalesOrder: { select: { id: true, orderNumber: true } },
                         tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
                     },

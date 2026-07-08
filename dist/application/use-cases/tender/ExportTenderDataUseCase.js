@@ -8,8 +8,8 @@ class ExportTenderDataUseCase {
         this.tenderRepository = tenderRepository;
         this.positionRepository = positionRepository;
     }
-    async execute(tenderId, format) {
-        const tender = await this.tenderRepository.findById(tenderId);
+    async execute(tenderId, format, tenantId) {
+        const tender = await this.tenderRepository.findById(tenderId, tenantId);
         if (!tender)
             throw new Error("İhale bulunamadı.");
         // Dışa Aktarım Blokaj Kuralı (Blocker): Onaysız teklif dışarı çıkartılamaz!
@@ -28,7 +28,7 @@ class ExportTenderDataUseCase {
         const hierarchyData = buildTree(null);
         // Statüyü Güncelle
         if (tender.status === 'Approved') {
-            await this.tenderRepository.updateStatus(tenderId, 'Exported');
+            await this.tenderRepository.updateStatus(tenderId, 'Exported', tenantId);
         }
         return {
             metadata: {

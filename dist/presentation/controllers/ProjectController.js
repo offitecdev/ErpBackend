@@ -7,6 +7,7 @@ exports.ProjectController = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const serviceTenantScope_1 = require("./serviceTenantScope");
+const technicianSchedule_1 = require("./technicianSchedule");
 const nanoid_1 = require("nanoid");
 const smtp = new SmtpMailService_1.SmtpMailService();
 const startOfDay = (date) => {
@@ -22,7 +23,6 @@ const endOfDay = (date) => {
 const normalizeIdList = (value) => Array.isArray(value)
     ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
     : [];
-const formatDateTime = (date) => date.toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
 const PROJECT_EXPENSE_TYPES = ["Nakliye", "Ekipman Kiralama", "Dış hizmetler", "Taşeron", "Diğer"];
 class ProjectController {
     createProjectUseCase;
@@ -108,37 +108,7 @@ class ProjectController {
         return employee;
     }
     async validateProjectTechnicians(technicianIds, tenantId) {
-        const ids = [...new Set(technicianIds.filter(Boolean))];
-        if (!ids.length)
-            return [];
-        const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(tenantId);
-        const employees = await prisma_client_1.default.employee.findMany({
-            where: {
-                id: { in: ids },
-                tenantId: { in: tenantIds },
-                isActive: true,
-                OR: [
-                    { roleName: "Teknisyen" },
-                    { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
-                ],
-            },
-            select: {
-                id: true,
-                tenantId: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-                phone: true,
-                roleName: true,
-                title: true,
-            },
-        });
-        const found = new Set(employees.map((employee) => employee.id));
-        const missing = ids.filter((id) => !found.has(id));
-        if (missing.length)
-            throw new Error("Seçilen teknisyenlerden biri bulunamadı.");
-        const byId = new Map(employees.map((employee) => [employee.id, employee]));
-        return ids.map((id) => byId.get(id)).filter(Boolean);
+        return (0, technicianSchedule_1.validateTechnicians)(technicianIds, tenantId);
     }
     async projectManagerRecipients(project) {
         const ids = [project.managerId].filter(Boolean);
@@ -172,7 +142,36 @@ class ProjectController {
             await this.notify({ tenantId: project.tenantId, ...payload });
         }
     }
-    async createAddonOrderForParent(project, parentSalesOrderId, employeeId) {
+    // The business date an addon order should carry: the original appointment date the
+    // billed extra work belongs to. Extra-work rows (expenses/materials/reports) carry
+    // an appointmentId, so we take the latest such appointment's startTime — even when
+    // the entry itself was made days later. Falls back to the rows' own dates, then now.
+    async resolveAddonOrderDate(tenantId, slice) {
+        const appointmentIds = Array.from(new Set([...(slice.expenses || []), ...(slice.extraMaterials || []), ...(slice.reports || [])]
+            .map((row) => row?.appointmentId)
+            .filter((id) => Boolean(id))));
+        if (appointmentIds.length) {
+            const appointments = await prisma_client_1.default.appointment.findMany({
+                where: { id: { in: appointmentIds }, tenantId },
+                select: { startTime: true },
+            });
+            const times = appointments
+                .map((appointment) => new Date(appointment.startTime).getTime())
+                .filter((time) => !Number.isNaN(time));
+            if (times.length)
+                return new Date(Math.max(...times));
+        }
+        // No appointment link (legacy rows): use the most recent row date in the slice.
+        const rowTimes = [
+            ...(slice.reports || []).map((row) => row?.workDate || row?.reportDate),
+            ...(slice.expenses || []).map((row) => row?.expenseDate),
+            ...(slice.extraMaterials || []).map((row) => row?.addedAt),
+        ]
+            .map((value) => (value ? new Date(value).getTime() : NaN))
+            .filter((time) => !Number.isNaN(time));
+        return rowTimes.length ? new Date(Math.max(...rowTimes)) : new Date();
+    }
+    async createAddonOrderForParent(project, parentSalesOrderId, employeeId, orderDate) {
         const tenantId = project.tenantId;
         const parentOrder = await prisma_client_1.default.salesOrder.findFirst({ where: { id: parentSalesOrderId, projectId: project.id, tenantId } });
         if (!parentOrder)
@@ -213,6 +212,9 @@ class ProjectController {
         const totalAmount = expenseTotal + materialTotal + overtimeTotal;
         if (totalAmount <= 0)
             return null;
+        // Date the addon to the appointment the extra work belongs to (never the
+        // possibly-later entry time). createdAt still bounds the next slice.
+        const resolvedOrderDate = orderDate ?? await this.resolveAddonOrderDate(tenantId, { expenses, extraMaterials, reports });
         const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
         const addonOrder = await prisma_client_1.default.salesOrder.create({
             data: {
@@ -227,6 +229,7 @@ class ProjectController {
                 orderType: "PROJECT_ADDON",
                 status: "ORDERED",
                 totalAmount,
+                orderDate: resolvedOrderDate,
                 createdByEmployeeId: employeeId,
             },
             include: {
@@ -239,6 +242,69 @@ class ProjectController {
             salesOrder: addonOrder,
             totals: { expenses: expenseTotal, extraMaterials: materialTotal, overtime: overtimeTotal, total: totalAmount },
         };
+    }
+    // Pending extra work accrued on `parentSalesOrderId` since its last addon —
+    // the same slice createAddonOrderForParent would bill. Shared by the addon
+    // request flow so the manager sees the totals a technician is flagging.
+    async computePendingAddonTotals(project, parentSalesOrderId) {
+        const tenantId = project.tenantId;
+        const addons = await prisma_client_1.default.salesOrder.findMany({
+            where: { parentSalesOrderId, projectId: project.id, tenantId },
+            orderBy: [{ revisionNumber: "desc" }, { createdAt: "desc" }],
+        });
+        const previousAddon = addons[0] || null;
+        const createdAtFilter = previousAddon?.createdAt ? { gt: previousAddon.createdAt } : undefined;
+        const [expenses, extraMaterials, reports] = await Promise.all([
+            prisma_client_1.default.projectExpense.findMany({
+                where: { projectId: project.id, salesOrderId: parentSalesOrderId, ...(createdAtFilter ? { expenseDate: createdAtFilter } : {}) },
+            }),
+            prisma_client_1.default.projectExtraMaterial.findMany({
+                where: { projectId: project.id, salesOrderId: parentSalesOrderId, ...(createdAtFilter ? { addedAt: createdAtFilter } : {}) },
+            }),
+            prisma_client_1.default.projectReport.findMany({
+                where: { projectId: project.id, salesOrderId: parentSalesOrderId, ...(createdAtFilter ? { reportDate: createdAtFilter } : {}) },
+            }),
+        ]);
+        const expenseTotal = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+        const materialTotal = extraMaterials.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0);
+        const overtimeTotal = reports.reduce((sum, item) => sum + Number(item.overtimeCost || 0), 0);
+        return { expenseTotal, materialTotal, overtimeTotal, total: expenseTotal + materialTotal + overtimeTotal };
+    }
+    // Records (or refreshes) a PENDING addon-order request for the parent order and
+    // notifies the project managers. Returns null when there is nothing to bill.
+    async createAddonRequestForParent(project, parentSalesOrderId, requesterId, appointmentId, note) {
+        const totals = await this.computePendingAddonTotals(project, parentSalesOrderId);
+        if (totals.total <= 0)
+            return null;
+        const requester = await prisma_client_1.default.employee.findUnique({ where: { id: requesterId }, select: { firstName: true, lastName: true } });
+        const requestedByName = [requester?.firstName, requester?.lastName].filter(Boolean).join(" ").trim() || null;
+        const existing = await prisma_client_1.default.projectAddonRequest.findFirst({
+            where: { projectId: project.id, tenantId: project.tenantId, salesOrderId: parentSalesOrderId, status: "PENDING" },
+        });
+        const data = {
+            salesOrderId: parentSalesOrderId,
+            appointmentId: appointmentId || null,
+            requestedById: requesterId,
+            requestedByName,
+            note: note ? String(note).trim() : null,
+            expenseTotal: totals.expenseTotal,
+            materialTotal: totals.materialTotal,
+            overtimeTotal: totals.overtimeTotal,
+            total: totals.total,
+        };
+        // One open request per parent order: refresh the existing one instead of
+        // stacking duplicates each time a technician finishes another montaj.
+        const request = existing
+            ? await prisma_client_1.default.projectAddonRequest.update({ where: { id: existing.id }, data: { ...data, createdAt: new Date() } })
+            : await prisma_client_1.default.projectAddonRequest.create({ data: { id: (0, nanoid_1.nanoid)(12), tenantId: project.tenantId, projectId: project.id, ...data } });
+        await this.notifyProjectManagers(project, {
+            type: "PROJECT_ADDON_ORDER_REQUESTED",
+            title: "Ek sipariş talebi",
+            message: `${requestedByName || "Teknisyen"}, ${project.projectName} projesi için ek sipariş talep etti.`,
+            linkUrl: `/projects/${project.id}`,
+            metadata: { projectId: project.id, salesOrderId: parentSalesOrderId, addonRequestId: request.id, total: totals.total },
+        });
+        return { request, totals };
     }
     async list(req, res) {
         try {
@@ -259,41 +325,7 @@ class ProjectController {
     }
     async listTechnicians(req, res) {
         try {
-            const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(req.user.tenantId);
-            const technicians = await prisma_client_1.default.employee.findMany({
-                where: {
-                    tenantId: { in: tenantIds },
-                    isActive: true,
-                    OR: [
-                        { roleName: "Teknisyen" },
-                        { employeeRoles: { some: { role: { roleName: "Teknisyen" } } } },
-                    ],
-                },
-                orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-                select: {
-                    id: true,
-                    tenantId: true,
-                    firstName: true,
-                    lastName: true,
-                    email: true,
-                    phone: true,
-                    title: true,
-                    roleName: true,
-                    employeeRoles: {
-                        select: { role: { select: { roleName: true } } },
-                    },
-                },
-            });
-            res.status(200).json(technicians.map((employee) => ({
-                id: employee.id,
-                tenantId: employee.tenantId,
-                firstName: employee.firstName,
-                lastName: employee.lastName,
-                email: employee.email,
-                phone: employee.phone,
-                title: employee.title,
-                roleName: employee.employeeRoles.find((employeeRole) => employeeRole.role.roleName === "Teknisyen")?.role.roleName || employee.roleName,
-            })));
+            res.status(200).json(await (0, technicianSchedule_1.listTechnicianOptions)(req.user.tenantId));
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -349,7 +381,7 @@ class ProjectController {
                     tender: this.tenderMaterialInclude(),
                     salesOrders: {
                         orderBy: { createdAt: "asc" },
-                        select: { id: true, orderNumber: true, totalAmount: true, parentSalesOrderId: true, revisionNumber: true, createdAt: true },
+                        select: { id: true, orderNumber: true, totalAmount: true, parentSalesOrderId: true, revisionNumber: true, createdAt: true, orderDate: true },
                     },
                     reports: {
                         orderBy: { reportDate: "desc" },
@@ -360,6 +392,51 @@ class ProjectController {
                     },
                     expenses: { orderBy: { expenseDate: "desc" } },
                     extraMaterials: { orderBy: { addedAt: "desc" }, include: { material: true } },
+                },
+            },
+        };
+    }
+    // Trimmed include for the calendar grid: only the fields the month/week/day
+    // blocks render (title, technician names, order number, navigation ids). It
+    // deliberately drops the tender material trees, project reports/images,
+    // expenses and extra materials that projectInstallationInclude carries so the
+    // range query stays cheap even with many appointments. The popup fetches the
+    // richer detail on click via projectCalendarDetailInclude.
+    projectCalendarListInclude() {
+        return {
+            assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
+            technicianAssignments: {
+                orderBy: { assignedAt: "asc" },
+                select: { technician: { select: { id: true, firstName: true, lastName: true } } },
+            },
+            salesOrder: { select: { id: true, orderNumber: true } },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    customer: { select: { id: true, companyName: true } },
+                },
+            },
+        };
+    }
+    // Single-appointment include for the calendar detail popup: customer contacts,
+    // participants with contact details, order/tender numbers and the manager —
+    // everything the popup shows, and nothing more (still no material/report trees).
+    projectCalendarDetailInclude() {
+        return {
+            assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+            technicianAssignments: {
+                orderBy: { assignedAt: "asc" },
+                include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } },
+            },
+            salesOrder: { select: { id: true, orderNumber: true, totalAmount: true, tender: { select: { id: true, tenderNumber: true } } } },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true, address: true } },
+                    manager: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    tender: { select: { id: true, tenderNumber: true } },
                 },
             },
         };
@@ -389,7 +466,11 @@ class ProjectController {
                     endTime: { lte: end },
                 },
                 orderBy: { startTime: "asc" },
-                include: this.projectInstallationInclude(),
+                // The calendar asks for the trimmed grid include; the installation
+                // screens (which derive their detail from this list) keep the full one.
+                include: String(req.query.view || "") === "calendar"
+                    ? this.projectCalendarListInclude()
+                    : this.projectInstallationInclude(),
             });
             res.status(200).json(appointments);
         }
@@ -420,7 +501,9 @@ class ProjectController {
                     endTime: { lte: end },
                 },
                 orderBy: { startTime: "asc" },
-                include: this.projectInstallationInclude(),
+                include: String(req.query.view || "") === "calendar"
+                    ? this.projectCalendarListInclude()
+                    : this.projectInstallationInclude(),
             });
             res.status(200).json(appointments);
         }
@@ -450,13 +533,53 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
+    // Detail for the calendar popup, fetched lazily when an appointment block is
+    // clicked. `technicianScope` mirrors the two list endpoints: managers may open
+    // any appointment in the tenant, technicians only their own assignments.
+    async getAppointmentDetail(req, res, opts = {}) {
+        try {
+            const where = {
+                id: String(req.params.appointmentId || ""),
+                tenantId: req.user.tenantId,
+                projectId: { not: null },
+            };
+            if (opts.technicianScope) {
+                where.OR = [
+                    { assignedTechId: req.user.id },
+                    { technicianAssignments: { some: { technicianId: req.user.id } } },
+                ];
+            }
+            const appointment = await prisma_client_1.default.appointment.findFirst({
+                where,
+                include: this.projectCalendarDetailInclude(),
+            });
+            if (!appointment)
+                return res.status(404).json({ error: "Randevu bulunamadı." });
+            res.status(200).json(appointment);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async getById(req, res) {
         try {
             const project = await this.projectRepository.findById(req.params.id, req.user.tenantId);
             if (!project) {
                 return res.status(404).json({ error: "Proje bulunamadı veya seçili şirkette değil." });
             }
-            res.status(200).json(project);
+            // Attached separately (not via the shared findById include) so the
+            // project keeps loading even if the addon-request table is absent.
+            let addonRequests = [];
+            try {
+                addonRequests = await prisma_client_1.default.projectAddonRequest.findMany({
+                    where: { projectId: project.id, tenantId: req.user.tenantId },
+                    orderBy: { createdAt: "desc" },
+                });
+            }
+            catch (addonError) {
+                console.error("[getById] could not load addon requests:", addonError?.message || addonError);
+            }
+            res.status(200).json({ ...project, addonRequests });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -692,9 +815,23 @@ class ProjectController {
     async addReport(req, res) {
         try {
             const salesOrderId = await this.resolveProjectSalesOrderId(req.params.id, req.user.tenantId, req.body.salesOrderId);
+            // Tie the report to a specific appointment when one is supplied so it never
+            // leaks onto sibling appointments sharing the sales order. Validate it belongs
+            // to this project/tenant before trusting it.
+            let appointmentId = null;
+            if (req.body.appointmentId) {
+                const appointment = await prisma_client_1.default.appointment.findFirst({
+                    where: { id: String(req.body.appointmentId), tenantId: req.user.tenantId, projectId: req.params.id },
+                    select: { id: true },
+                });
+                if (!appointment)
+                    return res.status(400).json({ error: "Randevu bu projeye ait değil." });
+                appointmentId = appointment.id;
+            }
             const input = {
                 projectId: req.params.id,
                 salesOrderId,
+                appointmentId,
                 employeeId: req.user.id,
                 workDate: req.body.workDate,
                 startedAt: req.body.startedAt,
@@ -893,21 +1030,37 @@ class ProjectController {
             // A day can only hold one field report per order. If one already exists, reuse it and just
             // close the appointment instead of failing with "a report already exists".
             const isPrimaryOrder = (appointment.project.salesOrders?.[0]?.id || null) === (salesOrderId || null);
-            const existingReport = await this.reportRepository.findByProjectAndWorkDate(appointment.projectId, workDate, salesOrderId ?? undefined, isPrimaryOrder);
+            // Prefer this appointment's own report (e.g. a manager-drafted one) so completing
+            // it reuses that report. Only fall back to the legacy order/day lookup for reports
+            // that carry NO appointmentId — a report already stamped to a sibling appointment
+            // must never be stolen/re-stamped, so this appointment gets its own report instead.
+            const ownReport = await this.reportRepository.findByAppointmentId(appointment.id);
+            const legacyDayReport = ownReport
+                ? null
+                : await this.reportRepository.findByProjectAndWorkDate(appointment.projectId, workDate, salesOrderId ?? undefined, isPrimaryOrder);
+            const existingReport = ownReport || (legacyDayReport && !legacyDayReport.appointmentId ? legacyDayReport : null);
+            const reportPayload = {
+                projectId: appointment.projectId,
+                salesOrderId,
+                appointmentId: appointment.id,
+                employeeId: reportEmployeeId,
+                workDate: workDate.toISOString(),
+                startedAt: startedAt.toISOString(),
+                endedAt: endedAt.toISOString(),
+                operationsDone,
+                technicalNotes: req.body.technicalNotes,
+                images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
+            };
+            // When a report already exists (e.g. a manager-drafted one), a technician
+            // finishing the montaj applies their own field-report content to it — the
+            // technician did the work, so their entry is the record of truth. A manager
+            // just marking the job done reuses the report untouched, so their explicit
+            // "Finish" never overwrites the report body with a default note.
             const reportResult = existingReport
-                ? (await this.reportRepository.findById(existingReport.id) || existingReport)
-                : await this.addReportUseCase.execute({
-                    projectId: appointment.projectId,
-                    salesOrderId,
-                    appointmentId: appointment.id,
-                    employeeId: reportEmployeeId,
-                    workDate: workDate.toISOString(),
-                    startedAt: startedAt.toISOString(),
-                    endedAt: endedAt.toISOString(),
-                    operationsDone,
-                    technicalNotes: req.body.technicalNotes,
-                    images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
-                });
+                ? (isManagerCompletion
+                    ? (await this.reportRepository.findById(existingReport.id) || existingReport)
+                    : await this.addReportUseCase.update(existingReport.id, reportPayload))
+                : await this.addReportUseCase.execute(reportPayload);
             const cleanUsedMaterials = Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : [];
             const usedMaterialRows = [];
             for (const material of cleanUsedMaterials) {
@@ -960,23 +1113,39 @@ class ProjectController {
                 });
             }
             const parentSalesOrderId = appointment.salesOrder?.parentSalesOrderId || salesOrderId || appointment.project.salesOrders?.[0]?.id || null;
-            const addon = parentSalesOrderId
-                ? await this.createAddonOrderForParent(appointment.project, parentSalesOrderId, req.user.id)
-                : null;
-            await this.notifyProjectManagers(appointment.project, {
-                type: isManagerCompletion ? "PROJECT_INSTALLATION_MANAGER_COMPLETED" : signatureBase64 ? "PROJECT_INSTALLATION_COMPLETED" : "PROJECT_INSTALLATION_UNSIGNED",
-                title: isManagerCompletion ? "Montaj yönetici tarafından bitirildi" : signatureBase64 ? "Montaj tamamlandı" : "Montaj imzasız geldi",
-                message: isManagerCompletion
-                    ? `${appointment.project.projectName} montajı yönetici tarafından bitirildi.`
-                    : `${appointment.project.projectName} montajı teknisyen tarafından bitirildi${signatureBase64 ? "." : ", müşteri imzası yok."}`,
-                linkUrl: `/projects/${appointment.projectId}`,
-                metadata: { projectId: appointment.projectId, appointmentId: appointment.id, reportId: reportResult.id, addonSalesOrderId: addon?.salesOrder?.id || null },
-            });
+            // Addon order/request + manager notification are best-effort side-effects:
+            // the montaj report is already saved, so a failure here (e.g. missing
+            // migration) must never abort the completion the technician just performed.
+            let addon = null;
+            let addonRequest = null;
+            try {
+                // Managers may finalize the addon order directly; a technician finishing
+                // the montaj only raises a request that the manager acts on.
+                if (parentSalesOrderId && isManagerCompletion) {
+                    addon = await this.createAddonOrderForParent(appointment.project, parentSalesOrderId, req.user.id, new Date(appointment.startTime));
+                }
+                else if (parentSalesOrderId && !isManagerCompletion) {
+                    addonRequest = await this.createAddonRequestForParent(appointment.project, parentSalesOrderId, req.user.id, appointment.id);
+                }
+                await this.notifyProjectManagers(appointment.project, {
+                    type: isManagerCompletion ? "PROJECT_INSTALLATION_MANAGER_COMPLETED" : signatureBase64 ? "PROJECT_INSTALLATION_COMPLETED" : "PROJECT_INSTALLATION_UNSIGNED",
+                    title: isManagerCompletion ? "Montaj yönetici tarafından bitirildi" : signatureBase64 ? "Montaj tamamlandı" : "Montaj imzasız geldi",
+                    message: isManagerCompletion
+                        ? `${appointment.project.projectName} montajı yönetici tarafından bitirildi.`
+                        : `${appointment.project.projectName} montajı teknisyen tarafından bitirildi${signatureBase64 ? "." : ", müşteri imzası yok."}`,
+                    linkUrl: `/projects/${appointment.projectId}`,
+                    metadata: { projectId: appointment.projectId, appointmentId: appointment.id, reportId: reportResult.id, addonSalesOrderId: addon?.salesOrder?.id || null, addonRequestId: addonRequest?.request?.id || null },
+                });
+            }
+            catch (sideEffectError) {
+                console.error("[completeInstallation] addon/notify side-effect failed:", sideEffectError?.message || sideEffectError);
+            }
             res.status(201).json({
                 message: isManagerCompletion ? "Montaj yönetici tarafından bitirildi." : signatureBase64 ? "Montaj tamamlandı ve imza alındı." : "Montaj imzasız tamamlandı.",
                 report,
                 addonOrder: addon?.salesOrder || null,
                 addonTotals: addon?.totals || null,
+                addonRequest: addonRequest?.request || null,
                 overtimeWarning: reportResult.overtimeWarning || null,
             });
         }
@@ -1177,6 +1346,72 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
+    // Admin/manager-facing: delete a project sales order. Addon (Zusatzauftrag)
+    // orders are billing snapshots that own no records, so they just drop the row.
+    // A main order underpins its addons and scoped records, so it is guarded: it is
+    // rejected while it still has addons, and any order that has been invoiced is
+    // rejected outright. When a main order is removed its own scoped reports /
+    // expenses / extra materials (restocked) / appointments are cleaned up too.
+    async deleteSalesOrder(req, res) {
+        try {
+            const projectId = req.params.id;
+            const salesOrderId = req.params.salesOrderId;
+            const tenantId = req.user.tenantId;
+            const order = await prisma_client_1.default.salesOrder.findFirst({
+                where: { id: salesOrderId, projectId, tenantId },
+            });
+            if (!order)
+                return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
+            // No order may be deleted once it has been billed.
+            const invoiceCount = await prisma_client_1.default.invoice.count({ where: { salesOrderId: order.id } });
+            if (invoiceCount > 0) {
+                return res.status(400).json({ error: "Faturalandırılmış bir sipariş silinemez." });
+            }
+            const isAddon = Boolean(order.parentSalesOrderId);
+            if (!isAddon) {
+                const addonCount = await prisma_client_1.default.salesOrder.count({
+                    where: { parentSalesOrderId: order.id, projectId, tenantId },
+                });
+                if (addonCount > 0) {
+                    return res.status(400).json({ error: "Ek siparişleri olan bir ana sipariş silinemez. Önce ek siparişleri silin." });
+                }
+            }
+            await prisma_client_1.default.$transaction(async (tx) => {
+                if (!isAddon) {
+                    // Reports own their materials/images via onDelete: Cascade.
+                    const reports = await tx.projectReport.findMany({
+                        where: { projectId, salesOrderId: order.id },
+                        select: { id: true },
+                    });
+                    if (reports.length) {
+                        await tx.projectReport.deleteMany({ where: { id: { in: reports.map((r) => r.id) } } });
+                    }
+                    // Restock every extra material before removing it.
+                    const extraMaterials = await tx.projectExtraMaterial.findMany({
+                        where: { projectId, salesOrderId: order.id },
+                        select: { id: true, materialId: true, quantity: true },
+                    });
+                    for (const row of extraMaterials) {
+                        await tx.material.update({
+                            where: { id: row.materialId },
+                            data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                        });
+                    }
+                    if (extraMaterials.length) {
+                        await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((r) => r.id) } } });
+                    }
+                    await tx.projectExpense.deleteMany({ where: { projectId, salesOrderId: order.id } });
+                    // Appointment assignments cascade on Appointment delete.
+                    await tx.appointment.deleteMany({ where: { projectId, salesOrderId: order.id } });
+                }
+                await tx.salesOrder.delete({ where: { id: order.id } });
+            });
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async createAddonOrder(req, res) {
         try {
             const projectId = req.params.id;
@@ -1238,6 +1473,9 @@ class ProjectController {
             if (totalAmount <= 0) {
                 return res.status(400).json({ error: "Ek sipariş oluşturmak için son ek siparişten sonra harici gider, ek malzeme veya ek işçilik maliyeti bulunamadı." });
             }
+            // Date the addon to the appointment its billed extra work belongs to, even
+            // when the manager creates it days later. createdAt still bounds the next slice.
+            const resolvedOrderDate = await this.resolveAddonOrderDate(tenantId, { expenses, extraMaterials, reports });
             const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
             const addonOrder = await prisma_client_1.default.salesOrder.create({
                 data: {
@@ -1252,6 +1490,7 @@ class ProjectController {
                     orderType: 'PROJECT_ADDON',
                     status: 'ORDERED',
                     totalAmount,
+                    orderDate: resolvedOrderDate,
                     createdByEmployeeId: employeeId,
                 },
                 include: {
@@ -1260,11 +1499,79 @@ class ProjectController {
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                 },
             });
+            // Any open technician requests for this parent are now fulfilled (best-effort).
+            try {
+                await prisma_client_1.default.projectAddonRequest.updateMany({
+                    where: { projectId, tenantId, salesOrderId: parentSalesOrderId, status: "PENDING" },
+                    data: { status: "HANDLED", resolvedById: employeeId, resolvedAt: new Date() },
+                });
+            }
+            catch (markError) {
+                console.error("[createAddonOrder] could not mark addon requests handled:", markError?.message || markError);
+            }
             res.status(201).json({
                 message: `${orderNumber} ek siparişi oluşturuldu.`,
                 salesOrder: addonOrder,
                 totals: { expenses: expenseTotal, extraMaterials: materialTotal, overtime: overtimeTotal, total: totalAmount },
             });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    // Technician-facing: raise a request that the manager create an addon order
+    // from the extra work accrued on a parent order. Does not create the order.
+    async requestAddonOrder(req, res) {
+        try {
+            const projectId = req.params.id;
+            const tenantId = req.user.tenantId;
+            const project = await this.projectRepository.findById(projectId, tenantId);
+            if (!project)
+                return res.status(404).json({ error: "Proje bulunamadı." });
+            const rawSalesOrderId = String(req.body.salesOrderId || req.body.parentSalesOrderId || "").trim();
+            let parentSalesOrderId = rawSalesOrderId || null;
+            if (parentSalesOrderId) {
+                const order = await prisma_client_1.default.salesOrder.findFirst({ where: { id: parentSalesOrderId, projectId, tenantId } });
+                if (!order)
+                    return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
+                parentSalesOrderId = order.parentSalesOrderId || order.id;
+            }
+            else {
+                parentSalesOrderId = project.salesOrders?.find((o) => !o.parentSalesOrderId)?.id || project.salesOrders?.[0]?.id || null;
+            }
+            if (!parentSalesOrderId)
+                return res.status(400).json({ error: "Ek sipariş talebi için bağlı bir sipariş bulunamadı." });
+            const result = await this.createAddonRequestForParent(project, parentSalesOrderId, req.user.id, req.body.appointmentId ? String(req.body.appointmentId) : null, req.body.note);
+            if (!result) {
+                return res.status(400).json({ error: "Ek sipariş talebi için harici gider, ek malzeme veya ek işçilik maliyeti bulunamadı." });
+            }
+            res.status(201).json({ message: "Ek sipariş talebi yöneticiye iletildi.", addonRequest: result.request, totals: result.totals });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    // Manager-facing: resolve (HANDLED / DISMISSED) a technician addon request.
+    async resolveAddonRequest(req, res) {
+        try {
+            const requestId = req.params.requestId;
+            const tenantId = req.user.tenantId;
+            const nextStatus = String(req.body.status || "DISMISSED").toUpperCase();
+            if (!["HANDLED", "DISMISSED", "PENDING"].includes(nextStatus)) {
+                return res.status(400).json({ error: "Geçersiz talep durumu." });
+            }
+            const request = await prisma_client_1.default.projectAddonRequest.findFirst({ where: { id: requestId, tenantId } });
+            if (!request)
+                return res.status(404).json({ error: "Ek sipariş talebi bulunamadı." });
+            const updated = await prisma_client_1.default.projectAddonRequest.update({
+                where: { id: request.id },
+                data: {
+                    status: nextStatus,
+                    resolvedById: nextStatus === "PENDING" ? null : req.user.id,
+                    resolvedAt: nextStatus === "PENDING" ? null : new Date(),
+                },
+            });
+            res.status(200).json({ message: "Ek sipariş talebi güncellendi.", addonRequest: updated });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -1308,71 +1615,7 @@ class ProjectController {
         });
     }
     async findTechnicianScheduleConflict(technicianIds, startTime, endTime, tenantId, appointmentId) {
-        const ids = [...new Set(technicianIds.filter(Boolean))];
-        if (!ids.length)
-            return null;
-        const employeeLabel = (employee) => employee ? `${employee.firstName || ""} ${employee.lastName || ""}`.trim() || employee.email || "Teknisyen" : "Teknisyen";
-        const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(tenantId);
-        const projectConflict = await prisma_client_1.default.appointment.findFirst({
-            where: {
-                tenantId: tenantIds.length ? { in: tenantIds } : undefined,
-                status: { in: ["BOOKED", "COMPLETED"] },
-                ...(appointmentId ? { id: { not: appointmentId } } : {}),
-                startTime: { lt: endTime },
-                endTime: { gt: startTime },
-                OR: [
-                    { assignedTechId: { in: ids } },
-                    { technicianAssignments: { some: { technicianId: { in: ids } } } },
-                ],
-            },
-            include: {
-                assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true } },
-                technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true } } } },
-                project: { select: { projectName: true } },
-            },
-        });
-        if (projectConflict) {
-            const technicians = [
-                projectConflict.assignedTechnician,
-                ...((projectConflict.technicianAssignments || []).map((assignment) => assignment.technician)),
-            ].filter(Boolean);
-            const conflicted = technicians.find((employee) => ids.includes(employee.id)) || technicians[0];
-            return {
-                type: "project",
-                message: `${employeeLabel(conflicted)} ${formatDateTime(projectConflict.startTime)} - ${formatDateTime(projectConflict.endTime)} arasında montajda: ${projectConflict.project?.projectName || "Proje montajı"}.`,
-            };
-        }
-        const maintenanceConflict = await prisma_client_1.default.maintenanceTask.findFirst({
-            where: {
-                status: { not: "CANCELLED" },
-                scheduledStartTime: { lt: endTime },
-                scheduledEndTime: { gt: startTime },
-                OR: [
-                    { assignedTechId: { in: ids } },
-                    { alternativeTechId: { in: ids } },
-                    { assignments: { some: { technicianId: { in: ids } } } },
-                ],
-            },
-            include: {
-                technician: { select: { id: true, firstName: true, lastName: true, email: true } },
-                alternativeTechnician: { select: { id: true, firstName: true, lastName: true, email: true } },
-                assignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true } } } },
-                contract: { include: { customer: { select: { companyName: true } } } },
-            },
-        });
-        if (maintenanceConflict) {
-            const technicians = [
-                maintenanceConflict.technician,
-                maintenanceConflict.alternativeTechnician,
-                ...((maintenanceConflict.assignments || []).map((assignment) => assignment.technician)),
-            ].filter(Boolean);
-            const conflicted = technicians.find((employee) => ids.includes(employee.id)) || technicians[0];
-            return {
-                type: "maintenance",
-                message: `${employeeLabel(conflicted)} ${formatDateTime(maintenanceConflict.scheduledStartTime)} - ${formatDateTime(maintenanceConflict.scheduledEndTime)} arasında bakımda: ${maintenanceConflict.contract?.customer?.companyName || maintenanceConflict.contract?.title || "Bakım görevi"}.`,
-            };
-        }
-        return null;
+        return (0, technicianSchedule_1.findTechnicianScheduleConflict)(technicianIds, startTime, endTime, tenantId, { appointmentId });
     }
     appointmentTechnicianIdsFromBody(body, fallbackIds = []) {
         if (body.technicianIds !== undefined)

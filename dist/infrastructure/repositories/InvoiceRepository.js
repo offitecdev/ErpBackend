@@ -70,6 +70,15 @@ class InvoiceRepository {
             include: invoiceInclude,
         }));
     }
+    async listForOrders(tenantId, salesOrderIds) {
+        if (salesOrderIds.length === 0)
+            return [];
+        return (await prisma_client_1.default.invoice.findMany({
+            where: { tenantId, salesOrderId: { in: salesOrderIds } },
+            orderBy: { createdAt: "desc" },
+            include: invoiceInclude,
+        }));
+    }
     async countForTenant(tenantId) {
         return prisma_client_1.default.invoice.count({ where: { tenantId } });
     }

@@ -9,7 +9,7 @@ const Tender_1 = require("../../domain/entities/Tender");
 const nanoid_1 = require("nanoid");
 class TenderRepository {
     mapToEntity(data) {
-        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin);
+        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation);
     }
     async create(tenderData) {
         const data = await prisma_client_1.default.tender.create({
@@ -17,9 +17,11 @@ class TenderRepository {
         });
         return this.mapToEntity(data);
     }
-    async findById(id) {
-        const data = await prisma_client_1.default.tender.findUnique({
-            where: { id },
+    async findById(id, tenantId) {
+        // Scoped by both id and tenantId (findFirst, since the composite is not a
+        // unique key). Cross-tenant ids simply resolve to null.
+        const data = await prisma_client_1.default.tender.findFirst({
+            where: { id, tenantId },
             include: {
                 customer: { select: { id: true, companyName: true, address: true, mainPhone: true, mainEmail: true, taxNumber: true } },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } }
@@ -71,6 +73,7 @@ class TenderRepository {
                     orderDate: true,
                     billingAddress: true,
                     deliveryAddress: true,
+                    billingSameAsInstallation: true,
                     internalDeliveryDate: true,
                     priceList: true,
                     paymentTerms: true,
@@ -141,8 +144,16 @@ class TenderRepository {
         }
         return items;
     }
-    async delete(id) {
+    async delete(id, tenantId) {
         await prisma_client_1.default.$transaction(async (tx) => {
+            // Only delete when the tender belongs to this tenant.
+            const owned = await tx.tender.findFirst({
+                where: { id, tenantId },
+                select: { id: true }
+            });
+            if (!owned) {
+                throw new Error("Teklif bulunamadı veya bu şirkete ait değil.");
+            }
             const positions = await tx.position.findMany({
                 where: { tenderId: id },
                 select: { id: true }
@@ -156,16 +167,22 @@ class TenderRepository {
             await tx.tender.delete({ where: { id } });
         });
     }
-    async updateStatus(id, status) {
-        const data = await prisma_client_1.default.tender.update({
-            where: { id },
+    async updateStatus(id, status, tenantId) {
+        // Update only the row matching id + tenantId; if nothing matched the
+        // tender either doesn't exist or belongs to another tenant.
+        const result = await prisma_client_1.default.tender.updateMany({
+            where: { id, tenantId },
             data: { status }
         });
+        if (result.count === 0) {
+            throw new Error("Teklif bulunamadı veya bu şirkete ait değil.");
+        }
+        const data = await prisma_client_1.default.tender.findUniqueOrThrow({ where: { id } });
         return this.mapToEntity(data);
     }
-    async createNextVersion(tenderId, newCreatedBy) {
-        const existingTender = await prisma_client_1.default.tender.findUnique({
-            where: { id: tenderId },
+    async createNextVersion(tenderId, newCreatedBy, tenantId) {
+        const existingTender = await prisma_client_1.default.tender.findFirst({
+            where: { id: tenderId, tenantId },
             include: {
                 positions: {
                     include: {

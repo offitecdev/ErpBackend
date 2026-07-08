@@ -7,7 +7,75 @@ exports.TenderController = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
+const technicianSchedule_1 = require("./technicianSchedule");
 const smtp = new SmtpMailService_1.SmtpMailService();
+const normalizeIdList = (value) => Array.isArray(value)
+    ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
+    : [];
+// Validation error whose message is safe to show the user. Carries status 400 so
+// controller catch blocks can distinguish it from unexpected/internal errors and
+// avoid leaking raw Prisma messages.
+class TenderValidationError extends Error {
+    status = 400;
+    constructor(message) {
+        super(message);
+        this.name = 'TenderValidationError';
+    }
+}
+// Validates a numeric field that may appear in a request body. Throws
+// TenderValidationError for NaN / Infinity / -Infinity / non-numeric input, or
+// values outside [min, max]. `undefined` (field absent) is always allowed; `null`
+// is allowed only when allowNull is set (callers treat null as "clear/default").
+const assertNumericField = (value, label, opts = {}) => {
+    if (value === undefined)
+        return;
+    if (value === null) {
+        if (opts.allowNull)
+            return;
+        throw new TenderValidationError(`${label} boş bırakılamaz.`);
+    }
+    if (typeof value !== 'number' && typeof value !== 'string') {
+        throw new TenderValidationError(`${label} geçerli bir sayı olmalıdır.`);
+    }
+    if (typeof value === 'string' && value.trim() === '') {
+        throw new TenderValidationError(`${label} geçerli bir sayı olmalıdır.`);
+    }
+    const num = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(num)) {
+        throw new TenderValidationError(`${label} geçerli bir sayı olmalıdır.`);
+    }
+    if (opts.min !== undefined && num < opts.min) {
+        throw new TenderValidationError(`${label} en az ${opts.min} olmalıdır.`);
+    }
+    if (opts.max !== undefined && num > opts.max) {
+        throw new TenderValidationError(`${label} en fazla ${opts.max} olabilir.`);
+    }
+};
+// Standard numeric rules shared by add/update position endpoints.
+const validatePositionNumericFields = (body) => {
+    assertNumericField(body.quantity, "Miktar", { min: 0, allowNull: true });
+    assertNumericField(body.unitPrice, "Birim fiyat", { min: 0, allowNull: true });
+    assertNumericField(body.discount, "İndirim", { min: 0, max: 100, allowNull: true });
+    assertNumericField(body.taxRate, "KDV oranı", { min: 0, allowNull: true });
+};
+// Mail hardening helpers (used by sendOfferMail).
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const isValidEmail = (value) => EMAIL_RE.test(value);
+// Strip CR/LF so a value placed into an SMTP header cannot inject extra headers.
+const stripHeaderValue = (value) => value.replace(/[\r\n]+/g, ' ').trim();
+const escapeHtml = (value) => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+// Technicians (responsible + additional) are returned the same way the project
+// appointment endpoints return them, so the proposal and project screens render
+// the same shape.
+const OFFER_SLOT_TECHNICIAN_INCLUDE = {
+    assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
+    technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } } },
+};
 class TenderController {
     importTenderUseCase;
     importSalesOrderCsvUseCase;
@@ -65,20 +133,57 @@ class TenderController {
         const tenderRef = this.normalizeTenderRef(rawRef);
         if (!tenderRef)
             return null;
-        const byId = await this.tenderRepository.findById(tenderRef);
-        if (byId && await this.canAccessTenant(byId.tenantId, tenantId))
-            return byId;
+        // Resolve the tender's own tenant first, then load it scoped to that tenant.
+        // This preserves parent/child (tenant-tree) access while the repository
+        // query itself is always tenant-scoped.
+        const byIdLight = await prisma_client_1.default.tender.findUnique({
+            where: { id: tenderRef },
+            select: { id: true, tenantId: true }
+        });
+        if (byIdLight && await this.canAccessTenant(byIdLight.tenantId, tenantId)) {
+            return this.tenderRepository.findById(byIdLight.id, byIdLight.tenantId);
+        }
         const byNumber = await prisma_client_1.default.tender.findMany({
             where: { tenderNumber: tenderRef },
             take: 50,
             select: { id: true, tenantId: true }
         });
-        for (const candidate of byNumber) {
-            if (await this.canAccessTenant(candidate.tenantId, tenantId)) {
-                return this.tenderRepository.findById(candidate.id);
+        if (byNumber.length) {
+            // The request-side tenant root is constant across candidates, so resolve it
+            // once instead of re-walking the tenant tree for every candidate.
+            const requestRootId = await this.tenantRootId(tenantId);
+            for (const candidate of byNumber) {
+                if (candidate.tenantId === tenantId) {
+                    return this.tenderRepository.findById(candidate.id, candidate.tenantId);
+                }
+                if (!requestRootId)
+                    continue;
+                const candidateRootId = await this.tenantRootId(candidate.tenantId);
+                if (candidateRootId && candidateRootId === requestRootId) {
+                    return this.tenderRepository.findById(candidate.id, candidate.tenantId);
+                }
             }
         }
         return null;
+    }
+    // Single source of truth for tender access. Resolves the tender's own tenant,
+    // verifies the caller can reach it (parent/sub-tenant aware, same as updateMeta),
+    // then loads the full tender scoped to that tenant. Returns null when the tender
+    // does not exist OR is not accessible — callers return 404 either way, so we do
+    // not leak whether another tenant's tender exists.
+    async getAccessibleTender(tenderId, user) {
+        const raw = String(tenderId || '').trim();
+        if (!raw)
+            return null;
+        const light = await prisma_client_1.default.tender.findUnique({
+            where: { id: raw },
+            select: { tenantId: true }
+        });
+        if (!light)
+            return null;
+        if (!await this.canAccessTenant(light.tenantId, user.tenantId))
+            return null;
+        return this.tenderRepository.findById(raw, light.tenantId);
     }
     async findCustomerForTenant(customerId, tenantId) {
         const customer = await prisma_client_1.default.customer.findUnique({
@@ -178,11 +283,10 @@ class TenderController {
             const tenderId = req.params.id;
             const tenantId = req.user.tenantId;
             const { positionNumber, shortDescription, longDescription, quantity, unit, npkCode, parentPositionId, rowType, sourceArticleId, displayOrder, unitPrice, discount, taxRate, imageUrl } = req.body;
-            const tender = await this.tenderRepository.findById(tenderId);
+            validatePositionNumericFields({ quantity, unitPrice, discount, taxRate });
+            const tender = await this.tenderRepository.findById(tenderId, tenantId);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
-            if (tender.tenantId !== tenantId)
-                return res.status(404).json({ error: "Teklif bulunamadı." });
             if (tender.status !== 'Draft') {
                 return res.status(403).json({ error: "Sadece taslak teklifler üzerinde satır eklenebilir." });
             }
@@ -201,18 +305,9 @@ class TenderController {
             }
             const effectiveParentPositionId = parent?.id || null;
             const effectiveHierarchyLevel = parent ? Number(parent.hierarchyLevel || 0) + 1 : 0;
-            const siblingMax = await prisma_client_1.default.position.aggregate({
-                where: { tenderId, parentPositionId: effectiveParentPositionId },
-                _max: { displayOrder: true }
-            });
-            const nextDisplayOrder = displayOrder !== undefined
-                ? Number(displayOrder) || 0
-                : Number(siblingMax._max.displayOrder ?? 0) + 1000;
-            const siblingCount = await prisma_client_1.default.position.count({
-                where: { tenderId, parentPositionId: effectiveParentPositionId }
-            });
-            const internalPositionNumber = positionNumber
-                || (parent ? `${parent.positionNumber}.${siblingCount + 1}` : String((siblingCount + 1) * 100));
+            // displayOrder / positionNumber are derived from the sibling max/count
+            // INSIDE the transaction below (under a tender row lock) so concurrent
+            // addPosition calls cannot read the same values and collide.
             const sourceArticle = safeRowType === 'PRODUCT' && sourceArticleId
                 ? await prisma_client_1.default.article.findFirst({
                     where: { id: sourceArticleId, tenantId },
@@ -265,26 +360,47 @@ class TenderController {
                     : (imageUrl !== undefined ? (imageUrl || null) : null))
                 : null;
             const newPosId = (0, nanoid_1.nanoid)(10);
-            await this.positionRepository.createMany([{
-                    id: newPosId,
-                    tenantId,
-                    tenderId,
-                    parentPositionId: effectiveParentPositionId,
-                    rowType: safeRowType,
-                    sourceArticleId: isProduct ? (sourceArticle?.id || sourceArticleId || null) : null,
-                    displayOrder: nextDisplayOrder,
-                    positionNumber: internalPositionNumber,
-                    shortDescription: resolvedShortDescription,
-                    longDescription: resolvedLongDescription,
-                    quantity: isPricedRow ? Number(quantity ?? (isProduct ? 1 : 0)) : 0,
-                    unit: resolvedUnit,
-                    npkCode: npkCode || null,
-                    hierarchyLevel: effectiveHierarchyLevel,
-                    unitPrice: resolvedUnitPrice,
-                    discount: isPricedRow && discount !== undefined ? Number(discount || 0) : 0,
-                    taxRate: isPricedRow && taxRate !== undefined ? Number(taxRate || 0) : 0,
-                    imageUrl: resolvedImageUrl,
-                }]);
+            // Atomic numbering + insert. Read Committed + a FOR UPDATE lock on the
+            // tender row serialize concurrent inserts for the same tender: a second
+            // call blocks on the lock until the first commits, then reads the updated
+            // max/count — so displayOrder and positionNumber can no longer duplicate.
+            await prisma_client_1.default.$transaction(async (tx) => {
+                await tx.$queryRaw `SELECT id FROM Tender WHERE id = ${tenderId} FOR UPDATE`;
+                const siblingMax = await tx.position.aggregate({
+                    where: { tenderId, parentPositionId: effectiveParentPositionId },
+                    _max: { displayOrder: true }
+                });
+                const nextDisplayOrder = displayOrder !== undefined
+                    ? Number(displayOrder) || 0
+                    : Number(siblingMax._max.displayOrder ?? 0) + 1000;
+                const siblingCount = await tx.position.count({
+                    where: { tenderId, parentPositionId: effectiveParentPositionId }
+                });
+                const internalPositionNumber = positionNumber
+                    || (parent ? `${parent.positionNumber}.${siblingCount + 1}` : String((siblingCount + 1) * 100));
+                await tx.position.createMany({
+                    data: [{
+                            id: newPosId,
+                            tenantId,
+                            tenderId,
+                            parentPositionId: effectiveParentPositionId,
+                            rowType: safeRowType,
+                            sourceArticleId: isProduct ? (sourceArticle?.id || sourceArticleId || null) : null,
+                            displayOrder: nextDisplayOrder,
+                            positionNumber: internalPositionNumber,
+                            shortDescription: resolvedShortDescription,
+                            longDescription: resolvedLongDescription,
+                            quantity: isPricedRow ? Number(quantity ?? (isProduct ? 1 : 0)) : 0,
+                            unit: resolvedUnit,
+                            npkCode: npkCode || null,
+                            hierarchyLevel: effectiveHierarchyLevel,
+                            unitPrice: resolvedUnitPrice,
+                            discount: isPricedRow && discount !== undefined ? Number(discount || 0) : 0,
+                            taxRate: isPricedRow && taxRate !== undefined ? Number(taxRate || 0) : 0,
+                            imageUrl: resolvedImageUrl,
+                        }]
+                });
+            }, { isolationLevel: 'ReadCommitted' });
             await this.tenderLogRepo.create({
                 tenantId,
                 tenderId,
@@ -300,8 +416,11 @@ class TenderController {
             res.status(201).json({ message: "Satır eklendi.", positionId: newPosId, position: created });
         }
         catch (error) {
+            if (error?.status === 400) {
+                return res.status(400).json({ error: error.message });
+            }
             console.error('[addPosition] error:', error);
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: "Satır eklenirken bir hata oluştu." });
         }
     }
     async updateMeta(req, res) {
@@ -309,15 +428,27 @@ class TenderController {
             const tenderId = req.params.id;
             const tenantId = req.user.tenantId;
             const employeeId = req.user.id;
-            const { customerId, format, validUntil } = req.body;
-            const tender = await this.tenderRepository.findById(tenderId);
-            if (!tender || !await this.canAccessTenant(tender.tenantId, tenantId)) {
+            const { customerId, format, validUntil, billingAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate } = req.body;
+            const tender = await this.getAccessibleTender(tenderId, req.user);
+            if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
             if (tender.status !== "Draft") {
                 return res.status(403).json({ error: "Sadece taslak teklif bilgileri düzenlenebilir." });
             }
             const data = {};
+            if (billingAddress !== undefined) {
+                data.billingAddress = billingAddress ? String(billingAddress) : null;
+            }
+            if (deliveryAddress !== undefined) {
+                data.deliveryAddress = deliveryAddress ? String(deliveryAddress) : null;
+            }
+            if (billingSameAsInstallation !== undefined) {
+                data.billingSameAsInstallation = !!billingSameAsInstallation;
+            }
+            if (internalDeliveryDate !== undefined) {
+                data.internalDeliveryDate = internalDeliveryDate ? new Date(internalDeliveryDate) : null;
+            }
             if (format !== undefined) {
                 if (format !== "SIA451" && format !== "CRBX") {
                     return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
@@ -373,7 +504,7 @@ class TenderController {
                     description: "Teklif müşterisi güncellendi."
                 });
             }
-            const updated = await this.tenderRepository.findById(tender.id);
+            const updated = await this.tenderRepository.findById(tender.id, tender.tenantId);
             res.status(200).json(updated);
         }
         catch (error) {
@@ -387,7 +518,8 @@ class TenderController {
             const tenantId = req.user.tenantId;
             const employeeId = req.user.id;
             const { shortDescription, longDescription, quantity, unit, unitPrice, discount, taxRate, imageUrl, npkCode, rowType, sourceArticleId, displayOrder, } = req.body;
-            const tender = await this.tenderRepository.findById(tenderId);
+            validatePositionNumericFields({ quantity, unitPrice, discount, taxRate });
+            const tender = await this.tenderRepository.findById(tenderId, tenantId);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status !== 'Draft') {
@@ -514,20 +646,23 @@ class TenderController {
             res.status(200).json(updated);
         }
         catch (error) {
+            if (error?.status === 400) {
+                return res.status(400).json({ error: error.message });
+            }
             console.error('[updatePosition] error:', error);
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: "Satır güncellenirken bir hata oluştu." });
         }
     }
     async delete(req, res) {
         try {
             const tenderId = req.params.id;
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status !== 'Draft') {
                 return res.status(403).json({ error: "Sadece taslak (Draft) teklifler silinebilir." });
             }
-            await this.tenderRepository.delete(tenderId);
+            await this.tenderRepository.delete(tenderId, tender.tenantId);
             res.status(200).json({ message: "Teklif silindi." });
         }
         catch (error) {
@@ -553,15 +688,40 @@ class TenderController {
         try {
             const tenderId = req.params.id;
             const positionId = req.params.positionId;
-            const costs = req.body;
             if (!tenderId || !positionId) {
                 return res.status(400).json({ error: "İhale ID ve satır ID zorunludur." });
             }
-            const result = await this.calculatePositionCostUseCase.execute(positionId, tenderId, costs);
+            // Sanitize cost inputs: every cost must be a finite number >= 0. Missing
+            // or null fields default to 0. Requiring >= 0 also guarantees the summed
+            // totalCalculatedPrice can never be negative.
+            const rawCosts = req.body || {};
+            const costFieldLabels = [
+                ['materialCost', 'Malzeme maliyeti'],
+                ['laborCost', 'İşçilik maliyeti'],
+                ['overheadCost', 'Genel gider'],
+                ['riskAmount', 'Risk tutarı'],
+                ['additionalCost', 'Ek maliyet'],
+                ['profitMargin', 'Kâr marjı'],
+            ];
+            const costs = {};
+            for (const [key, label] of costFieldLabels) {
+                assertNumericField(rawCosts[key], label, { min: 0, allowNull: true });
+                const raw = rawCosts[key];
+                costs[key] = raw === undefined || raw === null ? 0 : Number(raw);
+            }
+            const tender = await this.getAccessibleTender(tenderId, req.user);
+            if (!tender)
+                return res.status(404).json({ error: "İhale bulunamadı." });
+            const result = await this.calculatePositionCostUseCase.execute(positionId, tenderId, costs, tender.tenantId);
             res.status(200).json({ message: "Hesaplama kaydedildi.", calculation: result });
         }
         catch (error) {
-            res.status(403).json({ error: error.message });
+            // Access/ownership/state errors carry an explicit HTTP status; anything
+            // else is an unexpected failure and must not leak internals or masquerade
+            // as a 403.
+            const status = typeof error?.status === 'number' ? error.status : 500;
+            const message = status >= 500 ? "İşlem sırasında beklenmeyen bir hata oluştu." : error.message;
+            res.status(status).json({ error: message });
         }
     }
     async createVersion(req, res) {
@@ -571,7 +731,10 @@ class TenderController {
             if (!tenderId) {
                 return res.status(400).json({ error: "İhale ID zorunludur." });
             }
-            const newTender = await this.tenderRepository.createNextVersion(tenderId, employeeId);
+            const tender = await this.getAccessibleTender(tenderId, req.user);
+            if (!tender)
+                return res.status(404).json({ error: "İhale bulunamadı." });
+            const newTender = await this.tenderRepository.createNextVersion(tenderId, employeeId, tender.tenantId);
             res.status(201).json({ message: "Yeni versiyon başarıyla oluşturuldu.", tender: newTender });
         }
         catch (error) {
@@ -582,10 +745,10 @@ class TenderController {
         try {
             const tenderId = req.params.id;
             const employeeId = req.user.id; // İşlemi yapan kişi
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
-            const approvedTender = await this.tenderRepository.updateStatus(tenderId, 'Approved');
+            const approvedTender = await this.tenderRepository.updateStatus(tenderId, 'Approved', tender.tenantId);
             // CRM Zaman Çizelgesine Otomatik Düş!
             if (tender.customerId) {
                 await this.customerActivityRepo.create({
@@ -613,10 +776,41 @@ class TenderController {
             res.status(400).json({ error: error.message });
         }
     }
+    async listTechnicians(req, res) {
+        try {
+            res.status(200).json(await (0, technicianSchedule_1.listTechnicianOptions)(req.user.tenantId));
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    offerSlotTechnicianIdsFromBody(body, fallbackIds = []) {
+        if (body.technicianIds !== undefined)
+            return normalizeIdList(body.technicianIds);
+        if (body.assignedTechId !== undefined)
+            return normalizeIdList([body.assignedTechId]);
+        return [...new Set(fallbackIds.filter(Boolean))];
+    }
+    async replaceOfferSlotAssignments(slotId, technicianIds) {
+        const ids = [...new Set(technicianIds.filter(Boolean))];
+        await prisma_client_1.default.$transaction(async (tx) => {
+            await tx.offerScheduleSlotAssignment.deleteMany({ where: { slotId } });
+            if (ids.length) {
+                await tx.offerScheduleSlotAssignment.createMany({
+                    data: ids.map((technicianId) => ({
+                        id: (0, nanoid_1.nanoid)(10),
+                        slotId,
+                        technicianId,
+                    })),
+                    skipDuplicates: true,
+                });
+            }
+        });
+    }
     async getScheduleSlots(req, res) {
         try {
             const tenderId = req.params.id;
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.tenderRepository.findById(tenderId, req.user.tenantId);
             if (!tender || tender.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
@@ -625,7 +819,8 @@ class TenderController {
             }
             const slots = await prisma_client_1.default.offerScheduleSlot.findMany({
                 where: { tenderId },
-                orderBy: { startTime: 'asc' }
+                orderBy: { startTime: 'asc' },
+                include: OFFER_SLOT_TECHNICIAN_INCLUDE,
             });
             res.status(200).json(slots);
         }
@@ -636,9 +831,15 @@ class TenderController {
     async createScheduleSlot(req, res) {
         try {
             const tenderId = req.params.id;
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.tenderRepository.findById(tenderId, req.user.tenantId);
             if (!tender || tender.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+            if (tender.projectId) {
+                return res.status(400).json({ error: "Projeye dönüşmüş teklifin saat planı teklif ekranından güncellenemez. Lütfen proje randevu ekranını kullanın." });
+            }
+            if (!tender.customerId) {
+                return res.status(400).json({ error: "Saat planı eklemeden önce müşteri seçin." });
             }
             const startTime = new Date(req.body.startTime);
             const endTime = new Date(req.body.endTime);
@@ -655,18 +856,31 @@ class TenderController {
             if (conflict) {
                 return res.status(409).json({ error: "Bu teklif için saat planı çakışıyor." });
             }
+            // Same technician rules and conflict checks as the project module.
+            const technicians = await (0, technicianSchedule_1.validateTechnicians)(this.offerSlotTechnicianIdsFromBody(req.body), tender.tenantId);
+            const technicianIds = technicians.map((technician) => technician.id);
+            const responsibleTechnician = technicians[0] || null;
+            const techConflict = await (0, technicianSchedule_1.findTechnicianScheduleConflict)(technicianIds, startTime, endTime, tender.tenantId);
+            if (techConflict)
+                return res.status(409).json({ error: techConflict.message });
             const slot = await prisma_client_1.default.offerScheduleSlot.create({
                 data: {
                     id: (0, nanoid_1.nanoid)(10),
                     tenantId: tender.tenantId,
                     tenderId,
                     customerId: tender.customerId,
+                    assignedTechId: responsibleTechnician?.id || null,
                     startTime,
                     endTime,
                     notes: req.body.notes || null
                 }
             });
-            res.status(201).json(slot);
+            await this.replaceOfferSlotAssignments(slot.id, technicianIds);
+            const created = await prisma_client_1.default.offerScheduleSlot.findUnique({
+                where: { id: slot.id },
+                include: OFFER_SLOT_TECHNICIAN_INCLUDE,
+            });
+            res.status(201).json(created);
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -676,14 +890,17 @@ class TenderController {
         try {
             const tenderId = req.params.id;
             const slotId = req.params.slotId;
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.tenderRepository.findById(tenderId, req.user.tenantId);
             if (!tender || tender.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
             if (tender.projectId) {
                 return res.status(400).json({ error: "Projeye dönüşmüş teklifin saat planı teklif ekranından güncellenemez. Lütfen proje randevu ekranını kullanın." });
             }
-            const slot = await prisma_client_1.default.offerScheduleSlot.findUnique({ where: { id: slotId } });
+            const slot = await prisma_client_1.default.offerScheduleSlot.findUnique({
+                where: { id: slotId },
+                include: { technicianAssignments: true },
+            });
             if (!slot || slot.tenderId !== tenderId)
                 return res.status(404).json({ error: "Saat planı bulunamadı." });
             const startTime = new Date(req.body.startTime);
@@ -702,13 +919,30 @@ class TenderController {
             if (conflict) {
                 return res.status(409).json({ error: "Bu teklif için saat planı çakışıyor." });
             }
-            const updated = await prisma_client_1.default.offerScheduleSlot.update({
+            // Same technician rules and conflict checks as the project module.
+            const fallbackTechnicianIds = [
+                slot.assignedTechId,
+                ...((slot.technicianAssignments || []).map((assignment) => assignment.technicianId)),
+            ].filter(Boolean);
+            const technicians = await (0, technicianSchedule_1.validateTechnicians)(this.offerSlotTechnicianIdsFromBody(req.body, fallbackTechnicianIds), tender.tenantId);
+            const technicianIds = technicians.map((technician) => technician.id);
+            const responsibleTechnician = technicians[0] || null;
+            const techConflict = await (0, technicianSchedule_1.findTechnicianScheduleConflict)(technicianIds, startTime, endTime, tender.tenantId, { slotId });
+            if (techConflict)
+                return res.status(409).json({ error: techConflict.message });
+            await prisma_client_1.default.offerScheduleSlot.update({
                 where: { id: slotId },
                 data: {
                     startTime,
                     endTime,
+                    assignedTechId: responsibleTechnician?.id || null,
                     notes: req.body.notes || null
                 }
+            });
+            await this.replaceOfferSlotAssignments(slotId, technicianIds);
+            const updated = await prisma_client_1.default.offerScheduleSlot.findUnique({
+                where: { id: slotId },
+                include: OFFER_SLOT_TECHNICIAN_INCLUDE,
             });
             res.status(200).json(updated);
         }
@@ -720,7 +954,7 @@ class TenderController {
         try {
             const tenderId = req.params.id;
             const slotId = req.params.slotId;
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.tenderRepository.findById(tenderId, req.user.tenantId);
             if (!tender || tender.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
@@ -739,37 +973,111 @@ class TenderController {
     async sendOfferMail(req, res) {
         try {
             const tenderId = req.params.id;
-            const tender = await this.tenderRepository.findById(tenderId);
-            if (!tender || tender.tenantId !== req.user.tenantId) {
+            const tender = await this.getAccessibleTender(tenderId, req.user);
+            if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
+            if (!tender.customerId) {
+                return res.status(400).json({ error: "Müşterisi olmayan teklif için mail gönderilemez." });
+            }
             const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: tender.tenantId } });
+            // A date/time plan is optional — the proposal mail can be sent without any
+            // appointment. When slots exist they are still included in the mail below.
             const slots = await prisma_client_1.default.offerScheduleSlot.findMany({
                 where: { tenderId },
                 orderBy: { startTime: 'asc' }
             });
-            if (slots.length === 0) {
-                return res.status(400).json({ error: "Teklif mailinden önce en az bir tarih/saat planı ekleyin." });
+            // Recipient allow-list: the tender customer's main e-mail plus that
+            // customer's own contacts. The request may only pick from this set — it
+            // can never send to an arbitrary address, so the endpoint is not usable
+            // as an open mail relay.
+            const contacts = await prisma_client_1.default.customerContact.findMany({
+                where: { customerId: tender.customerId },
+                select: { email: true }
+            });
+            const allowedRecipients = new Map(); // lowercased -> canonical
+            const registerEmail = (value) => {
+                const trimmed = String(value || "").trim();
+                if (trimmed && isValidEmail(trimmed))
+                    allowedRecipients.set(trimmed.toLowerCase(), trimmed);
+            };
+            registerEmail(tender.customerEmail);
+            contacts.forEach((contact) => registerEmail(contact.email));
+            if (allowedRecipients.size === 0) {
+                return res.status(400).json({ error: "Bu müşteri için tanımlı geçerli bir e-posta adresi yok." });
             }
-            const to = String(req.body.to || tender.customerEmail || "").trim();
-            const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user.email || "").trim();
-            const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";
-            const subject = String(req.body.subject || `${tender.tenderNumber} teklifiniz`).trim();
+            const defaultTo = allowedRecipients.get(String(tender.customerEmail || "").trim().toLowerCase())
+                || Array.from(allowedRecipients.values())[0];
+            let to = defaultTo;
+            if (req.body.to !== undefined && String(req.body.to).trim() !== "") {
+                const requestedTo = stripHeaderValue(String(req.body.to));
+                const canonical = allowedRecipients.get(requestedTo.toLowerCase());
+                if (!canonical) {
+                    return res.status(403).json({ error: "Alıcı yalnızca teklifin müşterisine ait bir e-posta adresi olabilir." });
+                }
+                to = canonical;
+            }
+            // Sender is taken from the tenant MailSetting (never from the request
+            // body), so the From address cannot be spoofed. fromName may be supplied
+            // but is length-limited and header-sanitized.
+            const fromEmail = stripHeaderValue(String(settings?.fromEmail || req.user.email || ""));
+            if (!fromEmail || !isValidEmail(fromEmail)) {
+                return res.status(400).json({ error: "Gönderici e-posta adresi yapılandırılmamış." });
+            }
+            const rawFromName = settings?.fromName
+                || (req.body.fromName !== undefined ? String(req.body.fromName) : "")
+                || "Offitec ERP";
+            const fromName = stripHeaderValue(rawFromName).slice(0, 100) || "Offitec ERP";
+            const subject = stripHeaderValue(String(req.body.subject || `${tender.tenderNumber} teklifiniz`));
+            if (!subject)
+                return res.status(400).json({ error: "Konu boş olamaz." });
+            if (subject.length > 200)
+                return res.status(400).json({ error: "Konu 200 karakteri aşamaz." });
             const message = String(req.body.message || "Teklifimizi ve planlanan çalışma saatlerini ekte bulabilirsiniz. Uygun görmeniz halinde bu e-postaya yanıt verebilirsiniz.").trim();
-            if (!to)
-                return res.status(400).json({ error: "Alıcı e-posta adresi zorunludur." });
-            if (!fromEmail)
-                return res.status(400).json({ error: "Gönderici e-posta adresi zorunludur." });
+            if (message.length > 5000)
+                return res.status(400).json({ error: "Mesaj 5000 karakteri aşamaz." });
+            // Attachments: only well-formed inline PDF/PNG/JPG payloads, count- and
+            // size-limited, with sanitized filenames. No file paths/URLs are accepted.
+            const rawAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : [];
+            if (rawAttachments.length > 5) {
+                return res.status(400).json({ error: "En fazla 5 ek dosya gönderilebilir." });
+            }
+            const allowedAttachmentTypes = new Set(["application/pdf", "image/png", "image/jpeg"]);
+            let totalAttachmentBytes = 0;
+            const attachments = [];
+            for (const item of rawAttachments) {
+                if (!item || typeof item !== "object") {
+                    return res.status(400).json({ error: "Geçersiz ek dosya." });
+                }
+                const contentType = String(item.contentType || "").trim().toLowerCase();
+                const contentBase64 = typeof item.contentBase64 === "string" ? item.contentBase64 : "";
+                const rawName = String(item.filename || "").trim();
+                if (!rawName || !contentBase64) {
+                    return res.status(400).json({ error: "Ek dosya adı ve içeriği zorunludur." });
+                }
+                if (!allowedAttachmentTypes.has(contentType)) {
+                    return res.status(400).json({ error: "Sadece PDF, PNG veya JPG ek gönderilebilir." });
+                }
+                const filename = rawName.replace(/[\\/\r\n"]+/g, "_").slice(0, 120);
+                totalAttachmentBytes += Math.floor(contentBase64.replace(/\s+/g, "").length * 3 / 4);
+                attachments.push({ filename, contentType, contentBase64 });
+            }
+            if (totalAttachmentBytes > 15 * 1024 * 1024) {
+                return res.status(400).json({ error: "Eklerin toplam boyutu 15 MB sınırını aşıyor." });
+            }
             const scheduleText = slots.map((slot) => {
                 const start = new Date(slot.startTime);
                 const end = new Date(slot.endTime);
                 return `- ${start.toLocaleDateString('tr-TR')} ${start.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })} - ${end.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}`;
             }).join("\n");
+            const scheduleHtml = slots.length > 0
+                ? `<p><strong>Planlanan tarih ve saatler</strong></p>
+                    <ul>${slots.map((slot) => `<li>${new Date(slot.startTime).toLocaleString('tr-TR')} - ${new Date(slot.endTime).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</li>`).join("")}</ul>`
+                : "";
             const html = `
                 <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
-                    <p>${message.replace(/\n/g, "<br />")}</p>
-                    <p><strong>Planlanan tarih ve saatler</strong></p>
-                    <ul>${slots.map((slot) => `<li>${new Date(slot.startTime).toLocaleString('tr-TR')} - ${new Date(slot.endTime).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</li>`).join("")}</ul>
+                    <p>${escapeHtml(message).replace(/\n/g, "<br />")}</p>
+                    ${scheduleHtml}
                 </div>
             `;
             const result = await smtp.send(settings || {}, {
@@ -777,10 +1085,10 @@ class TenderController {
                 fromName,
                 to,
                 subject,
-                text: `${message}\n\nPlanlanan tarih ve saatler:\n${scheduleText}`,
+                text: slots.length > 0 ? `${message}\n\nPlanlanan tarih ve saatler:\n${scheduleText}` : message,
                 html,
-                replyTo: req.body.replyTo || settings?.replyTo || null,
-                attachments: Array.isArray(req.body.attachments) ? req.body.attachments : []
+                replyTo: settings?.replyTo || null,
+                attachments
             });
             await prisma_client_1.default.tender.update({
                 where: { id: tenderId },
@@ -794,7 +1102,7 @@ class TenderController {
                     customerId: tender.customerId,
                     employeeId: req.user.id,
                     activityType: "OFFER_MAIL_SENT",
-                    description: `${tender.tenderNumber} teklif PDF'i randevu saatleriyle birlikte ${to} adresine gönderildi.`,
+                    description: `${tender.tenderNumber} teklif PDF'i ${to} adresine gönderildi.`,
                     referenceId: tender.id,
                     activityDate: new Date()
                 });
@@ -805,35 +1113,50 @@ class TenderController {
             });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            if (error?.status === 400) {
+                return res.status(400).json({ error: error.message });
+            }
+            console.error('[sendOfferMail] error:', error);
+            // SMTP connect/auth failures are a mail-settings problem, not a server bug —
+            // surface a clear, actionable message instead of a generic 500.
+            if (typeof error?.message === "string" && error.message.startsWith("SMTP")) {
+                return res.status(502).json({ error: "E-posta gönderilemedi: SMTP sunucusuna bağlanılamadı veya kullanıcı adı/parola hatalı. Lütfen mail ayarlarını kontrol edin." });
+            }
+            res.status(500).json({ error: "Teklif maili gönderilirken bir hata oluştu." });
         }
     }
-    async acceptOfferByToken(req, res) {
-        try {
-            const token = req.params.token;
-            const tender = await prisma_client_1.default.tender.findUnique({ where: { offerAcceptanceToken: token } });
-            if (!tender)
-                return res.status(404).send("Teklif kabul bağlantısı geçersiz.");
-            await prisma_client_1.default.tender.update({
-                where: { id: tender.id },
-                data: { offerAcceptedAt: tender.offerAcceptedAt || new Date() }
-            });
-            res.status(200).send(`
-                <html><head><meta charset="utf-8"><title>Teklif kabul edildi</title></head>
-                <body style="font-family:Arial,sans-serif;padding:32px;color:#0f172a">
-                    <h1>Teklif kabul edildi</h1>
-                    <p>Teşekkür ederiz. Offitec ekibi sipariş/proje kaydını manuel olarak oluşturacaktır.</p>
-                </body></html>
-            `);
-        }
-        catch (error) {
-            res.status(400).send(error.message);
-        }
+    // DISABLED. Public offer acceptance is intentionally turned off.
+    //
+    // The previous implementation was unsafe: it was a public, unauthenticated GET
+    // that mutated state (setting offerAcceptedAt) with no rate limiting or expiry,
+    // and it matched on `offerAcceptanceToken` — a column that is never generated
+    // anywhere in the codebase, so the flow could not work and only presented an
+    // abuse surface (prefetch/scanner-triggered mutations if tokens were ever added).
+    //
+    // We now respond 410 Gone and change no data. Internal staff can still record a
+    // customer's acceptance via the authenticated PATCH /tenders/:id/mark-offer-accepted.
+    //
+    // TODO: If a real customer-facing acceptance flow is required, implement it as:
+    //   - generate a cryptographically random token (crypto.randomBytes)
+    //   - store only a HASH of the token in the DB (never the raw token)
+    //   - add an expiry timestamp and enforce it
+    //   - make it one-time use (invalidate on first acceptance)
+    //   - make the state-changing action a POST with an explicit confirmation step
+    //     (GET must remain side-effect free so link prefetch/scanners cannot accept)
+    //   - apply rate limiting (see RateLimitMiddleware) to the public endpoint
+    async acceptOfferByToken(_req, res) {
+        res.status(410).send(`
+            <html><head><meta charset="utf-8"><title>Bağlantı kullanım dışı</title></head>
+            <body style="font-family:Arial,sans-serif;padding:32px;color:#0f172a">
+                <h1>Bu bağlantı artık kullanılamıyor</h1>
+                <p>Çevrimiçi teklif kabul özelliği şu anda devre dışıdır. Lütfen teklifinizle ilgili olarak bizimle doğrudan iletişime geçin.</p>
+            </body></html>
+        `);
     }
     async markOfferAccepted(req, res) {
         try {
             const tenderId = req.params.id;
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.tenderRepository.findById(tenderId, req.user.tenantId);
             if (!tender || tender.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
@@ -853,13 +1176,13 @@ class TenderController {
             if (!tenderId) {
                 return res.status(400).json({ error: "İhale ID zorunludur." });
             }
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status === 'Draft') {
                 return res.status(403).json({ error: "[BLOCKED] Onaylanmamış (Draft) teklifler dışa aktarılamaz. Lütfen önce onaylayın." });
             }
-            const exportedTender = await this.tenderRepository.updateStatus(tenderId, 'Exported');
+            const exportedTender = await this.tenderRepository.updateStatus(tenderId, 'Exported', tender.tenantId);
             res.status(200).json({
                 message: "İhale başarıyla dışa aktarıldı.",
                 downloadUrl: `https://api.offitec.com/downloads/tenders/${tenderId}.crbx`,
@@ -876,7 +1199,7 @@ class TenderController {
             if (!tenderId) {
                 return res.status(400).json({ error: "İhale ID zorunludur." });
             }
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
             const includeImages = req.query.includeImages === 'true';
@@ -888,17 +1211,47 @@ class TenderController {
             res.status(400).json({ error: error.message });
         }
     }
+    // PDF üretimi için SADECE gerekli görselleri döndürür: verilen ürün id'lerinin
+    // (bu ihaledeki ürünler) görsel URL'leri. Tüm ihale detayı / tüm alanlar
+    // ÇEKİLMEZ — böylece PDF üretimi hızlanır. Kiracıya göre kısıtlıdır.
+    async getPdfImages(req, res) {
+        try {
+            const tenderId = req.params.id;
+            if (!tenderId)
+                return res.status(400).json({ error: "İhale ID zorunludur." });
+            const tenantId = req.user.tenantId;
+            const tender = await this.tenderRepository.findById(tenderId, tenantId);
+            if (!tender)
+                return res.status(404).json({ error: "İhale bulunamadı." });
+            const ids = normalizeIdList(req.body?.ids);
+            if (ids.length === 0)
+                return res.status(200).json([]);
+            const rows = await prisma_client_1.default.article.findMany({
+                where: { tenantId, id: { in: ids }, imageUrl: { not: null } },
+                select: { id: true, imageUrl: true },
+            });
+            res.status(200).json(rows);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async deletePosition(req, res) {
         try {
             const tenderId = req.params.id;
             const positionId = req.params.positionId;
-            const tender = await this.tenderRepository.findById(tenderId);
+            const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
             if (tender.status !== 'Draft') {
                 return res.status(403).json({ error: "Sadece taslak tekliflerdeki satırlar silinebilir." });
             }
             const before = await this.positionRepository.findById(positionId);
+            if (!before)
+                return res.status(404).json({ error: "Satır bulunamadı." });
+            if (before.tenderId !== tenderId || before.tenantId !== tender.tenantId) {
+                return res.status(404).json({ error: "Satır bu teklife ait değil." });
+            }
             await this.positionRepository.deletePosition(positionId);
             await this.tenderLogRepo.create({
                 tenantId: req.user.tenantId,
@@ -921,6 +1274,9 @@ class TenderController {
     async getActivities(req, res) {
         try {
             const tenderId = req.params.id;
+            const tender = await this.getAccessibleTender(tenderId, req.user);
+            if (!tender)
+                return res.status(404).json({ error: "İhale bulunamadı." });
             const activities = await this.customerActivityRepo.getActivitiesByReference(tenderId);
             res.status(200).json(activities);
         }
@@ -931,6 +1287,9 @@ class TenderController {
     async getLogs(req, res) {
         try {
             const tenderId = req.params.id;
+            const tender = await this.getAccessibleTender(tenderId, req.user);
+            if (!tender)
+                return res.status(404).json({ error: "İhale bulunamadı." });
             const logs = await this.tenderLogRepo.findByTender(tenderId);
             res.status(200).json(logs);
         }

@@ -50,7 +50,8 @@ class StockMovement {
     referenceId;
     description;
     unitCost;
-    constructor(id, tenantId, articleId, movementType, quantity, employeeId, transactionDate, sourceLocationId, destinationLocationId, referenceId, description, unitCost) {
+    supplierId;
+    constructor(id, tenantId, articleId, movementType, quantity, employeeId, transactionDate, sourceLocationId, destinationLocationId, referenceId, description, unitCost, supplierId) {
         this.id = id;
         this.tenantId = tenantId;
         this.articleId = articleId;
@@ -63,6 +64,7 @@ class StockMovement {
         this.referenceId = referenceId;
         this.description = description;
         this.unitCost = unitCost;
+        this.supplierId = supplierId;
     }
 }
 exports.StockMovement = StockMovement;

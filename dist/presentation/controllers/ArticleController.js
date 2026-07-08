@@ -63,7 +63,7 @@ class ArticleController {
     async create(req, res) {
         try {
             const tenantId = req.user.tenantId;
-            const { articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status, isActive, minStockLevel, criticalStockLevel, maxStockLevel, lastPurchaseDate, salePrice, defaultSupplierId, } = req.body;
+            const { articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, itemType, status, isActive, minStockLevel, criticalStockLevel, maxStockLevel, lastPurchaseDate, salePrice, defaultSupplierId, } = req.body;
             if (!articleCode || !name || !unit) {
                 return res.status(400).json({ error: "Ürün kodu, ad ve birim zorunludur." });
             }
@@ -81,6 +81,7 @@ class ArticleController {
                 supplierBarcode: supplierBarcode ?? null,
                 imageUrl: imageUrl ?? null,
                 category: category ?? null,
+                itemType: itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
                 status: status ?? 'ACTIVE',
                 isActive: isActive ?? true,
                 minStockLevel: Number(minStockLevel ?? 0),

@@ -44,7 +44,9 @@ router.use(AuthMiddleware_1.requireAuth, requireProjectModule);
 router.get('/', (0, RbacMiddleware_1.requirePermission)('projects.view'), (req, res) => controller.list(req, res));
 router.get('/options/technicians', (0, RbacMiddleware_1.requireAnyPermission)(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
 router.get('/appointments', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.listAppointments(req, res));
+router.get('/appointments/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentDetail(req, res));
 router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
+router.get('/technician/installations/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
 router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
 router.get('/materials', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
@@ -75,5 +77,9 @@ router.delete('/expenses/:expenseId', (0, RbacMiddleware_1.requirePermission)('p
 router.patch('/extra-materials/:extraMaterialId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.updateExtraMaterial(req, res));
 router.delete('/extra-materials/:extraMaterialId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.deleteExtraMaterial(req, res));
 router.post('/:id/addon-orders', (0, RbacMiddleware_1.requirePermission)('projects.createAddonOrder'), (req, res) => controller.createAddonOrder(req, res));
+router.delete('/:id/sales-orders/:salesOrderId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.deleteSalesOrder(req, res));
+// Technicians raise an addon-order request (they cannot create the order); managers resolve/dismiss it.
+router.post('/:id/addon-order-requests', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.requestAddonOrder(req, res));
+router.patch('/addon-order-requests/:requestId', (0, RbacMiddleware_1.requirePermission)('projects.createAddonOrder'), (req, res) => controller.resolveAddonRequest(req, res));
 exports.default = router;
 //# sourceMappingURL=project.routes.js.map

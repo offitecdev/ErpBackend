@@ -53,7 +53,25 @@ const allowSwaggerUi = (_req, res, next) => {
     next();
 };
 app.set('etag', false);
-app.use((0, cors_1.default)());
+// Restrict cross-origin access to an explicit allow-list when configured via
+// OFFITEC_CORS_ORIGINS (comma-separated). Falls back to permissive (any origin)
+// only when the variable is unset, so existing/dev setups keep working — set it
+// to the deployed frontend origin(s) in production.
+const corsAllowList = (process.env.OFFITEC_CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+app.use((0, cors_1.default)(corsAllowList.length
+    ? {
+        origin: (origin, callback) => {
+            // Allow same-origin / non-browser requests (no Origin header).
+            if (!origin || corsAllowList.includes(origin))
+                return callback(null, true);
+            return callback(new Error('CORS: origin not allowed'));
+        },
+        credentials: true,
+    }
+    : {}));
 app.use((0, helmet_1.default)({ crossOriginResourcePolicy: false }));
 app.use((0, morgan_1.default)('combined'));
 app.use(express_1.default.json({ limit: '50mb' }));

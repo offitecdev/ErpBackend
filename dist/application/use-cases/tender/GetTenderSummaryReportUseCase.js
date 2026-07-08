@@ -8,8 +8,8 @@ class GetTenderSummaryReportUseCase {
         this.tenderRepository = tenderRepository;
         this.positionRepository = positionRepository;
     }
-    async execute(tenderId) {
-        const tender = await this.tenderRepository.findById(tenderId);
+    async execute(tenderId, tenantId) {
+        const tender = await this.tenderRepository.findById(tenderId, tenantId);
         if (!tender)
             throw new Error("İhale bulunamadı.");
         const positions = await this.positionRepository.findByTenderId(tenderId);

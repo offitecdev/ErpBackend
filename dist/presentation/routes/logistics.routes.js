@@ -9,7 +9,6 @@ const CheckDelayedShipmentsUseCase_1 = require("../../application/use-cases/logi
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const router = (0, express_1.Router)();
-// Bağımlılıkların (Dependencies) oluşturulması
 const shipmentRepo = new ShipmentRepository_1.ShipmentRepository();
 const createUseCase = new CreateShipmentUseCase_1.CreateShipmentUseCase(shipmentRepo);
 const updateUseCase = new UpdateShipmentUseCase_1.UpdateShipmentUseCase(shipmentRepo);

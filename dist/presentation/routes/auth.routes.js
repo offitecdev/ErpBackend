@@ -9,7 +9,14 @@ const RoleRepository_1 = require("../../infrastructure/repositories/RoleReposito
 const BcryptCryptoService_1 = require("../../infrastructure/services/BcryptCryptoService");
 const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
+const RateLimitMiddleware_1 = require("../middlewares/RateLimitMiddleware");
 const GetMeUseCase_1 = require("../../application/use-cases/auth/GetMeUseCase");
+// Throttle credential attempts per IP to blunt brute-force / enumeration.
+const loginRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    message: 'Çok fazla giriş denemesi. Lütfen bir süre sonra tekrar deneyin.',
+});
 const router = (0, express_1.Router)();
 const employeeRepo = new EmployeeRepository_1.EmployeeRepository();
 const roleRepo = new RoleRepository_1.RoleRepository();
@@ -46,7 +53,7 @@ const authController = new AuthController_1.AuthController(loginUseCase, getUser
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.post('/login', (req, res) => authController.login(req, res));
+router.post('/login', loginRateLimiter, (req, res) => authController.login(req, res));
 /**
  * @swagger
  * /auth/me/permissions:

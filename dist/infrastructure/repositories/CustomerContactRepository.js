@@ -9,7 +9,7 @@ const CustomerContact_1 = require("../../domain/entities/CustomerContact");
 const nanoid_1 = require("nanoid");
 class CustomerContactRepository {
     mapToEntity(data) {
-        return new CustomerContact_1.CustomerContact(data.id, data.customerId, data.firstName, data.lastName, data.isPrimaryContact, data.title, data.phone, data.email);
+        return new CustomerContact_1.CustomerContact(data.id, data.customerId, data.firstName, data.lastName, data.isPrimaryContact, data.title, data.phone, data.email, data.mobilePhone, data.notes);
     }
     async create(contactData) {
         const data = await prisma_client_1.default.customerContact.create({
@@ -20,7 +20,9 @@ class CustomerContactRepository {
                 lastName: contactData.lastName,
                 title: contactData.title || null,
                 phone: contactData.phone || null,
+                mobilePhone: contactData.mobilePhone || null,
                 email: contactData.email || null,
+                notes: contactData.notes || null,
                 isPrimaryContact: contactData.isPrimaryContact ?? false
             }
         });

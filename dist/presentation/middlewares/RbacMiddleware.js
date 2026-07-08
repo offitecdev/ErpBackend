@@ -13,12 +13,13 @@ const requirePermission = (requiredPermission) => {
                 return;
             }
             const userPermissions = await getPermissionsUseCase.execute(req.user.id);
-            // Kullanıcıya hiç rol atanmamışsa (boş dizi) → tam erişim ver (ilk kurulum modu)
-            if (userPermissions.length === 0) {
-                next();
-                return;
-            }
-            if (!userPermissions.includes(requiredPermission)) {
+            // SECURE BY DEFAULT: a user with no permissions is denied on any
+            // permission-gated route. Previously an empty set granted full
+            // access ("first setup mode"), which made role-less users superusers.
+            // TODO: First-setup/bootstrap access must be controlled by an explicit
+            // tenant/system flag (e.g. a "needsBootstrap" tenant flag), never by
+            // an empty permission set.
+            if (userPermissions.length === 0 || !userPermissions.includes(requiredPermission)) {
                 res.status(403).json({
                     error: `Erişim Engellendi: Bu işlem için '${requiredPermission}' yetkisine sahip değilsiniz.`
                 });
@@ -30,7 +31,6 @@ const requirePermission = (requiredPermission) => {
             console.error('[RbacMiddleware] error while checking permission:', requiredPermission, error);
             res.status(500).json({
                 error: 'Yetki kontrolü sırasında bir hata oluştu.',
-                detail: error?.message,
             });
         }
     };
@@ -44,11 +44,11 @@ const requireAnyPermission = (requiredPermissions) => {
                 return;
             }
             const userPermissions = await getPermissionsUseCase.execute(req.user.id);
-            if (userPermissions.length === 0) {
-                next();
-                return;
-            }
-            if (!requiredPermissions.some((permission) => userPermissions.includes(permission))) {
+            // SECURE BY DEFAULT: deny when the user has no permissions. See the
+            // requirePermission note above — first-setup access must come from an
+            // explicit tenant/system flag, not from an empty permission set.
+            // TODO: gate bootstrap access behind an explicit tenant/system flag.
+            if (userPermissions.length === 0 || !requiredPermissions.some((permission) => userPermissions.includes(permission))) {
                 res.status(403).json({
                     error: `Erisim Engellendi: Bu islem icin ${requiredPermissions.join(', ')} yetkilerinden biri gereklidir.`
                 });
@@ -60,7 +60,6 @@ const requireAnyPermission = (requiredPermissions) => {
             console.error('[RbacMiddleware] error while checking any permission:', requiredPermissions, error);
             res.status(500).json({
                 error: 'Yetki kontrolu sirasinda bir hata olustu.',
-                detail: error?.message,
             });
         }
     };

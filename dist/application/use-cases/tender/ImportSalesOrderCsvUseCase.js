@@ -288,14 +288,16 @@ const employeeScore = (employee, rawNameOrEmail) => {
         return 60;
     return 0;
 };
-const findEmployeeForName = async (tx, tenantId, rawNameOrEmail, fallbackId) => {
+// Load the tenant's active employee directory once so name/email matching during
+// an import is done in memory instead of re-querying every row (avoids N+1).
+const loadActiveEmployees = (tx, tenantId) => tx.employee.findMany({
+    where: { tenantId, isActive: true },
+    select: { id: true, firstName: true, lastName: true, email: true },
+});
+const resolveEmployeeForName = (employees, rawNameOrEmail, fallbackId) => {
     const raw = String(rawNameOrEmail || "").trim();
     if (!raw)
         return { id: fallbackId, name: null };
-    const employees = await tx.employee.findMany({
-        where: { tenantId, isActive: true },
-        select: { id: true, firstName: true, lastName: true, email: true },
-    });
     const ranked = employees
         .map((employee) => ({ employee, score: employeeScore(employee, raw) }))
         .sort((a, b) => b.score - a.score);
@@ -321,7 +323,7 @@ const createMessageLogs = async (tx, input) => {
         if (seen.has(key))
             continue;
         seen.add(key);
-        const employee = await findEmployeeForName(tx, input.tenantId, author, input.fallbackEmployeeId);
+        const employee = resolveEmployeeForName(input.employees, author, input.fallbackEmployeeId);
         await tx.tenderActivityLog.create({
             data: {
                 id: (0, nanoid_1.nanoid)(12),
@@ -366,6 +368,7 @@ class ImportSalesOrderCsvUseCase {
             let createdCustomers = 0;
             let createdArticles = 0;
             let createdPositions = 0;
+            const employees = await loadActiveEmployees(tx, input.tenantId);
             for (const group of groups.values()) {
                 const firstRow = group.rows[0];
                 const customerName = firstValue(headers, group.rows, "customerName")
@@ -393,7 +396,7 @@ class ImportSalesOrderCsvUseCase {
                     createdCustomers += 1;
                 }
                 const salespersonName = firstValue(headers, group.rows, "salesperson");
-                const salespersonEmployee = await findEmployeeForName(tx, input.tenantId, salespersonName, input.employeeId);
+                const salespersonEmployee = resolveEmployeeForName(employees, salespersonName, input.employeeId);
                 const existingVersions = await tx.tender.aggregate({
                     where: { tenantId: input.tenantId, tenderNumber: group.orderReference },
                     _max: { version: true },

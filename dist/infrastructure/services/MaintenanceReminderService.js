@@ -44,24 +44,31 @@ const runReminderPass = async () => {
         },
         take: 100,
     });
+    const notifications = [];
+    const taskIds = [];
     for (const task of tasks) {
         const technicianIds = [...new Set(taskTechnicianIds(task))];
         for (const technicianId of technicianIds) {
-            await prisma_client_1.default.notification.create({
-                data: {
-                    id: (0, nanoid_1.nanoid)(12),
-                    tenantId: task.contract.tenantId,
-                    recipientEmployeeId: technicianId,
-                    type: "MAINTENANCE_REMINDER",
-                    title: "Yarın bakım randevunuz var",
-                    message: `${task.contract.contractCode} ${task.contract.customer?.companyName || ""} bakım randevusu yaklaşıyor.`,
-                    linkUrl: "/maintenance/technician",
-                    metadata: { taskId: task.id },
-                },
+            notifications.push({
+                id: (0, nanoid_1.nanoid)(12),
+                tenantId: task.contract.tenantId,
+                recipientEmployeeId: technicianId,
+                type: "MAINTENANCE_REMINDER",
+                title: "Yarın bakım randevunuz var",
+                message: `${task.contract.contractCode} ${task.contract.customer?.companyName || ""} bakım randevusu yaklaşıyor.`,
+                linkUrl: "/maintenance/technician",
+                metadata: { taskId: task.id },
             });
         }
-        await prisma_client_1.default.maintenanceTask.update({
-            where: { id: task.id },
+        taskIds.push(task.id);
+    }
+    // One bulk insert + one bulk update instead of a query per technician/task.
+    if (notifications.length) {
+        await prisma_client_1.default.notification.createMany({ data: notifications });
+    }
+    if (taskIds.length) {
+        await prisma_client_1.default.maintenanceTask.updateMany({
+            where: { id: { in: taskIds } },
             data: { reminderSentAt: new Date() },
         });
     }
@@ -83,21 +90,24 @@ const runProjectInstallationReminderPass = async () => {
         },
         take: 100,
     });
-    for (const appointment of appointments) {
-        await prisma_client_1.default.notification.create({
-            data: {
-                id: (0, nanoid_1.nanoid)(12),
-                tenantId: appointment.tenantId,
-                recipientEmployeeId: appointment.assignedTechId,
-                type: "PROJECT_INSTALLATION_REMINDER",
-                title: "Yarin montaj randevunuz var",
-                message: `${appointment.project?.projectName || "Proje"} ${appointment.salesOrder?.orderNumber || ""} montaji yaklasiyor.`,
-                linkUrl: "/projects/installation/calendar",
-                metadata: { projectId: appointment.projectId, appointmentId: appointment.id, salesOrderId: appointment.salesOrderId },
-            },
-        });
-        await prisma_client_1.default.appointment.update({
-            where: { id: appointment.id },
+    const notifications = appointments.map((appointment) => ({
+        id: (0, nanoid_1.nanoid)(12),
+        tenantId: appointment.tenantId,
+        recipientEmployeeId: appointment.assignedTechId,
+        type: "PROJECT_INSTALLATION_REMINDER",
+        title: "Yarin montaj randevunuz var",
+        message: `${appointment.project?.projectName || "Proje"} ${appointment.salesOrder?.orderNumber || ""} montaji yaklasiyor.`,
+        linkUrl: "/projects/installation/calendar",
+        metadata: { projectId: appointment.projectId, appointmentId: appointment.id, salesOrderId: appointment.salesOrderId },
+    }));
+    const appointmentIds = appointments.map((appointment) => appointment.id);
+    // One bulk insert + one bulk update instead of a query per appointment.
+    if (notifications.length) {
+        await prisma_client_1.default.notification.createMany({ data: notifications });
+    }
+    if (appointmentIds.length) {
+        await prisma_client_1.default.appointment.updateMany({
+            where: { id: { in: appointmentIds } },
             data: { installationReminderSentAt: new Date() },
         });
     }

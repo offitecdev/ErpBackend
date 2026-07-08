@@ -46,6 +46,15 @@ class ShipmentRepository {
         });
         return this.mapToEntity(updated);
     }
+    async markManyDelayed(ids) {
+        if (ids.length === 0)
+            return 0;
+        const result = await prisma_client_1.default.shipment.updateMany({
+            where: { id: { in: ids } },
+            data: { status: 'DELAYED' },
+        });
+        return result.count;
+    }
     async findById(id) {
         const data = await prisma_client_1.default.shipment.findUnique({
             where: { id },

@@ -75,8 +75,10 @@ router.delete('/contracts/:contractId', AuthMiddleware_1.requireAuth, (0, RbacMi
  *       - bearerAuth: []
  */
 router.get('/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.listTasks(req, res));
+router.get('/tasks/:taskId/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.getTaskCalendarDetail(req, res));
 router.get('/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.getTask(req, res));
 router.get('/technician/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.listMyTasks(req, res));
+router.get('/technician/tasks/:taskId/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.getMyTaskCalendarDetail(req, res));
 router.get('/technician/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.getMyTask(req, res));
 /**
  * @swagger

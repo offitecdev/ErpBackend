@@ -73,6 +73,24 @@ class CustomerActivityRepository {
         });
         return data.map((activity) => this.mapToEntity(activity));
     }
+    async findById(id) {
+        const data = await prisma_client_1.default.customerActivity.findUnique({ where: { id } });
+        return data ? this.mapToEntity(data) : null;
+    }
+    async update(id, activity) {
+        const data = {};
+        if (activity.activityType !== undefined)
+            data.activityType = activity.activityType;
+        if (activity.description !== undefined)
+            data.description = activity.description;
+        if (activity.activityDate !== undefined)
+            data.activityDate = activity.activityDate;
+        const updated = await prisma_client_1.default.customerActivity.update({ where: { id }, data });
+        return this.mapToEntity(updated);
+    }
+    async delete(id) {
+        await prisma_client_1.default.customerActivity.delete({ where: { id } });
+    }
 }
 exports.CustomerActivityRepository = CustomerActivityRepository;
 //# sourceMappingURL=CustomerActivityRepository.js.map

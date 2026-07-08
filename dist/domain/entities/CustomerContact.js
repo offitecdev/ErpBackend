@@ -10,7 +10,9 @@ class CustomerContact {
     title;
     phone;
     email;
-    constructor(id, customerId, firstName, lastName, isPrimaryContact, title, phone, email) {
+    mobilePhone;
+    notes;
+    constructor(id, customerId, firstName, lastName, isPrimaryContact, title, phone, email, mobilePhone, notes) {
         this.id = id;
         this.customerId = customerId;
         this.firstName = firstName;
@@ -19,6 +21,8 @@ class CustomerContact {
         this.title = title;
         this.phone = phone;
         this.email = email;
+        this.mobilePhone = mobilePhone;
+        this.notes = notes;
     }
 }
 exports.CustomerContact = CustomerContact;

@@ -63,7 +63,13 @@ const requireAuth = async (req, res, next) => {
         const secret = process.env.OFFITEC_JWT_SECRET;
         if (!secret)
             throw new Error('JWT Secret tanımlı değil!');
-        const decoded = jsonwebtoken_1.default.verify(token, secret);
+        // Pin the algorithm so a forged token can't downgrade to "none" or a
+        // different scheme; only our own HS256-signed tokens are accepted.
+        const decoded = jsonwebtoken_1.default.verify(token, secret, { algorithms: ['HS256'] });
+        if (!decoded || typeof decoded !== 'object' || !decoded.id || !decoded.tenantId || !decoded.email) {
+            res.status(401).json({ error: 'Geçersiz token içeriği.' });
+            return;
+        }
         const homeTenantId = decoded.tenantId;
         const tenantId = await resolveTenantId(homeTenantId, req.header('x-tenant-id'));
         req.user = {

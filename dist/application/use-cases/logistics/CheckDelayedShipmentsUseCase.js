@@ -11,14 +11,11 @@ class CheckDelayedShipmentsUseCase {
             tenantId,
             isEtaPassed: true
         });
-        let updateCount = 0;
-        for (const shipment of delayedCandidates) {
-            if (shipment.status === 'UNPAID' && shipment.autoMarkDelayed) {
-                await this.shipmentRepository.update(shipment.id, { status: 'DELAYED' });
-                updateCount++;
-            }
-        }
-        return updateCount;
+        const idsToDelay = delayedCandidates
+            .filter((shipment) => shipment.status === 'UNPAID' && shipment.autoMarkDelayed)
+            .map((shipment) => shipment.id);
+        // Single bulk update instead of one UPDATE per shipment.
+        return await this.shipmentRepository.markManyDelayed(idsToDelay);
     }
 }
 exports.CheckDelayedShipmentsUseCase = CheckDelayedShipmentsUseCase;

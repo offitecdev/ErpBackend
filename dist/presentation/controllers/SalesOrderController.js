@@ -10,12 +10,14 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const GetBillingSummaryUseCase_1 = require("../../application/use-cases/billing/GetBillingSummaryUseCase");
 const InvoiceRepository_1 = require("../../infrastructure/repositories/InvoiceRepository");
 const billingSummaryUseCase = new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(new InvoiceRepository_1.InvoiceRepository());
-const safeBillingSummary = async (tenantId, salesOrderId) => {
+// Resolve billing summaries for a set of orders with one invoice query (no N+1).
+// `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
+const safeBatchSummaries = async (tenantId, targets) => {
     try {
-        return await billingSummaryUseCase.execute({ tenantId, salesOrderId });
+        return await billingSummaryUseCase.executeBatch(tenantId, targets);
     }
     catch {
-        return null;
+        return new Map();
     }
 };
 const allowedOrderModes = new Set(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
@@ -32,6 +34,9 @@ class SalesOrderController {
         try {
             const tenantId = req.user.tenantId;
             const where = { tenantId };
+            if (req.query.customerId) {
+                where.customerId = String(req.query.customerId);
+            }
             if (req.query.search) {
                 const search = String(req.query.search);
                 where.OR = [
@@ -78,18 +83,26 @@ class SalesOrderController {
                     project: { select: { id: true, projectName: true, status: true, plannedBudget: true, actualCost: true } },
                     addonSalesOrders: {
                         orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true },
+                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true, orderDate: true },
                     },
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                 },
             });
-            const enriched = await Promise.all(orders.map(async (order) => {
-                const billingSummary = await safeBillingSummary(tenantId, order.id);
-                const addonSalesOrders = await Promise.all((order.addonSalesOrders || []).map(async (addon) => ({
+            const targets = orders.flatMap((order) => [
+                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0) },
+                ...(order.addonSalesOrders || []).map((addon) => ({
+                    salesOrderId: addon.id,
+                    baseAmount: Number(addon.totalAmount || 0),
+                })),
+            ]);
+            const summaries = await safeBatchSummaries(tenantId, targets);
+            const enriched = orders.map((order) => ({
+                ...order,
+                billingSummary: summaries.get(order.id) ?? null,
+                addonSalesOrders: (order.addonSalesOrders || []).map((addon) => ({
                     ...addon,
-                    billingSummary: await safeBillingSummary(tenantId, addon.id),
-                })));
-                return { ...order, billingSummary, addonSalesOrders };
+                    billingSummary: summaries.get(addon.id) ?? null,
+                })),
             }));
             res.status(200).json(enriched);
         }
@@ -116,7 +129,7 @@ class SalesOrderController {
                     parentSalesOrder: { select: { id: true, orderNumber: true } },
                     addonSalesOrders: {
                         orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true },
+                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true, orderDate: true },
                     },
                     reports: {
                         orderBy: { workDate: 'asc' },
@@ -138,11 +151,18 @@ class SalesOrderController {
             });
             if (!order)
                 return res.status(404).json({ error: 'Sipariş bulunamadı.' });
-            const billingSummary = await safeBillingSummary(tenantId, order.id);
-            const addonSalesOrders = await Promise.all((order.addonSalesOrders || []).map(async (addon) => ({
+            const summaries = await safeBatchSummaries(tenantId, [
+                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0) },
+                ...(order.addonSalesOrders || []).map((addon) => ({
+                    salesOrderId: addon.id,
+                    baseAmount: Number(addon.totalAmount || 0),
+                })),
+            ]);
+            const billingSummary = summaries.get(order.id) ?? null;
+            const addonSalesOrders = (order.addonSalesOrders || []).map((addon) => ({
                 ...addon,
-                billingSummary: await safeBillingSummary(tenantId, addon.id),
-            })));
+                billingSummary: summaries.get(addon.id) ?? null,
+            }));
             const expensesTotal = (order.expenses || []).reduce((sum, e) => sum + Number(e.amount || 0), 0);
             const extraMaterialsTotal = (order.extraMaterials || []).reduce((sum, m) => sum + Number(m.quantity || 0) * Number(m.unitPrice || 0), 0);
             const overtimeTotal = (order.reports || []).reduce((sum, r) => sum + Number(r.overtimeCost || 0), 0);
@@ -216,6 +236,7 @@ class SalesOrderController {
                     scheduleSlots = await tx.offerScheduleSlot.findMany({
                         where: { tenderId },
                         orderBy: { startTime: 'asc' },
+                        include: { technicianAssignments: true },
                     });
                     project = await tx.project.create({
                         data: {
@@ -258,20 +279,36 @@ class SalesOrderController {
                     },
                 });
                 if (project?.id && scheduleSlots.length > 0) {
-                    await tx.appointment.createMany({
-                        data: scheduleSlots.map((slot) => ({
-                            id: (0, nanoid_1.nanoid)(10),
-                            tenantId,
-                            projectId: project.id,
-                            salesOrderId: salesOrder.id,
-                            customerId: tender.customerId,
-                            startTime: slot.startTime,
-                            endTime: slot.endTime,
-                            status: 'BOOKED',
-                            notes: slot.notes,
-                            isLocked: true,
-                        })),
-                    });
+                    // Carry each proposal slot's technician assignment forward into
+                    // the project appointment so both screens stay in sync.
+                    for (const slot of scheduleSlots) {
+                        const appointment = await tx.appointment.create({
+                            data: {
+                                id: (0, nanoid_1.nanoid)(10),
+                                tenantId,
+                                projectId: project.id,
+                                salesOrderId: salesOrder.id,
+                                customerId: tender.customerId,
+                                assignedTechId: slot.assignedTechId || null,
+                                startTime: slot.startTime,
+                                endTime: slot.endTime,
+                                status: 'BOOKED',
+                                notes: slot.notes,
+                                isLocked: true,
+                            },
+                        });
+                        const technicianIds = [...new Set((slot.technicianAssignments || []).map((assignment) => assignment.technicianId).filter(Boolean))];
+                        if (technicianIds.length) {
+                            await tx.projectAppointmentAssignment.createMany({
+                                data: technicianIds.map((technicianId) => ({
+                                    id: (0, nanoid_1.nanoid)(10),
+                                    appointmentId: appointment.id,
+                                    technicianId,
+                                })),
+                                skipDuplicates: true,
+                            });
+                        }
+                    }
                 }
                 await tx.tender.update({
                     where: { id: tenderId },

@@ -17,12 +17,13 @@ class CreateProjectFromTenderUseCase {
         this.tenantRepository = tenantRepository;
     }
     async execute(tenderId, employeeId, managerId, activeTenantId, overtimeHourlyRate = 0) {
-        const tender = await this.tenderRepository.findById(tenderId);
+        // Tenant-scoped lookup: a project can only be created from a tender the
+        // active tenant owns.
+        if (!activeTenantId)
+            throw new Error("Seçili şirkette bu teklif bulunamadı.");
+        const tender = await this.tenderRepository.findById(tenderId, activeTenantId);
         if (!tender)
             throw new Error("Teklif bulunamadı.");
-        if (activeTenantId && tender.tenantId !== activeTenantId) {
-            throw new Error("Seçili şirkette bu teklif bulunamadı.");
-        }
         if (tender.status !== "Approved" && tender.status !== "Exported") {
             throw new Error("[BLOCKED] Sadece onaylanmış teklifler sipariş/projeye dönüştürülebilir.");
         }
@@ -37,7 +38,8 @@ class CreateProjectFromTenderUseCase {
         }
         const scheduleSlots = await prisma_client_1.default.offerScheduleSlot.findMany({
             where: { tenderId },
-            orderBy: { startTime: "asc" }
+            orderBy: { startTime: "asc" },
+            include: { technicianAssignments: true }
         });
         if (scheduleSlots.length === 0) {
             throw new Error("[BLOCKED] Sipariş oluşturmadan önce en az bir tarih/saat planı eklenmelidir.");
@@ -81,18 +83,47 @@ class CreateProjectFromTenderUseCase {
                 activityDate: new Date()
             }
         });
-        await prisma_client_1.default.appointment.createMany({
-            data: scheduleSlots.map((slot) => ({
-                id: (0, nanoid_1.nanoid)(10),
-                tenantId: tender.tenantId,
-                projectId: project.id,
-                customerId: tender.customerId,
-                startTime: slot.startTime,
-                endTime: slot.endTime,
-                status: "BOOKED",
-                notes: slot.notes,
-                isLocked: true
-            }))
+        // Mirror each proposal slot into a locked project appointment, carrying the
+        // technician assignment (responsible + additional) forward so the project
+        // calendar reflects exactly what was planned on the proposal.
+        // Pre-generate appointment ids so the whole batch can be inserted with two
+        // bulk writes (appointments + assignments) instead of two queries per slot.
+        const slotAppointments = scheduleSlots.map((slot) => ({ appointmentId: (0, nanoid_1.nanoid)(10), slot }));
+        if (slotAppointments.length) {
+            await prisma_client_1.default.appointment.createMany({
+                data: slotAppointments.map(({ appointmentId, slot }) => ({
+                    id: appointmentId,
+                    tenantId: tender.tenantId,
+                    projectId: project.id,
+                    customerId: tender.customerId,
+                    assignedTechId: slot.assignedTechId || null,
+                    startTime: slot.startTime,
+                    endTime: slot.endTime,
+                    status: "BOOKED",
+                    notes: slot.notes,
+                    isLocked: true,
+                })),
+            });
+            const assignmentRows = slotAppointments.flatMap(({ appointmentId, slot }) => {
+                const technicianIds = [...new Set((slot.technicianAssignments || []).map((assignment) => assignment.technicianId).filter(Boolean))];
+                return technicianIds.map((technicianId) => ({
+                    id: (0, nanoid_1.nanoid)(10),
+                    appointmentId,
+                    technicianId,
+                }));
+            });
+            if (assignmentRows.length) {
+                await prisma_client_1.default.projectAppointmentAssignment.createMany({
+                    data: assignmentRows,
+                    skipDuplicates: true,
+                });
+            }
+        }
+        // Keep the denormalized link in sync so the proposal screen knows it is
+        // converted and proxies technician edits to the project from now on.
+        await prisma_client_1.default.tender.update({
+            where: { id: tender.id },
+            data: { projectId: project.id },
         });
         return project;
     }
