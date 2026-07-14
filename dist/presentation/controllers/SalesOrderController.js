@@ -9,6 +9,7 @@ const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const GetBillingSummaryUseCase_1 = require("../../application/use-cases/billing/GetBillingSummaryUseCase");
 const InvoiceRepository_1 = require("../../infrastructure/repositories/InvoiceRepository");
+const salesOrder_pricing_1 = require("./salesOrder.pricing");
 const billingSummaryUseCase = new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(new InvoiceRepository_1.InvoiceRepository());
 // Resolve billing summaries for a set of orders with one invoice query (no N+1).
 // `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
@@ -21,14 +22,6 @@ const safeBatchSummaries = async (tenantId, targets) => {
     }
 };
 const allowedOrderModes = new Set(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
-const orderTotal = (positions) => positions.reduce((sum, position) => {
-    const quantity = Number(position.quantity || 0);
-    const unitPrice = position.unitPrice == null ? null : Number(position.unitPrice);
-    const discount = Number(position.discount || 0);
-    if (unitPrice != null && quantity > 0)
-        return sum + quantity * unitPrice * (1 - discount / 100);
-    return sum + Math.max(0, Number(position.calculation?.totalCalculatedPrice || 0));
-}, 0);
 class SalesOrderController {
     async list(req, res) {
         try {
@@ -221,7 +214,7 @@ class SalesOrderController {
                         reused: true,
                     };
                 }
-                const totalAmount = orderTotal(tender.positions || []);
+                const totalAmount = (0, salesOrder_pricing_1.orderTotal)(tender.positions || [], tender.directDiscount);
                 let project = null;
                 let scheduleSlots = [];
                 if (mode === 'PROJECT_NEW' || mode === 'PROJECT_EXISTING') {
@@ -263,7 +256,7 @@ class SalesOrderController {
                     if (!project)
                         throw new Error('Proje bulunamadi.');
                 }
-                const orderNumber = project?.id ? `SPR-${tender.tenderNumber}` : `SO-${tender.tenderNumber}`;
+                const orderNumber = project?.id ? `AUF-${tender.tenderNumber}` : `SO-${tender.tenderNumber}`;
                 const salesOrder = await tx.salesOrder.create({
                     data: {
                         id: (0, nanoid_1.nanoid)(10),

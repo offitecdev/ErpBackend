@@ -38,7 +38,8 @@ class ArticleController {
     async getById(req, res) {
         try {
             const id = req.params.id;
-            const article = await this.articleRepository.findArticleById(id);
+            const includeImages = req.query.includeImages !== 'false';
+            const article = await this.articleRepository.findArticleById(id, { includeImages });
             if (!article)
                 return res.status(404).json({ error: 'Ürün bulunamadı.' });
             res.status(200).json(article);

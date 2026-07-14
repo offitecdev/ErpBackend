@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenderController = void 0;
 const nanoid_1 = require("nanoid");
+const customerAddress_1 = require("../../application/utils/customerAddress");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const technicianSchedule_1 = require("./technicianSchedule");
@@ -58,6 +59,15 @@ const validatePositionNumericFields = (body) => {
     assertNumericField(body.discount, "İndirim", { min: 0, max: 100, allowNull: true });
     assertNumericField(body.taxRate, "KDV oranı", { min: 0, allowNull: true });
 };
+const clampPositionLogText = (value) => {
+    if (value === undefined || value === null)
+        return null;
+    const text = String(value);
+    const maxBytes = 60000;
+    if (Buffer.byteLength(text, 'utf8') <= maxBytes)
+        return text;
+    return Buffer.from(text, 'utf8').subarray(0, maxBytes - 32).toString('utf8') + '\n...[log truncated]';
+};
 // Mail hardening helpers (used by sendOfferMail).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const isValidEmail = (value) => EMAIL_RE.test(value);
@@ -69,6 +79,56 @@ const escapeHtml = (value) => value
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+// ── Rich (HTML) mail messages ────────────────────────────────────────────────
+// The offer-mail composer sends formatted HTML. Only the formatting tags the
+// editor can produce survive; everything else (scripts, links, images, event
+// handlers) is stripped before the message is embedded in the mail template.
+const looksLikeHtmlMessage = (value) => /<([a-z][a-z0-9]*)\b[^>]*>/i.test(value);
+const MAIL_HTML_ALLOWED_TAGS = /^(b|strong|i|em|u|s|strike|ul|ol|li|br|p|div|span|font|h2|h3)$/i;
+const sanitizeMailHtml = (html) => html.replace(/<\s*(\/?)\s*([a-z][a-z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi, (_m, closing, tag, attrs) => {
+    if (!MAIL_HTML_ALLOWED_TAGS.test(tag))
+        return '';
+    const lower = String(tag).toLowerCase();
+    if (closing)
+        return `</${lower}>`;
+    let safeAttrs = '';
+    if (lower === 'font') {
+        const color = String(attrs).match(/\bcolor\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+        const colorValue = color?.[1] ?? color?.[2] ?? color?.[3];
+        if (colorValue && /^#?[a-z0-9(),.%\s-]+$/i.test(colorValue))
+            safeAttrs += ` color="${colorValue}"`;
+        const size = String(attrs).match(/\bsize\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+        const sizeValue = size?.[1] ?? size?.[2] ?? size?.[3];
+        if (sizeValue && /^[1-7]$/.test(sizeValue))
+            safeAttrs += ` size="${sizeValue}"`;
+    }
+    const style = String(attrs).match(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+    const styleValue = style?.[1] ?? style?.[2];
+    if (styleValue) {
+        const kept = styleValue
+            .split(';')
+            .map((rule) => rule.trim())
+            .filter((rule) => /^(color|font-size)\s*:\s*[a-z0-9#(),.%\s-]+$/i.test(rule))
+            .join('; ');
+        if (kept)
+            safeAttrs += ` style="${kept}"`;
+    }
+    return `<${lower}${safeAttrs}>`;
+});
+// Plain-text mirror of an HTML message, for the e-mail's text/plain part.
+const stripHtmlToText = (html) => html
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/(p|div|li|ul|ol|h[1-6])\s*>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 // Technicians (responsible + additional) are returned the same way the project
 // appointment endpoints return them, so the proposal and project screens render
 // the same shape.
@@ -192,7 +252,11 @@ class TenderController {
                 id: true,
                 tenantId: true,
                 companyName: true,
+                addressName: true,
                 address: true,
+                postalCode: true,
+                city: true,
+                country: true,
                 mainEmail: true,
                 mainPhone: true,
                 taxNumber: true
@@ -279,6 +343,17 @@ class TenderController {
         }
     }
     async addPosition(req, res) {
+        // Backward compatibility for clients that still send one POST per row:
+        // run the same low-round-trip transaction used by the batch endpoint and
+        // adapt its response back to the historical singular shape.
+        if (!Array.isArray(req.body?.positions)) {
+            const position = req.body;
+            req.body = {
+                positions: [{ clientId: `single-${(0, nanoid_1.nanoid)(8)}`, position }],
+            };
+            req.singlePositionResponse = true;
+            return this.addPositionsBatch(req, res);
+        }
         try {
             const tenderId = req.params.id;
             const tenantId = req.user.tenantId;
@@ -326,6 +401,19 @@ class TenderController {
             if (safeRowType === 'PRODUCT' && sourceArticleId && !sourceArticle) {
                 return res.status(404).json({ error: "Stok ürünü bulunamadı." });
             }
+            // Per-customer default discount: when the client sends no explicit discount
+            // for a product line, fall back to the customer's saved discount for this article.
+            let resolvedDiscount = safeRowType === 'PRODUCT' || safeRowType === 'CUSTOM'
+                ? (discount !== undefined && discount !== null ? Number(discount || 0) : 0)
+                : 0;
+            if (safeRowType === 'PRODUCT' && sourceArticle && tender.customerId && (discount === undefined || discount === null)) {
+                const customerDiscount = await prisma_client_1.default.customerProductDiscount.findFirst({
+                    where: { customerId: tender.customerId, articleId: sourceArticle.id },
+                    select: { discount: true },
+                });
+                if (customerDiscount)
+                    resolvedDiscount = Number(customerDiscount.discount || 0);
+            }
             const defaults = {
                 SECTION: "Yeni bölüm",
                 TITLE: "Başlık",
@@ -354,9 +442,13 @@ class TenderController {
                         ? Number(unitPrice)
                         : (Number(sourceArticle.salePrice || 0) > 0 ? Number(sourceArticle.salePrice || 0) : Number(sourceArticle.baseCost || 0)))
                     : (unitPrice !== undefined ? (unitPrice === null ? null : Number(unitPrice)) : null));
+            // Article-linked products do NOT copy the article's base64 image into the
+            // position (that duplicated megabytes per row and made every save slow) —
+            // the PDF resolves product images by sourceArticleId on demand. Only rows
+            // without a source article keep an explicitly provided image.
             const resolvedImageUrl = canHaveImage
                 ? (isProduct
-                    ? (sourceArticle?.imageUrl || imageUrl || null)
+                    ? (sourceArticle ? null : (imageUrl || null))
                     : (imageUrl !== undefined ? (imageUrl || null) : null))
                 : null;
             const newPosId = (0, nanoid_1.nanoid)(10);
@@ -395,7 +487,7 @@ class TenderController {
                             npkCode: npkCode || null,
                             hierarchyLevel: effectiveHierarchyLevel,
                             unitPrice: resolvedUnitPrice,
-                            discount: isPricedRow && discount !== undefined ? Number(discount || 0) : 0,
+                            discount: resolvedDiscount,
                             taxRate: isPricedRow && taxRate !== undefined ? Number(taxRate || 0) : 0,
                             imageUrl: resolvedImageUrl,
                         }]
@@ -412,7 +504,9 @@ class TenderController {
                 newValue: resolvedShortDescription || defaults[safeRowType],
                 description: `${isProduct ? 'Ürün' : 'Satır'} eklendi: ${resolvedShortDescription || defaults[safeRowType]}`
             });
-            const created = await this.positionRepository.findById(newPosId, { includeImages: true });
+            // Image-less response: the client never needs the base64 image back after
+            // a save (PDF export fetches images separately, on demand).
+            const created = await this.positionRepository.findById(newPosId);
             res.status(201).json({ message: "Satır eklendi.", positionId: newPosId, position: created });
         }
         catch (error) {
@@ -423,12 +517,734 @@ class TenderController {
             res.status(400).json({ error: "Satır eklenirken bir hata oluştu." });
         }
     }
+    /**
+     * Persists all locally staged TenderDetail rows in one transaction.
+     *
+     * The single-row endpoint deliberately locks the tender while deriving row
+     * ordering. Calling it concurrently for every staged row therefore queues
+     * those requests behind the same lock and repeats all validation/relation
+     * queries. This endpoint validates shared data once and persists creates,
+     * heterogeneous updates, totals, subtree deletes and audit logs atomically.
+     */
+    async addPositionsBatch(req, res) {
+        const requestStartedAt = Date.now();
+        try {
+            const tenderId = req.params.id;
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
+            const rawEntries = req.body?.positions ?? [];
+            const rawUpdates = req.body?.updates ?? [];
+            const rawDeleteIds = req.body?.deleteIds ?? [];
+            const rawMeta = req.body?.meta ?? {};
+            if (!Array.isArray(rawEntries)
+                || !Array.isArray(rawUpdates)
+                || !Array.isArray(rawDeleteIds)
+                || !rawMeta
+                || typeof rawMeta !== 'object'
+                || Array.isArray(rawMeta)) {
+                throw new TenderValidationError("Geçersiz toplu satır verisi gönderildi.");
+            }
+            if (rawEntries.length === 0
+                && rawUpdates.length === 0
+                && rawDeleteIds.length === 0
+                && Object.keys(rawMeta).length === 0) {
+                throw new TenderValidationError("Kaydedilecek satır bulunamadı.");
+            }
+            if (rawEntries.length + rawUpdates.length + rawDeleteIds.length > 200) {
+                throw new TenderValidationError("Tek seferde en fazla 200 satır kaydedilebilir.");
+            }
+            const seenClientIds = new Set();
+            const entries = rawEntries.map((entry) => {
+                const clientId = String(entry?.clientId || '').trim();
+                const position = entry?.position;
+                if (!clientId || !position || typeof position !== 'object' || Array.isArray(position)) {
+                    throw new TenderValidationError("Geçersiz satır verisi gönderildi.");
+                }
+                if (seenClientIds.has(clientId)) {
+                    throw new TenderValidationError("Aynı geçici satır kimliği birden fazla kez gönderilemez.");
+                }
+                seenClientIds.add(clientId);
+                validatePositionNumericFields(position);
+                const normalizedRowType = String(position.rowType || 'SECTION').toUpperCase();
+                const allowedRowTypes = new Set(['SECTION', 'TITLE', 'DESCRIPTION', 'PRODUCT', 'CUSTOM']);
+                return {
+                    clientId,
+                    position,
+                    safeRowType: allowedRowTypes.has(normalizedRowType) ? normalizedRowType : 'SECTION',
+                    requestedParentPositionId: position.parentPositionId || null,
+                };
+            });
+            const seenUpdateIds = new Set();
+            const updates = rawUpdates.map((entry) => {
+                const positionId = String(entry?.positionId || '').trim();
+                const patch = entry?.patch;
+                if (!positionId || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
+                    throw new TenderValidationError("Geçersiz satır güncellemesi gönderildi.");
+                }
+                if (seenUpdateIds.has(positionId)) {
+                    throw new TenderValidationError("Aynı satır birden fazla kez güncellenemez.");
+                }
+                seenUpdateIds.add(positionId);
+                validatePositionNumericFields(patch);
+                return { positionId, input: patch };
+            });
+            const deleteIds = [...new Set(rawDeleteIds.map((value) => String(value || '').trim()).filter(Boolean))];
+            if (deleteIds.length !== rawDeleteIds.length) {
+                throw new TenderValidationError("Geçersiz veya yinelenen silme isteği gönderildi.");
+            }
+            if (deleteIds.some((positionId) => seenUpdateIds.has(positionId))) {
+                throw new TenderValidationError("Bir satır aynı kayıtta hem güncellenip hem silinemez.");
+            }
+            const metaData = {};
+            if (rawMeta.billingAddress !== undefined)
+                metaData.billingAddress = rawMeta.billingAddress ? String(rawMeta.billingAddress) : null;
+            if (rawMeta.installationAddress !== undefined)
+                metaData.installationAddress = rawMeta.installationAddress ? String(rawMeta.installationAddress) : null;
+            if (rawMeta.deliveryAddress !== undefined)
+                metaData.deliveryAddress = rawMeta.deliveryAddress ? String(rawMeta.deliveryAddress) : null;
+            if (rawMeta.commissionNumber !== undefined)
+                metaData.commissionNumber = rawMeta.commissionNumber ? String(rawMeta.commissionNumber) : null;
+            if (rawMeta.priceList !== undefined)
+                metaData.priceList = rawMeta.priceList ? String(rawMeta.priceList) : null;
+            if (rawMeta.currency !== undefined) {
+                if (rawMeta.currency === null || rawMeta.currency === '') {
+                    metaData.currency = null;
+                }
+                else {
+                    const normalizedCurrency = String(rawMeta.currency).toUpperCase();
+                    if (!['CHF', 'EUR', 'USD', 'GBP', 'TRY'].includes(normalizedCurrency)) {
+                        throw new TenderValidationError("Geçersiz para birimi.");
+                    }
+                    metaData.currency = normalizedCurrency;
+                }
+            }
+            if (rawMeta.directDiscount !== undefined) {
+                const value = rawMeta.directDiscount === null || rawMeta.directDiscount === ''
+                    ? 0
+                    : Number(rawMeta.directDiscount);
+                if (!Number.isFinite(value) || value < 0 || value > 100) {
+                    throw new TenderValidationError("İndirim 0 ile 100 arasında olmalıdır.");
+                }
+                metaData.directDiscount = value;
+            }
+            if (rawMeta.billingSameAsInstallation !== undefined) {
+                metaData.billingSameAsInstallation = Boolean(rawMeta.billingSameAsInstallation);
+            }
+            if (rawMeta.internalDeliveryDate !== undefined) {
+                metaData.internalDeliveryDate = rawMeta.internalDeliveryDate ? new Date(rawMeta.internalDeliveryDate) : null;
+            }
+            if (rawMeta.validUntil !== undefined) {
+                metaData.validUntil = rawMeta.validUntil ? new Date(rawMeta.validUntil) : null;
+            }
+            if (rawMeta.format !== undefined) {
+                if (rawMeta.format !== 'SIA451' && rawMeta.format !== 'CRBX') {
+                    throw new TenderValidationError("Format SIA451 veya CRBX olmalıdır.");
+                }
+                metaData.format = rawMeta.format;
+            }
+            const requestedCustomerId = rawMeta.customerId !== undefined
+                ? (rawMeta.customerId ? String(rawMeta.customerId) : null)
+                : undefined;
+            const sourceArticleIds = [...new Set(entries
+                    .filter((entry) => entry.safeRowType === 'PRODUCT' && entry.position.sourceArticleId)
+                    .map((entry) => String(entry.position.sourceArticleId)))];
+            const parentIds = [...new Set(entries
+                    .map((entry) => entry.requestedParentPositionId)
+                    .filter((value) => Boolean(value)))];
+            const affectedPositionIds = [...new Set([
+                    ...updates.map((entry) => entry.positionId),
+                    ...deleteIds,
+                ])];
+            // All validation reads are independent. Fetch them in one DB round
+            // instead of paying their network latency sequentially.
+            const [tender, sourceArticles, parents, affectedPositions, hierarchyRows, metaCustomer] = await Promise.all([
+                prisma_client_1.default.tender.findFirst({
+                    where: { id: tenderId, tenantId },
+                    select: { id: true, tenantId: true, status: true, customerId: true, tenderNumber: true },
+                }),
+                sourceArticleIds.length > 0
+                    ? prisma_client_1.default.article.findMany({
+                        where: { id: { in: sourceArticleIds }, tenantId },
+                        select: {
+                            id: true,
+                            name: true,
+                            description: true,
+                            baseCost: true,
+                            salePrice: true,
+                            unit: true,
+                        },
+                    })
+                    : Promise.resolve([]),
+                parentIds.length > 0
+                    ? prisma_client_1.default.position.findMany({
+                        where: { id: { in: parentIds }, tenderId, tenantId },
+                        select: { id: true, positionNumber: true, hierarchyLevel: true },
+                    })
+                    : Promise.resolve([]),
+                affectedPositionIds.length > 0
+                    ? prisma_client_1.default.position.findMany({
+                        where: { id: { in: affectedPositionIds }, tenderId, tenantId },
+                        select: {
+                            id: true,
+                            tenantId: true,
+                            tenderId: true,
+                            parentPositionId: true,
+                            rowType: true,
+                            sourceArticleId: true,
+                            displayOrder: true,
+                            npkCode: true,
+                            positionNumber: true,
+                            shortDescription: true,
+                            longDescription: true,
+                            quantity: true,
+                            unit: true,
+                            hierarchyLevel: true,
+                            unitPrice: true,
+                            discount: true,
+                            taxRate: true,
+                        },
+                    })
+                    : Promise.resolve([]),
+                deleteIds.length > 0
+                    ? prisma_client_1.default.position.findMany({
+                        where: { tenderId, tenantId },
+                        select: { id: true, parentPositionId: true },
+                    })
+                    : Promise.resolve([]),
+                requestedCustomerId
+                    ? this.findCustomerForTenant(requestedCustomerId, tenantId)
+                    : Promise.resolve(null),
+            ]);
+            if (!tender)
+                return res.status(404).json({ error: "İhale bulunamadı." });
+            if (tender.status !== 'Draft') {
+                return res.status(403).json({ error: "Sadece taslak teklifler üzerinde satır değişikliği yapılabilir." });
+            }
+            if (affectedPositions.length !== affectedPositionIds.length) {
+                return res.status(404).json({ error: "Güncellenecek veya silinecek satırlardan biri bulunamadı." });
+            }
+            if (requestedCustomerId && !metaCustomer) {
+                return res.status(404).json({ error: "Müşteri bulunamadı." });
+            }
+            if (requestedCustomerId !== undefined) {
+                metaData.customerId = requestedCustomerId;
+            }
+            const sourceArticleMap = new Map(sourceArticles.map((article) => [article.id, article]));
+            const missingArticleId = sourceArticleIds.find((articleId) => !sourceArticleMap.has(articleId));
+            if (missingArticleId) {
+                return res.status(404).json({ error: "Stok ürünü bulunamadı." });
+            }
+            const parentMap = new Map(parents.map((parent) => [parent.id, parent]));
+            const missingParentId = parentIds.find((parentId) => !parentMap.has(parentId));
+            if (missingParentId) {
+                return res.status(404).json({ error: "Üst satır bulunamadı." });
+            }
+            const discountedArticleIds = tender.customerId
+                ? [...new Set(entries
+                        .filter((entry) => entry.safeRowType === 'PRODUCT'
+                        && entry.position.sourceArticleId
+                        && (entry.position.discount === undefined || entry.position.discount === null))
+                        .map((entry) => String(entry.position.sourceArticleId)))]
+                : [];
+            const customerDiscounts = discountedArticleIds.length > 0
+                ? await prisma_client_1.default.customerProductDiscount.findMany({
+                    where: { customerId: tender.customerId, articleId: { in: discountedArticleIds } },
+                    select: { articleId: true, discount: true },
+                })
+                : [];
+            const customerDiscountMap = new Map(customerDiscounts.map((item) => [item.articleId, Number(item.discount || 0)]));
+            const defaults = {
+                SECTION: "Yeni bölüm",
+                TITLE: "Başlık",
+                DESCRIPTION: "Yeni satır",
+                PRODUCT: "Ürün",
+                CUSTOM: "Yeni satır",
+            };
+            const prepared = entries.map((entry) => {
+                const { position, safeRowType } = entry;
+                const sourceArticle = safeRowType === 'PRODUCT' && position.sourceArticleId
+                    ? sourceArticleMap.get(String(position.sourceArticleId))
+                    : null;
+                const parent = entry.requestedParentPositionId
+                    ? parentMap.get(entry.requestedParentPositionId)
+                    : null;
+                const isProduct = safeRowType === 'PRODUCT';
+                const isPricedRow = isProduct || safeRowType === 'CUSTOM';
+                const canHaveImage = isPricedRow || safeRowType === 'DESCRIPTION';
+                const hasExplicitShortDescription = position.shortDescription !== undefined
+                    && position.shortDescription !== null;
+                const cleanedShortDescription = hasExplicitShortDescription
+                    ? String(position.shortDescription).trim()
+                    : '';
+                const resolvedShortDescription = isProduct
+                    ? (cleanedShortDescription || sourceArticle?.name || defaults.PRODUCT)
+                    : (hasExplicitShortDescription ? cleanedShortDescription : defaults[safeRowType]);
+                const resolvedLongDescription = isProduct
+                    ? (position.longDescription !== undefined
+                        ? (position.longDescription || null)
+                        : (sourceArticle?.description || null))
+                    : (position.longDescription !== undefined ? (position.longDescription || null) : null);
+                const resolvedUnit = isPricedRow
+                    ? (isProduct ? (sourceArticle?.unit || position.unit || null) : (position.unit || null))
+                    : null;
+                const resolvedUnitPrice = !isPricedRow
+                    ? null
+                    : (isProduct && sourceArticle
+                        ? (position.unitPrice !== undefined && position.unitPrice !== null
+                            ? Number(position.unitPrice)
+                            : (Number(sourceArticle.salePrice || 0) > 0
+                                ? Number(sourceArticle.salePrice || 0)
+                                : Number(sourceArticle.baseCost || 0)))
+                        : (position.unitPrice !== undefined
+                            ? (position.unitPrice === null ? null : Number(position.unitPrice))
+                            : null));
+                const explicitDiscount = position.discount !== undefined && position.discount !== null;
+                const resolvedDiscount = isPricedRow
+                    ? (explicitDiscount
+                        ? Number(position.discount || 0)
+                        : (isProduct && sourceArticle
+                            ? (customerDiscountMap.get(sourceArticle.id) ?? 0)
+                            : 0))
+                    : 0;
+                const resolvedImageUrl = canHaveImage
+                    ? (isProduct
+                        ? (sourceArticle ? null : (position.imageUrl || null))
+                        : (position.imageUrl !== undefined ? (position.imageUrl || null) : null))
+                    : null;
+                return {
+                    clientId: entry.clientId,
+                    parent,
+                    requestedDisplayOrder: position.displayOrder,
+                    requestedPositionNumber: position.positionNumber,
+                    data: {
+                        id: (0, nanoid_1.nanoid)(10),
+                        tenantId,
+                        tenderId,
+                        parentPositionId: parent?.id || null,
+                        rowType: safeRowType,
+                        sourceArticleId: isProduct ? (sourceArticle?.id || position.sourceArticleId || null) : null,
+                        displayOrder: 0,
+                        positionNumber: '',
+                        shortDescription: resolvedShortDescription,
+                        longDescription: resolvedLongDescription,
+                        quantity: isPricedRow ? Number(position.quantity ?? (isProduct ? 1 : 0)) : 0,
+                        unit: resolvedUnit,
+                        npkCode: position.npkCode || null,
+                        hierarchyLevel: parent ? Number(parent.hierarchyLevel || 0) + 1 : 0,
+                        unitPrice: resolvedUnitPrice,
+                        discount: resolvedDiscount,
+                        taxRate: isPricedRow && position.taxRate !== undefined ? Number(position.taxRate || 0) : 0,
+                        imageUrl: resolvedImageUrl,
+                    },
+                };
+            });
+            const affectedPositionMap = new Map(affectedPositions.map((position) => [position.id, position]));
+            const updateLabels = {
+                shortDescription: "Açıklama",
+                longDescription: "Satır içeriği",
+                quantity: "Miktar",
+                unit: "Birim",
+                unitPrice: "Birim fiyat",
+                discount: "İndirim",
+                taxRate: "KDV",
+                imageUrl: "Görsel",
+                npkCode: "Eski kod",
+                rowType: "Satır tipi",
+                sourceArticleId: "Kaynak ürün",
+                displayOrder: "Sıra",
+            };
+            const priceFields = new Set(['quantity', 'unitPrice', 'discount', 'taxRate']);
+            const preparedUpdates = updates.map(({ positionId, input }) => {
+                const before = affectedPositionMap.get(positionId);
+                const targetRowType = input.rowType !== undefined
+                    ? String(input.rowType || '').toUpperCase()
+                    : String(before.rowType || 'SECTION').toUpperCase();
+                const allowedRowTypes = new Set(['SECTION', 'TITLE', 'DESCRIPTION', 'PRODUCT', 'CUSTOM']);
+                if (!allowedRowTypes.has(targetRowType)) {
+                    throw new TenderValidationError("Geçersiz satır tipi.");
+                }
+                const targetCanPrice = targetRowType === 'PRODUCT' || targetRowType === 'CUSTOM';
+                const targetCanHaveImage = targetCanPrice || targetRowType === 'DESCRIPTION';
+                const patch = {};
+                if (input.shortDescription !== undefined)
+                    patch.shortDescription = String(input.shortDescription);
+                if (input.longDescription !== undefined)
+                    patch.longDescription = input.longDescription || null;
+                if (targetCanPrice) {
+                    if (input.quantity !== undefined)
+                        patch.quantity = Number(input.quantity);
+                    if (input.unit !== undefined)
+                        patch.unit = input.unit || null;
+                    if (input.unitPrice !== undefined)
+                        patch.unitPrice = input.unitPrice === null ? null : Number(input.unitPrice);
+                    if (input.discount !== undefined)
+                        patch.discount = input.discount === null ? null : Number(input.discount);
+                    if (input.taxRate !== undefined)
+                        patch.taxRate = input.taxRate === null ? null : Number(input.taxRate);
+                }
+                else {
+                    patch.quantity = 0;
+                    patch.unit = null;
+                    patch.unitPrice = null;
+                    patch.discount = 0;
+                    patch.taxRate = 0;
+                }
+                if (input.imageUrl !== undefined)
+                    patch.imageUrl = targetCanHaveImage ? (input.imageUrl || null) : null;
+                if (input.rowType !== undefined && !targetCanHaveImage)
+                    patch.imageUrl = null;
+                if (input.npkCode !== undefined)
+                    patch.npkCode = input.npkCode || null;
+                if (input.rowType !== undefined)
+                    patch.rowType = targetRowType;
+                if (input.sourceArticleId !== undefined || !targetCanPrice) {
+                    patch.sourceArticleId = targetRowType === 'PRODUCT' ? (input.sourceArticleId || null) : null;
+                }
+                if (input.displayOrder !== undefined)
+                    patch.displayOrder = Number(input.displayOrder);
+                if (Object.keys(patch).length === 0) {
+                    throw new TenderValidationError("Güncellenecek satır alanı bulunamadı.");
+                }
+                const nextPosition = { ...before, ...patch };
+                const logs = Object.keys(patch)
+                    .filter((field) => field !== 'imageUrl')
+                    .filter((field) => String(before[field] ?? '') !== String(nextPosition[field] ?? ''))
+                    .map((field) => ({
+                    tenantId,
+                    tenderId,
+                    positionId,
+                    employeeId,
+                    actionType: priceFields.has(field) ? 'POSITION_PRICE_UPDATED' : 'POSITION_UPDATED',
+                    fieldName: field,
+                    oldValue: clampPositionLogText(before[field]),
+                    newValue: clampPositionLogText(nextPosition[field]),
+                    description: clampPositionLogText(`${updateLabels[field] ?? field} değiştirildi: ${before[field] ?? 'boş'} -> ${nextPosition[field] ?? 'boş'}`),
+                }));
+                if (patch.imageUrl !== undefined) {
+                    logs.push({
+                        tenantId,
+                        tenderId,
+                        positionId,
+                        employeeId,
+                        actionType: 'POSITION_UPDATED',
+                        fieldName: 'imageUrl',
+                        oldValue: null,
+                        newValue: null,
+                        description: patch.imageUrl ? 'Görsel güncellendi.' : 'Görsel kaldırıldı.',
+                    });
+                }
+                const pricingChanged = targetCanPrice && (input.quantity !== undefined
+                    || input.unitPrice !== undefined
+                    || input.discount !== undefined);
+                const qty = Number(nextPosition.quantity ?? 0);
+                const price = nextPosition.unitPrice == null ? null : Number(nextPosition.unitPrice);
+                const discount = Number(nextPosition.discount ?? 0);
+                const calculatedTotal = pricingChanged
+                    ? (qty > 0 && price !== null ? qty * price * (1 - discount / 100) : 0)
+                    : null;
+                return { positionId, patch, nextPosition, logs, calculatedTotal };
+            });
+            const childrenByParent = new Map();
+            hierarchyRows.forEach((row) => {
+                if (!row.parentPositionId)
+                    return;
+                const children = childrenByParent.get(row.parentPositionId) ?? [];
+                children.push(row.id);
+                childrenByParent.set(row.parentPositionId, children);
+            });
+            const allDeleteIds = new Set();
+            const deleteQueue = [...deleteIds];
+            while (deleteQueue.length > 0) {
+                const current = deleteQueue.shift();
+                if (allDeleteIds.has(current))
+                    continue;
+                allDeleteIds.add(current);
+                deleteQueue.push(...(childrenByParent.get(current) ?? []));
+            }
+            if (preparedUpdates.some((entry) => allDeleteIds.has(entry.positionId))) {
+                throw new TenderValidationError("Silinecek bir satır veya alt satırı aynı kayıtta güncellenemez.");
+            }
+            const deleteLogs = deleteIds.map((positionId) => {
+                const before = affectedPositionMap.get(positionId);
+                return {
+                    tenantId,
+                    tenderId,
+                    positionId,
+                    employeeId,
+                    actionType: 'POSITION_DELETED',
+                    fieldName: null,
+                    oldValue: clampPositionLogText(before.shortDescription ?? positionId),
+                    newValue: null,
+                    description: clampPositionLogText(`${before.shortDescription ?? 'Satır'} silindi.`),
+                };
+            });
+            const needsDerivedOrdering = prepared.some((item) => item.requestedDisplayOrder === undefined || !item.requestedPositionNumber);
+            const customerChanged = requestedCustomerId !== undefined && requestedCustomerId !== tender.customerId;
+            const metaTenderLogs = customerChanged
+                ? [{
+                        tenantId,
+                        tenderId,
+                        positionId: null,
+                        employeeId,
+                        actionType: 'TENDER_META_UPDATED',
+                        fieldName: 'customerId',
+                        oldValue: tender.customerId || null,
+                        newValue: requestedCustomerId || null,
+                        description: 'Teklif müşterisi güncellendi.',
+                    }]
+                : [];
+            const validationFinishedAt = Date.now();
+            const applyWrites = async (tx) => {
+                // TenderDetail supplies both ordering values. A lock is only
+                // necessary for legacy callers that ask the server to derive them.
+                if (needsDerivedOrdering) {
+                    await tx.$queryRaw `SELECT id FROM Tender WHERE id = ${tenderId} FOR UPDATE`;
+                }
+                if (Object.keys(metaData).length > 0) {
+                    // updateMany, not update: the response is built from metaData
+                    // itself, and update would wrap the write in an implicit
+                    // transaction plus a SELECT-back — 3 extra round-trips to a
+                    // remote DB for a row nobody reads.
+                    await tx.tender.updateMany({ where: { id: tenderId }, data: metaData });
+                    if (metaData.customerId) {
+                        await tx.offerScheduleSlot.updateMany({
+                            where: { tenderId },
+                            data: { customerId: metaData.customerId },
+                        });
+                    }
+                    if (customerChanged && requestedCustomerId) {
+                        await tx.customerActivity.create({
+                            data: {
+                                id: (0, nanoid_1.nanoid)(),
+                                customerId: requestedCustomerId,
+                                employeeId,
+                                activityType: 'TENDER_CUSTOMER_CHANGED',
+                                description: `${tender.tenderNumber} numaralı taslak teklif bu müşteriye bağlandı.`,
+                                referenceId: tenderId,
+                                activityDate: new Date(),
+                            },
+                        });
+                    }
+                }
+                const existingRows = needsDerivedOrdering
+                    ? await tx.position.findMany({
+                        where: { tenderId },
+                        select: { parentPositionId: true, displayOrder: true },
+                    })
+                    : [];
+                const siblingStats = new Map();
+                existingRows.forEach((row) => {
+                    const key = row.parentPositionId || '';
+                    const current = siblingStats.get(key) ?? { count: 0, maxOrder: 0 };
+                    current.count += 1;
+                    current.maxOrder = Math.max(current.maxOrder, Number(row.displayOrder || 0));
+                    siblingStats.set(key, current);
+                });
+                prepared.forEach((item) => {
+                    const key = item.data.parentPositionId || '';
+                    const stats = siblingStats.get(key) ?? { count: 0, maxOrder: 0 };
+                    item.data.displayOrder = item.requestedDisplayOrder !== undefined
+                        ? Number(item.requestedDisplayOrder) || 0
+                        : stats.maxOrder + 1000;
+                    item.data.positionNumber = item.requestedPositionNumber
+                        ? String(item.requestedPositionNumber)
+                        : (item.parent
+                            ? `${item.parent.positionNumber}.${stats.count + 1}`
+                            : String((stats.count + 1) * 100));
+                    stats.count += 1;
+                    stats.maxOrder = Math.max(stats.maxOrder, item.data.displayOrder);
+                    siblingStats.set(key, stats);
+                });
+                if (prepared.length > 0) {
+                    await tx.position.createMany({ data: prepared.map((item) => item.data) });
+                }
+                if (preparedUpdates.length > 0) {
+                    // Heterogeneous patches are written with one parameterized CASE
+                    // update instead of one Prisma round-trip per position.
+                    const mutableFields = [
+                        'shortDescription', 'longDescription', 'quantity', 'unit',
+                        'unitPrice', 'discount', 'taxRate', 'imageUrl', 'npkCode',
+                        'rowType', 'sourceArticleId', 'displayOrder',
+                    ];
+                    const parameters = [];
+                    const assignments = mutableFields.flatMap((field) => {
+                        const matching = preparedUpdates.filter((entry) => Object.prototype.hasOwnProperty.call(entry.patch, field));
+                        if (matching.length === 0)
+                            return [];
+                        const cases = matching.map((entry) => {
+                            parameters.push(entry.positionId, entry.patch[field]);
+                            return 'WHEN ? THEN ?';
+                        }).join(' ');
+                        return [`\`${field}\` = CASE \`id\` ${cases} ELSE \`${field}\` END`];
+                    });
+                    const updateIds = preparedUpdates.map((entry) => entry.positionId);
+                    parameters.push(tenantId, tenderId, ...updateIds);
+                    await tx.$executeRawUnsafe(`UPDATE \`Position\` SET ${assignments.join(', ')} WHERE \`tenantId\` = ? AND \`tenderId\` = ? AND \`id\` IN (${updateIds.map(() => '?').join(', ')})`, ...parameters);
+                    const calculationUpdates = preparedUpdates.filter((entry) => entry.calculatedTotal !== null);
+                    if (calculationUpdates.length > 0) {
+                        const valuesSql = calculationUpdates.map(() => '(?, ?, 0, 0, 0, 0, 0, 0, ?)').join(', ');
+                        const calculationParameters = calculationUpdates.flatMap((entry) => [
+                            (0, nanoid_1.nanoid)(10),
+                            entry.positionId,
+                            entry.calculatedTotal,
+                        ]);
+                        await tx.$executeRawUnsafe(`INSERT INTO \`CalculationItem\` (\`id\`, \`positionId\`, \`materialCost\`, \`laborCost\`, \`overheadCost\`, \`riskAmount\`, \`additionalCost\`, \`profitMargin\`, \`totalCalculatedPrice\`) VALUES ${valuesSql} ON DUPLICATE KEY UPDATE \`totalCalculatedPrice\` = VALUES(\`totalCalculatedPrice\`)`, ...calculationParameters);
+                    }
+                }
+                const allDeleteIdList = [...allDeleteIds];
+                if (allDeleteIdList.length > 0) {
+                    await tx.positionArticleMapping.deleteMany({ where: { positionId: { in: allDeleteIdList } } });
+                    await tx.positionMaterialMapping.deleteMany({ where: { positionId: { in: allDeleteIdList } } });
+                    await tx.calculationItem.deleteMany({ where: { positionId: { in: allDeleteIdList } } });
+                    const deleted = await tx.position.deleteMany({ where: { id: { in: allDeleteIdList }, tenderId, tenantId } });
+                    if (deleted.count !== allDeleteIdList.length) {
+                        throw new TenderValidationError("Bazı satırlar başka bir işlemde silindi; sayfayı yenileyip tekrar deneyin.");
+                    }
+                }
+            };
+            // The DB is remote, so each statement costs a full network
+            // round-trip. When the unit of work boils down to a single
+            // statement (meta-only save, or edits folded into the one CASE
+            // update) it is already atomic on its own — skip the transaction
+            // wrapper instead of paying BEGIN/COMMIT round-trips around it.
+            const hasCalculationUpdate = preparedUpdates.some((entry) => entry.calculatedTotal !== null);
+            const writeStatementCount = (Object.keys(metaData).length > 0
+                ? 1 + (metaData.customerId ? 1 : 0) + (customerChanged && requestedCustomerId ? 1 : 0)
+                : 0)
+                + (prepared.length > 0 ? 1 : 0)
+                + (preparedUpdates.length > 0 ? (hasCalculationUpdate ? 2 : 1) : 0)
+                + (allDeleteIds.size > 0 ? 4 : 0);
+            if (needsDerivedOrdering || writeStatementCount > 1) {
+                await prisma_client_1.default.$transaction(applyWrites, { isolationLevel: 'ReadCommitted', maxWait: 5000, timeout: 15000 });
+            }
+            else {
+                await applyWrites(prisma_client_1.default);
+            }
+            const writeFinishedAt = Date.now();
+            // Activity logs are informational: write them after the unit of
+            // work commits, off the response's critical path. A failed log
+            // write must not fail (or slow down) an otherwise successful save.
+            const activityLogs = [
+                ...prepared.map((item) => ({
+                    id: (0, nanoid_1.nanoid)(12),
+                    tenantId,
+                    tenderId,
+                    positionId: item.data.id,
+                    mappingId: null,
+                    articleId: null,
+                    employeeId,
+                    actionType: 'POSITION_CREATED',
+                    fieldName: null,
+                    oldValue: null,
+                    newValue: item.data.shortDescription,
+                    description: `${item.data.rowType === 'PRODUCT' ? 'Ürün' : 'Satır'} eklendi: ${item.data.shortDescription}`,
+                })),
+                ...preparedUpdates.flatMap((entry) => entry.logs).map((log) => ({
+                    id: (0, nanoid_1.nanoid)(12),
+                    mappingId: null,
+                    articleId: null,
+                    ...log,
+                })),
+                ...deleteLogs.map((log) => ({
+                    id: (0, nanoid_1.nanoid)(12),
+                    mappingId: null,
+                    articleId: null,
+                    ...log,
+                })),
+                ...metaTenderLogs.map((log) => ({
+                    id: (0, nanoid_1.nanoid)(12),
+                    mappingId: null,
+                    articleId: null,
+                    ...log,
+                })),
+            ];
+            if (activityLogs.length > 0) {
+                void prisma_client_1.default.tenderActivityLog.createMany({ data: activityLogs })
+                    .catch((logError) => console.error('[addPositionsBatch] activity log write failed:', logError));
+            }
+            res.setHeader('Server-Timing', `validation;dur=${validationFinishedAt - requestStartedAt}, db-write;dur=${writeFinishedAt - validationFinishedAt}, total;dur=${writeFinishedAt - requestStartedAt}`);
+            const createdPositions = prepared.map((item) => ({
+                clientId: item.clientId,
+                positionId: item.data.id,
+                position: {
+                    id: item.data.id,
+                    tenantId: item.data.tenantId,
+                    tenderId: item.data.tenderId,
+                    parentPositionId: item.data.parentPositionId,
+                    rowType: item.data.rowType,
+                    sourceArticleId: item.data.sourceArticleId,
+                    displayOrder: item.data.displayOrder,
+                    npkCode: item.data.npkCode,
+                    positionNumber: item.data.positionNumber,
+                    shortDescription: item.data.shortDescription,
+                    longDescription: item.data.longDescription,
+                    quantity: item.data.quantity,
+                    unit: item.data.unit,
+                    hierarchyLevel: item.data.hierarchyLevel,
+                    unitPrice: item.data.unitPrice,
+                    discount: item.data.discount,
+                    taxRate: item.data.taxRate,
+                    calculation: null,
+                    articleMappings: [],
+                    materialMappings: [],
+                },
+            }));
+            const updatedPositions = preparedUpdates.map((entry) => {
+                const position = { ...entry.nextPosition };
+                delete position.imageUrl;
+                return position;
+            });
+            const updatedTender = Object.keys(metaData).length > 0
+                ? {
+                    id: tenderId,
+                    ...metaData,
+                    ...(requestedCustomerId !== undefined
+                        ? {
+                            customerName: metaCustomer?.companyName ?? null,
+                            customerAddress: (0, customerAddress_1.formatCustomerAddress)(metaCustomer),
+                            customerEmail: metaCustomer?.mainEmail ?? null,
+                            customerPhone: metaCustomer?.mainPhone ?? null,
+                            customerTaxNumber: metaCustomer?.taxNumber ?? null,
+                        }
+                        : {}),
+                }
+                : null;
+            if (req.singlePositionResponse) {
+                const created = createdPositions[0];
+                return res.status(201).json({
+                    message: "Satır eklendi.",
+                    positionId: created.positionId,
+                    position: created.position,
+                });
+            }
+            if (req.singleUpdateResponse) {
+                return res.status(200).json(updatedPositions[0]);
+            }
+            if (req.singleDeleteResponse) {
+                return res.status(200).json({ message: "Satır silindi." });
+            }
+            res.status(prepared.length > 0 ? 201 : 200).json({
+                message: `${prepared.length} satır eklendi, ${preparedUpdates.length} satır güncellendi, ${deleteIds.length} satır silindi.`,
+                positions: createdPositions,
+                updatedPositions,
+                deletedPositionIds: deleteIds,
+                updatedTender,
+            });
+        }
+        catch (error) {
+            if (error?.status === 400) {
+                return res.status(400).json({ error: error.message });
+            }
+            console.error('[addPositionsBatch] error:', error);
+            res.status(400).json({ error: "Satırlar eklenirken bir hata oluştu." });
+        }
+    }
     async updateMeta(req, res) {
         try {
             const tenderId = req.params.id;
             const tenantId = req.user.tenantId;
             const employeeId = req.user.id;
-            const { customerId, format, validUntil, billingAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate } = req.body;
+            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount } = req.body;
             const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
@@ -440,8 +1256,37 @@ class TenderController {
             if (billingAddress !== undefined) {
                 data.billingAddress = billingAddress ? String(billingAddress) : null;
             }
+            if (installationAddress !== undefined) {
+                data.installationAddress = installationAddress ? String(installationAddress) : null;
+            }
             if (deliveryAddress !== undefined) {
                 data.deliveryAddress = deliveryAddress ? String(deliveryAddress) : null;
+            }
+            if (commissionNumber !== undefined) {
+                data.commissionNumber = commissionNumber ? String(commissionNumber) : null;
+            }
+            if (priceList !== undefined) {
+                data.priceList = priceList ? String(priceList) : null;
+            }
+            if (currency !== undefined) {
+                if (currency === null || currency === "") {
+                    data.currency = null;
+                }
+                else {
+                    const allowedCurrencies = ["CHF", "EUR", "USD", "GBP", "TRY"];
+                    const normalizedCurrency = String(currency).toUpperCase();
+                    if (!allowedCurrencies.includes(normalizedCurrency)) {
+                        return res.status(400).json({ error: "Geçersiz para birimi." });
+                    }
+                    data.currency = normalizedCurrency;
+                }
+            }
+            if (directDiscount !== undefined) {
+                const parsedDirectDiscount = directDiscount === null || directDiscount === '' ? 0 : Number(directDiscount);
+                if (!Number.isFinite(parsedDirectDiscount) || parsedDirectDiscount < 0 || parsedDirectDiscount > 100) {
+                    return res.status(400).json({ error: "İndirim 0 ile 100 arasında olmalıdır." });
+                }
+                data.directDiscount = parsedDirectDiscount;
             }
             if (billingSameAsInstallation !== undefined) {
                 data.billingSameAsInstallation = !!billingSameAsInstallation;
@@ -512,6 +1357,16 @@ class TenderController {
         }
     }
     async updatePosition(req, res) {
+        if (!Array.isArray(req.body?.updates)) {
+            const patch = req.body;
+            req.body = {
+                positions: [],
+                updates: [{ positionId: req.params.positionId, patch }],
+                deleteIds: [],
+            };
+            req.singleUpdateResponse = true;
+            return this.addPositionsBatch(req, res);
+        }
         try {
             const tenderId = req.params.id;
             const positionId = req.params.positionId;
@@ -519,17 +1374,43 @@ class TenderController {
             const employeeId = req.user.id;
             const { shortDescription, longDescription, quantity, unit, unitPrice, discount, taxRate, imageUrl, npkCode, rowType, sourceArticleId, displayOrder, } = req.body;
             validatePositionNumericFields({ quantity, unitPrice, discount, taxRate });
-            const tender = await this.tenderRepository.findById(tenderId, tenantId);
-            if (!tender)
-                return res.status(404).json({ error: "İhale bulunamadı." });
-            if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak tekliflerdeki satırlar güncellenebilir." });
-            }
-            const before = await this.positionRepository.findById(positionId);
-            if (!before)
-                return res.status(404).json({ error: "Satır bulunamadı." });
-            if (before.tenderId !== tenderId || before.tenantId !== tenantId) {
-                return res.status(404).json({ error: "Satır bu teklife ait değil." });
+            // One narrow lookup replaces the former tender query plus the full
+            // position-detail query (calculation and mapping collections included).
+            const before = await prisma_client_1.default.position.findFirst({
+                where: {
+                    id: positionId,
+                    tenderId,
+                    tenantId,
+                    tender: { is: { status: 'Draft' } },
+                },
+                select: {
+                    id: true,
+                    tenantId: true,
+                    tenderId: true,
+                    rowType: true,
+                    shortDescription: true,
+                    longDescription: true,
+                    quantity: true,
+                    unit: true,
+                    unitPrice: true,
+                    discount: true,
+                    taxRate: true,
+                    npkCode: true,
+                    sourceArticleId: true,
+                    displayOrder: true,
+                },
+            });
+            if (!before) {
+                // Keep the common Draft path to one query. Only the exceptional
+                // not-found/non-Draft path pays for this status distinction.
+                const existing = await prisma_client_1.default.position.findFirst({
+                    where: { id: positionId, tenderId, tenantId },
+                    select: { id: true, tender: { select: { status: true } } },
+                });
+                if (existing?.tender.status !== undefined && existing.tender.status !== 'Draft') {
+                    return res.status(403).json({ error: "Sadece taslak tekliflerdeki satırlar güncellenebilir." });
+                }
+                return res.status(404).json({ error: "Satır veya ihale bulunamadı." });
             }
             const targetRowType = rowType !== undefined
                 ? String(rowType || '').toUpperCase()
@@ -573,47 +1454,6 @@ class TenderController {
             }
             if (displayOrder !== undefined)
                 patch.displayOrder = Number(displayOrder);
-            const updated = await this.positionRepository.updatePosition(positionId, patch);
-            // When manual pricing is set, sync totalCalculatedPrice
-            // without overwriting existing cost breakdown (material/labor/overhead/risk/profit).
-            const pricingChanged = targetCanPrice && (quantity !== undefined ||
-                unitPrice !== undefined ||
-                discount !== undefined);
-            if (pricingChanged) {
-                const qty = Number(updated.quantity ?? 0);
-                const price = updated.unitPrice == null ? null : Number(updated.unitPrice);
-                const disc = Number(updated.discount ?? 0);
-                if (qty > 0 && price != null) {
-                    const gross = qty * price;
-                    const net = gross * (1 - disc / 100);
-                    const existing = await this.positionRepository.getCalculationByPositionId(positionId);
-                    if (existing) {
-                        await this.positionRepository.saveCalculation({
-                            id: existing.id,
-                            positionId,
-                            materialCost: existing.materialCost,
-                            laborCost: existing.laborCost,
-                            overheadCost: existing.overheadCost,
-                            riskAmount: existing.riskAmount,
-                            additionalCost: existing.additionalCost || 0,
-                            profitMargin: existing.profitMargin,
-                            totalCalculatedPrice: net,
-                        });
-                    }
-                    else {
-                        await this.positionRepository.saveCalculation({
-                            positionId,
-                            materialCost: 0,
-                            laborCost: 0,
-                            overheadCost: 0,
-                            riskAmount: 0,
-                            additionalCost: 0,
-                            profitMargin: 0,
-                            totalCalculatedPrice: net,
-                        });
-                    }
-                }
-            }
             const labels = {
                 shortDescription: "Açıklama",
                 longDescription: "Satır içeriği",
@@ -629,8 +1469,12 @@ class TenderController {
                 displayOrder: "Sıra",
             };
             const priceFields = ['quantity', 'unitPrice', 'discount', 'taxRate'];
+            const nextPosition = { ...before, ...patch };
+            // imageUrl is excluded from the value diff: it is a LONGTEXT base64
+            // blob and `before` is intentionally image-less. It gets a value-less log.
             const changedLogs = Object.keys(patch)
-                .filter((field) => String(before[field] ?? '') !== String(updated[field] ?? ''))
+                .filter((field) => field !== 'imageUrl')
+                .filter((field) => String(before[field] ?? '') !== String(nextPosition[field] ?? ''))
                 .map((field) => ({
                 tenantId,
                 tenderId,
@@ -639,10 +1483,60 @@ class TenderController {
                 actionType: priceFields.includes(field) ? "POSITION_PRICE_UPDATED" : "POSITION_UPDATED",
                 fieldName: field,
                 oldValue: before[field] == null ? null : String(before[field]),
-                newValue: updated[field] == null ? null : String(updated[field]),
-                description: `${labels[field] ?? field} değiştirildi: ${before[field] ?? 'boş'} -> ${updated[field] ?? 'boş'}`
+                newValue: nextPosition[field] == null ? null : String(nextPosition[field]),
+                description: `${labels[field] ?? field} değiştirildi: ${before[field] ?? 'boş'} -> ${nextPosition[field] ?? 'boş'}`
             }));
-            await this.tenderLogRepo.createMany(changedLogs);
+            if (patch.imageUrl !== undefined) {
+                changedLogs.push({
+                    tenantId,
+                    tenderId,
+                    positionId,
+                    employeeId,
+                    actionType: "POSITION_UPDATED",
+                    fieldName: "imageUrl",
+                    oldValue: null,
+                    newValue: null,
+                    description: patch.imageUrl ? "Görsel güncellendi." : "Görsel kaldırıldı."
+                });
+            }
+            // Validation is complete, so the position update, audit insert and
+            // optional calculation upsert can share the second DB round.
+            const writes = [
+                this.positionRepository.updatePosition(positionId, patch),
+                this.tenderLogRepo.createMany(changedLogs),
+            ];
+            // When manual pricing is set, sync totalCalculatedPrice without
+            // overwriting the existing cost breakdown.
+            const pricingChanged = targetCanPrice && (quantity !== undefined ||
+                unitPrice !== undefined ||
+                discount !== undefined);
+            if (pricingChanged) {
+                const qty = Number(nextPosition.quantity ?? 0);
+                const price = nextPosition.unitPrice == null ? null : Number(nextPosition.unitPrice);
+                const disc = Number(nextPosition.discount ?? 0);
+                if (qty > 0 && price != null) {
+                    const gross = qty * price;
+                    const net = gross * (1 - disc / 100);
+                    // One UPSERT replaces getCalculation + saveCalculation's own
+                    // existence read + update/create (three sequential queries).
+                    writes.push(prisma_client_1.default.calculationItem.upsert({
+                        where: { positionId },
+                        update: { totalCalculatedPrice: net },
+                        create: {
+                            id: (0, nanoid_1.nanoid)(10),
+                            positionId,
+                            materialCost: 0,
+                            laborCost: 0,
+                            overheadCost: 0,
+                            riskAmount: 0,
+                            additionalCost: 0,
+                            profitMargin: 0,
+                            totalCalculatedPrice: net,
+                        },
+                    }));
+                }
+            }
+            const [updated] = await Promise.all(writes);
             res.status(200).json(updated);
         }
         catch (error) {
@@ -779,6 +1673,86 @@ class TenderController {
     async listTechnicians(req, res) {
         try {
             res.status(200).json(await (0, technicianSchedule_1.listTechnicianOptions)(req.user.tenantId));
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    // ── Tenant-wide offer-mail drafts ────────────────────────────────────────
+    // Reusable subject + message templates shared by ALL tenders' mail composers.
+    async listMailDrafts(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const drafts = await prisma_client_1.default.tenderMailDraft.findMany({
+                where: { tenantId },
+                orderBy: { updatedAt: 'desc' },
+            });
+            res.status(200).json(drafts);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async createMailDraft(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const { subject, message } = req.body;
+            const draft = await prisma_client_1.default.tenderMailDraft.create({
+                data: {
+                    id: (0, nanoid_1.nanoid)(10),
+                    tenantId,
+                    subject: String(subject ?? '').slice(0, 191),
+                    message: message ? String(message) : null,
+                    createdBy: req.user.id || null,
+                },
+            });
+            res.status(201).json(draft);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async updateMailDraft(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const draftId = req.params.draftId;
+            const existing = await prisma_client_1.default.tenderMailDraft.findFirst({
+                where: { id: draftId, tenantId },
+                select: { id: true },
+            });
+            if (!existing)
+                return res.status(404).json({ error: "Taslak bulunamadı." });
+            const { subject, message } = req.body;
+            const data = {};
+            if (subject !== undefined)
+                data.subject = String(subject ?? '').slice(0, 191);
+            if (message !== undefined)
+                data.message = message ? String(message) : null;
+            if (Object.keys(data).length === 0) {
+                return res.status(400).json({ error: "Güncellenecek alan bulunamadı." });
+            }
+            const draft = await prisma_client_1.default.tenderMailDraft.update({
+                where: { id: draftId },
+                data,
+            });
+            res.status(200).json(draft);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async deleteMailDraft(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const draftId = req.params.draftId;
+            const existing = await prisma_client_1.default.tenderMailDraft.findFirst({
+                where: { id: draftId, tenantId },
+                select: { id: true },
+            });
+            if (!existing)
+                return res.status(404).json({ error: "Taslak bulunamadı." });
+            await prisma_client_1.default.tenderMailDraft.delete({ where: { id: draftId } });
+            res.status(200).json({ message: "Taslak silindi.", draftId });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -1034,8 +2008,16 @@ class TenderController {
             if (subject.length > 200)
                 return res.status(400).json({ error: "Konu 200 karakteri aşamaz." });
             const message = String(req.body.message || "Teklifimizi ve planlanan çalışma saatlerini ekte bulabilirsiniz. Uygun görmeniz halinde bu e-postaya yanıt verebilirsiniz.").trim();
-            if (message.length > 5000)
-                return res.status(400).json({ error: "Mesaj 5000 karakteri aşamaz." });
+            const isHtmlMessage = looksLikeHtmlMessage(message);
+            // HTML markup inflates the raw length; the cap guards payload size, not
+            // visible text, so it scales with the format.
+            if (message.length > (isHtmlMessage ? 20000 : 5000)) {
+                return res.status(400).json({ error: "Mesaj çok uzun." });
+            }
+            const messageHtml = isHtmlMessage
+                ? sanitizeMailHtml(message)
+                : `${escapeHtml(message).replace(/\n/g, "<br />")}`;
+            const messageText = isHtmlMessage ? stripHtmlToText(message) : message;
             // Attachments: only well-formed inline PDF/PNG/JPG payloads, count- and
             // size-limited, with sanitized filenames. No file paths/URLs are accepted.
             const rawAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : [];
@@ -1076,7 +2058,7 @@ class TenderController {
                 : "";
             const html = `
                 <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
-                    <p>${escapeHtml(message).replace(/\n/g, "<br />")}</p>
+                    <p>${messageHtml}</p>
                     ${scheduleHtml}
                 </div>
             `;
@@ -1085,7 +2067,7 @@ class TenderController {
                 fromName,
                 to,
                 subject,
-                text: slots.length > 0 ? `${message}\n\nPlanlanan tarih ve saatler:\n${scheduleText}` : message,
+                text: slots.length > 0 ? `${messageText}\n\nPlanlanan tarih ve saatler:\n${scheduleText}` : messageText,
                 html,
                 replyTo: settings?.replyTo || null,
                 attachments
@@ -1199,12 +2181,19 @@ class TenderController {
             if (!tenderId) {
                 return res.status(400).json({ error: "İhale ID zorunludur." });
             }
-            const tender = await this.getAccessibleTender(tenderId, req.user);
+            const includeImages = req.query.includeImages === 'true';
+            // light=true: plain position figures only (no mappings, long descriptions
+            // or activities) — used by read-only summaries like the project positions tab.
+            const light = req.query.light === 'true';
+            // The three queries are independent; run them concurrently and only check
+            // the access result before responding, instead of paying for them in series.
+            const [tender, positions, activities] = await Promise.all([
+                this.getAccessibleTender(tenderId, req.user),
+                this.positionRepository.findByTenderId(tenderId, { includeImages, light }),
+                light ? Promise.resolve([]) : this.customerActivityRepo.getActivitiesByReference(tenderId),
+            ]);
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
-            const includeImages = req.query.includeImages === 'true';
-            const positions = await this.positionRepository.findByTenderId(tenderId, { includeImages });
-            const activities = await this.customerActivityRepo.getActivitiesByReference(tenderId);
             res.status(200).json({ tender, positions, activities });
         }
         catch (error) {
@@ -1224,19 +2213,41 @@ class TenderController {
             if (!tender)
                 return res.status(404).json({ error: "İhale bulunamadı." });
             const ids = normalizeIdList(req.body?.ids);
-            if (ids.length === 0)
+            const positionIds = normalizeIdList(req.body?.positionIds);
+            if (ids.length === 0 && positionIds.length === 0)
                 return res.status(200).json([]);
-            const rows = await prisma_client_1.default.article.findMany({
-                where: { tenantId, id: { in: ids }, imageUrl: { not: null } },
-                select: { id: true, imageUrl: true },
-            });
-            res.status(200).json(rows);
+            // Article images (product rows) + per-position uploaded images (manual
+            // products / description rows) — both only ever fetched here, for the PDF.
+            const [articleRows, positionRows] = await Promise.all([
+                ids.length > 0
+                    ? prisma_client_1.default.article.findMany({
+                        where: { tenantId, id: { in: ids }, imageUrl: { not: null } },
+                        select: { id: true, imageUrl: true },
+                    })
+                    : [],
+                positionIds.length > 0
+                    ? prisma_client_1.default.position.findMany({
+                        where: { tenantId, tenderId, id: { in: positionIds }, imageUrl: { not: null } },
+                        select: { id: true, imageUrl: true },
+                    })
+                    : [],
+            ]);
+            res.status(200).json([...articleRows, ...positionRows]);
         }
         catch (error) {
             res.status(400).json({ error: error.message });
         }
     }
     async deletePosition(req, res) {
+        if (!Array.isArray(req.body?.deleteIds)) {
+            req.body = {
+                positions: [],
+                updates: [],
+                deleteIds: [req.params.positionId],
+            };
+            req.singleDeleteResponse = true;
+            return this.addPositionsBatch(req, res);
+        }
         try {
             const tenderId = req.params.id;
             const positionId = req.params.positionId;

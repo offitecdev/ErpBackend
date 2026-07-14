@@ -319,5 +319,10 @@ app.listen(PORT, () => {
     console.log(`API Docs  -> http://localhost:${PORT}/api-docs`);
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     (0, MaintenanceReminderService_1.startMaintenanceReminderService)();
+    // Open the remote-DB connection pool now instead of on the first request,
+    // which otherwise pays the connection handshakes itself.
+    prisma_client_1.default.$queryRaw `SELECT 1`
+        .then(() => console.log('Database pool warmed up.'))
+        .catch((error) => console.error('Database warm-up failed:', error));
 });
 //# sourceMappingURL=main.js.map

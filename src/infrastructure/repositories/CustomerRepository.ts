@@ -29,7 +29,12 @@ export class CustomerRepository implements ICustomerRepository {
             data.customerSource,
             data.responsibleFirstName,
             data.responsibleLastName,
-            data.status ?? "ACTIVE"
+            data.status ?? "ACTIVE",
+            data.priceList,
+            data.addressName,
+            data.postalCode,
+            data.city,
+            data.country
         )
     }
 
@@ -44,13 +49,18 @@ export class CustomerRepository implements ICustomerRepository {
                 customerType: customerData.customerType ?? "PRIVATE",
                 taxOffice: customerData.taxOffice ?? null,
                 taxNumber: customerData.taxNumber ?? null,
+                addressName: customerData.addressName ?? null,
                 address: customerData.address ?? null,
+                postalCode: customerData.postalCode ?? null,
+                city: customerData.city ?? null,
+                country: customerData.country ?? null,
                 mainPhone: customerData.mainPhone ?? null,
                 mobilePhone: customerData.mobilePhone ?? null,
                 mainEmail: customerData.mainEmail ?? null,
                 website: customerData.website ?? null,
                 language: customerData.language ?? null,
                 vatNumber: customerData.vatNumber ?? null,
+                priceList: customerData.priceList ?? null,
                 customerSource: customerData.customerSource ?? null,
                 responsibleFirstName: customerData.responsibleFirstName ?? null,
                 responsibleLastName: customerData.responsibleLastName ?? null,
@@ -142,6 +152,7 @@ export class CustomerRepository implements ICustomerRepository {
             whereClause.OR = [
                 { companyName: { contains: filter.search } },
                 { taxNumber: { contains: filter.search } },
+                { vatNumber: { contains: filter.search } },
                 { mainEmail: { contains: filter.search } }
             ];
         }
@@ -160,13 +171,18 @@ export class CustomerRepository implements ICustomerRepository {
                     customerType: true,
                     taxOffice: true,
                     taxNumber: true,
+                    addressName: true,
                     address: true,
+                    postalCode: true,
+                    city: true,
+                    country: true,
                     mainPhone: true,
                     mobilePhone: true,
                     mainEmail: true,
                     website: true,
                     language: true,
                     vatNumber: true,
+                    priceList: true,
                     customerSource: true,
                     responsibleFirstName: true,
                     responsibleLastName: true,

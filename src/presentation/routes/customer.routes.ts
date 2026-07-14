@@ -15,6 +15,7 @@ import { CustomerActivityRepository } from '../../infrastructure/repositories/Cu
 import { DocumentRepository } from '../../infrastructure/repositories/DocumentRepository';
 import { CustomerContactRepository } from '../../infrastructure/repositories/CustomerContactRepository';
 import { CustomerLocationRepository } from '../../infrastructure/repositories/CustomerLocationRepository';
+import { CustomerProductDiscountRepository } from '../../infrastructure/repositories/CustomerProductDiscountRepository';
 import { TenderRepository } from '../../infrastructure/repositories/TenderRepository';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
@@ -27,6 +28,7 @@ const customerActivityRepo  = new CustomerActivityRepository();
 const documentRepo          = new DocumentRepository();
 const customerContactRepo   = new CustomerContactRepository();
 const customerLocationRepo  = new CustomerLocationRepository();
+const customerProductDiscountRepo = new CustomerProductDiscountRepository();
 
 const createCustomerUseCase         = new CreateCustomerUseCase(customerRepo);
 const getCustomerDashboardUseCase   = new GetCustomerDashboardUseCase(customerRepo);
@@ -51,7 +53,8 @@ const customerController = new CustomerController(
     customerNoteRepo,
     customerActivityRepo,
     addCustomerLocationUseCase,
-    customerLocationRepo
+    customerLocationRepo,
+    customerProductDiscountRepo
 );
 
 /**
@@ -149,7 +152,15 @@ router.post(
  *                 type: string
  *               taxNumber:
  *                 type: string
+ *               addressName:
+ *                 type: string
  *               address:
+ *                 type: string
+ *               postalCode:
+ *                 type: string
+ *               city:
+ *                 type: string
+ *               country:
  *                 type: string
  *               mainPhone:
  *                 type: string
@@ -396,6 +407,32 @@ router.delete(
     requireAuth,
     requirePermission('crm.customers.create'),
     (req, res) => customerController.deleteLocation(req, res)
+);
+
+/* ----------------------------- Product discounts (Produktrabatte) ----------------------------- */
+router.get(
+    '/:id/product-discounts',
+    requireAuth,
+    requirePermission('crm.customers.view'),
+    (req, res) => customerController.listProductDiscounts(req, res)
+);
+router.post(
+    '/:id/product-discounts',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.upsertProductDiscount(req, res)
+);
+router.patch(
+    '/:id/product-discounts/:discountId',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.updateProductDiscount(req, res)
+);
+router.delete(
+    '/:id/product-discounts/:discountId',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.deleteProductDiscount(req, res)
 );
 
 /* ----------------------------- Notes edit/delete ----------------------------- */

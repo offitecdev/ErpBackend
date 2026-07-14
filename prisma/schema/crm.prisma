@@ -6,13 +6,20 @@ model Customer {
   customerType String             @default("PRIVATE")
   taxOffice    String?
   taxNumber    String?
+  // Primary address, entered as separate fields on the customer profile.
+  // `address` holds the street line; addressName is an optional label.
+  addressName  String?
   address      String?
+  postalCode   String?
+  city         String?
+  country      String?
   mainPhone    String?
   mobilePhone  String?
   mainEmail    String?
   website      String?
   language     String?
   vatNumber    String?
+  priceList    String?
   customerSource String?
   responsibleFirstName String?
   responsibleLastName  String?
@@ -33,8 +40,26 @@ model Customer {
   workOrders WorkOrder[]
   salesOrders SalesOrder[]
   invoices Invoice[]
+  productDiscounts CustomerProductDiscount[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
+}
+
+// Per-customer default discount (%) for a specific article. Applied automatically
+// when that article is added to a tender for the customer.
+model CustomerProductDiscount {
+  id         String   @id
+  tenantId   String
+  customerId String
+  articleId  String
+  discount   Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  @@unique([customerId, articleId])
+  @@index([tenantId])
+  @@index([articleId])
 }
 
 model SalesOrder {
@@ -145,7 +170,8 @@ model CustomerLocation {
   id            String   @id
   customerId    String
   name          String
-  // Address list this entry belongs to: INSTALLATION (Montage/Lieferung) or BILLING (Rechnung).
+  // Address list this entry belongs to: INSTALLATION (Projekt/Montage),
+  // DELIVERY (Lieferung) or BILLING (Rechnung).
   kind          String   @default("INSTALLATION")
   address       String?
   city          String?

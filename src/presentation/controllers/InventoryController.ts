@@ -86,6 +86,7 @@ export class InventoryController {
                 search: req.query.search ? String(req.query.search) : undefined,
                 status: req.query.status ? String(req.query.status) : undefined,
                 itemType: req.query.itemType ? String(req.query.itemType) : undefined,
+                includeDescription: req.query.includeDescription === 'true',
             });
             res.status(200).json(result);
         } catch (error: any) {

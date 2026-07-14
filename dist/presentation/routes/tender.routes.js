@@ -88,6 +88,20 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
 router.post('/:id/positions', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addPosition(req, res));
 /**
  * @swagger
+ * /tenders/{id}/positions/batch:
+ *   post:
+ *     tags: [Tender]
+ *     summary: Teklife birden fazla satırı tek işlemde ekle
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/:id/positions/batch', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addPositionsBatch(req, res));
+// Atomic TenderDetail unit-of-work endpoint. A distinct path prevents a new
+// frontend from partially saving against an older backend that only understands
+// create-only batch payloads.
+router.post('/:id/positions/save', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addPositionsBatch(req, res));
+/**
+ * @swagger
  * /tenders/{id}/positions/{positionId}:
  *   patch:
  *     tags: [Tender]
@@ -143,6 +157,12 @@ router.patch('/:id/approve', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
 router.patch('/:id/meta', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
 router.patch('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
 router.get('/options/technicians', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listTechnicians(req, res));
+// Tenant-wide offer-mail drafts (subject + message templates). Registered
+// BEFORE the '/:id' routes so 'mail-drafts' is never captured as a tender id.
+router.get('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listMailDrafts(req, res));
+router.post('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.createMailDraft(req, res));
+router.patch('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.updateMailDraft(req, res));
+router.delete('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.deleteMailDraft(req, res));
 router.get('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getScheduleSlots(req, res));
 router.post('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.createScheduleSlot(req, res));
 router.patch('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateScheduleSlot(req, res));

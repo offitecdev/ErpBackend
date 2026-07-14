@@ -39,6 +39,9 @@ export class Tender {
         public sourceRecurringTotal?: number | null,
         public sourceMargin?: number | null,
         public billingSameAsInstallation?: boolean | null,
+        public installationAddress?: string | null,
+        public directDiscount?: number | null,
+        public currency?: string | null,
     ){}
 }
 

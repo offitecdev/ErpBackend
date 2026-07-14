@@ -245,6 +245,7 @@ export class InventoryRepository implements IInventoryRepository {
             search?: string | undefined;
             status?: string | undefined;
             itemType?: string | undefined;
+            includeDescription?: boolean;
         }
     ): Promise<{ items: any[]; total: number; page: number; pageSize: number }> {
         const page = Math.max(1, Number(options.page) || 1);
@@ -272,6 +273,7 @@ export class InventoryRepository implements IInventoryRepository {
                     id: true,
                     articleCode: true,
                     name: true,
+                    ...(options.includeDescription ? { description: true } : {}),
                     category: true,
                     itemType: true,
                     systemBarcode: true,
@@ -297,6 +299,7 @@ export class InventoryRepository implements IInventoryRepository {
                 id: a.id,
                 articleCode: a.articleCode,
                 name: a.name,
+                ...(options.includeDescription ? { description: a.description ?? null } : {}),
                 category: a.category,
                 itemType: a.itemType ?? 'PRODUCT',
                 systemBarcode: a.systemBarcode,

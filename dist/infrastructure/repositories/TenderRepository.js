@@ -6,10 +6,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenderRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Tender_1 = require("../../domain/entities/Tender");
+const customerAddress_1 = require("../../application/utils/customerAddress");
 const nanoid_1 = require("nanoid");
 class TenderRepository {
     mapToEntity(data) {
-        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation);
+        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency);
     }
     async create(tenderData) {
         const data = await prisma_client_1.default.tender.create({
@@ -23,7 +24,7 @@ class TenderRepository {
         const data = await prisma_client_1.default.tender.findFirst({
             where: { id, tenantId },
             include: {
-                customer: { select: { id: true, companyName: true, address: true, mainPhone: true, mainEmail: true, taxNumber: true } },
+                customer: { select: { id: true, companyName: true, addressName: true, address: true, postalCode: true, city: true, country: true, mainPhone: true, mainEmail: true, taxNumber: true } },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } }
             }
         });
@@ -31,7 +32,9 @@ class TenderRepository {
             return null;
         const entity = this.mapToEntity(data);
         entity.customerName = data.customer?.companyName ?? null;
-        entity.customerAddress = data.customer?.address ?? null;
+        // The customer's primary address (street / postal + city / country) formatted
+        // as a single multi-line string — the default for the tender's address slot.
+        entity.customerAddress = (0, customerAddress_1.formatCustomerAddress)(data.customer);
         entity.customerEmail = data.customer?.mainEmail ?? null;
         entity.customerPhone = data.customer?.mainPhone ?? null;
         entity.customerTaxNumber = data.customer?.taxNumber ?? null;
@@ -72,12 +75,15 @@ class TenderRepository {
                     sourceCreatedAt: true,
                     orderDate: true,
                     billingAddress: true,
+                    installationAddress: true,
                     deliveryAddress: true,
                     billingSameAsInstallation: true,
+                    directDiscount: true,
                     internalDeliveryDate: true,
                     priceList: true,
                     paymentTerms: true,
                     commissionNumber: true,
+                    currency: true,
                     salespersonName: true,
                     sourceStatus: true,
                     sourceCompany: true,
@@ -211,11 +217,15 @@ class TenderRepository {
                     sourceCreatedAt: existingTender.sourceCreatedAt,
                     orderDate: existingTender.orderDate,
                     billingAddress: existingTender.billingAddress,
+                    installationAddress: existingTender.installationAddress,
                     deliveryAddress: existingTender.deliveryAddress,
+                    billingSameAsInstallation: existingTender.billingSameAsInstallation,
+                    directDiscount: existingTender.directDiscount,
                     internalDeliveryDate: existingTender.internalDeliveryDate,
                     priceList: existingTender.priceList,
                     paymentTerms: existingTender.paymentTerms,
                     commissionNumber: existingTender.commissionNumber,
+                    currency: existingTender.currency,
                     salespersonName: existingTender.salespersonName,
                     sourceStatus: existingTender.sourceStatus,
                     sourceCompany: existingTender.sourceCompany,

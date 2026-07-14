@@ -4,7 +4,7 @@ import {CalculationItem} from "../entities/CalculationItem";
 export interface IPositionRepository{
     createMany(positions: Partial<Position>[]): Promise<void>;
     findById(positionId: string, options?: { includeImages?: boolean }): Promise<any | null>;
-    findByTenderId(tenderId:string, options?: { includeImages?: boolean }): Promise<any[]>;
+    findByTenderId(tenderId:string, options?: { includeImages?: boolean; light?: boolean }): Promise<any[]>;
     saveCalculation(calculationItem: Partial<CalculationItem>): Promise<CalculationItem>;
     getCalculationByPositionId(positionId:string): Promise<CalculationItem | null>;
     deletePosition(positionId: string): Promise<void>;

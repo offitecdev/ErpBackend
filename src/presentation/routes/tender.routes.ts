@@ -122,6 +122,32 @@ router.post(
 
 /**
  * @swagger
+ * /tenders/{id}/positions/batch:
+ *   post:
+ *     tags: [Tender]
+ *     summary: Teklife birden fazla satırı tek işlemde ekle
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/:id/positions/batch',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.addPositionsBatch(req, res)
+);
+
+// Atomic TenderDetail unit-of-work endpoint. A distinct path prevents a new
+// frontend from partially saving against an older backend that only understands
+// create-only batch payloads.
+router.post(
+    '/:id/positions/save',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.addPositionsBatch(req, res)
+);
+
+/**
+ * @swagger
  * /tenders/{id}/positions/{positionId}:
  *   patch:
  *     tags: [Tender]
@@ -231,6 +257,36 @@ router.get(
     requireAuth,
     requirePermission('tenders.view'),
     (req, res) => tenderController.listTechnicians(req, res)
+);
+
+// Tenant-wide offer-mail drafts (subject + message templates). Registered
+// BEFORE the '/:id' routes so 'mail-drafts' is never captured as a tender id.
+router.get(
+    '/mail-drafts',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.listMailDrafts(req, res)
+);
+
+router.post(
+    '/mail-drafts',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.createMailDraft(req, res)
+);
+
+router.patch(
+    '/mail-drafts/:draftId',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.updateMailDraft(req, res)
+);
+
+router.delete(
+    '/mail-drafts/:draftId',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.deleteMailDraft(req, res)
 );
 
 router.get(

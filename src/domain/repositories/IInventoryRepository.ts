@@ -34,6 +34,7 @@ export interface IInventoryRepository {
             search?: string | undefined;
             status?: string | undefined;
             itemType?: string | undefined;
+            includeDescription?: boolean;
         }
     ): Promise<{ items: any[]; total: number; page: number; pageSize: number }>;
 

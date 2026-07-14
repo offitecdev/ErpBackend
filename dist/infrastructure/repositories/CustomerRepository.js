@@ -13,7 +13,7 @@ const INACTIVE_CUSTOMER_STATUSES = new Set(["PASSIVE", "BLOCKED"]);
 const deriveIsActive = (status) => !INACTIVE_CUSTOMER_STATUSES.has(status);
 class CustomerRepository {
     mapToEntity(data) {
-        return new Customer_1.Customer(data.id, data.tenantId, data.companyName, data.isActive, data.segment, data.taxOffice, data.taxNumber, data.address, data.mainPhone, data.mainEmail, data.customerType ?? "PRIVATE", data.mobilePhone, data.website, data.language, data.vatNumber, data.customerSource, data.responsibleFirstName, data.responsibleLastName, data.status ?? "ACTIVE");
+        return new Customer_1.Customer(data.id, data.tenantId, data.companyName, data.isActive, data.segment, data.taxOffice, data.taxNumber, data.address, data.mainPhone, data.mainEmail, data.customerType ?? "PRIVATE", data.mobilePhone, data.website, data.language, data.vatNumber, data.customerSource, data.responsibleFirstName, data.responsibleLastName, data.status ?? "ACTIVE", data.priceList, data.addressName, data.postalCode, data.city, data.country);
     }
     async createCustomer(customerData) {
         const status = customerData.status ?? "ACTIVE";
@@ -26,13 +26,18 @@ class CustomerRepository {
                 customerType: customerData.customerType ?? "PRIVATE",
                 taxOffice: customerData.taxOffice ?? null,
                 taxNumber: customerData.taxNumber ?? null,
+                addressName: customerData.addressName ?? null,
                 address: customerData.address ?? null,
+                postalCode: customerData.postalCode ?? null,
+                city: customerData.city ?? null,
+                country: customerData.country ?? null,
                 mainPhone: customerData.mainPhone ?? null,
                 mobilePhone: customerData.mobilePhone ?? null,
                 mainEmail: customerData.mainEmail ?? null,
                 website: customerData.website ?? null,
                 language: customerData.language ?? null,
                 vatNumber: customerData.vatNumber ?? null,
+                priceList: customerData.priceList ?? null,
                 customerSource: customerData.customerSource ?? null,
                 responsibleFirstName: customerData.responsibleFirstName ?? null,
                 responsibleLastName: customerData.responsibleLastName ?? null,
@@ -113,6 +118,7 @@ class CustomerRepository {
             whereClause.OR = [
                 { companyName: { contains: filter.search } },
                 { taxNumber: { contains: filter.search } },
+                { vatNumber: { contains: filter.search } },
                 { mainEmail: { contains: filter.search } }
             ];
         }
@@ -130,13 +136,18 @@ class CustomerRepository {
                     customerType: true,
                     taxOffice: true,
                     taxNumber: true,
+                    addressName: true,
                     address: true,
+                    postalCode: true,
+                    city: true,
+                    country: true,
                     mainPhone: true,
                     mobilePhone: true,
                     mainEmail: true,
                     website: true,
                     language: true,
                     vatNumber: true,
+                    priceList: true,
                     customerSource: true,
                     responsibleFirstName: true,
                     responsibleLastName: true,

@@ -13,7 +13,7 @@ export interface IArticleRepository {
     updateArticle(id: string, patch: Partial<Article>): Promise<Article>;
     deleteArticle(id: string): Promise<void>;
     findAllArticles(filter: IArticleFilter): Promise<Article[]>;
-    findArticleById(id: string): Promise<Article | null>;
+    findArticleById(id: string, options?: { includeImages?: boolean }): Promise<Article | null>;
     findArticleByCode(tenantId: string, codeOrBarcode: string): Promise<Article | null>;
 
     mapArticleToPosition(mapping: Partial<PositionArticleMapping>): Promise<PositionArticleMapping>;

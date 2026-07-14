@@ -21,12 +21,21 @@ model Tender {
   sourceCreatedAt     DateTime?
   orderDate           DateTime?
   billingAddress      String?      @db.Text
+  // Projektadresse (installation/Montage). Historically deliveryAddress held this;
+  // deliveryAddress is now the actual Lieferadresse.
+  installationAddress String?      @db.Text
   deliveryAddress     String?      @db.Text
   billingSameAsInstallation Boolean? @default(false)
   internalDeliveryDate DateTime?
   priceList           String?
   paymentTerms        String?
   commissionNumber    String?
+  // Currency the offer is denominated in (CHF/EUR/USD/GBP/TRY). Symbol-only:
+  // it changes how amounts are displayed/exported, not their numeric value.
+  currency            String?
+
+  // Document-level direct discount (%) applied to the net total in the offer summary.
+  directDiscount      Float?       @default(0)
   salespersonName     String?
   sourceStatus        String?
   sourceCompany       String?
@@ -186,6 +195,21 @@ model TenderMaterialUsage {
 
   @@index([tenderId])
   @@index([materialId])
+}
+
+// Tenant-wide reusable offer-mail drafts (subject + message templates).
+// NOT tied to a single tender — the mail composer of every tender can list,
+// apply, edit and delete them.
+model TenderMailDraft {
+  id        String   @id
+  tenantId  String
+  subject   String   @default("")
+  message   String?  @db.Text
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model TenderActivityLog {

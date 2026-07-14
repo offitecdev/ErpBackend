@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import prisma from '../../infrastructure/database/prisma.client';
 import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/GetBillingSummaryUseCase';
 import { InvoiceRepository } from '../../infrastructure/repositories/InvoiceRepository';
+import { orderTotal } from './salesOrder.pricing';
 
 const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository());
 
@@ -23,15 +24,6 @@ const safeBatchSummaries = async (
 type OrderMode = 'PROJECT_NEW' | 'PROJECT_EXISTING' | 'INVOICE';
 
 const allowedOrderModes = new Set<OrderMode>(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
-
-const orderTotal = (positions: any[]) =>
-    positions.reduce((sum, position) => {
-        const quantity = Number(position.quantity || 0);
-        const unitPrice = position.unitPrice == null ? null : Number(position.unitPrice);
-        const discount = Number(position.discount || 0);
-        if (unitPrice != null && quantity > 0) return sum + quantity * unitPrice * (1 - discount / 100);
-        return sum + Math.max(0, Number(position.calculation?.totalCalculatedPrice || 0));
-    }, 0);
 
 export class SalesOrderController {
     async list(req: Request, res: Response) {
@@ -233,7 +225,7 @@ export class SalesOrderController {
                     };
                 }
 
-                const totalAmount = orderTotal(tender.positions || []);
+                const totalAmount = orderTotal(tender.positions || [], tender.directDiscount);
                 let project: any = null;
                 let scheduleSlots: any[] = [];
 
@@ -277,7 +269,7 @@ export class SalesOrderController {
                     if (!project) throw new Error('Proje bulunamadi.');
                 }
 
-                const orderNumber = project?.id ? `SPR-${tender.tenderNumber}` : `SO-${tender.tenderNumber}`;
+                const orderNumber = project?.id ? `AUF-${tender.tenderNumber}` : `SO-${tender.tenderNumber}`;
                 const salesOrder = await (tx as any).salesOrder.create({
                     data: {
                         id: nanoid(10),

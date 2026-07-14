@@ -3,6 +3,7 @@
 import prisma from "../database/prisma.client";
 import { ITenderRepository, ITenderFilter, TenderListItem } from "../../domain/repositories/ITenderRepository";
 import { Tender } from "../../domain/entities/Tender";
+import { formatCustomerAddress } from "../../application/utils/customerAddress";
 import { nanoid } from "nanoid";
 
 export class TenderRepository implements ITenderRepository {
@@ -19,7 +20,10 @@ export class TenderRepository implements ITenderRepository {
             data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature,
             data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount,
             data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin,
-            data.billingSameAsInstallation
+            data.billingSameAsInstallation,
+            data.installationAddress,
+            data.directDiscount,
+            data.currency
         );
     }
 
@@ -36,14 +40,16 @@ export class TenderRepository implements ITenderRepository {
         const data = await prisma.tender.findFirst({
             where: { id, tenantId },
             include: {
-                customer: { select: { id: true, companyName: true, address: true, mainPhone: true, mainEmail: true, taxNumber: true } },
+                customer: { select: { id: true, companyName: true, addressName: true, address: true, postalCode: true, city: true, country: true, mainPhone: true, mainEmail: true, taxNumber: true } },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } }
             }
         });
         if (!data) return null;
         const entity: any = this.mapToEntity(data);
         entity.customerName = (data as any).customer?.companyName ?? null;
-        entity.customerAddress = (data as any).customer?.address ?? null;
+        // The customer's primary address (street / postal + city / country) formatted
+        // as a single multi-line string — the default for the tender's address slot.
+        entity.customerAddress = formatCustomerAddress((data as any).customer);
         entity.customerEmail = (data as any).customer?.mainEmail ?? null;
         entity.customerPhone = (data as any).customer?.mainPhone ?? null;
         entity.customerTaxNumber = (data as any).customer?.taxNumber ?? null;
@@ -84,12 +90,15 @@ export class TenderRepository implements ITenderRepository {
                 sourceCreatedAt: true,
                 orderDate: true,
                 billingAddress: true,
+                installationAddress: true,
                 deliveryAddress: true,
                 billingSameAsInstallation: true,
+                directDiscount: true,
                 internalDeliveryDate: true,
                 priceList: true,
                 paymentTerms: true,
                 commissionNumber: true,
+                currency: true,
                 salespersonName: true,
                 sourceStatus: true,
                 sourceCompany: true,
@@ -231,11 +240,15 @@ export class TenderRepository implements ITenderRepository {
                     sourceCreatedAt: (existingTender as any).sourceCreatedAt,
                     orderDate: (existingTender as any).orderDate,
                     billingAddress: (existingTender as any).billingAddress,
+                    installationAddress: (existingTender as any).installationAddress,
                     deliveryAddress: (existingTender as any).deliveryAddress,
+                    billingSameAsInstallation: (existingTender as any).billingSameAsInstallation,
+                    directDiscount: (existingTender as any).directDiscount,
                     internalDeliveryDate: (existingTender as any).internalDeliveryDate,
                     priceList: (existingTender as any).priceList,
                     paymentTerms: (existingTender as any).paymentTerms,
                     commissionNumber: (existingTender as any).commissionNumber,
+                    currency: (existingTender as any).currency,
                     salespersonName: (existingTender as any).salespersonName,
                     sourceStatus: (existingTender as any).sourceStatus,
                     sourceCompany: (existingTender as any).sourceCompany,

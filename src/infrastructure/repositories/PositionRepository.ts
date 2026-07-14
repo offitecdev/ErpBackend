@@ -28,6 +28,57 @@ export class PositionRepository implements IPositionRepository {
         };
     }
 
+    // Plain figures only — for read-only summaries (e.g. the project positions tab).
+    // Skips longDescription, article/material mappings and the full calculation row,
+    // which dominate the payload and query time of the full select.
+    private positionLightSelect() {
+        return {
+            id: true,
+            tenantId: true,
+            tenderId: true,
+            parentPositionId: true,
+            rowType: true,
+            sourceArticleId: true,
+            displayOrder: true,
+            npkCode: true,
+            positionNumber: true,
+            shortDescription: true,
+            quantity: true,
+            unit: true,
+            hierarchyLevel: true,
+            unitPrice: true,
+            discount: true,
+            taxRate: true,
+            calculation: { select: { totalCalculatedPrice: true } },
+        };
+    }
+
+    // Mutation responses only need the position's own scalar fields. Returning the
+    // full detail select here makes Prisma issue extra relation queries for the
+    // calculation and both mapping collections after every PATCH, even when the
+    // caller changed only a short/long description.
+    private positionMutationSelect() {
+        return {
+            id: true,
+            tenantId: true,
+            tenderId: true,
+            parentPositionId: true,
+            rowType: true,
+            sourceArticleId: true,
+            displayOrder: true,
+            npkCode: true,
+            positionNumber: true,
+            shortDescription: true,
+            longDescription: true,
+            quantity: true,
+            unit: true,
+            hierarchyLevel: true,
+            unitPrice: true,
+            discount: true,
+            taxRate: true,
+        };
+    }
+
     private positionSelect(includeImages = false) {
         return {
             id: true,
@@ -153,11 +204,11 @@ export class PositionRepository implements IPositionRepository {
         });
     }
 
-    async findByTenderId(tenderId: string, options?: { includeImages?: boolean }): Promise<any[]> {
+    async findByTenderId(tenderId: string, options?: { includeImages?: boolean; light?: boolean }): Promise<any[]> {
         // Bu metod artık raporlamaya veri sağlamak için calculation ve bağlı ürünleri include ediyor.
         const data = await prisma.position.findMany({
             where: { tenderId },
-            select: this.positionSelect(!!options?.includeImages),
+            select: options?.light ? this.positionLightSelect() : this.positionSelect(!!options?.includeImages),
             orderBy: [
                 { displayOrder: 'asc' },
                 { positionNumber: 'asc' }
@@ -259,6 +310,12 @@ export class PositionRepository implements IPositionRepository {
         if ((patch as any).rowType !== undefined) data.rowType = (patch as any).rowType;
         if ((patch as any).sourceArticleId !== undefined) data.sourceArticleId = (patch as any).sourceArticleId;
         if ((patch as any).displayOrder !== undefined) data.displayOrder = Number((patch as any).displayOrder);
-        return await prisma.position.update({ where: { id: positionId }, data });
+        // Scalar-only and image-less: avoids downloading base64 data and avoids
+        // relation queries that the client already has in local state.
+        return await prisma.position.update({
+            where: { id: positionId },
+            data,
+            select: this.positionMutationSelect(),
+        });
     }
 }

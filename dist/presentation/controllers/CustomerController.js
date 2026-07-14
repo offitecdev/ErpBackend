@@ -16,7 +16,8 @@ class CustomerController {
     activityRepository;
     addCustomerLocationUseCase;
     locationRepository;
-    constructor(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepository, contactRepository, noteRepository, activityRepository, addCustomerLocationUseCase, locationRepository) {
+    productDiscountRepository;
+    constructor(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepository, contactRepository, noteRepository, activityRepository, addCustomerLocationUseCase, locationRepository, productDiscountRepository) {
         this.createCustomerUseCase = createCustomerUseCase;
         this.getCustomerDashboardUseCase = getCustomerDashboardUseCase;
         this.addCustomerNoteUseCase = addCustomerNoteUseCase;
@@ -30,6 +31,7 @@ class CustomerController {
         this.activityRepository = activityRepository;
         this.addCustomerLocationUseCase = addCustomerLocationUseCase;
         this.locationRepository = locationRepository;
+        this.productDiscountRepository = productDiscountRepository;
     }
     async create(req, res) {
         try {
@@ -238,6 +240,63 @@ class CustomerController {
         }
         catch (error) {
             res.status(400).json({ error: error.message || 'Standorte konnten nicht geladen werden.' });
+        }
+    }
+    async listProductDiscounts(req, res) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            const result = await this.productDiscountRepository.findByCustomerId(customerId);
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Produktrabatte konnten nicht geladen werden.' });
+        }
+    }
+    async upsertProductDiscount(req, res) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            const articleId = req.body.articleId;
+            const discount = Number(req.body.discount);
+            if (!articleId || typeof articleId !== 'string') {
+                return res.status(400).json({ error: 'articleId ist erforderlich.' });
+            }
+            if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+                return res.status(400).json({ error: 'Rabatt muss zwischen 0 und 100 liegen.' });
+            }
+            const result = await this.productDiscountRepository.upsert({
+                tenantId: req.user.tenantId,
+                customerId,
+                articleId,
+                discount,
+            });
+            res.status(201).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Produktrabatt konnte nicht gespeichert werden.' });
+        }
+    }
+    async updateProductDiscount(req, res) {
+        try {
+            const discountId = (Array.isArray(req.params.discountId) ? req.params.discountId[0] : req.params.discountId);
+            const discount = Number(req.body.discount);
+            if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+                return res.status(400).json({ error: 'Rabatt muss zwischen 0 und 100 liegen.' });
+            }
+            const result = await this.productDiscountRepository.updateDiscount(discountId, discount);
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Produktrabatt konnte nicht aktualisiert werden.' });
+        }
+    }
+    async deleteProductDiscount(req, res) {
+        try {
+            const discountId = (Array.isArray(req.params.discountId) ? req.params.discountId[0] : req.params.discountId);
+            await this.productDiscountRepository.delete(discountId);
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message || 'Produktrabatt konnte nicht gelöscht werden.' });
         }
     }
     async logActivity(req, res) {

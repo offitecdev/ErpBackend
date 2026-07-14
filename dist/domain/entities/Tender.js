@@ -41,7 +41,10 @@ class Tender {
     sourceRecurringTotal;
     sourceMargin;
     billingSameAsInstallation;
-    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation) {
+    installationAddress;
+    directDiscount;
+    currency;
+    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -81,6 +84,9 @@ class Tender {
         this.sourceRecurringTotal = sourceRecurringTotal;
         this.sourceMargin = sourceMargin;
         this.billingSameAsInstallation = billingSameAsInstallation;
+        this.installationAddress = installationAddress;
+        this.directDiscount = directDiscount;
+        this.currency = currency;
     }
 }
 exports.Tender = Tender;

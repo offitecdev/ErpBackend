@@ -21,7 +21,12 @@ class Customer {
     responsibleFirstName;
     responsibleLastName;
     status;
-    constructor(id, tenantId, companyName, isActive, segment, taxOffice, taxNumber, address, mainPhone, mainEmail, customerType = "PRIVATE", mobilePhone, website, language, vatNumber, customerSource, responsibleFirstName, responsibleLastName, status = "ACTIVE") {
+    priceList;
+    addressName;
+    postalCode;
+    city;
+    country;
+    constructor(id, tenantId, companyName, isActive, segment, taxOffice, taxNumber, address, mainPhone, mainEmail, customerType = "PRIVATE", mobilePhone, website, language, vatNumber, customerSource, responsibleFirstName, responsibleLastName, status = "ACTIVE", priceList, addressName, postalCode, city, country) {
         this.id = id;
         this.tenantId = tenantId;
         this.companyName = companyName;
@@ -41,6 +46,11 @@ class Customer {
         this.responsibleFirstName = responsibleFirstName;
         this.responsibleLastName = responsibleLastName;
         this.status = status;
+        this.priceList = priceList;
+        this.addressName = addressName;
+        this.postalCode = postalCode;
+        this.city = city;
+        this.country = country;
     }
 }
 exports.Customer = Customer;

@@ -25,6 +25,31 @@ const mappingArticleSelect = {
 
 export class ArticleRepository implements IArticleRepository {
 
+    private articleSelect(includeImages = true) {
+        return {
+            id: true,
+            tenantId: true,
+            articleCode: true,
+            name: true,
+            baseCost: true,
+            salePrice: true,
+            defaultSupplierId: true,
+            unit: true,
+            description: true,
+            systemBarcode: true,
+            supplierBarcode: true,
+            ...(includeImages ? { imageUrl: true } : {}),
+            category: true,
+            itemType: true,
+            status: true,
+            isActive: true,
+            minStockLevel: true,
+            criticalStockLevel: true,
+            maxStockLevel: true,
+            lastPurchaseDate: true,
+        };
+    }
+
     private mapToEntity(d: any): Article {
         return new Article(
             d.id,
@@ -137,8 +162,13 @@ export class ArticleRepository implements IArticleRepository {
         return data.map(d => this.mapToEntity(d));
     }
 
-    async findArticleById(id: string): Promise<Article | null> {
-        const data = await prisma.article.findUnique({ where: { id } });
+    async findArticleById(id: string, options?: { includeImages?: boolean }): Promise<Article | null> {
+        const data = await prisma.article.findUnique({
+            where: { id },
+            // `includeImages=false` must prevent MariaDB from reading the LONGTEXT
+            // column, not merely remove it from the JSON response afterwards.
+            select: this.articleSelect(options?.includeImages !== false),
+        });
         return data ? this.mapToEntity(data) : null;
     }
 

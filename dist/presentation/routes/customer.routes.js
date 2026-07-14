@@ -16,6 +16,7 @@ const CustomerActivityRepository_1 = require("../../infrastructure/repositories/
 const DocumentRepository_1 = require("../../infrastructure/repositories/DocumentRepository");
 const CustomerContactRepository_1 = require("../../infrastructure/repositories/CustomerContactRepository");
 const CustomerLocationRepository_1 = require("../../infrastructure/repositories/CustomerLocationRepository");
+const CustomerProductDiscountRepository_1 = require("../../infrastructure/repositories/CustomerProductDiscountRepository");
 const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepository");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
@@ -26,6 +27,7 @@ const customerActivityRepo = new CustomerActivityRepository_1.CustomerActivityRe
 const documentRepo = new DocumentRepository_1.DocumentRepository();
 const customerContactRepo = new CustomerContactRepository_1.CustomerContactRepository();
 const customerLocationRepo = new CustomerLocationRepository_1.CustomerLocationRepository();
+const customerProductDiscountRepo = new CustomerProductDiscountRepository_1.CustomerProductDiscountRepository();
 const createCustomerUseCase = new CreateCustomerUseCase_1.CreateCustomerUseCase(customerRepo);
 const getCustomerDashboardUseCase = new GetCustomerDashboardUseCase_1.GetCustomerDashboardUseCase(customerRepo);
 const addCustomerNoteUseCase = new AddCustomerNoteUseCase_1.AddCustomerNoteUseCase(customerNoteRepo, customerRepo);
@@ -35,7 +37,7 @@ const uploadDocumentUseCase = new UploadDocumentUseCase_1.UploadDocumentUseCase(
 const addCustomerContactUseCase = new AddCustomerContactUseCase_1.AddCustomerContactUseCase(customerContactRepo);
 const addCustomerLocationUseCase = new AddCustomerLocationUseCase_1.AddCustomerLocationUseCase(customerLocationRepo);
 const tenderRepoForCustomer = new TenderRepository_1.TenderRepository();
-const customerController = new CustomerController_1.CustomerController(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepo, customerContactRepo, customerNoteRepo, customerActivityRepo, addCustomerLocationUseCase, customerLocationRepo);
+const customerController = new CustomerController_1.CustomerController(createCustomerUseCase, getCustomerDashboardUseCase, addCustomerNoteUseCase, listCustomersUseCase, logCustomerActivityUseCase, uploadDocumentUseCase, addCustomerContactUseCase, customerRepo, customerContactRepo, customerNoteRepo, customerActivityRepo, addCustomerLocationUseCase, customerLocationRepo, customerProductDiscountRepo);
 /**
  * @swagger
  * /customers:
@@ -119,7 +121,15 @@ router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermi
  *                 type: string
  *               taxNumber:
  *                 type: string
+ *               addressName:
+ *                 type: string
  *               address:
+ *                 type: string
+ *               postalCode:
+ *                 type: string
+ *               city:
+ *                 type: string
+ *               country:
  *                 type: string
  *               mainPhone:
  *                 type: string
@@ -294,6 +304,11 @@ router.get('/:id/locations', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
 router.post('/:id/locations', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.addLocation(req, res));
 router.patch('/:id/locations/:locationId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.updateLocation(req, res));
 router.delete('/:id/locations/:locationId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.deleteLocation(req, res));
+/* ----------------------------- Product discounts (Produktrabatte) ----------------------------- */
+router.get('/:id/product-discounts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => customerController.listProductDiscounts(req, res));
+router.post('/:id/product-discounts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.upsertProductDiscount(req, res));
+router.patch('/:id/product-discounts/:discountId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.updateProductDiscount(req, res));
+router.delete('/:id/product-discounts/:discountId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.deleteProductDiscount(req, res));
 /* ----------------------------- Notes edit/delete ----------------------------- */
 router.patch('/:id/notes/:noteId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.addNote'), (req, res) => customerController.updateNote(req, res));
 router.delete('/:id/notes/:noteId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.addNote'), (req, res) => customerController.deleteNote(req, res));

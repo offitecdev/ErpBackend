@@ -18,6 +18,11 @@ export class Customer {
         public customerSource? : string | null ,
         public responsibleFirstName? : string | null ,
         public responsibleLastName? : string | null ,
-        public status : string = "ACTIVE"
+        public status : string = "ACTIVE",
+        public priceList? : string | null ,
+        public addressName? : string | null ,
+        public postalCode? : string | null ,
+        public city? : string | null ,
+        public country? : string | null
     ) {}
 }

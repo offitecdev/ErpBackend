@@ -25,6 +25,30 @@ const mappingArticleSelect = {
     defaultSupplierId: true,
 };
 class ArticleRepository {
+    articleSelect(includeImages = true) {
+        return {
+            id: true,
+            tenantId: true,
+            articleCode: true,
+            name: true,
+            baseCost: true,
+            salePrice: true,
+            defaultSupplierId: true,
+            unit: true,
+            description: true,
+            systemBarcode: true,
+            supplierBarcode: true,
+            ...(includeImages ? { imageUrl: true } : {}),
+            category: true,
+            itemType: true,
+            status: true,
+            isActive: true,
+            minStockLevel: true,
+            criticalStockLevel: true,
+            maxStockLevel: true,
+            lastPurchaseDate: true,
+        };
+    }
     mapToEntity(d) {
         return new Article_1.Article(d.id, d.tenantId, d.articleCode, d.name, d.baseCost, d.unit, d.description, d.systemBarcode, d.supplierBarcode, d.imageUrl, d.category, d.status ?? 'ACTIVE', d.isActive ?? true, d.minStockLevel ?? 0, d.criticalStockLevel ?? 0, d.maxStockLevel, d.lastPurchaseDate, d.salePrice ?? 0, d.defaultSupplierId ?? null, d.itemType ?? 'PRODUCT');
     }
@@ -107,8 +131,13 @@ class ArticleRepository {
         });
         return data.map(d => this.mapToEntity(d));
     }
-    async findArticleById(id) {
-        const data = await prisma_client_1.default.article.findUnique({ where: { id } });
+    async findArticleById(id, options) {
+        const data = await prisma_client_1.default.article.findUnique({
+            where: { id },
+            // `includeImages=false` must prevent MariaDB from reading the LONGTEXT
+            // column, not merely remove it from the JSON response afterwards.
+            select: this.articleSelect(options?.includeImages !== false),
+        });
         return data ? this.mapToEntity(data) : null;
     }
     async findArticleByCode(tenantId, codeOrBarcode) {

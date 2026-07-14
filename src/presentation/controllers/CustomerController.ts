@@ -13,6 +13,7 @@ import { ICustomerContactRepository } from '../../domain/repositories/ICustomerC
 import { ICustomerNoteRepository } from '../../domain/repositories/ICustomerNoteRepository';
 import { ICustomerActivityRepository } from '../../domain/repositories/ICustomerActivityRepository';
 import { ICustomerLocationRepository } from '../../domain/repositories/ICustomerLocationRepository';
+import { CustomerProductDiscountRepository } from '../../infrastructure/repositories/CustomerProductDiscountRepository';
 
 export class CustomerController {
     constructor(
@@ -28,7 +29,8 @@ export class CustomerController {
         private noteRepository: ICustomerNoteRepository,
         private activityRepository: ICustomerActivityRepository,
         private addCustomerLocationUseCase: AddCustomerLocationUseCase,
-        private locationRepository: ICustomerLocationRepository
+        private locationRepository: ICustomerLocationRepository,
+        private productDiscountRepository: CustomerProductDiscountRepository
     ) {}
 
     async create(req: Request, res: Response) {
@@ -238,6 +240,63 @@ export class CustomerController {
             res.status(200).json(result);
         } catch (error: any) {
             res.status(400).json({ error: error.message || 'Standorte konnten nicht geladen werden.' });
+        }
+    }
+
+    async listProductDiscounts(req: Request, res: Response) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
+            const result = await this.productDiscountRepository.findByCustomerId(customerId);
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Produktrabatte konnten nicht geladen werden.' });
+        }
+    }
+
+    async upsertProductDiscount(req: Request, res: Response) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
+            const articleId = req.body.articleId as string;
+            const discount = Number(req.body.discount);
+            if (!articleId || typeof articleId !== 'string') {
+                return res.status(400).json({ error: 'articleId ist erforderlich.' });
+            }
+            if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+                return res.status(400).json({ error: 'Rabatt muss zwischen 0 und 100 liegen.' });
+            }
+            const result = await this.productDiscountRepository.upsert({
+                tenantId: req.user!.tenantId,
+                customerId,
+                articleId,
+                discount,
+            });
+            res.status(201).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Produktrabatt konnte nicht gespeichert werden.' });
+        }
+    }
+
+    async updateProductDiscount(req: Request, res: Response) {
+        try {
+            const discountId = (Array.isArray(req.params.discountId) ? req.params.discountId[0] : req.params.discountId) as string;
+            const discount = Number(req.body.discount);
+            if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+                return res.status(400).json({ error: 'Rabatt muss zwischen 0 und 100 liegen.' });
+            }
+            const result = await this.productDiscountRepository.updateDiscount(discountId, discount);
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Produktrabatt konnte nicht aktualisiert werden.' });
+        }
+    }
+
+    async deleteProductDiscount(req: Request, res: Response) {
+        try {
+            const discountId = (Array.isArray(req.params.discountId) ? req.params.discountId[0] : req.params.discountId) as string;
+            await this.productDiscountRepository.delete(discountId);
+            res.status(204).send();
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Produktrabatt konnte nicht gelöscht werden.' });
         }
     }
 
