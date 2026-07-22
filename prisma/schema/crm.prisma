@@ -41,8 +41,54 @@ model Customer {
   salesOrders SalesOrder[]
   invoices Invoice[]
   productDiscounts CustomerProductDiscount[]
+  meetingActivities MeetingActivity[]
+  meetingParticipations MeetingActivityParticipant[] @relation("MeetingParticipantCustomer")
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
+}
+
+// Workspace "meeting activity" (a meeting or a lightweight task) shown on the
+// CRM overview and the unified calendar. Participants can be staff members or
+// customers, mixed freely.
+model MeetingActivity {
+  id                  String   @id
+  tenantId            String
+  // MEETING | TASK
+  kind                String   @default("MEETING")
+  title               String
+  notes               String?  @db.Text
+  startTime           DateTime
+  endTime             DateTime
+  customerId          String?
+  createdByEmployeeId String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant       Tenant                       @relation(fields: [tenantId], references: [id])
+  customer     Customer?                    @relation(fields: [customerId], references: [id])
+  createdBy    Employee                     @relation("MeetingActivityCreator", fields: [createdByEmployeeId], references: [id])
+  participants MeetingActivityParticipant[]
+
+  @@index([tenantId, startTime])
+  @@index([customerId])
+  @@index([createdByEmployeeId])
+}
+
+model MeetingActivityParticipant {
+  id              String  @id
+  meetingId       String
+  // EMPLOYEE | CUSTOMER — exactly one of employeeId/customerId is set.
+  participantType String
+  employeeId      String?
+  customerId      String?
+
+  meeting  MeetingActivity @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  employee Employee?       @relation("MeetingParticipantEmployee", fields: [employeeId], references: [id])
+  customer Customer?       @relation("MeetingParticipantCustomer", fields: [customerId], references: [id])
+
+  @@index([meetingId])
+  @@index([employeeId])
+  @@index([customerId])
 }
 
 // Per-customer default discount (%) for a specific article. Applied automatically

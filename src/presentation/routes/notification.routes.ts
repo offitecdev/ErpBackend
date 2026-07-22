@@ -1,8 +1,35 @@
 import { Router } from 'express';
+import { nanoid } from 'nanoid';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
 
 const router = Router();
+
+// Create a personal notification (e.g. an urgent alert card archived from the
+// floating alert deck lands in the recipient's notification list).
+router.post('/', requireAuth, async (req, res) => {
+    try {
+        const user = (req as any).user!;
+        const title = String(req.body?.title || '').trim();
+        if (!title) return res.status(400).json({ error: 'Başlık gerekli.' });
+        const notification = await (prisma as any).notification.create({
+            data: {
+                id: nanoid(12),
+                tenantId: user.tenantId,
+                recipientEmployeeId: user.id,
+                type: String(req.body?.type || 'ALERT'),
+                title,
+                message: String(req.body?.message || ''),
+                linkUrl: req.body?.linkUrl ? String(req.body.linkUrl) : null,
+                isRead: Boolean(req.body?.isRead) || false,
+                readAt: req.body?.isRead ? new Date() : null,
+            },
+        });
+        res.status(201).json(notification);
+    } catch (error: any) {
+        res.status(400).json({ error: error.message });
+    }
+});
 
 router.get('/', requireAuth, async (req, res) => {
     try {

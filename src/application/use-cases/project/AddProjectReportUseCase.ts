@@ -19,17 +19,29 @@ export interface ReportInput {
     images?: string[];
 }
 
-const startOfDay = (date: Date) => {
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    return d;
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+// The work day is a CALENDAR date, not an instant. Anchoring it at 12:00 UTC keeps
+// it on the same calendar day in every timezone; the previous local-midnight anchor
+// shifted the report onto the neighbouring day whenever the server's timezone
+// differed from the user's (a report filed "today" was stored as yesterday).
+const resolveWorkDate = (raw: string) => {
+    const match = DATE_ONLY.exec(String(raw ?? "").trim());
+    if (match) {
+        return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0));
+    }
+    // Legacy full-ISO input: keep the calendar day it resolves to on this server.
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return parsed;
+    return new Date(Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 12, 0, 0, 0));
 };
 
-const endOfDay = (date: Date) => {
-    const d = new Date(date);
-    d.setHours(23, 59, 59, 999);
-    return d;
-};
+// UTC bounds of the calendar day a (noon-anchored) work date falls on.
+const utcDayStart = (date: Date) =>
+    new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0));
+
+const utcDayEnd = (date: Date) =>
+    new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999));
 
 const minutesBetween = (start: Date, end: Date) =>
     Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
@@ -60,7 +72,7 @@ export class AddProjectReportUseCase {
             if (!belongsToProject) throw new Error("Sipariş bu projeye ait değil.");
         }
 
-        const workDate = startOfDay(new Date(input.workDate));
+        const workDate = resolveWorkDate(input.workDate);
         const startedAt = new Date(input.startedAt);
         const endedAt = new Date(input.endedAt);
         if (Number.isNaN(workDate.getTime()) || Number.isNaN(startedAt.getTime()) || Number.isNaN(endedAt.getTime())) {
@@ -69,8 +81,8 @@ export class AddProjectReportUseCase {
         if (endedAt <= startedAt) throw new Error("Bitiş saati başlangıç saatinden sonra olmalıdır.");
         if (!input.operationsDone?.trim()) throw new Error("Yapılan iş alanı zorunludur.");
 
-        const dayStart = startOfDay(workDate);
-        const dayEnd = endOfDay(workDate);
+        const dayStart = utcDayStart(workDate);
+        const dayEnd = utcDayEnd(workDate);
         const appointments = await (prisma as any).appointment.findMany({
             where: {
                 projectId: input.projectId,
@@ -84,6 +96,16 @@ export class AddProjectReportUseCase {
                 endTime: { lte: dayEnd }
             }
         });
+
+        // The report's own appointment always counts towards the planned minutes, even
+        // if it sits just outside the UTC day window (early-morning / late-night slots
+        // in a far-offset timezone) — otherwise its own day would look unplanned.
+        if (input.appointmentId && !appointments.some((appointment: any) => appointment.id === input.appointmentId)) {
+            const own: any = await (prisma as any).appointment.findFirst({
+                where: { id: input.appointmentId, projectId: input.projectId },
+            });
+            if (own) appointments.push(own);
+        }
 
         const plannedMinutesForDay = appointments.reduce((sum: number, appointment: any) => {
             return sum + minutesBetween(new Date(appointment.startTime), new Date(appointment.endTime));

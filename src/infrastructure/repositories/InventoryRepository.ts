@@ -246,6 +246,9 @@ export class InventoryRepository implements IInventoryRepository {
             status?: string | undefined;
             itemType?: string | undefined;
             includeDescription?: boolean;
+            code?: string | undefined;
+            name?: string | undefined;
+            barcode?: string | undefined;
         }
     ): Promise<{ items: any[]; total: number; page: number; pageSize: number }> {
         const page = Math.max(1, Number(options.page) || 1);
@@ -264,6 +267,22 @@ export class InventoryRepository implements IInventoryRepository {
                 { category: { contains: search } },
             ];
         }
+        // Kolon bazlı filtreler — genel aramanın (OR) üstüne AND olarak daraltır.
+        const columnFilters: any[] = [];
+        const code = String(options.code || '').trim();
+        if (code) columnFilters.push({ articleCode: { contains: code } });
+        const name = String(options.name || '').trim();
+        if (name) columnFilters.push({ name: { contains: name } });
+        const barcode = String(options.barcode || '').trim();
+        if (barcode) {
+            columnFilters.push({
+                OR: [
+                    { systemBarcode: { contains: barcode } },
+                    { supplierBarcode: { contains: barcode } },
+                ],
+            });
+        }
+        if (columnFilters.length) where.AND = columnFilters;
 
         const [total, articles] = await Promise.all([
             (prisma as any).article.count({ where }),

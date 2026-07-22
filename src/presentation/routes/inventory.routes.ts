@@ -181,6 +181,18 @@ router.get(
  *       - in: query
  *         name: itemType
  *         schema: { type: string, enum: [PRODUCT, MATERIAL] }
+ *       - in: query
+ *         name: code
+ *         schema: { type: string }
+ *         description: Stok kodu kolonunda daraltma (contains)
+ *       - in: query
+ *         name: name
+ *         schema: { type: string }
+ *         description: Ürün adı kolonunda daraltma (contains)
+ *       - in: query
+ *         name: barcode
+ *         schema: { type: string }
+ *         description: Sistem/tedarikçi barkodu kolonunda daraltma (contains)
  */
 router.get(
     '/articles/summary/paged',

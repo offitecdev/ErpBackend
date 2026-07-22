@@ -29,6 +29,8 @@ import maintenanceRoutes from './presentation/routes/maintenance.routes';
 import salesOrderRoutes from './presentation/routes/sales-order.routes';
 import billingRoutes from './presentation/routes/billing.routes';
 import notificationRoutes from './presentation/routes/notification.routes';
+import meetingRoutes from './presentation/routes/meeting.routes';
+import fxRoutes from './presentation/routes/fx.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { requireAuth } from './presentation/middlewares/AuthMiddleware';
 import { requirePermission } from './presentation/middlewares/RbacMiddleware';
@@ -354,6 +356,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/maintenance`, maintenanceRoutes);
     app.use(`${prefix}/regie`, regieRoutes);
     app.use(`${prefix}/notifications`, notificationRoutes);
+    app.use(`${prefix}/meetings`, meetingRoutes);
+    app.use(`${prefix}/fx`, fxRoutes);
 }
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

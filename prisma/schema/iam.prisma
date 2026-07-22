@@ -34,6 +34,7 @@ model Tenant {
   checklistTemplates     ChecklistTemplate[]
   deliveryReports        DeliveryReport[]
   signatureRequests      SignatureRequest[]
+  meetingActivities      MeetingActivity[]
 
   @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
 }
@@ -84,6 +85,8 @@ model Employee {
   serviceReports         ServiceReport[]    @relation("ServiceReportTech")
   createdSalesOrders     SalesOrder[]
   issuedInvoices         Invoice[]          @relation("EmployeeIssuedInvoices")
+  createdMeetingActivities MeetingActivity[] @relation("MeetingActivityCreator")
+  meetingParticipations  MeetingActivityParticipant[] @relation("MeetingParticipantEmployee")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }

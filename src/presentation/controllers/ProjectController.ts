@@ -1435,28 +1435,29 @@ export class ProjectController {
             });
             if (!order) return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
 
-            // No order may be deleted once it has been billed.
-            const invoiceCount = await (prisma as any).invoice.count({ where: { salesOrderId: order.id } });
+            const isAddon = Boolean(order.parentSalesOrderId);
+
+            // Deleting a main order removes its addon orders with it, so the whole
+            // family (order + addons) must be un-billed before anything is deleted.
+            const addons: any[] = isAddon
+                ? []
+                : await (prisma as any).salesOrder.findMany({
+                    where: { parentSalesOrderId: order.id, projectId, tenantId },
+                    select: { id: true },
+                });
+            const familyIds = [order.id, ...addons.map((addon) => addon.id)];
+            const invoiceCount = await (prisma as any).invoice.count({ where: { salesOrderId: { in: familyIds } } });
             if (invoiceCount > 0) {
                 return res.status(400).json({ error: "Faturalandırılmış bir sipariş silinemez." });
             }
 
-            const isAddon = Boolean(order.parentSalesOrderId);
-
-            if (!isAddon) {
-                const addonCount = await (prisma as any).salesOrder.count({
-                    where: { parentSalesOrderId: order.id, projectId, tenantId },
-                });
-                if (addonCount > 0) {
-                    return res.status(400).json({ error: "Ek siparişleri olan bir ana sipariş silinemez. Önce ek siparişleri silin." });
-                }
-            }
-
             await (prisma as any).$transaction(async (tx: any) => {
                 if (!isAddon) {
+                    // Records normally carry the parent order id, but sweep the whole
+                    // family in case anything was ever stamped with an addon id.
                     // Reports own their materials/images via onDelete: Cascade.
                     const reports: any[] = await tx.projectReport.findMany({
-                        where: { projectId, salesOrderId: order.id },
+                        where: { projectId, salesOrderId: { in: familyIds } },
                         select: { id: true },
                     });
                     if (reports.length) {
@@ -1465,7 +1466,7 @@ export class ProjectController {
 
                     // Restock every extra material before removing it.
                     const extraMaterials: any[] = await tx.projectExtraMaterial.findMany({
-                        where: { projectId, salesOrderId: order.id },
+                        where: { projectId, salesOrderId: { in: familyIds } },
                         select: { id: true, materialId: true, quantity: true },
                     });
                     for (const row of extraMaterials) {
@@ -1478,10 +1479,16 @@ export class ProjectController {
                         await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((r) => r.id) } } });
                     }
 
-                    await tx.projectExpense.deleteMany({ where: { projectId, salesOrderId: order.id } });
+                    await tx.projectExpense.deleteMany({ where: { projectId, salesOrderId: { in: familyIds } } });
 
                     // Appointment assignments cascade on Appointment delete.
-                    await tx.appointment.deleteMany({ where: { projectId, salesOrderId: order.id } });
+                    await tx.appointment.deleteMany({ where: { projectId, salesOrderId: { in: familyIds } } });
+
+                    // Addon orders carry no records of their own (they bill the parent's
+                    // time slice, deleted above) — remove them entirely, not just zeroed.
+                    if (addons.length) {
+                        await tx.salesOrder.deleteMany({ where: { id: { in: addons.map((addon) => addon.id) } } });
+                    }
                 }
 
                 await tx.salesOrder.delete({ where: { id: order.id } });

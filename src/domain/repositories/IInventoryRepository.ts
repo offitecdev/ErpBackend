@@ -35,6 +35,11 @@ export interface IInventoryRepository {
             status?: string | undefined;
             itemType?: string | undefined;
             includeDescription?: boolean;
+            // Kolon bazlı filtreler (ürün listesi tablosundaki filtre satırı) —
+            // `search` genel aramadır, bunlar tek kolona daraltır.
+            code?: string | undefined;
+            name?: string | undefined;
+            barcode?: string | undefined;
         }
     ): Promise<{ items: any[]; total: number; page: number; pageSize: number }>;
 
