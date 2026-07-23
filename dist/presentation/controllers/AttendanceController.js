@@ -1,7 +1,11 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AttendanceController = void 0;
 require("../middlewares/AuthMiddleware"); // Import for req.user type augmentation
+const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 class AttendanceController {
     checkInUseCase;
     checkOutUseCase;
@@ -81,6 +85,15 @@ class AttendanceController {
             const id = req.params.id;
             const { checkInTime, checkOutTime } = req.body;
             const editedById = req.user.id;
+            // Ownership check: the log must belong to an employee of the caller's
+            // tenant (prevents cross-tenant attendance edits by id).
+            const log = await prisma_client_1.default.attendanceLog.findUnique({
+                where: { id },
+                select: { employee: { select: { tenantId: true } } },
+            });
+            if (!log || log.employee.tenantId !== req.user.tenantId) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             const result = await this.updateAttendanceUseCase.execute(id, checkInTime, checkOutTime, editedById);
             res.status(200).json(result);
         }

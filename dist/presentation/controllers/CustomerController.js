@@ -1,7 +1,11 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CustomerController = void 0;
 require("../middlewares/AuthMiddleware");
+const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 class CustomerController {
     createCustomerUseCase;
     getCustomerDashboardUseCase;
@@ -33,6 +37,33 @@ class CustomerController {
         this.locationRepository = locationRepository;
         this.productDiscountRepository = productDiscountRepository;
     }
+    /**
+     * Ownership guards (anti-IDOR): every by-id operation must resolve to a row
+     * inside the caller's tenant. A foreign id behaves exactly like a missing
+     * id — the guard fails and the handler answers 404.
+     */
+    async customerInTenant(customerId, tenantId) {
+        const customer = await prisma_client_1.default.customer.findUnique({
+            where: { id: customerId },
+            select: { tenantId: true },
+        });
+        return customer?.tenantId === tenantId;
+    }
+    /** Child rows (contact/note/activity/location) resolve tenant via their parent customer. */
+    async childInTenant(model, id, tenantId) {
+        const row = await prisma_client_1.default[model].findUnique({
+            where: { id },
+            select: { customer: { select: { tenantId: true } } },
+        });
+        return row?.customer?.tenantId === tenantId;
+    }
+    async discountInTenant(discountId, tenantId) {
+        const row = await prisma_client_1.default.customerProductDiscount.findUnique({
+            where: { id: discountId },
+            select: { tenantId: true },
+        });
+        return row?.tenantId === tenantId;
+    }
     async create(req, res) {
         try {
             const customerData = {
@@ -59,6 +90,17 @@ class CustomerController {
                 filter.status = req.query.status;
             if (req.query.search)
                 filter.search = req.query.search;
+            // Kolon bazlı filtreler + sıralama (Teklifler/Ürünler listesindeki desenle aynı).
+            if (req.query.companyName)
+                filter.companyName = req.query.companyName;
+            if (req.query.vatNumber)
+                filter.vatNumber = req.query.vatNumber;
+            if (req.query.email)
+                filter.email = req.query.email;
+            if (req.query.sortBy === 'companyName' || req.query.sortBy === 'vatNumber' || req.query.sortBy === 'status')
+                filter.sortBy = req.query.sortBy;
+            if (req.query.sortDirection)
+                filter.sortDirection = req.query.sortDirection === 'asc' ? 'asc' : 'desc';
             if (req.query.page)
                 filter.page = Math.max(1, Number(req.query.page) || 1);
             if (req.query.pageSize)
@@ -94,6 +136,9 @@ class CustomerController {
             if (!id || Array.isArray(id)) {
                 return res.status(400).json({ error: 'Geçersiz müşteri ID.' });
             }
+            if (!(await this.customerInTenant(id, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const result = await this.customerRepository.update(id, req.body);
             res.status(200).json(result);
         }
@@ -124,6 +169,9 @@ class CustomerController {
             if (!employeeId) {
                 return res.status(401).json({ error: 'Yetkisiz erişim.' });
             }
+            if (!(await this.customerInTenant(id, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const noteData = {
                 customerId: id,
                 createdByEmployeeId: employeeId,
@@ -141,6 +189,9 @@ class CustomerController {
     async addContact(req, res) {
         try {
             const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            if (!(await this.customerInTenant(customerId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const contactData = {
                 customerId,
                 firstName: req.body.firstName,
@@ -162,6 +213,9 @@ class CustomerController {
     async updateContact(req, res) {
         try {
             const contactId = (Array.isArray(req.params.contactId) ? req.params.contactId[0] : req.params.contactId);
+            if (!(await this.childInTenant('customerContact', contactId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             const result = await this.contactRepository.update(contactId, req.body);
             res.status(200).json(result);
         }
@@ -172,6 +226,9 @@ class CustomerController {
     async deleteContact(req, res) {
         try {
             const contactId = (Array.isArray(req.params.contactId) ? req.params.contactId[0] : req.params.contactId);
+            if (!(await this.childInTenant('customerContact', contactId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             await this.contactRepository.delete(contactId);
             res.status(204).send();
         }
@@ -182,6 +239,9 @@ class CustomerController {
     async updateNote(req, res) {
         try {
             const noteId = (Array.isArray(req.params.noteId) ? req.params.noteId[0] : req.params.noteId);
+            if (!(await this.childInTenant('customerNote', noteId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             const result = await this.noteRepository.update(noteId, {
                 noteText: req.body.noteText,
                 noteType: req.body.noteType,
@@ -196,6 +256,9 @@ class CustomerController {
     async deleteNote(req, res) {
         try {
             const noteId = (Array.isArray(req.params.noteId) ? req.params.noteId[0] : req.params.noteId);
+            if (!(await this.childInTenant('customerNote', noteId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             await this.noteRepository.delete(noteId);
             res.status(204).send();
         }
@@ -206,6 +269,9 @@ class CustomerController {
     async addLocation(req, res) {
         try {
             const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            if (!(await this.customerInTenant(customerId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const result = await this.addCustomerLocationUseCase.execute({ ...req.body, customerId });
             res.status(201).json(result);
         }
@@ -216,6 +282,9 @@ class CustomerController {
     async updateLocation(req, res) {
         try {
             const locationId = (Array.isArray(req.params.locationId) ? req.params.locationId[0] : req.params.locationId);
+            if (!(await this.childInTenant('customerLocation', locationId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             const result = await this.locationRepository.update(locationId, req.body);
             res.status(200).json(result);
         }
@@ -226,6 +295,9 @@ class CustomerController {
     async deleteLocation(req, res) {
         try {
             const locationId = (Array.isArray(req.params.locationId) ? req.params.locationId[0] : req.params.locationId);
+            if (!(await this.childInTenant('customerLocation', locationId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             await this.locationRepository.delete(locationId);
             res.status(204).send();
         }
@@ -236,6 +308,9 @@ class CustomerController {
     async listLocations(req, res) {
         try {
             const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            if (!(await this.customerInTenant(customerId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const result = await this.locationRepository.findByCustomerId(customerId);
             res.status(200).json(result);
         }
@@ -246,6 +321,9 @@ class CustomerController {
     async listProductDiscounts(req, res) {
         try {
             const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            if (!(await this.customerInTenant(customerId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const result = await this.productDiscountRepository.findByCustomerId(customerId);
             res.status(200).json(result);
         }
@@ -263,6 +341,9 @@ class CustomerController {
             }
             if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
                 return res.status(400).json({ error: 'Rabatt muss zwischen 0 und 100 liegen.' });
+            }
+            if (!(await this.customerInTenant(customerId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
             }
             const result = await this.productDiscountRepository.upsert({
                 tenantId: req.user.tenantId,
@@ -283,6 +364,9 @@ class CustomerController {
             if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
                 return res.status(400).json({ error: 'Rabatt muss zwischen 0 und 100 liegen.' });
             }
+            if (!(await this.discountInTenant(discountId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             const result = await this.productDiscountRepository.updateDiscount(discountId, discount);
             res.status(200).json(result);
         }
@@ -293,6 +377,9 @@ class CustomerController {
     async deleteProductDiscount(req, res) {
         try {
             const discountId = (Array.isArray(req.params.discountId) ? req.params.discountId[0] : req.params.discountId);
+            if (!(await this.discountInTenant(discountId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             await this.productDiscountRepository.delete(discountId);
             res.status(204).send();
         }
@@ -303,6 +390,9 @@ class CustomerController {
     async logActivity(req, res) {
         try {
             const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            if (!(await this.customerInTenant(customerId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const activityData = {
                 customerId,
                 employeeId: req.user.id,
@@ -323,6 +413,9 @@ class CustomerController {
     async updateActivity(req, res) {
         try {
             const activityId = (Array.isArray(req.params.activityId) ? req.params.activityId[0] : req.params.activityId);
+            if (!(await this.childInTenant('customerActivity', activityId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             const payload = {};
             if (req.body.activityType !== undefined)
                 payload.activityType = req.body.activityType;
@@ -340,6 +433,9 @@ class CustomerController {
     async deleteActivity(req, res) {
         try {
             const activityId = (Array.isArray(req.params.activityId) ? req.params.activityId[0] : req.params.activityId);
+            if (!(await this.childInTenant('customerActivity', activityId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             await this.activityRepository.delete(activityId);
             res.status(204).send();
         }
@@ -350,6 +446,9 @@ class CustomerController {
     async uploadDocument(req, res) {
         try {
             const relatedEntityId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+            if (!(await this.customerInTenant(relatedEntityId, req.user.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
             const documentData = {
                 tenantId: req.user.tenantId,
                 relatedEntityId,

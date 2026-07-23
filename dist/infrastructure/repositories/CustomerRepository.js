@@ -122,6 +122,28 @@ class CustomerRepository {
                 { mainEmail: { contains: filter.search } }
             ];
         }
+        // Kolon bazlı filtreler — üstteki genel arama ile AND'lenir (MySQL collation
+        // varsayılan olarak büyük/küçük harf duyarsız, ayrıca `mode` gerekmez).
+        if (filter.companyName)
+            whereClause.companyName = { contains: filter.companyName };
+        if (filter.vatNumber)
+            whereClause.vatNumber = { contains: filter.vatNumber };
+        if (filter.email)
+            whereClause.mainEmail = { contains: filter.email };
+        // Sıralama — yalnızca izin verilen DB kolonları; sortBy yoksa alfabetik varsayılan.
+        const sortDir = filter.sortDirection === 'asc' ? 'asc' : 'desc';
+        let orderBy = { companyName: 'asc' };
+        switch (filter.sortBy) {
+            case 'companyName':
+                orderBy = { companyName: sortDir };
+                break;
+            case 'vatNumber':
+                orderBy = { vatNumber: sortDir };
+                break;
+            case 'status':
+                orderBy = { status: sortDir };
+                break;
+        }
         const page = filter.page && filter.page > 0 ? filter.page : undefined;
         const pageSize = filter.pageSize && filter.pageSize > 0 ? Math.min(filter.pageSize, 100) : undefined;
         const [data, total] = await Promise.all([
@@ -153,7 +175,7 @@ class CustomerRepository {
                     responsibleLastName: true,
                     status: true,
                 },
-                orderBy: { companyName: 'asc' },
+                orderBy,
                 ...(page && pageSize ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
             }),
             page && pageSize ? prisma_client_1.default.customer.count({ where: whereClause }) : Promise.resolve(0),

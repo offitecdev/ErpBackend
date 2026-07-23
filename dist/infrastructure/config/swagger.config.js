@@ -48,8 +48,8 @@ const options = {
                 },
                 LoginResponse: {
                     type: 'object',
+                    description: 'Tokenlar JSON gövdesinde DÖNMEZ; HttpOnly Secure SameSite cookie olarak yazılır (ofi_access 15 dk, ofi_refresh 30 gün).',
                     properties: {
-                        token: { type: 'string' },
                         employee: {
                             type: 'object',
                             properties: {

@@ -1003,6 +1003,14 @@ class MaintenanceController {
                 res.status(400).json({ error: "Imza zorunludur." });
                 return;
             }
+            // Ownership check (same rule as updateReport): the report's contract
+            // tenant must be inside the caller's service-tenant scope.
+            const tenantId = req.user.tenantId;
+            const report = await this.maintenanceRepo.getReportById(reportId);
+            if (!report || !(await (0, serviceTenantScope_1.isTenantInServiceTenantScope)(report.task?.contract?.tenantId, tenantId))) {
+                res.status(404).json({ error: "Rapor bulunamadi." });
+                return;
+            }
             const signedReport = await this.reportUseCase.signReport(reportId, signatureBase64);
             res.status(200).json({ message: "Rapor imzalandi ve kilitlendi.", report: signedReport });
         }

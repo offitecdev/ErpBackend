@@ -22,7 +22,10 @@ class Employee {
     createdAt;
     updatedAt;
     roleId;
-    constructor(id, tenantId, firstName, lastName, email, passwordHash, isActive, title, departmentId, roleName, phone, address, hireDate, terminationDate, annualLeaveEntitlement, profilePictureUrl, notes, createdAt, updatedAt, roleId) {
+    passwordChangedAt;
+    deletedAt;
+    bannedAt;
+    constructor(id, tenantId, firstName, lastName, email, passwordHash, isActive, title, departmentId, roleName, phone, address, hireDate, terminationDate, annualLeaveEntitlement, profilePictureUrl, notes, createdAt, updatedAt, roleId, passwordChangedAt, deletedAt, bannedAt) {
         this.id = id;
         this.tenantId = tenantId;
         this.firstName = firstName;
@@ -43,6 +46,9 @@ class Employee {
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
         this.roleId = roleId;
+        this.passwordChangedAt = passwordChangedAt;
+        this.deletedAt = deletedAt;
+        this.bannedAt = bannedAt;
     }
 }
 exports.Employee = Employee;

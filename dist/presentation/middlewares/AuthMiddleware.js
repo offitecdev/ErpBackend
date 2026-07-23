@@ -4,8 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.requireAuth = void 0;
-const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService");
+const authCookies_1 = require("../utils/authCookies");
 const findTenantRootId = async (tenantId) => {
     const cached = tenantRootCache.get(tenantId);
     if (cached && cached.expiresAt > Date.now()) {
@@ -49,25 +50,61 @@ const resolveTenantId = async (homeTenantId, requestedTenantId) => {
     return requested;
 };
 const requireAuth = async (req, res, next) => {
+    // Tokens are accepted exclusively from the HttpOnly cookie — never from
+    // the JSON body. (Authorization: Bearer is still honored for API tooling
+    // such as Swagger UI; browsers never store tokens anywhere JS can read.)
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        res.status(401).json({ error: 'Kimlik doğrulama reddedildi: Token bulunamadı.' });
-        return;
-    }
-    const token = authHeader.split(' ')[1];
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
+    const cookieToken = req.cookies?.[authCookies_1.ACCESS_COOKIE];
+    const token = cookieToken || headerToken;
     if (!token) {
         res.status(401).json({ error: 'Kimlik doğrulama reddedildi: Token bulunamadı.' });
         return;
     }
+    // CSRF (double-submit cookie), on top of SameSite: cookie-authenticated
+    // state-changing requests must echo the JS-readable csrf cookie in the
+    // X-CSRF-Token header — a cross-site attacker's browser sends the auth
+    // cookie but cannot read the csrf cookie to forge the header. Bearer-header
+    // auth is inherently CSRF-proof and skips this.
+    const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+    if (cookieToken && isMutation) {
+        const csrfCookie = req.cookies?.[authCookies_1.CSRF_COOKIE];
+        const csrfHeader = req.header('x-csrf-token');
+        if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+            res.status(403).json({ error: 'CSRF doğrulaması başarısız. Sayfayı yenileyip tekrar deneyin.' });
+            return;
+        }
+    }
     try {
-        const secret = process.env.OFFITEC_JWT_SECRET;
-        if (!secret)
-            throw new Error('JWT Secret tanımlı değil!');
-        // Pin the algorithm so a forged token can't downgrade to "none" or a
-        // different scheme; only our own HS256-signed tokens are accepted.
-        const decoded = jsonwebtoken_1.default.verify(token, secret, { algorithms: ['HS256'] });
-        if (!decoded || typeof decoded !== 'object' || !decoded.id || !decoded.tenantId || !decoded.email) {
-            res.status(401).json({ error: 'Geçersiz token içeriği.' });
+        // Purpose-bound verification: only a token signed with the access secret
+        // and carrying typ=access is accepted here — a refresh (or activation,
+        // reset, deletion) token can never authorize an API request.
+        const decoded = JwtTokenService_1.jwtTokenService.verifyToken('access', token);
+        // The token being valid is not enough: the account's current state is
+        // checked in the database on every authorized request.
+        const employee = await prisma_client_1.default.employee.findUnique({
+            where: { id: decoded.id },
+            select: { isActive: true, deletedAt: true, bannedAt: true, passwordChangedAt: true },
+        });
+        // These states mean the whole session is dead (refresh would fail
+        // too), so the server clears its cookies. An *expired* access token, in
+        // contrast, must NOT clear anything — the refresh cookie is still valid
+        // and the client will silently renew.
+        if (!employee || employee.deletedAt || employee.bannedAt) {
+            (0, authCookies_1.clearAuthCookies)(res);
+            res.status(401).json({ error: 'Hesap bulunamadı veya silinmiş.' });
+            return;
+        }
+        if (!employee.isActive) {
+            (0, authCookies_1.clearAuthCookies)(res);
+            res.status(401).json({ error: 'Hesabınız pasif durumdadır. Sistem yöneticisi ile iletişime geçin.' });
+            return;
+        }
+        // A password change bumps passwordChangedAt; any token minted before it
+        // carries a stale pwdAt claim and dies here.
+        if (decoded.pwdAt !== (0, JwtTokenService_1.toPwdAtClaim)(employee.passwordChangedAt)) {
+            (0, authCookies_1.clearAuthCookies)(res);
+            res.status(401).json({ error: 'Parola değiştirildiği için oturum geçersiz. Lütfen tekrar giriş yapın.' });
             return;
         }
         const homeTenantId = decoded.tenantId;

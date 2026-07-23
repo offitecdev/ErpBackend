@@ -112,7 +112,7 @@ class TenderArticleController {
                         select: {
                             tenderId: true,
                             calculation: true,
-                            tender: { select: { status: true } },
+                            tender: { select: { status: true, tenantId: true } },
                         },
                     },
                 },
@@ -121,6 +121,11 @@ class TenderArticleController {
                 return res.status(404).json({ error: "ÃƒÅ“rÃƒÂ¼n eÃ…Å¸leÃ…Å¸tirmesi bulunamadÃ„Â±." });
             if (before.positionId !== positionId || before.position.tenderId !== tenderId) {
                 return res.status(404).json({ error: "ÃƒÅ“rÃƒÂ¼n eÃ…Å¸leÃ…Å¸tirmesi bu teklife ait deÄŸil." });
+            }
+            // Ownership check: the mapping's tender must belong to the caller's
+            // tenant — URL-consistency alone doesn't stop cross-tenant access.
+            if (before.position.tender.tenantId !== tenantId) {
+                return res.status(404).json({ error: "ÃƒÅ“rÃƒÂ¼n eÃ…Å¸leÃ…Å¸tirmesi bulunamadÃ„Â±." });
             }
             if (before.position.tender.status !== 'Draft') {
                 return res.status(403).json({ error: "OnaylanmÃ„Â±Ã…Å¸ tekliflerdeki ÃƒÂ¼rÃƒÂ¼n eÃ…Å¸leÃ…Å¸tirmeleri gÃƒÂ¼ncellenemez." });
@@ -215,7 +220,7 @@ class TenderArticleController {
                             tenderId: true,
                             shortDescription: true,
                             calculation: true,
-                            tender: { select: { status: true } },
+                            tender: { select: { status: true, tenantId: true } },
                         },
                     },
                 },
@@ -224,6 +229,10 @@ class TenderArticleController {
                 return res.status(404).json({ error: "Ürün eşleştirmesi bulunamadı." });
             if (before.positionId !== positionId || before.position.tenderId !== tenderId) {
                 return res.status(404).json({ error: "Ürün eşleştirmesi bu teklife ait değil." });
+            }
+            // Ownership check: cross-tenant mapping ids answer 404.
+            if (before.position.tender.tenantId !== tenantId) {
+                return res.status(404).json({ error: "Ürün eşleştirmesi bulunamadı." });
             }
             if (before.position.tender.status !== 'Draft') {
                 return res.status(403).json({ error: "Onaylanmış tekliflerdeki ürün eşleştirmeleri silinemez." });

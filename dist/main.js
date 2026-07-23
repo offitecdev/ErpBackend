@@ -7,6 +7,7 @@ const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
+const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const helmet_1 = __importDefault(require("helmet"));
 const morgan_1 = __importDefault(require("morgan"));
 const swagger_ui_express_1 = __importDefault(require("swagger-ui-express"));
@@ -35,8 +36,10 @@ const billing_routes_1 = __importDefault(require("./presentation/routes/billing.
 const notification_routes_1 = __importDefault(require("./presentation/routes/notification.routes"));
 const meeting_routes_1 = __importDefault(require("./presentation/routes/meeting.routes"));
 const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
+const files_routes_1 = __importDefault(require("./presentation/routes/files.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const AuthMiddleware_1 = require("./presentation/middlewares/AuthMiddleware");
+const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
 const RbacMiddleware_1 = require("./presentation/middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("./infrastructure/database/prisma.client"));
 const nanoid_1 = require("nanoid");
@@ -55,29 +58,41 @@ const allowSwaggerUi = (_req, res, next) => {
     next();
 };
 app.set('etag', false);
-// Restrict cross-origin access to an explicit allow-list when configured via
-// OFFITEC_CORS_ORIGINS (comma-separated). Falls back to permissive (any origin)
-// only when the variable is unset, so existing/dev setups keep working — set it
-// to the deployed frontend origin(s) in production.
+// One reverse-proxy hop (nginx) in production: makes req.ip the real client
+// address for rate limiting and audit logs instead of the proxy's.
+app.set('trust proxy', 1);
+// CORS: explicit allow-list only — never a wildcard and never origin
+// reflection. Configure production origins via OFFITEC_CORS_ORIGINS
+// (comma-separated); without it only the known frontend origins pass.
+// Requests with no Origin header (same-origin, curl, server-to-server) are
+// allowed — CORS only governs browsers doing cross-origin calls.
 const corsAllowList = (process.env.OFFITEC_CORS_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
-app.use((0, cors_1.default)(corsAllowList.length
-    ? {
-        origin: (origin, callback) => {
-            // Allow same-origin / non-browser requests (no Origin header).
-            if (!origin || corsAllowList.includes(origin))
-                return callback(null, true);
-            return callback(new Error('CORS: origin not allowed'));
-        },
-        credentials: true,
-    }
-    : {}));
+const defaultCorsOrigins = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:4173',
+    'https://demo.offitec.ch',
+];
+const allowedOrigins = corsAllowList.length ? corsAllowList : defaultCorsOrigins;
+app.use((0, cors_1.default)({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin))
+            return callback(null, true);
+        return callback(new Error('CORS: origin not allowed'));
+    },
+    credentials: true,
+    // PATCH is included on top of the required set — this API mutates via PATCH.
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+}));
 app.use((0, helmet_1.default)({ crossOriginResourcePolicy: false }));
+app.use((0, cookie_parser_1.default)());
 app.use((0, morgan_1.default)('combined'));
-app.use(express_1.default.json({ limit: '50mb' }));
-app.use(express_1.default.urlencoded({ limit: '50mb', extended: true }));
+// 15 MB is the global upload/body ceiling (mirrors MAX_UPLOAD_BYTES).
+app.use(express_1.default.json({ limit: '15mb' }));
+app.use(express_1.default.urlencoded({ limit: '15mb', extended: true }));
 app.use(apiPrefixes, (_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -313,11 +328,9 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/notifications`, notification_routes_1.default);
     app.use(`${prefix}/meetings`, meeting_routes_1.default);
     app.use(`${prefix}/fx`, fx_routes_1.default);
+    app.use(`${prefix}/files`, files_routes_1.default);
 }
-app.use((err, _req, res, _next) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Internal Server Error' });
-});
+app.use(ErrorHandlerMiddleware_1.globalErrorHandler);
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`API Docs  -> http://localhost:${PORT}/api-docs`);

@@ -9,7 +9,7 @@ const Employee_1 = require("../../domain/entities/Employee");
 class EmployeeRepository {
     mapToEntity(data) {
         const firstRole = data.employeeRoles?.[0]?.role;
-        const emp = new Employee_1.Employee(data.id, data.tenantId, data.firstName, data.lastName, data.email, data.passwordHash, data.isActive, data.title, data.departmentId, firstRole?.roleName ?? data.roleName, data.phone, data.address, data.hireDate, data.terminationDate, data.annualLeaveEntitlement, data.profilePictureUrl, data.notes, data.createdAt, data.updatedAt, firstRole?.id ?? null);
+        const emp = new Employee_1.Employee(data.id, data.tenantId, data.firstName, data.lastName, data.email, data.passwordHash, data.isActive, data.title, data.departmentId, firstRole?.roleName ?? data.roleName, data.phone, data.address, data.hireDate, data.terminationDate, data.annualLeaveEntitlement, data.profilePictureUrl, data.notes, data.createdAt, data.updatedAt, firstRole?.id ?? null, data.passwordChangedAt, data.deletedAt, data.bannedAt);
         return emp;
     }
     roleInclude = {

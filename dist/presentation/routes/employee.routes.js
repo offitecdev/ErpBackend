@@ -9,7 +9,10 @@ const EmployeeRepository_1 = require("../../infrastructure/repositories/Employee
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
 const BcryptCryptoService_1 = require("../../infrastructure/services/BcryptCryptoService");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
+const ValidationMiddleware_1 = require("../middlewares/ValidationMiddleware");
+const employeeSchemas_1 = require("../validation/employeeSchemas");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const router = (0, express_1.Router)();
 const employeeRepo = new EmployeeRepository_1.EmployeeRepository();
 const roleRepo = new RoleRepository_1.RoleRepository();
@@ -46,7 +49,7 @@ const employeeController = new EmployeeController_1.EmployeeController(createEmp
  *       403:
  *         description: Erişim reddedildi
  */
-router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.create'), (req, res) => employeeController.create(req, res));
+router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.create'), (0, ValidationMiddleware_1.validate)({ body: employeeSchemas_1.employeeCreateSchema }), (req, res) => employeeController.create(req, res));
 /**
  * @swagger
  * /employees:
@@ -142,7 +145,7 @@ router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePer
  *       404:
  *         description: Personel bulunamadı
  */
-router.patch('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.update'), (req, res) => employeeController.update(req, res));
+router.patch('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.update'), (0, ValidationMiddleware_1.validate)({ body: employeeSchemas_1.employeeUpdateSchema }), (req, res) => employeeController.update(req, res));
 /**
  * @swagger
  * /employees/{id}/deactivate:
@@ -154,8 +157,96 @@ router.patch('/:id/deactivate', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
     try {
         // Repoyu kullanarak kişiyi pasife çekiyoruz
         const id = req.params.id;
+        // Ownership check: only employees of the caller's tenant can be deactivated.
+        const existing = await employeeRepo.findById(id);
+        if (!existing || existing.tenantId !== req.user.tenantId) {
+            return res.status(404).json({ error: 'Personel bulunamadı.' });
+        }
         const updated = await employeeRepo.update(id, { isActive: false, terminationDate: new Date() });
+        AuditLogService_1.auditLog.log({
+            action: 'employee.deactivate',
+            tenantId: req.user.tenantId,
+            employeeId: req.user.id,
+            entityType: 'Employee',
+            entityId: id,
+            ...AuditLogService_1.auditLog.context(req),
+        });
         res.status(200).json({ message: 'Personel pasife alındı.', data: updated });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /employees/{id}/restore:
+ *   patch:
+ *     tags: [Employees]
+ *     summary: Silinmiş hesabı geri yükler (silinmeden itibaren 30 gün içinde)
+ */
+router.patch('/:id/restore', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.delete'), async (req, res) => {
+    try {
+        const id = req.params.id;
+        const existing = await employeeRepo.findById(id);
+        if (!existing || existing.tenantId !== req.user.tenantId) {
+            return res.status(404).json({ error: 'Personel bulunamadı.' });
+        }
+        if (existing.bannedAt) {
+            return res.status(403).json({ error: 'Engellenmiş hesap geri yüklenemez.' });
+        }
+        if (!existing.deletedAt) {
+            return res.status(400).json({ error: 'Hesap silinmiş durumda değil.' });
+        }
+        const RECOVERY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+        if (Date.now() - existing.deletedAt.getTime() > RECOVERY_WINDOW_MS) {
+            return res.status(410).json({ error: 'Kurtarma süresi (30 gün) dolmuş; hesap geri yüklenemez.' });
+        }
+        const updated = await employeeRepo.update(id, { deletedAt: null, isActive: true });
+        AuditLogService_1.auditLog.log({
+            action: 'employee.restore',
+            tenantId: req.user.tenantId,
+            employeeId: req.user.id,
+            entityType: 'Employee',
+            entityId: id,
+            ...AuditLogService_1.auditLog.context(req),
+        });
+        const { passwordHash, ...safe } = updated;
+        res.status(200).json({ message: 'Hesap geri yüklendi.', data: safe });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /employees/{id}/ban:
+ *   patch:
+ *     tags: [Employees]
+ *     summary: Hesabı kalıcı olarak engeller (giriş, geri yükleme ve aynı e-posta ile yeniden kayıt kapanır)
+ */
+router.patch('/:id/ban', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.delete'), async (req, res) => {
+    try {
+        const id = req.params.id;
+        const existing = await employeeRepo.findById(id);
+        if (!existing || existing.tenantId !== req.user.tenantId) {
+            return res.status(404).json({ error: 'Personel bulunamadı.' });
+        }
+        if (id === req.user.id) {
+            return res.status(400).json({ error: 'Kendi hesabınızı engelleyemezsiniz.' });
+        }
+        if (existing.bannedAt) {
+            return res.status(200).json({ message: 'Hesap zaten engelli.' });
+        }
+        await employeeRepo.update(id, { bannedAt: new Date(), isActive: false });
+        AuditLogService_1.auditLog.log({
+            action: 'employee.ban',
+            tenantId: req.user.tenantId,
+            employeeId: req.user.id,
+            entityType: 'Employee',
+            entityId: id,
+            ...AuditLogService_1.auditLog.context(req),
+        });
+        res.status(200).json({ message: 'Hesap engellendi.' });
     }
     catch (error) {
         res.status(400).json({ error: error.message });
