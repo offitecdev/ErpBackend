@@ -100,17 +100,19 @@ class ArticleRepository {
         return this.mapToEntity(data);
     }
     async deleteArticle(id) {
-        await prisma_client_1.default.$transaction(async (tx) => {
-            await tx.positionArticleMapping.deleteMany({ where: { articleId: id } });
-            await tx.stockBalance.deleteMany({ where: { articleId: id } });
-            await tx.purchaseProposal.deleteMany({ where: { articleId: id } });
-            await tx.stockMovement.deleteMany({ where: { articleId: id } });
-            await tx.articleSupplier.deleteMany({ where: { articleId: id } });
-            await tx.article.delete({ where: { id } });
+        // Keep stock history and references intact; deletion moves the product card
+        // to trash so it can be recovered administratively.
+        await prisma_client_1.default.article.update({
+            where: { id },
+            data: {
+                deletedAt: new Date(),
+                status: 'INACTIVE',
+                isActive: false,
+            },
         });
     }
     async findAllArticles(filter) {
-        const where = { tenantId: filter.tenantId };
+        const where = { tenantId: filter.tenantId, deletedAt: null };
         if (filter.onlyActive)
             where.isActive = true;
         if (filter.category)
@@ -132,8 +134,8 @@ class ArticleRepository {
         return data.map(d => this.mapToEntity(d));
     }
     async findArticleById(id, options) {
-        const data = await prisma_client_1.default.article.findUnique({
-            where: { id },
+        const data = await prisma_client_1.default.article.findFirst({
+            where: { id, deletedAt: null },
             // `includeImages=false` must prevent MariaDB from reading the LONGTEXT
             // column, not merely remove it from the JSON response afterwards.
             select: this.articleSelect(options?.includeImages !== false),
@@ -144,6 +146,7 @@ class ArticleRepository {
         const data = await prisma_client_1.default.article.findFirst({
             where: {
                 tenantId,
+                deletedAt: null,
                 OR: [
                     { articleCode: codeOrBarcode },
                     { systemBarcode: codeOrBarcode },

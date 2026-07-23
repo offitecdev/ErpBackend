@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import '../middlewares/AuthMiddleware'; // Import for req.user type augmentation
+import prisma from '../../infrastructure/database/prisma.client';
 import { CheckInUseCase } from '../../application/use-cases/attandance/CheckInUseCase';
 import { CheckOutUseCase } from '../../application/use-cases/attandance/CheckOutUseCase';
 import { StartBreakUseCase } from '../../application/use-cases/attandance/StartBreakUseCase';
@@ -82,6 +83,15 @@ export class AttendanceController {
             const id = req.params.id as string;
             const { checkInTime, checkOutTime } = req.body;
             const editedById = req.user!.id;
+            // Ownership check: the log must belong to an employee of the caller's
+            // tenant (prevents cross-tenant attendance edits by id).
+            const log = await prisma.attendanceLog.findUnique({
+                where: { id },
+                select: { employee: { select: { tenantId: true } } },
+            });
+            if (!log || log.employee.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+            }
             const result = await this.updateAttendanceUseCase.execute(id, checkInTime, checkOutTime, editedById);
             res.status(200).json(result);
         } catch (error: any) {

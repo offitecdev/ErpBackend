@@ -5,6 +5,17 @@ export interface ITenderFilter{
     customerId?: string;
     status?: 'Draft' | 'Approved' | 'Exported';
     search?: string;
+    // Kolon bazlı filtreler (liste başlığı altındaki filtre satırı) — sunucuda daraltır.
+    tenderNumber?: string;
+    customerName?: string;
+    creatorName?: string;
+    // İki durumlu iş akışı: taslak (teklif) veya sipariş (projeye bağlı ya da
+    // kaynağı satış siparişi olan kayıtlar). Ham `status` alanından türetilir.
+    orderState?: 'draft' | 'order';
+    // E-posta gönderim durumu filtresi (offerMailSentAt dolu / boş).
+    mailSent?: 'yes' | 'no';
+    sortBy?: 'tenderNumber' | 'customerName' | 'status' | 'createdAt';
+    sortDirection?: 'asc' | 'desc';
     page?: number;
     pageSize?: number;
 }

@@ -3,8 +3,8 @@ import { ICustomerRepository } from "../../../domain/repositories/ICustomerRepos
 export class GetCustomerDashboardUseCase {
     constructor(private customerRepository: ICustomerRepository) {}
 
-    async execute(customerId: string, tenantId?: string) {
-        const dashboard = await this.customerRepository.getCustomerDashboard(customerId, tenantId);
+    async execute(customerId: string, tenantId?: string, summaryOnly = false) {
+        const dashboard = await this.customerRepository.getCustomerDashboard(customerId, tenantId, summaryOnly);
 
         if (!dashboard) throw new Error("Müşteri bulunamadı.");
 

@@ -193,7 +193,7 @@ export class InventoryRepository implements IInventoryRepository {
 
     async getArticleStockSummary(tenantId: string, includeImages = false): Promise<any[]> {
         const articles = await (prisma as any).article.findMany({
-            where: { tenantId },
+            where: { tenantId, deletedAt: null },
             include: articleSummaryInclude,
         });
         return articles.map((a: any) => mapArticleToSummary(a, includeImages));
@@ -204,7 +204,7 @@ export class InventoryRepository implements IInventoryRepository {
     // ÇEKİLMEZ — stok hareketi ekranındaki canlı sayaç için gereken en az veri.
     async getArticleStockInfo(tenantId: string, articleId: string): Promise<any | null> {
         const article = await (prisma as any).article.findFirst({
-            where: { id: articleId, tenantId },
+            where: { id: articleId, tenantId, deletedAt: null },
             select: {
                 id: true,
                 baseCost: true,
@@ -249,12 +249,14 @@ export class InventoryRepository implements IInventoryRepository {
             code?: string | undefined;
             name?: string | undefined;
             barcode?: string | undefined;
+            sortBy?: string | undefined;
+            sortDirection?: 'asc' | 'desc' | undefined;
         }
     ): Promise<{ items: any[]; total: number; page: number; pageSize: number }> {
         const page = Math.max(1, Number(options.page) || 1);
         const pageSize = Math.min(200, Math.max(1, Number(options.pageSize) || 15));
 
-        const where: any = { tenantId };
+        const where: any = { tenantId, deletedAt: null };
         if (options.itemType) where.itemType = options.itemType;
         if (options.status) where.status = options.status;
         const search = String(options.search || '').trim();
@@ -284,6 +286,90 @@ export class InventoryRepository implements IInventoryRepository {
         }
         if (columnFilters.length) where.AND = columnFilters;
 
+        const select = {
+            id: true,
+            articleCode: true,
+            name: true,
+            ...(options.includeDescription ? { description: true } : {}),
+            category: true,
+            itemType: true,
+            systemBarcode: true,
+            supplierBarcode: true,
+            unit: true,
+            salePrice: true,
+            baseCost: true,
+            status: true,
+            minStockLevel: true,
+            criticalStockLevel: true,
+            createdAt: true,
+            stockBalances: { select: { currentQuantity: true } },
+        };
+        const mapRow = (article: any) => ({
+            id: article.id,
+            articleCode: article.articleCode,
+            name: article.name,
+            ...(options.includeDescription ? { description: article.description ?? null } : {}),
+            category: article.category,
+            itemType: article.itemType ?? 'PRODUCT',
+            systemBarcode: article.systemBarcode,
+            supplierBarcode: article.supplierBarcode,
+            unit: article.unit,
+            salePrice: article.salePrice ?? 0,
+            baseCost: article.baseCost,
+            status: article.status,
+            minStockLevel: article.minStockLevel,
+            criticalStockLevel: article.criticalStockLevel,
+            createdAt: article.createdAt,
+            totalQuantity: article.stockBalances.reduce(
+                (sum: number, balance: any) => sum + (balance.currentQuantity || 0),
+                0,
+            ),
+        });
+
+        const sortDirection: 'asc' | 'desc' = options.sortDirection === 'asc' ? 'asc' : 'desc';
+        const sortableFields: Record<string, string> = {
+            createdAt: 'createdAt',
+            articleCode: 'articleCode',
+            name: 'name',
+            barcode: 'systemBarcode',
+            salePrice: 'salePrice',
+            minStockLevel: 'minStockLevel',
+            criticalStockLevel: 'criticalStockLevel',
+            status: 'status',
+        };
+        const requestedSort = options.sortBy || 'createdAt';
+        const sortBy = requestedSort === 'totalQuantity' || sortableFields[requestedSort]
+            ? requestedSort
+            : 'createdAt';
+        const needsComputedPass = sortBy === 'totalQuantity';
+
+        // Total stock is an aggregate across locations. Only sorting by that
+        // aggregate needs an in-memory pass; ordinary requests retain DB pagination.
+        if (needsComputedPass) {
+            const rows = (await (prisma as any).article.findMany({ where, select })).map(mapRow);
+            const directionFactor = sortDirection === 'asc' ? 1 : -1;
+            rows.sort((left: any, right: any) => {
+                const leftValue = left[sortBy];
+                const rightValue = right[sortBy];
+                if (leftValue == null && rightValue == null) return left.id.localeCompare(right.id);
+                if (leftValue == null) return 1;
+                if (rightValue == null) return -1;
+                const comparison = typeof leftValue === 'string'
+                    ? leftValue.localeCompare(String(rightValue))
+                    : Number(leftValue) - Number(rightValue);
+                return comparison === 0
+                    ? left.id.localeCompare(right.id)
+                    : comparison * directionFactor;
+            });
+            return {
+                items: rows.slice((page - 1) * pageSize, page * pageSize),
+                total: rows.length,
+                page,
+                pageSize,
+            };
+        }
+
+        const databaseSortField = sortableFields[sortBy] || 'createdAt';
         const [total, articles] = await Promise.all([
             (prisma as any).article.count({ where }),
             (prisma as any).article.findMany({
@@ -303,34 +389,19 @@ export class InventoryRepository implements IInventoryRepository {
                     status: true,
                     minStockLevel: true,
                     criticalStockLevel: true,
+                    createdAt: true,
                     // Only the quantity is needed for the "in stock" column — no
                     // location objects, reservations or movement history.
                     stockBalances: { select: { currentQuantity: true } },
                 },
-                orderBy: { name: 'asc' },
+                orderBy: [{ [databaseSortField]: sortDirection }, { id: 'asc' }],
                 skip: (page - 1) * pageSize,
                 take: pageSize,
             }),
         ]);
 
         return {
-            items: articles.map((a: any) => ({
-                id: a.id,
-                articleCode: a.articleCode,
-                name: a.name,
-                ...(options.includeDescription ? { description: a.description ?? null } : {}),
-                category: a.category,
-                itemType: a.itemType ?? 'PRODUCT',
-                systemBarcode: a.systemBarcode,
-                supplierBarcode: a.supplierBarcode,
-                unit: a.unit,
-                salePrice: a.salePrice ?? 0,
-                baseCost: a.baseCost,
-                status: a.status,
-                minStockLevel: a.minStockLevel,
-                criticalStockLevel: a.criticalStockLevel,
-                totalQuantity: a.stockBalances.reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0),
-            })),
+            items: articles.map(mapRow),
             total,
             page,
             pageSize,
@@ -341,6 +412,7 @@ export class InventoryRepository implements IInventoryRepository {
         const data = await prisma.article.findFirst({
             where: {
                 tenantId,
+                deletedAt: null,
                 OR: [
                     { systemBarcode: codeOrBarcode },
                     { supplierBarcode: codeOrBarcode },

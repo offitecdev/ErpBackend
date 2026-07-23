@@ -4,7 +4,10 @@ import { AddProjectReportUseCase, ReportInput } from '../../application/use-case
 import { RequestExtraMaterialUseCase } from '../../application/use-cases/project/RequestExtraMaterialUseCase';
 import { ApproveVariationUseCase } from '../../application/use-cases/project/ApproveVariationUseCase';
 import { AddProjectExpenseUseCase } from '../../application/use-cases/project/AddProjectExpenseUseCase';
-import { ProjectRepository } from '../../infrastructure/repositories/ProjectRepository';
+import {
+    ProjectRepository,
+    type ProjectDetailView as ProjectDetailDataView,
+} from '../../infrastructure/repositories/ProjectRepository';
 import { ProjectReportRepository } from '../../infrastructure/repositories/ProjectReportRepository';
 import { MaterialRepository } from '../../infrastructure/repositories/MaterialRepository';
 import prisma from '../../infrastructure/database/prisma.client';
@@ -603,7 +606,31 @@ export class ProjectController {
 
     async getById(req: Request, res: Response) {
         try {
-            const project = await this.projectRepository.findById(req.params.id as string, req.user!.tenantId);
+            const allowedViews = new Set([
+                "overview",
+                "details",
+                "planning",
+                "fieldReports",
+                "generalReport",
+                "delivery",
+                "signatures",
+                "expenses",
+                "materials",
+                "overtime",
+                "billing",
+                "addons",
+            ]);
+            const requestedView = String(req.query.view || "");
+            if (requestedView && !allowedViews.has(requestedView)) {
+                return res.status(400).json({ error: "Geçersiz proje detay görünümü." });
+            }
+            const project = requestedView
+                ? await this.projectRepository.findDetailById(
+                    req.params.id as string,
+                    req.user!.tenantId,
+                    requestedView as ProjectDetailDataView,
+                )
+                : await this.projectRepository.findById(req.params.id as string, req.user!.tenantId);
             if (!project) {
                 return res.status(404).json({ error: "Proje bulunamadı veya seçili şirkette değil." });
             }
@@ -711,7 +738,10 @@ export class ProjectController {
 
     async listMaterials(req: Request, res: Response) {
         try {
-            const materials = await this.materialRepository.list(req.user!.tenantId);
+            const materials = await this.materialRepository.list(
+                req.user!.tenantId,
+                { compact: req.query.view === "picker" },
+            );
             res.status(200).json(materials);
         } catch (error: any) {
             res.status(400).json({ error: error.message });

@@ -39,10 +39,7 @@ const databaseUrl = `mysql://${dbUser}:${dbPass}@${dbHost}:${dbPort}/${dbName}`;
 
 process.env.DATABASE_URL = databaseUrl;
 
-// The database is remote, so every fresh connection pays a TCP + auth
-// handshake worth several network round-trips. Keep a floor of idle
-// connections open (and TCP-alive) so requests never pay that cost — the
-// first save after a server start/idle period used to take seconds.
+
 const adapter = new PrismaMariaDb({
     host: dbHost,
     port: Number(dbPort),
@@ -54,7 +51,6 @@ const adapter = new PrismaMariaDb({
     keepAliveDelay: 30_000,
 });
 
-// Models using composite primary keys (@@id) — these have no standalone `id` field
 const COMPOSITE_PK_MODELS = new Set(['EmployeeRole', 'RolePermission']);
 
 const prisma = new PrismaClient({

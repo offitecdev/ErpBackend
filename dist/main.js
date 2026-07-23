@@ -33,6 +33,8 @@ const maintenance_routes_1 = __importDefault(require("./presentation/routes/main
 const sales_order_routes_1 = __importDefault(require("./presentation/routes/sales-order.routes"));
 const billing_routes_1 = __importDefault(require("./presentation/routes/billing.routes"));
 const notification_routes_1 = __importDefault(require("./presentation/routes/notification.routes"));
+const meeting_routes_1 = __importDefault(require("./presentation/routes/meeting.routes"));
+const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const AuthMiddleware_1 = require("./presentation/middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("./presentation/middlewares/RbacMiddleware");
@@ -309,6 +311,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/maintenance`, maintenance_routes_1.default);
     app.use(`${prefix}/regie`, regie_routes_1.default);
     app.use(`${prefix}/notifications`, notification_routes_1.default);
+    app.use(`${prefix}/meetings`, meeting_routes_1.default);
+    app.use(`${prefix}/fx`, fx_routes_1.default);
 }
 app.use((err, _req, res, _next) => {
     console.error(err.stack);

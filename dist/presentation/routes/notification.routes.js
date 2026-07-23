@@ -4,9 +4,37 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const nanoid_1 = require("nanoid");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const router = (0, express_1.Router)();
+// Create a personal notification (e.g. an urgent alert card archived from the
+// floating alert deck lands in the recipient's notification list).
+router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const user = req.user;
+        const title = String(req.body?.title || '').trim();
+        if (!title)
+            return res.status(400).json({ error: 'Başlık gerekli.' });
+        const notification = await prisma_client_1.default.notification.create({
+            data: {
+                id: (0, nanoid_1.nanoid)(12),
+                tenantId: user.tenantId,
+                recipientEmployeeId: user.id,
+                type: String(req.body?.type || 'ALERT'),
+                title,
+                message: String(req.body?.message || ''),
+                linkUrl: req.body?.linkUrl ? String(req.body.linkUrl) : null,
+                isRead: Boolean(req.body?.isRead) || false,
+                readAt: req.body?.isRead ? new Date() : null,
+            },
+        });
+        res.status(201).json(notification);
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;

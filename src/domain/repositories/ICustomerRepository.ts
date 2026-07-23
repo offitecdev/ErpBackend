@@ -6,6 +6,13 @@ export interface ICustomerFilter {
     segment?: string;
     status?: string;
     isActive?: boolean;
+    // Kolon bazlı filtreler (liste başlığı altındaki filtre satırı) — sunucuda daraltır.
+    companyName?: string;
+    vatNumber?: string;
+    email?: string;
+    // Not: Customer modelinde createdAt yok — sıralama yalnızca bu kolonlara izinli.
+    sortBy?: 'companyName' | 'vatNumber' | 'status';
+    sortDirection?: 'asc' | 'desc';
     page?: number;
     pageSize?: number;
 }
@@ -24,5 +31,5 @@ export interface ICustomerRepository {
     delete(id: string, tenantId?: string): Promise<void>;
     findById(id: string): Promise<Customer | null>;
     findAll(filter: ICustomerFilter): Promise<Customer[] | PaginatedResult<Customer>>;
-    getCustomerDashboard(id: string, tenantId?: string): Promise<any>;
+    getCustomerDashboard(id: string, tenantId?: string, summaryOnly?: boolean): Promise<any>;
 }

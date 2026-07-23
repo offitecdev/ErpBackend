@@ -3,6 +3,7 @@ dotenv.config();
 
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import swaggerUi from 'swagger-ui-express';
@@ -31,8 +32,10 @@ import billingRoutes from './presentation/routes/billing.routes';
 import notificationRoutes from './presentation/routes/notification.routes';
 import meetingRoutes from './presentation/routes/meeting.routes';
 import fxRoutes from './presentation/routes/fx.routes';
+import filesRoutes from './presentation/routes/files.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { requireAuth } from './presentation/middlewares/AuthMiddleware';
+import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
 import { requirePermission } from './presentation/middlewares/RbacMiddleware';
 import prisma from './infrastructure/database/prisma.client';
 import { nanoid } from 'nanoid';
@@ -54,31 +57,41 @@ const allowSwaggerUi = (_req: express.Request, res: express.Response, next: expr
 };
 
 app.set('etag', false);
+// One reverse-proxy hop (nginx) in production: makes req.ip the real client
+// address for rate limiting and audit logs instead of the proxy's.
+app.set('trust proxy', 1);
 
-// Restrict cross-origin access to an explicit allow-list when configured via
-// OFFITEC_CORS_ORIGINS (comma-separated). Falls back to permissive (any origin)
-// only when the variable is unset, so existing/dev setups keep working — set it
-// to the deployed frontend origin(s) in production.
+// CORS: explicit allow-list only — never a wildcard and never origin
+// reflection. Configure production origins via OFFITEC_CORS_ORIGINS
+// (comma-separated); without it only the known frontend origins pass.
+// Requests with no Origin header (same-origin, curl, server-to-server) are
+// allowed — CORS only governs browsers doing cross-origin calls.
 const corsAllowList = (process.env.OFFITEC_CORS_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
-app.use(cors(
-    corsAllowList.length
-        ? {
-            origin: (origin, callback) => {
-                // Allow same-origin / non-browser requests (no Origin header).
-                if (!origin || corsAllowList.includes(origin)) return callback(null, true);
-                return callback(new Error('CORS: origin not allowed'));
-            },
-            credentials: true,
-        }
-        : {},
-));
+const defaultCorsOrigins = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:4173',
+    'https://demo.offitec.ch',
+];
+const allowedOrigins = corsAllowList.length ? corsAllowList : defaultCorsOrigins;
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error('CORS: origin not allowed'));
+    },
+    credentials: true,
+    // PATCH is included on top of the required set — this API mutates via PATCH.
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+}));
 app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(cookieParser());
 app.use(morgan('combined'));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// 15 MB is the global upload/body ceiling (mirrors MAX_UPLOAD_BYTES).
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ limit: '15mb', extended: true }));
 
 app.use(apiPrefixes, (_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -358,12 +371,10 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/notifications`, notificationRoutes);
     app.use(`${prefix}/meetings`, meetingRoutes);
     app.use(`${prefix}/fx`, fxRoutes);
+    app.use(`${prefix}/files`, filesRoutes);
 }
 
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Internal Server Error' });
-});
+app.use(globalErrorHandler);
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);

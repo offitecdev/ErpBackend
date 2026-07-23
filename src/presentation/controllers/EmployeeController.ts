@@ -6,6 +6,8 @@ import { UpdateEmployeeUseCase } from '../../application/use-cases/employee/Upda
 import { IEmployeeRepository } from '../../domain/repositories/IEmployeeRepository';
 import { IRoleRepository } from '../../domain/repositories/IRoleRepository';
 import { ICryptoService } from '../../application/interfaces/ICryptoService';
+import { assertPasswordPolicy } from '../../application/validation/password';
+import { auditLog } from '../../infrastructure/services/AuditLogService';
 
 // TS Hatasını çözmek için Request objesini genişletiyoruz
 export interface AuthRequest extends Request {
@@ -34,7 +36,15 @@ export class EmployeeController {
                 tenantId: req.user?.tenantId
             };
             const result = await this.createEmployeeUseCase.execute(employeeData);
-            
+            auditLog.log({
+                action: 'employee.create',
+                tenantId: req.user!.tenantId,
+                employeeId: req.user!.id,
+                entityType: 'Employee',
+                entityId: result.id,
+                ...auditLog.context(req),
+            });
+
             // Eğer frontend'den bir roleId gönderildiyse, ilişkiyi kur
             if (req.body.roleId) {
                 try {
@@ -104,7 +114,9 @@ export class EmployeeController {
         try {
             const id = req.params.id as string;
             const employee = await this.employeeRepository.findById(id);
-            if (!employee) {
+            // Ownership check: an id from another tenant answers 404, exactly like
+            // a non-existent id, so foreign employee records can't be read (IDOR).
+            if (!employee || employee.tenantId !== req.user!.tenantId) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
             const { passwordHash, ...safeResult } = employee;
@@ -119,15 +131,39 @@ export class EmployeeController {
             const id = req.params.id as string;
             const { roleId, password, ...employeeData } = req.body;
 
+            // Ownership check before any write — the row must belong to the
+            // caller's tenant (prevents cross-tenant employee updates).
+            const existing = await this.employeeRepository.findById(id);
+            if (!existing || existing.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: 'Personel bulunamadı.' });
+            }
+
             if (password) {
+                assertPasswordPolicy(password);
                 employeeData.passwordHash = await this.cryptoService.hashPassword(password);
+                // Invalidates every JWT issued before this change (pwdAt claim check).
+                employeeData.passwordChangedAt = new Date();
             }
 
             const result = await this.updateEmployeeUseCase.execute(id, employeeData);
-            
+
             if (roleId) {
                 await this.roleRepository.assignRoleToEmployee(id, roleId);
             }
+
+            auditLog.log({
+                action: 'employee.update',
+                tenantId: req.user!.tenantId,
+                employeeId: req.user!.id,
+                entityType: 'Employee',
+                entityId: id,
+                metadata: {
+                    fields: Object.keys(employeeData),
+                    passwordChanged: Boolean(password),
+                    ...(roleId ? { roleId } : {}),
+                },
+                ...auditLog.context(req),
+            });
 
             const { passwordHash, ...safeResult } = result;
             res.status(200).json(safeResult);

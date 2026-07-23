@@ -51,7 +51,15 @@ model Employee {
   phone                  String?
   address                String?            @db.Text
   passwordHash           String
+  /// Set on every password change; JWTs carry it as the `pwdAt` claim so all
+  /// tokens issued before the change become invalid.
+  passwordChangedAt      DateTime?
   isActive               Boolean            @default(true)
+  /// Soft delete: a non-null value blocks login, refresh and every authorized request.
+  /// Recoverable by an admin for 30 days (restore endpoint), then considered final.
+  deletedAt              DateTime?
+  /// Admin ban: blocks login/refresh/restore permanently; the e-mail cannot re-register.
+  bannedAt               DateTime?
   hireDate               DateTime?
   terminationDate        DateTime?
   annualLeaveEntitlement Int                @default(0)
@@ -89,6 +97,25 @@ model Employee {
   meetingParticipations  MeetingActivityParticipant[] @relation("MeetingParticipantEmployee")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
+}
+
+/// Append-only record of sensitive operations: who, when, from which IP,
+/// which action, on which entity. Written fire-and-forget by AuditLogService.
+model AuditLog {
+  id         String   @id
+  tenantId   String?
+  employeeId String?
+  action     String
+  entityType String?
+  entityId   String?
+  ipAddress  String?
+  userAgent  String?  @db.VarChar(512)
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([employeeId])
+  @@index([action])
 }
 
 model Role {

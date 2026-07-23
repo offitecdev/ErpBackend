@@ -7,10 +7,23 @@ exports.MaterialRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const nanoid_1 = require("nanoid");
 class MaterialRepository {
-    async list(tenantId) {
+    async list(tenantId, options = {}) {
         return await prisma_client_1.default.material.findMany({
             where: { tenantId, isActive: true },
-            orderBy: { name: 'asc' }
+            orderBy: { name: 'asc' },
+            ...(options.compact ? {
+                select: {
+                    id: true,
+                    tenantId: true,
+                    serialId: true,
+                    name: true,
+                    stockQuantity: true,
+                    unitCost: true,
+                    minStockLevel: true,
+                    criticalStockLevel: true,
+                    isActive: true,
+                },
+            } : {}),
         });
     }
     async findById(id) {

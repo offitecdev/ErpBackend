@@ -286,6 +286,14 @@ export class TenderController {
             if (req.query.customerId) filter.customerId = req.query.customerId as string;
             if (req.query.status) filter.status = req.query.status as 'Draft' | 'Approved' | 'Exported';
             if (req.query.search) filter.search = req.query.search as string;
+            // Kolon bazlı filtreler + sıralama (Ürünler listesindeki desenle aynı).
+            if (req.query.tenderNumber) filter.tenderNumber = req.query.tenderNumber as string;
+            if (req.query.customerName) filter.customerName = req.query.customerName as string;
+            if (req.query.creatorName) filter.creatorName = req.query.creatorName as string;
+            if (req.query.orderState === 'draft' || req.query.orderState === 'order') filter.orderState = req.query.orderState;
+            if (req.query.mailSent === 'yes' || req.query.mailSent === 'no') filter.mailSent = req.query.mailSent;
+            if (req.query.sortBy) filter.sortBy = req.query.sortBy as 'tenderNumber' | 'customerName' | 'status' | 'createdAt';
+            if (req.query.sortDirection) filter.sortDirection = req.query.sortDirection === 'asc' ? 'asc' : 'desc';
             if (req.query.page) filter.page = Math.max(1, Number(req.query.page) || 1);
             if (req.query.pageSize) filter.pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
 

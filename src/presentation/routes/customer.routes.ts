@@ -239,6 +239,12 @@ router.delete(
  *         required: true
  *         schema:
  *           type: string
+ *       - in: query
+ *         name: summary
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *         description: İlk boyama için yalnızca müşteri profil özetini getirir.
  *     responses:
  *       200:
  *         description: Dashboard verisi başarıyla getirildi

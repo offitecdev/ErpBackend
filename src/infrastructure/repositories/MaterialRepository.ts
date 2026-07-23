@@ -2,10 +2,23 @@ import prisma from "../database/prisma.client";
 import { nanoid } from "nanoid";
 
 export class MaterialRepository {
-    async list(tenantId: string) {
+    async list(tenantId: string, options: { compact?: boolean } = {}) {
         return await prisma.material.findMany({
             where: { tenantId, isActive: true },
-            orderBy: { name: 'asc' }
+            orderBy: { name: 'asc' },
+            ...(options.compact ? {
+                select: {
+                    id: true,
+                    tenantId: true,
+                    serialId: true,
+                    name: true,
+                    stockQuantity: true,
+                    unitCost: true,
+                    minStockLevel: true,
+                    criticalStockLevel: true,
+                    isActive: true,
+                },
+            } : {}),
         });
     }
 

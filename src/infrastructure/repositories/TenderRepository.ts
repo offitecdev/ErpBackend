@@ -69,6 +69,64 @@ export class TenderRepository implements ITenderRepository {
                 { tenderNumber: { contains: filter.search } },
             ];
         }
+        // Kolon bazlı filtreler — üstteki genel arama ile AND'lenir (MySQL collation
+        // varsayılan olarak büyük/küçük harf duyarsız, ayrıca `mode` gerekmez).
+        if (filter.tenderNumber) where.tenderNumber = { contains: filter.tenderNumber };
+        if (filter.customerName) {
+            where.customer = { is: { companyName: { contains: filter.customerName } } };
+        }
+        if (filter.creatorName) {
+            where.createdBy = {
+                is: {
+                    OR: [
+                        { firstName: { contains: filter.creatorName } },
+                        { lastName: { contains: filter.creatorName } },
+                        { email: { contains: filter.creatorName } },
+                    ],
+                },
+            };
+        }
+
+        // "Sipariş" durumu — projeye bağlanmış VEYA kaynağı bir satış siparişi olan
+        // kayıtlar (frontend'deki isSourceSalesOrder ile aynı ham değerler). Genel
+        // arama üstteki `where.OR`'u kullandığından bu koşul `where.AND`'e eklenir.
+        const ORDER_SOURCE_VALUES = [
+            'Verkaufsauftrag', 'Auftrag', 'sales order', 'sale order',
+            'sales_order', 'sale_order', 'Sipariş', 'Siparişte', 'Siparis', 'Sipariste',
+        ];
+        const andConditions: any[] = [];
+        if (filter.orderState === 'order') {
+            andConditions.push({
+                OR: [
+                    { projectId: { not: null } },
+                    { sourceStatus: { in: ORDER_SOURCE_VALUES } },
+                ],
+            });
+        } else if (filter.orderState === 'draft') {
+            andConditions.push({ projectId: null });
+            // NULL sourceStatus, `notIn` ile üç değerli mantıkta elenirdi; açık NULL
+            // dalıyla taslak kayıtların dışarıda kalması engellenir.
+            andConditions.push({
+                OR: [
+                    { sourceStatus: null },
+                    { sourceStatus: { notIn: ORDER_SOURCE_VALUES } },
+                ],
+            });
+        }
+        if (andConditions.length > 0) where.AND = andConditions;
+
+        if (filter.mailSent === 'yes') where.offerMailSentAt = { not: null };
+        else if (filter.mailSent === 'no') where.offerMailSentAt = null;
+
+        // Sıralama — yalnızca DB kolonlarına (hesaplanan grandTotal hariç) izin ver.
+        const sortDir: 'asc' | 'desc' = filter.sortDirection === 'asc' ? 'asc' : 'desc';
+        let orderBy: any = { createdAt: 'desc' };
+        switch (filter.sortBy) {
+            case 'tenderNumber': orderBy = { tenderNumber: sortDir }; break;
+            case 'status': orderBy = { status: sortDir }; break;
+            case 'customerName': orderBy = { customer: { companyName: sortDir } }; break;
+            case 'createdAt': orderBy = { createdAt: sortDir }; break;
+        }
 
         const page = filter.page && filter.page > 0 ? filter.page : undefined;
         const pageSize = filter.pageSize && filter.pageSize > 0 ? Math.min(filter.pageSize, 100) : undefined;
@@ -129,7 +187,7 @@ export class TenderRepository implements ITenderRepository {
                     }
                 }
             },
-            orderBy: { createdAt: 'desc' },
+            orderBy,
             ...(page && pageSize ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
             }),
             page && pageSize ? prisma.tender.count({ where }) : Promise.resolve(0),

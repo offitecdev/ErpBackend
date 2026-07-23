@@ -563,7 +563,27 @@ class ProjectController {
     }
     async getById(req, res) {
         try {
-            const project = await this.projectRepository.findById(req.params.id, req.user.tenantId);
+            const allowedViews = new Set([
+                "overview",
+                "details",
+                "planning",
+                "fieldReports",
+                "generalReport",
+                "delivery",
+                "signatures",
+                "expenses",
+                "materials",
+                "overtime",
+                "billing",
+                "addons",
+            ]);
+            const requestedView = String(req.query.view || "");
+            if (requestedView && !allowedViews.has(requestedView)) {
+                return res.status(400).json({ error: "Geçersiz proje detay görünümü." });
+            }
+            const project = requestedView
+                ? await this.projectRepository.findDetailById(req.params.id, req.user.tenantId, requestedView)
+                : await this.projectRepository.findById(req.params.id, req.user.tenantId);
             if (!project) {
                 return res.status(404).json({ error: "Proje bulunamadı veya seçili şirkette değil." });
             }
@@ -673,7 +693,7 @@ class ProjectController {
     }
     async listMaterials(req, res) {
         try {
-            const materials = await this.materialRepository.list(req.user.tenantId);
+            const materials = await this.materialRepository.list(req.user.tenantId, { compact: req.query.view === "picker" });
             res.status(200).json(materials);
         }
         catch (error) {
@@ -1362,25 +1382,27 @@ class ProjectController {
             });
             if (!order)
                 return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
-            // No order may be deleted once it has been billed.
-            const invoiceCount = await prisma_client_1.default.invoice.count({ where: { salesOrderId: order.id } });
+            const isAddon = Boolean(order.parentSalesOrderId);
+            // Deleting a main order removes its addon orders with it, so the whole
+            // family (order + addons) must be un-billed before anything is deleted.
+            const addons = isAddon
+                ? []
+                : await prisma_client_1.default.salesOrder.findMany({
+                    where: { parentSalesOrderId: order.id, projectId, tenantId },
+                    select: { id: true },
+                });
+            const familyIds = [order.id, ...addons.map((addon) => addon.id)];
+            const invoiceCount = await prisma_client_1.default.invoice.count({ where: { salesOrderId: { in: familyIds } } });
             if (invoiceCount > 0) {
                 return res.status(400).json({ error: "Faturalandırılmış bir sipariş silinemez." });
             }
-            const isAddon = Boolean(order.parentSalesOrderId);
-            if (!isAddon) {
-                const addonCount = await prisma_client_1.default.salesOrder.count({
-                    where: { parentSalesOrderId: order.id, projectId, tenantId },
-                });
-                if (addonCount > 0) {
-                    return res.status(400).json({ error: "Ek siparişleri olan bir ana sipariş silinemez. Önce ek siparişleri silin." });
-                }
-            }
             await prisma_client_1.default.$transaction(async (tx) => {
                 if (!isAddon) {
+                    // Records normally carry the parent order id, but sweep the whole
+                    // family in case anything was ever stamped with an addon id.
                     // Reports own their materials/images via onDelete: Cascade.
                     const reports = await tx.projectReport.findMany({
-                        where: { projectId, salesOrderId: order.id },
+                        where: { projectId, salesOrderId: { in: familyIds } },
                         select: { id: true },
                     });
                     if (reports.length) {
@@ -1388,7 +1410,7 @@ class ProjectController {
                     }
                     // Restock every extra material before removing it.
                     const extraMaterials = await tx.projectExtraMaterial.findMany({
-                        where: { projectId, salesOrderId: order.id },
+                        where: { projectId, salesOrderId: { in: familyIds } },
                         select: { id: true, materialId: true, quantity: true },
                     });
                     for (const row of extraMaterials) {
@@ -1400,9 +1422,14 @@ class ProjectController {
                     if (extraMaterials.length) {
                         await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((r) => r.id) } } });
                     }
-                    await tx.projectExpense.deleteMany({ where: { projectId, salesOrderId: order.id } });
+                    await tx.projectExpense.deleteMany({ where: { projectId, salesOrderId: { in: familyIds } } });
                     // Appointment assignments cascade on Appointment delete.
-                    await tx.appointment.deleteMany({ where: { projectId, salesOrderId: order.id } });
+                    await tx.appointment.deleteMany({ where: { projectId, salesOrderId: { in: familyIds } } });
+                    // Addon orders carry no records of their own (they bill the parent's
+                    // time slice, deleted above) — remove them entirely, not just zeroed.
+                    if (addons.length) {
+                        await tx.salesOrder.deleteMany({ where: { id: { in: addons.map((addon) => addon.id) } } });
+                    }
                 }
                 await tx.salesOrder.delete({ where: { id: order.id } });
             });

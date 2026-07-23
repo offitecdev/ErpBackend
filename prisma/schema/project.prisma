@@ -326,6 +326,8 @@ model Material {
   criticalStockLevel Float   @default(0)
   imageUrl           String? @db.Text
   isActive           Boolean @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
@@ -336,6 +338,7 @@ model Material {
   positionMappings PositionMaterialMapping[]
 
   @@index([tenantId])
+  @@index([tenantId, createdAt])
 }
 
 /// Checklist templates configured by an administrator under Settings.

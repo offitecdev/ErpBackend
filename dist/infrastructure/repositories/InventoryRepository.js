@@ -175,7 +175,7 @@ class InventoryRepository {
     }
     async getArticleStockSummary(tenantId, includeImages = false) {
         const articles = await prisma_client_1.default.article.findMany({
-            where: { tenantId },
+            where: { tenantId, deletedAt: null },
             include: articleSummaryInclude,
         });
         return articles.map((a) => mapArticleToSummary(a, includeImages));
@@ -185,7 +185,7 @@ class InventoryRepository {
     // ÇEKİLMEZ — stok hareketi ekranındaki canlı sayaç için gereken en az veri.
     async getArticleStockInfo(tenantId, articleId) {
         const article = await prisma_client_1.default.article.findFirst({
-            where: { id: articleId, tenantId },
+            where: { id: articleId, tenantId, deletedAt: null },
             select: {
                 id: true,
                 baseCost: true,
@@ -220,7 +220,7 @@ class InventoryRepository {
     async getArticleStockSummaryPaged(tenantId, options) {
         const page = Math.max(1, Number(options.page) || 1);
         const pageSize = Math.min(200, Math.max(1, Number(options.pageSize) || 15));
-        const where = { tenantId };
+        const where = { tenantId, deletedAt: null };
         if (options.itemType)
             where.itemType = options.itemType;
         if (options.status)
@@ -235,6 +235,106 @@ class InventoryRepository {
                 { category: { contains: search } },
             ];
         }
+        // Kolon bazlı filtreler — genel aramanın (OR) üstüne AND olarak daraltır.
+        const columnFilters = [];
+        const code = String(options.code || '').trim();
+        if (code)
+            columnFilters.push({ articleCode: { contains: code } });
+        const name = String(options.name || '').trim();
+        if (name)
+            columnFilters.push({ name: { contains: name } });
+        const barcode = String(options.barcode || '').trim();
+        if (barcode) {
+            columnFilters.push({
+                OR: [
+                    { systemBarcode: { contains: barcode } },
+                    { supplierBarcode: { contains: barcode } },
+                ],
+            });
+        }
+        if (columnFilters.length)
+            where.AND = columnFilters;
+        const select = {
+            id: true,
+            articleCode: true,
+            name: true,
+            ...(options.includeDescription ? { description: true } : {}),
+            category: true,
+            itemType: true,
+            systemBarcode: true,
+            supplierBarcode: true,
+            unit: true,
+            salePrice: true,
+            baseCost: true,
+            status: true,
+            minStockLevel: true,
+            criticalStockLevel: true,
+            createdAt: true,
+            stockBalances: { select: { currentQuantity: true } },
+        };
+        const mapRow = (article) => ({
+            id: article.id,
+            articleCode: article.articleCode,
+            name: article.name,
+            ...(options.includeDescription ? { description: article.description ?? null } : {}),
+            category: article.category,
+            itemType: article.itemType ?? 'PRODUCT',
+            systemBarcode: article.systemBarcode,
+            supplierBarcode: article.supplierBarcode,
+            unit: article.unit,
+            salePrice: article.salePrice ?? 0,
+            baseCost: article.baseCost,
+            status: article.status,
+            minStockLevel: article.minStockLevel,
+            criticalStockLevel: article.criticalStockLevel,
+            createdAt: article.createdAt,
+            totalQuantity: article.stockBalances.reduce((sum, balance) => sum + (balance.currentQuantity || 0), 0),
+        });
+        const sortDirection = options.sortDirection === 'asc' ? 'asc' : 'desc';
+        const sortableFields = {
+            createdAt: 'createdAt',
+            articleCode: 'articleCode',
+            name: 'name',
+            barcode: 'systemBarcode',
+            salePrice: 'salePrice',
+            minStockLevel: 'minStockLevel',
+            criticalStockLevel: 'criticalStockLevel',
+            status: 'status',
+        };
+        const requestedSort = options.sortBy || 'createdAt';
+        const sortBy = requestedSort === 'totalQuantity' || sortableFields[requestedSort]
+            ? requestedSort
+            : 'createdAt';
+        const needsComputedPass = sortBy === 'totalQuantity';
+        // Total stock is an aggregate across locations. Only sorting by that
+        // aggregate needs an in-memory pass; ordinary requests retain DB pagination.
+        if (needsComputedPass) {
+            const rows = (await prisma_client_1.default.article.findMany({ where, select })).map(mapRow);
+            const directionFactor = sortDirection === 'asc' ? 1 : -1;
+            rows.sort((left, right) => {
+                const leftValue = left[sortBy];
+                const rightValue = right[sortBy];
+                if (leftValue == null && rightValue == null)
+                    return left.id.localeCompare(right.id);
+                if (leftValue == null)
+                    return 1;
+                if (rightValue == null)
+                    return -1;
+                const comparison = typeof leftValue === 'string'
+                    ? leftValue.localeCompare(String(rightValue))
+                    : Number(leftValue) - Number(rightValue);
+                return comparison === 0
+                    ? left.id.localeCompare(right.id)
+                    : comparison * directionFactor;
+            });
+            return {
+                items: rows.slice((page - 1) * pageSize, page * pageSize),
+                total: rows.length,
+                page,
+                pageSize,
+            };
+        }
+        const databaseSortField = sortableFields[sortBy] || 'createdAt';
         const [total, articles] = await Promise.all([
             prisma_client_1.default.article.count({ where }),
             prisma_client_1.default.article.findMany({
@@ -254,33 +354,18 @@ class InventoryRepository {
                     status: true,
                     minStockLevel: true,
                     criticalStockLevel: true,
+                    createdAt: true,
                     // Only the quantity is needed for the "in stock" column — no
                     // location objects, reservations or movement history.
                     stockBalances: { select: { currentQuantity: true } },
                 },
-                orderBy: { name: 'asc' },
+                orderBy: [{ [databaseSortField]: sortDirection }, { id: 'asc' }],
                 skip: (page - 1) * pageSize,
                 take: pageSize,
             }),
         ]);
         return {
-            items: articles.map((a) => ({
-                id: a.id,
-                articleCode: a.articleCode,
-                name: a.name,
-                ...(options.includeDescription ? { description: a.description ?? null } : {}),
-                category: a.category,
-                itemType: a.itemType ?? 'PRODUCT',
-                systemBarcode: a.systemBarcode,
-                supplierBarcode: a.supplierBarcode,
-                unit: a.unit,
-                salePrice: a.salePrice ?? 0,
-                baseCost: a.baseCost,
-                status: a.status,
-                minStockLevel: a.minStockLevel,
-                criticalStockLevel: a.criticalStockLevel,
-                totalQuantity: a.stockBalances.reduce((s, b) => s + (b.currentQuantity || 0), 0),
-            })),
+            items: articles.map(mapRow),
             total,
             page,
             pageSize,
@@ -290,6 +375,7 @@ class InventoryRepository {
         const data = await prisma_client_1.default.article.findFirst({
             where: {
                 tenantId,
+                deletedAt: null,
                 OR: [
                     { systemBarcode: codeOrBarcode },
                     { supplierBarcode: codeOrBarcode },

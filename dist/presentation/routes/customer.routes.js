@@ -196,6 +196,12 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
  *         required: true
  *         schema:
  *           type: string
+ *       - in: query
+ *         name: summary
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *         description: İlk boyama için yalnızca müşteri profil özetini getirir.
  *     responses:
  *       200:
  *         description: Dashboard verisi başarıyla getirildi

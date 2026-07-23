@@ -156,6 +156,20 @@ export class CustomerRepository implements ICustomerRepository {
                 { mainEmail: { contains: filter.search } }
             ];
         }
+        // Kolon bazlı filtreler — üstteki genel arama ile AND'lenir (MySQL collation
+        // varsayılan olarak büyük/küçük harf duyarsız, ayrıca `mode` gerekmez).
+        if (filter.companyName) whereClause.companyName = { contains: filter.companyName };
+        if (filter.vatNumber) whereClause.vatNumber = { contains: filter.vatNumber };
+        if (filter.email) whereClause.mainEmail = { contains: filter.email };
+
+        // Sıralama — yalnızca izin verilen DB kolonları; sortBy yoksa alfabetik varsayılan.
+        const sortDir: 'asc' | 'desc' = filter.sortDirection === 'asc' ? 'asc' : 'desc';
+        let orderBy: any = { companyName: 'asc' };
+        switch (filter.sortBy) {
+            case 'companyName': orderBy = { companyName: sortDir }; break;
+            case 'vatNumber': orderBy = { vatNumber: sortDir }; break;
+            case 'status': orderBy = { status: sortDir }; break;
+        }
 
         const page = filter.page && filter.page > 0 ? filter.page : undefined;
         const pageSize = filter.pageSize && filter.pageSize > 0 ? Math.min(filter.pageSize, 100) : undefined;
@@ -188,7 +202,7 @@ export class CustomerRepository implements ICustomerRepository {
                     responsibleLastName: true,
                     status: true,
                 },
-                orderBy: { companyName: 'asc' },
+                orderBy,
                 ...(page && pageSize ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
             }),
             page && pageSize ? prisma.customer.count({ where: whereClause }) : Promise.resolve(0),
@@ -211,9 +225,36 @@ export class CustomerRepository implements ICustomerRepository {
     
 
 
-        async getCustomerDashboard(id: string, tenantId?: string): Promise<any> {
+        async getCustomerDashboard(id: string, tenantId?: string, summaryOnly = false): Promise<any> {
         const whereClause: any = { id };
         if (tenantId) whereClause.tenantId = tenantId;
+
+        if (summaryOnly) {
+            return prisma.customer.findFirst({
+                where: whereClause,
+                select: {
+                    id: true,
+                    companyName: true,
+                    customerType: true,
+                    vatNumber: true,
+                    priceList: true,
+                    mainEmail: true,
+                    mainPhone: true,
+                    mobilePhone: true,
+                    website: true,
+                    language: true,
+                    responsibleFirstName: true,
+                    responsibleLastName: true,
+                    addressName: true,
+                    address: true,
+                    postalCode: true,
+                    city: true,
+                    country: true,
+                    status: true,
+                    isActive: true,
+                }
+            });
+        }
 
         const dashboardData = await prisma.customer.findFirst({
             where: whereClause,
@@ -230,18 +271,6 @@ export class CustomerRepository implements ICustomerRepository {
                     orderBy: { activityDate: 'desc' },
                     take: 10 // Son 10 aktiviteyi getir
                 },
-                // YENİ EKLENEN KISIM: Müşterinin Teklifleri
-                tenders: {
-                    orderBy: { createdAt: 'desc' },
-                    select: {
-                        id: true,
-                        tenderNumber: true,
-                        version: true,
-                        status: true,
-                        format: true,
-                        createdAt: true
-                    }
-                }
             }
         });
 
@@ -262,11 +291,10 @@ export class CustomerRepository implements ICustomerRepository {
                     employeeEmail: employee?.email ?? null
                 };
             });
-            const documents = await prisma.document.findMany({
-                where: { entityType: 'customer', relatedEntityId: id },
-                orderBy: { fileName: 'asc' }
-            });
-            return { ...dashboardData, activities, documents };
+            // Offers are loaded independently by the customer page and documents
+            // are not rendered there. Keeping both out of this LCP-critical query
+            // avoids redundant relation scans and a sequential document lookup.
+            return { ...dashboardData, activities };
         }
 
         return dashboardData;

@@ -151,6 +151,18 @@ router.get('/articles/summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
  *       - in: query
  *         name: itemType
  *         schema: { type: string, enum: [PRODUCT, MATERIAL] }
+ *       - in: query
+ *         name: code
+ *         schema: { type: string }
+ *         description: Stok kodu kolonunda daraltma (contains)
+ *       - in: query
+ *         name: name
+ *         schema: { type: string }
+ *         description: Ürün adı kolonunda daraltma (contains)
+ *       - in: query
+ *         name: barcode
+ *         schema: { type: string }
+ *         description: Sistem/tedarikçi barkodu kolonunda daraltma (contains)
  */
 router.get('/articles/summary/paged', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getArticleStockSummaryPaged(req, res));
 /**
@@ -634,6 +646,7 @@ router.get('/search-items', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.r
             prisma_client_1.default.article.findMany({
                 where: {
                     tenantId,
+                    deletedAt: null,
                     OR: [
                         { name: { contains: q } },
                         { articleCode: { contains: q } },
@@ -782,6 +795,7 @@ router.get('/supply/low-stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
             prisma_client_1.default.article.findMany({
                 where: {
                     tenantId,
+                    deletedAt: null,
                     isActive: true,
                     OR: [{ minStockLevel: { gt: 0 } }, { criticalStockLevel: { gt: 0 } }],
                 },
@@ -843,7 +857,7 @@ router.get('/supply/item/:kind/:id/suppliers', AuthMiddleware_1.requireAuth, (0,
         const id = String(req.params.id);
         if (kind === 'PRODUCT') {
             const article = await prisma_client_1.default.article.findFirst({
-                where: { id, tenantId },
+                where: { id, tenantId, deletedAt: null },
                 select: { id: true, articleCode: true, name: true, unit: true },
             });
             if (!article)

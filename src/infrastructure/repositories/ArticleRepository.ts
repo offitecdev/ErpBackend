@@ -132,18 +132,20 @@ export class ArticleRepository implements IArticleRepository {
     }
 
     async deleteArticle(id: string): Promise<void> {
-        await prisma.$transaction(async (tx) => {
-            await tx.positionArticleMapping.deleteMany({ where: { articleId: id } });
-            await tx.stockBalance.deleteMany({ where: { articleId: id } });
-            await tx.purchaseProposal.deleteMany({ where: { articleId: id } });
-            await tx.stockMovement.deleteMany({ where: { articleId: id } });
-            await (tx as any).articleSupplier.deleteMany({ where: { articleId: id } });
-            await tx.article.delete({ where: { id } });
+        // Keep stock history and references intact; deletion moves the product card
+        // to trash so it can be recovered administratively.
+        await (prisma as any).article.update({
+            where: { id },
+            data: {
+                deletedAt: new Date(),
+                status: 'INACTIVE',
+                isActive: false,
+            },
         });
     }
 
     async findAllArticles(filter: IArticleFilter): Promise<Article[]> {
-        const where: any = { tenantId: filter.tenantId };
+        const where: any = { tenantId: filter.tenantId, deletedAt: null };
         if (filter.onlyActive) where.isActive = true;
         if (filter.category) where.category = filter.category;
         if (filter.status) where.status = filter.status;
@@ -163,8 +165,8 @@ export class ArticleRepository implements IArticleRepository {
     }
 
     async findArticleById(id: string, options?: { includeImages?: boolean }): Promise<Article | null> {
-        const data = await prisma.article.findUnique({
-            where: { id },
+        const data = await (prisma as any).article.findFirst({
+            where: { id, deletedAt: null },
             // `includeImages=false` must prevent MariaDB from reading the LONGTEXT
             // column, not merely remove it from the JSON response afterwards.
             select: this.articleSelect(options?.includeImages !== false),
@@ -176,6 +178,7 @@ export class ArticleRepository implements IArticleRepository {
         const data = await prisma.article.findFirst({
             where: {
                 tenantId,
+                deletedAt: null,
                 OR: [
                     { articleCode: codeOrBarcode },
                     { systemBarcode: codeOrBarcode },

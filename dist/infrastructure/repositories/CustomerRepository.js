@@ -170,10 +170,36 @@ class CustomerRepository {
         }
         return items;
     }
-    async getCustomerDashboard(id, tenantId) {
+    async getCustomerDashboard(id, tenantId, summaryOnly = false) {
         const whereClause = { id };
         if (tenantId)
             whereClause.tenantId = tenantId;
+        if (summaryOnly) {
+            return prisma_client_1.default.customer.findFirst({
+                where: whereClause,
+                select: {
+                    id: true,
+                    companyName: true,
+                    customerType: true,
+                    vatNumber: true,
+                    priceList: true,
+                    mainEmail: true,
+                    mainPhone: true,
+                    mobilePhone: true,
+                    website: true,
+                    language: true,
+                    responsibleFirstName: true,
+                    responsibleLastName: true,
+                    addressName: true,
+                    address: true,
+                    postalCode: true,
+                    city: true,
+                    country: true,
+                    status: true,
+                    isActive: true,
+                }
+            });
+        }
         const dashboardData = await prisma_client_1.default.customer.findFirst({
             where: whereClause,
             include: {
@@ -189,18 +215,6 @@ class CustomerRepository {
                     orderBy: { activityDate: 'desc' },
                     take: 10 // Son 10 aktiviteyi getir
                 },
-                // YENİ EKLENEN KISIM: Müşterinin Teklifleri
-                tenders: {
-                    orderBy: { createdAt: 'desc' },
-                    select: {
-                        id: true,
-                        tenderNumber: true,
-                        version: true,
-                        status: true,
-                        format: true,
-                        createdAt: true
-                    }
-                }
             }
         });
         if (dashboardData) {
@@ -220,11 +234,10 @@ class CustomerRepository {
                     employeeEmail: employee?.email ?? null
                 };
             });
-            const documents = await prisma_client_1.default.document.findMany({
-                where: { entityType: 'customer', relatedEntityId: id },
-                orderBy: { fileName: 'asc' }
-            });
-            return { ...dashboardData, activities, documents };
+            // Offers are loaded independently by the customer page and documents
+            // are not rendered there. Keeping both out of this LCP-critical query
+            // avoids redundant relation scans and a sequential document lookup.
+            return { ...dashboardData, activities };
         }
         return dashboardData;
     }

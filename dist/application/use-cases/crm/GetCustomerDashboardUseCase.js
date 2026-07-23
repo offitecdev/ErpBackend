@@ -6,8 +6,8 @@ class GetCustomerDashboardUseCase {
     constructor(customerRepository) {
         this.customerRepository = customerRepository;
     }
-    async execute(customerId, tenantId) {
-        const dashboard = await this.customerRepository.getCustomerDashboard(customerId, tenantId);
+    async execute(customerId, tenantId, summaryOnly = false) {
+        const dashboard = await this.customerRepository.getCustomerDashboard(customerId, tenantId, summaryOnly);
         if (!dashboard)
             throw new Error("Müşteri bulunamadı.");
         return dashboard;

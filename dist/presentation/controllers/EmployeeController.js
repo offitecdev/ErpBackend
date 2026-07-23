@@ -1,6 +1,10 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EmployeeController = void 0;
+const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 class EmployeeController {
     createEmployeeUseCase;
     getEmployeeUseCase;
@@ -45,6 +49,32 @@ class EmployeeController {
     }
     async list(req, res) {
         try {
+            // `light=1`: trimmed name/role listing for pickers & filters — skips the
+            // employeeRoles join and heavy columns, so it answers in a fraction of
+            // the full listing's time.
+            if (String(req.query.light || '') === '1') {
+                const rows = await prisma_client_1.default.employee.findMany({
+                    where: {
+                        tenantId: req.user.tenantId,
+                        ...(req.query.isActive !== undefined ? { isActive: req.query.isActive === 'true' } : {}),
+                    },
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                        roleName: true,
+                        title: true,
+                        // Some employees only carry their role via the RBAC join.
+                        employeeRoles: { select: { role: { select: { roleName: true } } }, take: 1 },
+                    },
+                    orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+                });
+                return res.status(200).json(rows.map(({ employeeRoles, ...rest }) => ({
+                    ...rest,
+                    roleName: employeeRoles?.[0]?.role?.roleName ?? rest.roleName,
+                })));
+            }
             const filters = {
                 tenantId: req.user.tenantId,
                 isActive: req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined,

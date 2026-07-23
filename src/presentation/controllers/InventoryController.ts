@@ -90,6 +90,8 @@ export class InventoryController {
                 code: req.query.code ? String(req.query.code) : undefined,
                 name: req.query.name ? String(req.query.name) : undefined,
                 barcode: req.query.barcode ? String(req.query.barcode) : undefined,
+                sortBy: req.query.sortBy ? String(req.query.sortBy) : undefined,
+                sortDirection: req.query.sortDirection === 'asc' ? 'asc' : 'desc',
             });
             res.status(200).json(result);
         } catch (error: any) {

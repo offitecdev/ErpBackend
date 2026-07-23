@@ -13,7 +13,8 @@ export class EmployeeRepository implements IEmployeeRepository {
             data.departmentId, firstRole?.roleName ?? data.roleName, data.phone, data.address,
             data.hireDate, data.terminationDate, data.annualLeaveEntitlement,
             data.profilePictureUrl, data.notes, data.createdAt, data.updatedAt,
-            firstRole?.id ?? null
+            firstRole?.id ?? null,
+            data.passwordChangedAt, data.deletedAt, data.bannedAt
         );
         return emp;
     }

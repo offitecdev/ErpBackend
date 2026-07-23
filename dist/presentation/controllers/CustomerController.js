@@ -77,7 +77,8 @@ class CustomerController {
                 return res.status(400).json({ error: 'Geçersiz müşteri ID.' });
             }
             const tenantId = req.user?.tenantId;
-            const result = await this.getCustomerDashboardUseCase.execute(id, tenantId);
+            const summaryOnly = req.query.summary === 'true';
+            const result = await this.getCustomerDashboardUseCase.execute(id, tenantId, summaryOnly);
             if (!result) {
                 return res.status(404).json({ error: 'Müşteri bulunamadı.' });
             }

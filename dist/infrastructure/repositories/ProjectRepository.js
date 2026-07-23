@@ -5,6 +5,65 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const materialLiteSelect = {
+    id: true,
+    serialId: true,
+    name: true,
+    stockQuantity: true,
+    unitCost: true,
+};
+const tenderMaterialUsageSelect = {
+    id: true,
+    materialId: true,
+    quantity: true,
+    unitCost: true,
+    description: true,
+    material: { select: materialLiteSelect },
+};
+const reportSummarySelect = {
+    id: true,
+    projectId: true,
+    salesOrderId: true,
+    appointmentId: true,
+    reportDate: true,
+    workDate: true,
+    startedAt: true,
+    overtimeMinutes: true,
+    overtimeHourlyRate: true,
+    overtimeCost: true,
+    isSigned: true,
+};
+const expenseSummarySelect = {
+    id: true,
+    projectId: true,
+    salesOrderId: true,
+    appointmentId: true,
+    expenseType: true,
+    amount: true,
+    expenseDate: true,
+};
+const extraMaterialSummarySelect = {
+    id: true,
+    projectId: true,
+    salesOrderId: true,
+    appointmentId: true,
+    materialId: true,
+    quantity: true,
+    unitPrice: true,
+    addedAt: true,
+};
+const appointmentSummarySelect = {
+    id: true,
+    tenantId: true,
+    projectId: true,
+    salesOrderId: true,
+    assignedTechId: true,
+    customerId: true,
+    startTime: true,
+    endTime: true,
+    status: true,
+    installationReminderSentAt: true,
+};
 class ProjectRepository {
     async createProject(data) {
         return await prisma_client_1.default.$transaction(async (tx) => {
@@ -142,6 +201,223 @@ class ProjectRepository {
                     include: { material: true }
                 }
             }
+        });
+    }
+    /**
+     * Read model for the project-detail UI.
+     *
+     * The legacy findById method intentionally stays untouched because service,
+     * mutation and PDF flows still consume its complete graph. This method is used
+     * only when the UI supplies a `view` and avoids reading unrelated LONGTEXT
+     * columns and relation trees (offer positions, report images/signatures and
+     * material images) until the section that needs them is opened.
+     */
+    async findDetailById(id, tenantId, view) {
+        const withAppointmentPeople = view === "details" || view === "planning" || view === "fieldReports" || view === "generalReport";
+        const withReportDetails = [
+            "fieldReports",
+            "generalReport",
+            "delivery",
+            "signatures",
+            "expenses",
+            "materials",
+            "overtime",
+        ].includes(view);
+        const withReportMaterials = view === "fieldReports" || view === "generalReport";
+        const withReportAssets = view === "generalReport" || view === "delivery" || view === "signatures";
+        const withExpenseDetails = view === "fieldReports" || view === "generalReport" || view === "expenses";
+        const withExtraMaterialDetails = view === "fieldReports" || view === "generalReport" || view === "materials";
+        const withTenderMaterials = view === "planning" || view === "fieldReports" || view === "generalReport" || view === "materials";
+        const reportSelect = withReportDetails
+            ? {
+                id: true,
+                projectId: true,
+                salesOrderId: true,
+                appointmentId: true,
+                employeeId: true,
+                reportDate: true,
+                reportType: true,
+                workDate: true,
+                startedAt: true,
+                endedAt: true,
+                workedMinutes: true,
+                plannedMinutesForDay: true,
+                overtimeMinutes: true,
+                overtimeHourlyRate: true,
+                overtimeCost: true,
+                operationsDone: true,
+                technicalNotes: true,
+                isSigned: true,
+                signedAt: true,
+                hoursApprovedAt: true,
+                hoursApprovedById: true,
+                autoApproved: true,
+                employee: { select: { id: true, firstName: true, lastName: true, email: true } },
+                ...(withReportMaterials ? {
+                    usedMaterials: {
+                        select: {
+                            id: true,
+                            reportId: true,
+                            articleId: true,
+                            materialId: true,
+                            quantity: true,
+                            costAtTime: true,
+                            article: { select: { id: true, articleCode: true, name: true, baseCost: true, unit: true } },
+                            material: { select: materialLiteSelect },
+                        },
+                    },
+                } : {}),
+                ...(withReportAssets ? {
+                    customerSignature: true,
+                    images: {
+                        orderBy: { createdAt: "asc" },
+                        select: {
+                            id: true,
+                            reportId: true,
+                            imageData: true,
+                            caption: true,
+                            uploadedById: true,
+                            createdAt: true,
+                        },
+                    },
+                } : {}),
+            }
+            : reportSummarySelect;
+        const expenseSelect = withExpenseDetails
+            ? { ...expenseSummarySelect, description: true }
+            : expenseSummarySelect;
+        const extraMaterialSelect = withExtraMaterialDetails
+            ? {
+                ...extraMaterialSummarySelect,
+                description: true,
+                material: { select: materialLiteSelect },
+            }
+            : extraMaterialSummarySelect;
+        const appointmentSelect = withAppointmentPeople
+            ? {
+                ...appointmentSummarySelect,
+                notes: true,
+                isLocked: true,
+                assignedTechnician: {
+                    select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true },
+                },
+                technicianAssignments: {
+                    orderBy: { assignedAt: "asc" },
+                    select: {
+                        id: true,
+                        appointmentId: true,
+                        technicianId: true,
+                        assignedAt: true,
+                        technician: {
+                            select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true },
+                        },
+                    },
+                },
+            }
+            : appointmentSummarySelect;
+        const tenderSelect = {
+            id: true,
+            tenderNumber: true,
+            status: true,
+            projectId: true,
+            ...(withTenderMaterials ? {
+                usedMaterials: {
+                    orderBy: { createdAt: "desc" },
+                    select: tenderMaterialUsageSelect,
+                },
+            } : {}),
+        };
+        return await prisma_client_1.default.project.findFirst({
+            where: { id, tenantId },
+            select: {
+                id: true,
+                tenantId: true,
+                customerId: true,
+                tenderId: true,
+                managerId: true,
+                projectName: true,
+                status: true,
+                plannedBudget: true,
+                actualCost: true,
+                overtimeHourlyRate: true,
+                overtimeTolerancePercent: true,
+                startDate: true,
+                endDate: true,
+                bookingToken: true,
+                createdAt: true,
+                updatedAt: true,
+                customer: {
+                    select: {
+                        id: true,
+                        companyName: true,
+                        mainEmail: true,
+                        mainPhone: true,
+                        address: true,
+                        language: true,
+                    },
+                },
+                manager: { select: { id: true, firstName: true, lastName: true, email: true } },
+                tender: { select: tenderSelect },
+                salesOrders: {
+                    orderBy: { createdAt: "asc" },
+                    select: {
+                        id: true,
+                        tenantId: true,
+                        customerId: true,
+                        tenderId: true,
+                        projectId: true,
+                        parentSalesOrderId: true,
+                        revisionNumber: true,
+                        orderNumber: true,
+                        orderType: true,
+                        status: true,
+                        totalAmount: true,
+                        createdByEmployeeId: true,
+                        createdAt: true,
+                        updatedAt: true,
+                        orderDate: true,
+                        customer: {
+                            select: {
+                                id: true,
+                                companyName: true,
+                                mainEmail: true,
+                                mainPhone: true,
+                                address: true,
+                                language: true,
+                            },
+                        },
+                        parentSalesOrder: { select: { id: true, orderNumber: true } },
+                        addonSalesOrders: {
+                            select: {
+                                id: true,
+                                orderNumber: true,
+                                revisionNumber: true,
+                                totalAmount: true,
+                                createdAt: true,
+                                orderDate: true,
+                            },
+                        },
+                        tender: { select: tenderSelect },
+                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    },
+                },
+                appointments: {
+                    orderBy: { startTime: "asc" },
+                    select: appointmentSelect,
+                },
+                reports: {
+                    orderBy: { reportDate: "desc" },
+                    select: reportSelect,
+                },
+                expenses: {
+                    orderBy: { expenseDate: "desc" },
+                    select: expenseSelect,
+                },
+                extraMaterials: {
+                    orderBy: { addedAt: "desc" },
+                    select: extraMaterialSelect,
+                },
+            },
         });
     }
     async findByToken(bookingToken) {

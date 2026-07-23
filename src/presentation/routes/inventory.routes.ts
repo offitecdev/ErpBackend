@@ -744,6 +744,7 @@ router.get(
                 (prisma as any).article.findMany({
                     where: {
                         tenantId,
+                        deletedAt: null,
                         OR: [
                             { name: { contains: q } },
                             { articleCode: { contains: q } },
@@ -926,6 +927,7 @@ router.get(
                 (prisma as any).article.findMany({
                     where: {
                         tenantId,
+                        deletedAt: null,
                         isActive: true,
                         OR: [{ minStockLevel: { gt: 0 } }, { criticalStockLevel: { gt: 0 } }],
                     },
@@ -997,7 +999,7 @@ router.get(
 
             if (kind === 'PRODUCT') {
                 const article = await (prisma as any).article.findFirst({
-                    where: { id, tenantId },
+                    where: { id, tenantId, deletedAt: null },
                     select: { id: true, articleCode: true, name: true, unit: true },
                 });
                 if (!article) return res.status(404).json({ error: 'Ürün bulunamadı.' });

@@ -21,5 +21,8 @@ export class Employee {
         public createdAt?: Date | null,
         public updatedAt?: Date | null,
         public roleId?: string | null,
+        public passwordChangedAt?: Date | null,
+        public deletedAt?: Date | null,
+        public bannedAt?: Date | null,
     )  {}
 }

@@ -40,6 +40,8 @@ export interface IInventoryRepository {
             code?: string | undefined;
             name?: string | undefined;
             barcode?: string | undefined;
+            sortBy?: string | undefined;
+            sortDirection?: 'asc' | 'desc' | undefined;
         }
     ): Promise<{ items: any[]; total: number; page: number; pageSize: number }>;
 
