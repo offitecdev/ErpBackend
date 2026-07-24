@@ -23,7 +23,8 @@ export class TenderRepository implements ITenderRepository {
             data.billingSameAsInstallation,
             data.installationAddress,
             data.directDiscount,
-            data.currency
+            data.currency,
+            data.directDiscountLabel
         );
     }
 
@@ -152,6 +153,7 @@ export class TenderRepository implements ITenderRepository {
                 deliveryAddress: true,
                 billingSameAsInstallation: true,
                 directDiscount: true,
+                directDiscountLabel: true,
                 internalDeliveryDate: true,
                 priceList: true,
                 paymentTerms: true,
@@ -302,6 +304,7 @@ export class TenderRepository implements ITenderRepository {
                     deliveryAddress: (existingTender as any).deliveryAddress,
                     billingSameAsInstallation: (existingTender as any).billingSameAsInstallation,
                     directDiscount: (existingTender as any).directDiscount,
+                    directDiscountLabel: (existingTender as any).directDiscountLabel,
                     internalDeliveryDate: (existingTender as any).internalDeliveryDate,
                     priceList: (existingTender as any).priceList,
                     paymentTerms: (existingTender as any).paymentTerms,

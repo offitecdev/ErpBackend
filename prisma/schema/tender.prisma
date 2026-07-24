@@ -36,6 +36,8 @@ model Tender {
 
   // Document-level direct discount (%) applied to the net total in the offer summary.
   directDiscount      Float?       @default(0)
+  // Optional custom display name for the direct discount (e.g. "Winteraktion").
+  directDiscountLabel String?
   salespersonName     String?
   sourceStatus        String?
   sourceCompany       String?

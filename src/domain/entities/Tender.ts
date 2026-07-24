@@ -42,6 +42,7 @@ export class Tender {
         public installationAddress?: string | null,
         public directDiscount?: number | null,
         public currency?: string | null,
+        public directDiscountLabel?: string | null,
     ){}
 }
 
