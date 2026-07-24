@@ -642,6 +642,13 @@ class TenderController {
                 }
                 metaData.directDiscount = value;
             }
+            if (rawMeta.directDiscountLabel !== undefined) {
+                const label = rawMeta.directDiscountLabel === null ? '' : String(rawMeta.directDiscountLabel).trim();
+                if (label.length > 80) {
+                    throw new TenderValidationError("İndirim adı en fazla 80 karakter olabilir.");
+                }
+                metaData.directDiscountLabel = label || null;
+            }
             if (rawMeta.billingSameAsInstallation !== undefined) {
                 metaData.billingSameAsInstallation = Boolean(rawMeta.billingSameAsInstallation);
             }
@@ -1259,7 +1266,7 @@ class TenderController {
             const tenderId = req.params.id;
             const tenantId = req.user.tenantId;
             const employeeId = req.user.id;
-            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount } = req.body;
+            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount, directDiscountLabel } = req.body;
             const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
@@ -1302,6 +1309,13 @@ class TenderController {
                     return res.status(400).json({ error: "İndirim 0 ile 100 arasında olmalıdır." });
                 }
                 data.directDiscount = parsedDirectDiscount;
+            }
+            if (directDiscountLabel !== undefined) {
+                const label = directDiscountLabel === null ? '' : String(directDiscountLabel).trim();
+                if (label.length > 80) {
+                    return res.status(400).json({ error: "İndirim adı en fazla 80 karakter olabilir." });
+                }
+                data.directDiscountLabel = label || null;
             }
             if (billingSameAsInstallation !== undefined) {
                 data.billingSameAsInstallation = !!billingSameAsInstallation;

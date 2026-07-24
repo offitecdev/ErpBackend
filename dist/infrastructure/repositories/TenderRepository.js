@@ -10,7 +10,7 @@ const customerAddress_1 = require("../../application/utils/customerAddress");
 const nanoid_1 = require("nanoid");
 class TenderRepository {
     mapToEntity(data) {
-        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency);
+        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency, data.directDiscountLabel);
     }
     async create(tenderData) {
         const data = await prisma_client_1.default.tender.create({
@@ -147,6 +147,7 @@ class TenderRepository {
                     deliveryAddress: true,
                     billingSameAsInstallation: true,
                     directDiscount: true,
+                    directDiscountLabel: true,
                     internalDeliveryDate: true,
                     priceList: true,
                     paymentTerms: true,
@@ -289,6 +290,7 @@ class TenderRepository {
                     deliveryAddress: existingTender.deliveryAddress,
                     billingSameAsInstallation: existingTender.billingSameAsInstallation,
                     directDiscount: existingTender.directDiscount,
+                    directDiscountLabel: existingTender.directDiscountLabel,
                     internalDeliveryDate: existingTender.internalDeliveryDate,
                     priceList: existingTender.priceList,
                     paymentTerms: existingTender.paymentTerms,

@@ -44,7 +44,8 @@ class Tender {
     installationAddress;
     directDiscount;
     currency;
-    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency) {
+    directDiscountLabel;
+    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency, directDiscountLabel) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -87,6 +88,7 @@ class Tender {
         this.installationAddress = installationAddress;
         this.directDiscount = directDiscount;
         this.currency = currency;
+        this.directDiscountLabel = directDiscountLabel;
     }
 }
 exports.Tender = Tender;
