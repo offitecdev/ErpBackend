@@ -10,67 +10,86 @@ enum TenderStatus {
 }
 
 model Tender {
-  id                  String       @id
-  tenantId            String
-  customerId          String?
-  projectId           String?
-  tenderNumber        String
-  version             Int          @default(1)
-  format              TenderFormat
-  validUntil          DateTime?
-  sourceCreatedAt     DateTime?
-  orderDate           DateTime?
-  billingAddress      String?      @db.Text
+  id                        String       @id
+  tenantId                  String
+  customerId                String?
+  projectId                 String?
+  tenderNumber              String
+  version                   Int          @default(1)
+  format                    TenderFormat
+  validUntil                DateTime?
+  sourceCreatedAt           DateTime?
+  orderDate                 DateTime?
+  billingAddress            String?      @db.Text
   // Projektadresse (installation/Montage). Historically deliveryAddress held this;
   // deliveryAddress is now the actual Lieferadresse.
-  installationAddress String?      @db.Text
-  deliveryAddress     String?      @db.Text
-  billingSameAsInstallation Boolean? @default(false)
-  internalDeliveryDate DateTime?
-  priceList           String?
-  paymentTerms        String?
-  commissionNumber    String?
+  installationAddress       String?      @db.Text
+  deliveryAddress           String?      @db.Text
+  billingSameAsInstallation Boolean?     @default(false)
+  internalDeliveryDate      DateTime?
+  priceList                 String?
+  paymentTerms              String?
+  commissionNumber          String?
   // Currency the offer is denominated in (CHF/EUR/USD/GBP/TRY). Symbol-only:
   // it changes how amounts are displayed/exported, not their numeric value.
-  currency            String?
+  currency                  String?
 
   // Document-level direct discount (%) applied to the net total in the offer summary.
-  directDiscount      Float?       @default(0)
+  directDiscount       Float?                @default(0)
   // Optional custom display name for the direct discount (e.g. "Winteraktion").
-  directDiscountLabel String?
-  salespersonName     String?
-  sourceStatus        String?
-  sourceCompany       String?
-  shippingTerms       String?
-  shippingWeight      Float?
-  fiscalPosition      String?
-  salesTeam           String?
-  onlineSignature     Boolean?
-  onlinePayment       Boolean?
-  coverLetter         String?      @db.LongText
-  sourceTotal         Float?
-  sourceNetAmount     Float?
-  sourceTaxAmount     Float?
+  directDiscountLabel  String?
+  // Second document-level discount (%) applied SEQUENTIALLY after directDiscount
+  // (100 → -20% → 80 → -10% → 72). Same factor scales net and VAT.
+  extraDiscount        Float?                @default(0)
+  extraDiscountLabel   String?
+  // Payment schedule as a JSON array of stage percents, e.g. "[30,20,10,40]".
+  // Stages must sum to 100. Null = no schedule (free-form invoicing).
+  paymentStages        String?
+  salespersonName      String?
+  sourceStatus         String?
+  sourceCompany        String?
+  shippingTerms        String?
+  shippingWeight       Float?
+  fiscalPosition       String?
+  salesTeam            String?
+  onlineSignature      Boolean?
+  onlinePayment        Boolean?
+  // ── Optional PDF content blocks ──
+  // Rich text (HTML: bold / italic / colour). All three are optional and the
+  // document renders without them.
+  // Letter printed on its own page, straight after the cover page.
+  coverLetter          String?               @db.LongText
+  // Note printed after the totals, at the end of the document.
+  closingNote          String?               @db.LongText
+  // Images printed after the closing note — a JSON array of data URIs.
+  closingImages        String?               @db.LongText
+  sourceTotal          Float?
+  sourceNetAmount      Float?
+  sourceTaxAmount      Float?
   sourceRecurringTotal Float?
-  sourceMargin        Float?
-  status              TenderStatus @default(Draft)
-  offerMailSentAt     DateTime?
-  offerAcceptedAt     DateTime?
-  offerMailRecipient  String?
-  offerAcceptanceToken String?     @unique @db.VarChar(128)
-  createdAt           DateTime     @default(now())
-  createdByEmployeeId String
-  tenant              Tenant       @relation(fields: [tenantId], references: [id])
-  customer            Customer?    @relation(fields: [customerId], references: [id])
-  createdBy           Employee     @relation(fields: [createdByEmployeeId], references: [id])
-  positions           Position[]
-  usedMaterials       TenderMaterialUsage[]
-  salesOrder          SalesOrder?
-  project             Project?
-  offerScheduleSlots  OfferScheduleSlot[]
+  sourceMargin         Float?
+  status               TenderStatus          @default(Draft)
+  offerMailSentAt      DateTime?
+  offerAcceptedAt      DateTime?
+  offerMailRecipient   String?
+  offerAcceptanceToken String?               @unique @db.VarChar(128)
+  createdAt            DateTime              @default(now())
+  createdByEmployeeId  String
+  tenant               Tenant                @relation(fields: [tenantId], references: [id])
+  customer             Customer?             @relation(fields: [customerId], references: [id])
+  createdBy            Employee              @relation(fields: [createdByEmployeeId], references: [id])
+  positions            Position[]
+  usedMaterials        TenderMaterialUsage[]
+  salesOrder           SalesOrder?
+  project              Project?
+  offerScheduleSlots   OfferScheduleSlot[]
 
   @@index([tenantId])
   @@index([customerId])
+  // Liste tenant içinde sıralanır; tek kolonluk tenantId indeksi sıralamayı
+  // karşılamadığı için her sayfa filesort'a düşüyordu.
+  @@index([tenantId, createdAt])
+  @@index([tenantId, tenderNumber])
 }
 
 model Position {
@@ -96,8 +115,8 @@ model Position {
   parentPosition   Position?  @relation("PositionHierarchy", fields: [parentPositionId], references: [id])
   subPositions     Position[] @relation("PositionHierarchy")
 
-  calculation     CalculationItem?
-  articleMappings PositionArticleMapping[]
+  calculation      CalculationItem?
+  articleMappings  PositionArticleMapping[]
   materialMappings PositionMaterialMapping[]
 
   @@index([tenderId])
@@ -107,16 +126,16 @@ model Position {
 }
 
 model CalculationItem {
-  id                   String @id
-  positionId           String @unique
-  materialCost         Float  @default(0)
-  laborCost            Float  @default(0)
-  overheadCost         Float  @default(0)
-  riskAmount           Float  @default(0)
-  additionalCost       Float  @default(0)
-  profitMargin         Float  @default(0)
-  totalCalculatedPrice Float  @default(0)
-  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  id                   String   @id
+  positionId           String   @unique
+  materialCost         Float    @default(0)
+  laborCost            Float    @default(0)
+  overheadCost         Float    @default(0)
+  riskAmount           Float    @default(0)
+  additionalCost       Float    @default(0)
+  profitMargin         Float    @default(0)
+  totalCalculatedPrice Float    @default(0)
+  position             Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
 }
 
 model Article {
@@ -147,13 +166,13 @@ model Article {
   tenant           Tenant                   @relation(fields: [tenantId], references: [id])
   positionMappings PositionArticleMapping[]
 
-  stockBalances     StockBalance[]
-  stockMovements    StockMovement[]
-  purchaseProposals PurchaseProposal[]
-  articleSuppliers  ArticleSupplier[]
-  reportMaterials   ReportMaterial[]
+  stockBalances        StockBalance[]
+  stockMovements       StockMovement[]
+  purchaseProposals    PurchaseProposal[]
+  articleSuppliers     ArticleSupplier[]
+  reportMaterials      ReportMaterial[]
   maintenanceMaterials MaintenanceMaterial[]
-  serviceMaterials  ServiceMaterial[]
+  serviceMaterials     ServiceMaterial[]
 
   @@unique([tenantId, articleCode])
   @@index([tenantId])
@@ -192,7 +211,7 @@ model TenderMaterialUsage {
   tenderId    String
   materialId  String
   quantity    Float
-  unitCost     Float   @default(0)
+  unitCost    Float    @default(0)
   description String?  @db.Text
   createdAt   DateTime @default(now())
 

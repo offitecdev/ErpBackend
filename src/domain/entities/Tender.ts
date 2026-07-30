@@ -33,6 +33,8 @@ export class Tender {
         public onlineSignature?: boolean | null,
         public onlinePayment?: boolean | null,
         public coverLetter?: string | null,
+        public closingNote?: string | null,
+        public closingImages?: string | null,
         public sourceTotal?: number | null,
         public sourceNetAmount?: number | null,
         public sourceTaxAmount?: number | null,
@@ -43,6 +45,9 @@ export class Tender {
         public directDiscount?: number | null,
         public currency?: string | null,
         public directDiscountLabel?: string | null,
+        public extraDiscount?: number | null,
+        public extraDiscountLabel?: string | null,
+        public paymentStages?: string | null,
     ){}
 }
 

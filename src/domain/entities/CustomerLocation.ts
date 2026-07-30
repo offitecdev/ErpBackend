@@ -15,5 +15,9 @@ export class CustomerLocation {
         public notes?: string | null,
         public createdAt?: Date,
         public updatedAt?: Date,
+        /** Adres eki / daire — sokak satırının (`address`) devamı. */
+        public addressSupplement?: string | null,
+        /** Eyalet / kanton / bölge. */
+        public state?: string | null,
     ) {}
 }

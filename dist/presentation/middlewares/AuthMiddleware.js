@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requireAuth = void 0;
+exports.requireAuth = exports.findTenantRootId = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService");
 const authCookies_1 = require("../utils/authCookies");
@@ -34,6 +34,7 @@ const findTenantRootId = async (tenantId) => {
     });
     return current.id;
 };
+exports.findTenantRootId = findTenantRootId;
 const TENANT_ROOT_CACHE_TTL_MS = 60_000;
 const tenantRootCache = new Map();
 const resolveTenantId = async (homeTenantId, requestedTenantId) => {
@@ -41,8 +42,8 @@ const resolveTenantId = async (homeTenantId, requestedTenantId) => {
     if (!requested || requested === homeTenantId)
         return homeTenantId;
     const [homeRootId, requestedRootId] = await Promise.all([
-        findTenantRootId(homeTenantId),
-        findTenantRootId(requested),
+        (0, exports.findTenantRootId)(homeTenantId),
+        (0, exports.findTenantRootId)(requested),
     ]);
     if (!homeRootId || homeRootId !== requestedRootId) {
         throw new Error('Bu şirket için erişim yetkiniz yok.');

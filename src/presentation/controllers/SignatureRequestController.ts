@@ -35,6 +35,40 @@ export class SignatureRequestController {
         }
     }
 
+    /** Authenticated report detail; unlike the registry this includes snapshot and signature. */
+    async getOne(req: Request, res: Response) {
+        try {
+            const request = await prisma.signatureRequest.findFirst({
+                where: { id: String(req.params.id), tenantId: req.user!.tenantId },
+            });
+            if (!request) return res.status(404).json({ error: "Rapor bulunamadı." });
+            res.status(200).json(request);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    /** Capture an in-panel signature for a persisted general report snapshot. */
+    async sign(req: Request, res: Response) {
+        try {
+            const tenantId = req.user!.tenantId;
+            const signatureBase64 = req.body?.signatureBase64 ? String(req.body.signatureBase64) : "";
+            if (!signatureBase64) return res.status(400).json({ error: "İmza zorunludur." });
+            const existing = await prisma.signatureRequest.findFirst({
+                where: { id: String(req.params.id), tenantId },
+            });
+            if (!existing) return res.status(404).json({ error: "Rapor bulunamadı." });
+            const signedAt = new Date();
+            const updated = await prisma.signatureRequest.update({
+                where: { id: existing.id },
+                data: { signatureBase64, signedAt, status: "SIGNED" },
+            });
+            res.status(200).json(updated);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     /**
      * Admin: create a signature request for any report kind. The client passes a
      * render-ready `snapshot` (it already shows the preview), so general reports
@@ -145,7 +179,11 @@ export class SignatureRequestController {
                                 type: "REPORT_SIGNATURE_REQUEST",
                                 title: "İmza talebi",
                                 message: `${request.title || "Rapor"} için müşteri imzası alınması gerekiyor.`,
-                                linkUrl: "/projects/installation/tasks",
+                                linkUrl: reportType === "GENERAL"
+                                    ? `/montage/reports/view/general/${request.id}`
+                                    : reportId
+                                        ? `/montage/reports/view/${reportType.toLowerCase()}/${reportId}`
+                                        : "/montage/reports",
                                 metadata: { signatureRequestId: request.id, reportType, reportId, projectId: request.projectId },
                             },
                         });

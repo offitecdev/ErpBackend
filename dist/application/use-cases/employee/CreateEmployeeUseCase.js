@@ -48,6 +48,7 @@ class CreateEmployeeUseCase {
             annualLeaveEntitlement: data.annualLeaveEntitlement ?? 14,
             profilePictureUrl: data.profilePictureUrl,
             notes: data.notes,
+            moduleKeys: data.moduleKeys ?? null,
         });
     }
 }

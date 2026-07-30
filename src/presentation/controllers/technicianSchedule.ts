@@ -1,5 +1,5 @@
 import prisma from '../../infrastructure/database/prisma.client';
-import { getServiceTenantScope } from './serviceTenantScope';
+import { getCompanyTreeTenantIds, getServiceTenantScope } from './serviceTenantScope';
 
 /**
  * Shared technician scheduling rules for the project (montaj) and tender (teklif) modules.
@@ -28,7 +28,8 @@ export type TechnicianConflict = { type: "project" | "maintenance" | "offer"; me
 export async function validateTechnicians(technicianIds: string[], tenantId: string) {
     const ids = [...new Set(technicianIds.filter(Boolean))];
     if (!ids.length) return [] as any[];
-    const tenantIds = await getServiceTenantScope(tenantId);
+    // Personnel are shared company-wide -> technicians of the whole tree qualify.
+    const tenantIds = await getCompanyTreeTenantIds(tenantId);
     const employees = await (prisma as any).employee.findMany({
         where: {
             id: { in: ids },
@@ -62,7 +63,8 @@ export async function validateTechnicians(technicianIds: string[], tenantId: str
  * shaped identically for the project and tender option pickers.
  */
 export async function listTechnicianOptions(tenantId: string) {
-    const tenantIds = await getServiceTenantScope(tenantId);
+    // Personnel are shared company-wide -> offer the whole tree's technicians.
+    const tenantIds = await getCompanyTreeTenantIds(tenantId);
     const technicians = await (prisma as any).employee.findMany({
         where: {
             tenantId: { in: tenantIds },

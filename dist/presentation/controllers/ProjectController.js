@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectController = void 0;
+const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const serviceTenantScope_1 = require("./serviceTenantScope");
@@ -78,7 +79,8 @@ class ProjectController {
         const id = String(technicianId || "").trim();
         if (!id)
             return null;
-        const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(tenantId);
+        // Personnel are shared company-wide -> technicians of the whole tree qualify.
+        const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
         const employee = await prisma_client_1.default.employee.findFirst({
             where: {
                 id,
@@ -340,7 +342,19 @@ class ProjectController {
                 projectId: true,
                 usedMaterials: {
                     orderBy: { createdAt: "desc" },
-                    include: { material: true },
+                    // Same lite material shape as the position mappings below —
+                    // both feed one material list. `material: true` would also
+                    // pull the imageUrl TEXT column, which nothing here renders.
+                    select: {
+                        id: true,
+                        materialId: true,
+                        quantity: true,
+                        unitCost: true,
+                        description: true,
+                        material: {
+                            select: { id: true, serialId: true, name: true, stockQuantity: true, unitCost: true },
+                        },
+                    },
                 },
                 positions: {
                     select: {
@@ -374,10 +388,16 @@ class ProjectController {
             assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
             technicianAssignments: { orderBy: { assignedAt: "asc" }, include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } } },
             salesOrder: { select: { id: true, orderNumber: true, totalAmount: true, parentSalesOrderId: true, revisionNumber: true, tenderId: true, tender: this.tenderMaterialInclude() } },
+            // `select`, not `include`: the installation screens read the project
+            // only for its name, customer, offer, reports, expenses and extra
+            // materials. A bare `include` also ships every project scalar
+            // (bookingToken, plannedBudget, overtime settings, tenant/manager ids,
+            // dates) plus the manager join — none of which is rendered here.
             project: {
-                include: {
+                select: {
+                    id: true,
+                    projectName: true,
                     customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true, address: true } },
-                    manager: { select: { id: true, firstName: true, lastName: true, email: true } },
                     tender: this.tenderMaterialInclude(),
                     salesOrders: {
                         orderBy: { createdAt: "asc" },
@@ -391,7 +411,10 @@ class ProjectController {
                         },
                     },
                     expenses: { orderBy: { expenseDate: "desc" } },
-                    extraMaterials: { orderBy: { addedAt: "desc" }, include: { material: true } },
+                    extraMaterials: {
+                        orderBy: { addedAt: "desc" },
+                        include: { material: { select: { id: true, serialId: true, name: true, stockQuantity: true, unitCost: true } } },
+                    },
                 },
             },
         };
@@ -441,6 +464,212 @@ class ProjectController {
             },
         };
     }
+    // Technician appointment pop-up: exactly the contact and assignment fields
+    // rendered by AppointmentSheet. Order totals, tenders, managers, report
+    // trees and image blobs belong to their own screens and are not loaded here.
+    projectTechnicianPopupSelect() {
+        return {
+            id: true,
+            projectId: true,
+            salesOrderId: true,
+            assignedTechId: true,
+            startTime: true,
+            endTime: true,
+            status: true,
+            notes: true,
+            assignedTechnician: {
+                select: { id: true, firstName: true, lastName: true },
+            },
+            technicianAssignments: {
+                orderBy: { assignedAt: "asc" },
+                select: {
+                    technicianId: true,
+                    technician: { select: { id: true, firstName: true, lastName: true } },
+                },
+            },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    customer: {
+                        select: { id: true, companyName: true, mainPhone: true, address: true },
+                    },
+                },
+            },
+        };
+    }
+    // Fast initial payload for the technician work screen. The expensive tender
+    // tree, expenses and catalogue are intentionally loaded by their own tabs.
+    projectInstallationWorkSelect(appointmentId) {
+        return {
+            id: true,
+            tenantId: true,
+            projectId: true,
+            salesOrderId: true,
+            assignedTechId: true,
+            customerId: true,
+            startTime: true,
+            endTime: true,
+            status: true,
+            notes: true,
+            isLocked: true,
+            assignedTechnician: {
+                select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true },
+            },
+            technicianAssignments: {
+                orderBy: { assignedAt: "asc" },
+                select: {
+                    technicianId: true,
+                    technician: {
+                        select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true },
+                    },
+                },
+            },
+            salesOrder: {
+                select: { id: true, orderNumber: true, parentSalesOrderId: true, revisionNumber: true },
+            },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    overtimeHourlyRate: true,
+                    overtimeTolerancePercent: true,
+                    customer: {
+                        select: { id: true, companyName: true, mainEmail: true, mainPhone: true, address: true },
+                    },
+                    salesOrders: {
+                        orderBy: { createdAt: "asc" },
+                        select: { id: true, orderNumber: true },
+                    },
+                    reports: {
+                        where: { appointmentId },
+                        orderBy: { reportDate: "desc" },
+                        select: {
+                            id: true,
+                            projectId: true,
+                            salesOrderId: true,
+                            appointmentId: true,
+                            employeeId: true,
+                            reportDate: true,
+                            reportType: true,
+                            workDate: true,
+                            startedAt: true,
+                            endedAt: true,
+                            workedMinutes: true,
+                            plannedMinutesForDay: true,
+                            overtimeMinutes: true,
+                            overtimeHourlyRate: true,
+                            overtimeCost: true,
+                            operationsDone: true,
+                            technicalNotes: true,
+                            isSigned: true,
+                            signedAt: true,
+                            employee: {
+                                select: { id: true, firstName: true, lastName: true, email: true },
+                            },
+                            images: {
+                                orderBy: { createdAt: "asc" },
+                                select: { id: true, imageData: true, caption: true, createdAt: true },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+    }
+    projectInstallationExpenseSelect() {
+        return {
+            id: true,
+            expenses: {
+                orderBy: { expenseDate: "desc" },
+                select: {
+                    id: true,
+                    expenseType: true,
+                    amount: true,
+                    description: true,
+                    expenseDate: true,
+                    appointmentId: true,
+                    salesOrderId: true,
+                },
+            },
+        };
+    }
+    projectInstallationMaterialSelect() {
+        return {
+            id: true,
+            salesOrder: {
+                select: {
+                    id: true,
+                    orderNumber: true,
+                    parentSalesOrderId: true,
+                    revisionNumber: true,
+                    tenderId: true,
+                    tender: this.tenderMaterialInclude(),
+                },
+            },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    tender: this.tenderMaterialInclude(),
+                },
+            },
+            extraMaterials: {
+                orderBy: { addedAt: "desc" },
+                select: {
+                    id: true,
+                    materialId: true,
+                    quantity: true,
+                    unitPrice: true,
+                    description: true,
+                    addedAt: true,
+                    appointmentId: true,
+                    salesOrderId: true,
+                    material: {
+                        select: {
+                            id: true,
+                            serialId: true,
+                            name: true,
+                            stockQuantity: true,
+                            unitCost: true,
+                        },
+                    },
+                },
+            },
+        };
+    }
+    // Teknisyen montaj listesi için asgari yük: tablo satırı (sipariş no, müşteri,
+    // proje, tarih) + durum türetimi (rapor imzalı mı — findReport eşleşmesi için
+    // gereken skaler alanlar). projectInstallationInclude'un taşıdığı rapor
+    // GÖRSELLERİ / müşteri imzası (base64 LongText'ler), malzeme ağaçları,
+    // giderler burada bilerek yok — liste saniyeler yerine milisaniyede dönsün.
+    projectMontageListInclude() {
+        return {
+            salesOrder: { select: { id: true, orderNumber: true } },
+            project: {
+                select: {
+                    id: true,
+                    projectName: true,
+                    customer: { select: { id: true, companyName: true } },
+                    salesOrders: {
+                        orderBy: { createdAt: "asc" },
+                        select: { id: true, orderNumber: true },
+                    },
+                    reports: {
+                        select: {
+                            id: true,
+                            isSigned: true,
+                            appointmentId: true,
+                            salesOrderId: true,
+                            workDate: true,
+                            reportDate: true,
+                            startedAt: true,
+                        },
+                    },
+                },
+            },
+        };
+    }
     async listMyInstallations(req, res) {
         try {
             const now = new Date();
@@ -453,6 +682,13 @@ class ProjectController {
             // the full first/last day so single-day (day view) ranges are not empty.
             const start = startOfDay(rawStart);
             const end = endOfDay(rawEnd);
+            // Montaj tabloları SUNUCUDA sayfalanır ve yalnızca tablo kolonlarını
+            // alır: satır başına düz bir DTO döner (sipariş no, müşteri, proje,
+            // saatler, imza durumu). Pop-up/iş ekranı verileri burada YOK — onlar
+            // açıldıkları anda kendi detay uçlarından yüklenir.
+            if (String(req.query.view || "") === "montage-page") {
+                return this.listMontageOrdersPage(req, res, start, end);
+            }
             const appointments = await prisma_client_1.default.appointment.findMany({
                 where: {
                     tenantId: req.user.tenantId,
@@ -466,13 +702,589 @@ class ProjectController {
                     endTime: { lte: end },
                 },
                 orderBy: { startTime: "asc" },
-                // The calendar asks for the trimmed grid include; the installation
-                // screens (which derive their detail from this list) keep the full one.
+                // The calendar asks for the trimmed grid include, the montage list
+                // for the row-only include; the installation screens (which derive
+                // their detail from this list) keep the full one.
                 include: String(req.query.view || "") === "calendar"
                     ? this.projectCalendarListInclude()
-                    : this.projectInstallationInclude(),
+                    : String(req.query.view || "") === "montage"
+                        ? this.projectMontageListInclude()
+                        : this.projectInstallationInclude(),
             });
             res.status(200).json(appointments);
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    // Sayfalı montaj listesi: mode=active (BOOKED, en yakını önce) |
+    // completed (COMPLETED, en yenisi önce), 10'arlı sayfa. "İmzalı mı"
+    // yalnızca SAYFADAKİ randevuların raporlarına bakılarak hesaplanır —
+    // frontend'in findReport kuralının aynısı (aynı gün + randevu/sipariş
+    // kapsamı), böylece durum rozetleri iki tarafta aynı sonucu verir.
+    async listMontageOrdersPage(req, res, start, end) {
+        const mode = String(req.query.mode || "active") === "completed" ? "completed" : "active";
+        const page = Math.max(1, Number(req.query.page || 1) || 1);
+        const pageSize = Math.min(50, Math.max(1, Number(req.query.pageSize || 10) || 10));
+        const where = {
+            tenantId: req.user.tenantId,
+            OR: [
+                { assignedTechId: req.user.id },
+                { technicianAssignments: { some: { technicianId: req.user.id } } },
+            ],
+            projectId: { not: null },
+            status: mode === "completed" ? "COMPLETED" : "BOOKED",
+            startTime: { gte: start },
+            endTime: { lte: end },
+            ...(mode === "completed" ? { reports: { some: { employeeId: req.user.id } } } : {}),
+        };
+        const fetched = await prisma_client_1.default.appointment.findMany({
+            where,
+            orderBy: { startTime: mode === "completed" ? "desc" : "asc" },
+            skip: (page - 1) * pageSize,
+            take: pageSize + 1,
+            select: {
+                id: true,
+                startTime: true,
+                endTime: true,
+                status: true,
+                salesOrderId: true,
+                projectId: true,
+                salesOrder: { select: { orderNumber: true } },
+                project: {
+                    select: {
+                        projectName: true,
+                        customer: { select: { companyName: true } },
+                    },
+                },
+                ...(mode === "completed"
+                    ? {
+                        reports: {
+                            where: { employeeId: req.user.id },
+                            orderBy: { reportDate: "desc" },
+                            take: 1,
+                            select: { id: true, isSigned: true },
+                        },
+                    }
+                    : {}),
+            },
+        });
+        const hasMore = fetched.length > pageSize;
+        const appointments = fetched.slice(0, pageSize);
+        const offset = (page - 1) * pageSize;
+        const total = hasMore
+            ? await prisma_client_1.default.appointment.count({ where })
+            : offset + appointments.length;
+        // İmza durumu yalnızca appointmentId üzerinden hesaplanır. Bir siparişin
+        // başka gün/randevusuna ait raporu bu satırı imzalı gösteremez.
+        res.status(200).json({
+            items: appointments.map((appt) => ({
+                id: appt.id,
+                startTime: appt.startTime,
+                endTime: appt.endTime,
+                status: appt.status,
+                projectId: appt.projectId,
+                salesOrderId: appt.salesOrderId,
+                orderNumber: appt.salesOrder?.orderNumber || appt.project?.projectName || appt.id,
+                projectName: appt.project?.projectName || "-",
+                customerName: appt.project?.customer?.companyName || "-",
+                fieldReportId: appt.reports?.[0]?.id || null,
+                signed: Boolean(appt.reports?.[0]?.isSigned),
+            })),
+            total,
+            totalPages: Math.max(1, Math.ceil(total / pageSize)),
+            page,
+            pageSize,
+        });
+    }
+    /**
+     * Technician report registry used by the montage panel.
+     *
+     * The list deliberately returns only the visible table columns. In
+     * particular it never selects report images, checklist JSON or the
+     * LongText customer-signature fields. Field-report preview data is loaded
+     * from getMyMontageReport only after the user opens a row.
+     */
+    async listMyMontageReportOrders(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
+            const page = Math.max(1, Number(req.query.page || 1) || 1);
+            const pageSize = Math.min(20, Math.max(1, Number(req.query.pageSize || 10) || 10));
+            const search = String(req.query.search || "").trim();
+            const offset = (page - 1) * pageSize;
+            const searchFilter = search
+                ? client_1.Prisma.sql `
+                    AND (
+                        so.orderNumber LIKE ${`%${search}%`}
+                        OR p.projectName LIKE ${`%${search}%`}
+                        OR c.companyName LIKE ${`%${search}%`}
+                    )
+                `
+                : client_1.Prisma.empty;
+            // One narrow query replaces the previous sequential groupBy + order
+            // lookup (+ occasional second groupBy for total). COUNT(*) OVER()
+            // keeps exact 10-row pagination without another database round trip.
+            const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                SELECT
+                    so.id AS salesOrderId,
+                    so.orderNumber AS orderNumber,
+                    so.projectId AS projectId,
+                    p.projectName AS projectName,
+                    c.companyName AS customerName,
+                    COUNT(pr.id) AS fieldReportCount,
+                    MAX(pr.reportDate) AS latestReportDate,
+                    COUNT(*) OVER() AS totalRows
+                FROM ProjectReport pr
+                INNER JOIN Project p
+                    ON p.id = pr.projectId
+                    AND p.tenantId = ${tenantId}
+                INNER JOIN SalesOrder so
+                    ON so.id = pr.salesOrderId
+                    AND so.tenantId = ${tenantId}
+                LEFT JOIN Customer c
+                    ON c.id = p.customerId
+                WHERE pr.employeeId = ${employeeId}
+                    AND pr.salesOrderId IS NOT NULL
+                    ${searchFilter}
+                GROUP BY
+                    so.id,
+                    so.orderNumber,
+                    so.projectId,
+                    p.projectName,
+                    c.companyName
+                ORDER BY latestReportDate DESC
+                LIMIT ${pageSize}
+                OFFSET ${offset}
+            `);
+            const total = Number(rows[0]?.totalRows || 0);
+            res.status(200).json({
+                items: rows.map((row) => ({
+                    salesOrderId: row.salesOrderId,
+                    orderNumber: row.orderNumber || row.salesOrderId,
+                    projectId: row.projectId || null,
+                    projectName: row.projectName || "-",
+                    customerName: row.customerName || "-",
+                    fieldReportCount: Number(row.fieldReportCount || 0),
+                    latestReportDate: row.latestReportDate || null,
+                })),
+                total,
+                totalPages: Math.max(1, Math.ceil(total / pageSize)),
+                page,
+                pageSize,
+            });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async getMyMontageReportOrder(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
+            const salesOrderId = String(req.params.salesOrderId || "");
+            const fieldReports = await prisma_client_1.default.projectReport.findMany({
+                where: {
+                    employeeId,
+                    salesOrderId,
+                    project: { tenantId },
+                },
+                orderBy: { reportDate: "desc" },
+                select: {
+                    id: true,
+                    appointmentId: true,
+                    reportDate: true,
+                    workDate: true,
+                    isSigned: true,
+                    appointment: {
+                        select: { id: true, startTime: true, endTime: true },
+                    },
+                    employee: {
+                        select: { firstName: true, lastName: true },
+                    },
+                },
+            });
+            if (!fieldReports.length)
+                return res.status(404).json({ error: "Sipariş saha raporu bulunamadı." });
+            const order = await prisma_client_1.default.salesOrder.findFirst({
+                where: { id: salesOrderId, tenantId },
+                select: {
+                    id: true,
+                    orderNumber: true,
+                    projectId: true,
+                    project: {
+                        select: {
+                            projectName: true,
+                            customer: { select: { companyName: true } },
+                        },
+                    },
+                },
+            });
+            if (!order)
+                return res.status(404).json({ error: "Sipariş bulunamadı." });
+            const [deliveryReport, exactGeneral, fallbackGeneral] = await Promise.all([
+                prisma_client_1.default.deliveryReport.findFirst({
+                    where: { tenantId, salesOrderId },
+                    orderBy: { createdAt: "desc" },
+                    select: { id: true, isSigned: true, createdAt: true, checklistName: true },
+                }),
+                prisma_client_1.default.signatureRequest.findFirst({
+                    where: { tenantId, reportType: "GENERAL", reportId: salesOrderId },
+                    orderBy: { createdAt: "desc" },
+                    select: { id: true, status: true, createdAt: true },
+                }),
+                prisma_client_1.default.signatureRequest.findFirst({
+                    where: {
+                        tenantId,
+                        reportType: "GENERAL",
+                        projectId: order.projectId || "__no_match__",
+                        title: { contains: order.orderNumber },
+                    },
+                    orderBy: { createdAt: "desc" },
+                    select: { id: true, status: true, createdAt: true },
+                }),
+            ]);
+            res.status(200).json({
+                order: {
+                    salesOrderId: order.id,
+                    orderNumber: order.orderNumber,
+                    projectId: order.projectId,
+                    projectName: order.project?.projectName || "-",
+                    customerName: order.project?.customer?.companyName || "-",
+                },
+                fieldReports,
+                deliveryReport,
+                generalReport: exactGeneral || fallbackGeneral,
+                createAppointmentId: fieldReports.find((row) => row.appointmentId)?.appointmentId || null,
+            });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async getMyMontageReportResources(req, res) {
+        try {
+            const report = await prisma_client_1.default.projectReport.findFirst({
+                where: {
+                    id: String(req.params.reportId),
+                    employeeId: req.user.id,
+                    project: { tenantId: req.user.tenantId },
+                },
+                select: {
+                    id: true,
+                    appointmentId: true,
+                    usedMaterials: {
+                        select: {
+                            id: true,
+                            quantity: true,
+                            costAtTime: true,
+                            article: { select: { articleCode: true, name: true, unit: true } },
+                            material: { select: { name: true } },
+                        },
+                    },
+                },
+            });
+            if (!report)
+                return res.status(404).json({ error: "Saha raporu bulunamadı." });
+            if (!report.appointmentId) {
+                return res.status(200).json({ usedMaterials: report.usedMaterials, extraMaterials: [], expenses: [] });
+            }
+            const [extraMaterials, expenses] = await Promise.all([
+                prisma_client_1.default.projectExtraMaterial.findMany({
+                    where: { appointmentId: report.appointmentId },
+                    select: {
+                        id: true,
+                        quantity: true,
+                        unitPrice: true,
+                        description: true,
+                        material: { select: { name: true } },
+                    },
+                }),
+                prisma_client_1.default.projectExpense.findMany({
+                    where: { appointmentId: report.appointmentId },
+                    select: {
+                        id: true,
+                        expenseType: true,
+                        amount: true,
+                        description: true,
+                        expenseDate: true,
+                    },
+                }),
+            ]);
+            res.status(200).json({ usedMaterials: report.usedMaterials, extraMaterials, expenses });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async listMyMontageReports(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
+            const page = Math.max(1, Number(req.query.page || 1) || 1);
+            const pageSize = Math.min(50, Math.max(1, Number(req.query.pageSize || 10) || 10));
+            const kind = ["field", "delivery", "general"].includes(String(req.query.kind))
+                ? String(req.query.kind)
+                : "all";
+            const signed = ["signed", "unsigned"].includes(String(req.query.signed))
+                ? String(req.query.signed)
+                : "all";
+            const search = String(req.query.search || "").trim();
+            const signedValue = signed === "all" ? undefined : signed === "signed";
+            const matchingProjects = search
+                ? await prisma_client_1.default.project.findMany({
+                    where: {
+                        tenantId,
+                        OR: [
+                            { projectName: { contains: search } },
+                            { customer: { is: { companyName: { contains: search } } } },
+                        ],
+                    },
+                    select: { id: true },
+                })
+                : [];
+            const matchingOrders = search
+                ? await prisma_client_1.default.salesOrder.findMany({
+                    where: {
+                        tenantId,
+                        orderNumber: { contains: search },
+                    },
+                    select: { id: true },
+                })
+                : [];
+            const matchingProjectIds = matchingProjects.map((row) => row.id);
+            const matchingOrderIds = matchingOrders.map((row) => row.id);
+            const fieldWhere = {
+                employeeId,
+                project: { tenantId },
+                ...(signedValue === undefined ? {} : { isSigned: signedValue }),
+            };
+            const deliveryWhere = {
+                tenantId,
+                employeeId,
+                ...(signedValue === undefined ? {} : { isSigned: signedValue }),
+            };
+            const assignedProjectRows = kind === "all" || kind === "general"
+                ? await prisma_client_1.default.appointment.findMany({
+                    where: {
+                        tenantId,
+                        projectId: { not: null },
+                        OR: [
+                            { assignedTechId: employeeId },
+                            { technicianAssignments: { some: { technicianId: employeeId } } },
+                        ],
+                    },
+                    distinct: ["projectId"],
+                    select: { projectId: true },
+                })
+                : [];
+            const assignedProjectIds = assignedProjectRows.map((row) => row.projectId).filter(Boolean);
+            const generalWhere = {
+                tenantId,
+                reportType: "GENERAL",
+                projectId: assignedProjectIds.length ? { in: assignedProjectIds } : "__no_match__",
+                ...(signedValue === undefined
+                    ? {}
+                    : signedValue
+                        ? { status: "SIGNED" }
+                        : { status: { not: "SIGNED" } }),
+            };
+            if (search) {
+                fieldWhere.OR = [
+                    { operationsDone: { contains: search } },
+                    ...(matchingProjectIds.length ? [{ projectId: { in: matchingProjectIds } }] : []),
+                    ...(matchingOrderIds.length ? [{ salesOrderId: { in: matchingOrderIds } }] : []),
+                ];
+                deliveryWhere.OR = [
+                    ...(matchingProjectIds.length ? [{ projectId: { in: matchingProjectIds } }] : []),
+                    ...(matchingOrderIds.length ? [{ salesOrderId: { in: matchingOrderIds } }] : []),
+                ];
+                if (!deliveryWhere.OR.length)
+                    deliveryWhere.id = "__no_match__";
+                generalWhere.OR = [
+                    { title: { contains: search } },
+                    ...(matchingProjectIds.length ? [{ projectId: { in: matchingProjectIds } }] : []),
+                ];
+            }
+            const includeField = kind !== "delivery" && kind !== "general";
+            const includeDelivery = kind !== "field" && kind !== "general";
+            const includeGeneral = kind !== "field" && kind !== "delivery";
+            const requestedRows = page * pageSize;
+            const [fieldTotal, deliveryTotal, generalTotal, fieldReports, deliveryReports, generalReports] = await Promise.all([
+                includeField ? prisma_client_1.default.projectReport.count({ where: fieldWhere }) : 0,
+                includeDelivery ? prisma_client_1.default.deliveryReport.count({ where: deliveryWhere }) : 0,
+                includeGeneral ? prisma_client_1.default.signatureRequest.count({ where: generalWhere }) : 0,
+                includeField
+                    ? prisma_client_1.default.projectReport.findMany({
+                        where: fieldWhere,
+                        orderBy: { reportDate: "desc" },
+                        take: requestedRows,
+                        select: {
+                            id: true,
+                            reportDate: true,
+                            workDate: true,
+                            appointmentId: true,
+                            projectId: true,
+                            salesOrderId: true,
+                            isSigned: true,
+                            project: {
+                                select: {
+                                    projectName: true,
+                                    customer: { select: { companyName: true } },
+                                },
+                            },
+                            salesOrder: { select: { orderNumber: true } },
+                        },
+                    })
+                    : [],
+                includeDelivery
+                    ? prisma_client_1.default.deliveryReport.findMany({
+                        where: deliveryWhere,
+                        orderBy: { createdAt: "desc" },
+                        take: requestedRows,
+                        select: {
+                            id: true,
+                            createdAt: true,
+                            appointmentId: true,
+                            projectId: true,
+                            salesOrderId: true,
+                            isSigned: true,
+                        },
+                    })
+                    : [],
+                includeGeneral
+                    ? prisma_client_1.default.signatureRequest.findMany({
+                        where: generalWhere,
+                        orderBy: { createdAt: "desc" },
+                        take: requestedRows,
+                        select: {
+                            id: true,
+                            createdAt: true,
+                            projectId: true,
+                            title: true,
+                            status: true,
+                            signedAt: true,
+                        },
+                    })
+                    : [],
+            ]);
+            // DeliveryReport intentionally has no Prisma relation to project/order.
+            // Resolve just the labels required by the current page in two batched
+            // scalar queries.
+            const deliveryProjectIds = [...new Set([
+                    ...deliveryReports.map((row) => row.projectId),
+                    ...generalReports.map((row) => row.projectId),
+                ].filter(Boolean))];
+            const deliveryOrderIds = [...new Set(deliveryReports.map((row) => row.salesOrderId).filter(Boolean))];
+            const [deliveryProjects, deliveryOrders] = await Promise.all([
+                deliveryProjectIds.length
+                    ? prisma_client_1.default.project.findMany({
+                        where: { id: { in: deliveryProjectIds }, tenantId },
+                        select: {
+                            id: true,
+                            projectName: true,
+                            customer: { select: { companyName: true } },
+                        },
+                    })
+                    : [],
+                deliveryOrderIds.length
+                    ? prisma_client_1.default.salesOrder.findMany({
+                        where: { id: { in: deliveryOrderIds }, tenantId },
+                        select: { id: true, orderNumber: true },
+                    })
+                    : [],
+            ]);
+            const projectLabels = new Map(deliveryProjects.map((row) => [row.id, row]));
+            const orderLabels = new Map(deliveryOrders.map((row) => [row.id, row]));
+            const rows = [
+                ...fieldReports.map((report) => ({
+                    key: `field-${report.id}`,
+                    id: report.id,
+                    kind: "field",
+                    date: report.workDate || report.reportDate,
+                    customerName: report.project?.customer?.companyName || "-",
+                    projectName: report.project?.projectName || "-",
+                    projectId: report.projectId || null,
+                    orderNumber: report.salesOrder?.orderNumber || "-",
+                    appointmentId: report.appointmentId || null,
+                    signed: Boolean(report.isSigned),
+                })),
+                ...deliveryReports.map((report) => {
+                    const project = report.projectId ? projectLabels.get(report.projectId) : null;
+                    const order = report.salesOrderId ? orderLabels.get(report.salesOrderId) : null;
+                    return {
+                        key: `delivery-${report.id}`,
+                        id: report.id,
+                        kind: "delivery",
+                        date: report.createdAt,
+                        customerName: project?.customer?.companyName || "-",
+                        projectName: project?.projectName || "-",
+                        projectId: report.projectId || null,
+                        orderNumber: order?.orderNumber || "-",
+                        appointmentId: report.appointmentId || null,
+                        signed: Boolean(report.isSigned),
+                    };
+                }),
+                ...generalReports.map((report) => {
+                    const project = report.projectId ? projectLabels.get(report.projectId) : null;
+                    return {
+                        key: `general-${report.id}`,
+                        id: report.id,
+                        kind: "general",
+                        date: report.createdAt,
+                        customerName: project?.customer?.companyName || "-",
+                        projectName: project?.projectName || "-",
+                        projectId: report.projectId || null,
+                        orderNumber: report.title || "-",
+                        appointmentId: null,
+                        signed: report.status === "SIGNED",
+                    };
+                }),
+            ]
+                .sort((left, right) => String(right.date || "").localeCompare(String(left.date || "")))
+                .slice((page - 1) * pageSize, page * pageSize);
+            const total = Number(fieldTotal) + Number(deliveryTotal) + Number(generalTotal);
+            res.status(200).json({
+                items: rows,
+                total,
+                totalPages: Math.max(1, Math.ceil(total / pageSize)),
+                page,
+                pageSize,
+            });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /** Full field-report preview, fetched only after a report row is opened. */
+    async getMyMontageReport(req, res) {
+        try {
+            const report = await prisma_client_1.default.projectReport.findFirst({
+                where: {
+                    id: String(req.params.reportId),
+                    employeeId: req.user.id,
+                    project: { tenantId: req.user.tenantId },
+                },
+                include: {
+                    project: {
+                        select: {
+                            id: true,
+                            projectName: true,
+                            customer: { select: { id: true, companyName: true } },
+                        },
+                    },
+                    salesOrder: { select: { id: true, orderNumber: true } },
+                    appointment: { select: { id: true, startTime: true, endTime: true } },
+                    employee: { select: { id: true, firstName: true, lastName: true } },
+                    images: {
+                        orderBy: { createdAt: "asc" },
+                        select: { id: true, imageData: true, caption: true },
+                    },
+                },
+            });
+            if (!report)
+                return res.status(404).json({ error: "Saha raporu bulunamadı." });
+            res.status(200).json(report);
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -513,18 +1325,30 @@ class ProjectController {
     }
     async getMyInstallation(req, res) {
         try {
-            const appointment = await prisma_client_1.default.appointment.findFirst({
-                where: {
-                    id: String(req.params.appointmentId || ""),
-                    tenantId: req.user.tenantId,
-                    OR: [
-                        { assignedTechId: req.user.id },
-                        { technicianAssignments: { some: { technicianId: req.user.id } } },
-                    ],
-                    projectId: { not: null },
-                },
-                include: this.projectInstallationInclude(),
-            });
+            const appointmentId = String(req.params.appointmentId || "");
+            const section = String(req.query.section || "work");
+            const where = {
+                id: appointmentId,
+                tenantId: req.user.tenantId,
+                OR: [
+                    { assignedTechId: req.user.id },
+                    { technicianAssignments: { some: { technicianId: req.user.id } } },
+                ],
+                projectId: { not: null },
+            };
+            const appointment = section === "general"
+                ? await prisma_client_1.default.appointment.findFirst({
+                    where,
+                    include: this.projectInstallationInclude(),
+                })
+                : await prisma_client_1.default.appointment.findFirst({
+                    where,
+                    select: section === "expenses"
+                        ? this.projectInstallationExpenseSelect()
+                        : section === "materials"
+                            ? this.projectInstallationMaterialSelect()
+                            : this.projectInstallationWorkSelect(appointmentId),
+                });
             if (!appointment)
                 return res.status(404).json({ error: "Montaj randevusu bulunamadı." });
             res.status(200).json(appointment);
@@ -549,10 +1373,9 @@ class ProjectController {
                     { technicianAssignments: { some: { technicianId: req.user.id } } },
                 ];
             }
-            const appointment = await prisma_client_1.default.appointment.findFirst({
-                where,
-                include: this.projectCalendarDetailInclude(),
-            });
+            const appointment = await prisma_client_1.default.appointment.findFirst(opts.technicianScope
+                ? { where, select: this.projectTechnicianPopupSelect() }
+                : { where, include: this.projectCalendarDetailInclude() });
             if (!appointment)
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             res.status(200).json(appointment);
@@ -935,6 +1758,12 @@ class ProjectController {
         try {
             const reportId = req.params.reportId;
             const { signatureBase64 } = req.body;
+            const report = await prisma_client_1.default.projectReport.findFirst({
+                where: { id: reportId, project: { tenantId: req.user.tenantId } },
+                select: { id: true },
+            });
+            if (!report)
+                return res.status(404).json({ error: "Saha raporu bulunamadı." });
             await this.reportRepository.signReport(reportId, signatureBase64);
             res.status(200).json({ message: "Rapor müşteri tarafından imzalandı." });
         }

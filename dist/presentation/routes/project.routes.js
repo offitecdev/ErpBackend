@@ -49,6 +49,10 @@ router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermissio
 router.get('/technician/installations/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
 router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
+router.get('/technician/reports', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
+router.get('/technician/report-orders/:salesOrderId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
+router.get('/technician/reports/:reportId/resources', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
+router.get('/technician/reports/:reportId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
 router.get('/materials', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
 router.post('/materials', (0, RbacMiddleware_1.requirePermission)('inventory.articles.create'), (req, res) => controller.createMaterial(req, res));
 router.patch('/materials/:materialId', (0, RbacMiddleware_1.requirePermission)('inventory.articles.update'), (req, res) => controller.updateMaterial(req, res));
@@ -62,7 +66,7 @@ router.patch('/:id/activate', (0, RbacMiddleware_1.requirePermission)('projects.
 router.post('/:id/send-booking-mail', (0, RbacMiddleware_1.requirePermission)('projects.mail'), (req, res) => controller.sendBookingMail(req, res));
 router.post('/:id/reports', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.addReport(req, res));
 router.patch('/reports/:reportId', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.updateReport(req, res));
-router.patch('/reports/:reportId/sign', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.signReport(req, res));
+router.patch('/reports/:reportId/sign', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.signReport(req, res));
 router.post('/reports/:reportId/materials', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.addReportMaterials(req, res));
 router.post('/reports/:reportId/signature-request', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.requestReportSignature(req, res));
 router.post('/:id/appointments', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.createAppointment(req, res));

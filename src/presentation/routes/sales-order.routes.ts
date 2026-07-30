@@ -12,5 +12,6 @@ router.get('/', requirePermission('crm.customers.view'), (req, res) => controlle
 router.get('/my-orders', requirePermission('crm.customers.view'), (req, res) => controller.myOrders(req, res));
 router.post('/from-tender', requirePermission('tenders.approve'), (req, res) => controller.createFromTender(req, res));
 router.get('/:id', requirePermission('crm.customers.view'), (req, res) => controller.getById(req, res));
+router.patch('/:id/payment-stages', requirePermission('billing.manage'), (req, res) => controller.updatePaymentStages(req, res));
 
 export default router;

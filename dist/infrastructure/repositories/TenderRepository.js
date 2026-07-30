@@ -4,13 +4,117 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenderRepository = void 0;
+const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Tender_1 = require("../../domain/entities/Tender");
 const customerAddress_1 = require("../../application/utils/customerAddress");
 const nanoid_1 = require("nanoid");
+// Liste tablosunun çizdiği kolonlar. Tam gövdedeki coverLetter / closingNote /
+// closingImages LONGTEXT'tir — closingImages data-URI (base64 görsel) dizisi
+// tutar, yani satır başına megabaytlarca veri; liste hiçbirini kullanmıyor.
+const TENDER_LIST_SELECT = {
+    id: true,
+    tenderNumber: true,
+    version: true,
+    projectId: true,
+    sourceStatus: true,
+    createdByEmployeeId: true,
+    currency: true,
+    createdAt: true,
+    offerMailSentAt: true,
+    customer: { select: { companyName: true } },
+    createdBy: { select: { firstName: true, lastName: true, email: true } },
+};
+// Tam gövde — `fields=list` göndermeyen çağıranlar (uyarı yığını, PDF/rapor
+// yolları) bu şekle bağlı.
+const TENDER_FULL_SELECT = {
+    id: true,
+    tenantId: true,
+    customerId: true,
+    tenderNumber: true,
+    version: true,
+    format: true,
+    status: true,
+    createdByEmployeeId: true,
+    createdAt: true,
+    projectId: true,
+    validUntil: true,
+    sourceCreatedAt: true,
+    orderDate: true,
+    billingAddress: true,
+    installationAddress: true,
+    deliveryAddress: true,
+    billingSameAsInstallation: true,
+    directDiscount: true,
+    directDiscountLabel: true,
+    extraDiscount: true,
+    extraDiscountLabel: true,
+    paymentStages: true,
+    internalDeliveryDate: true,
+    priceList: true,
+    paymentTerms: true,
+    commissionNumber: true,
+    currency: true,
+    salespersonName: true,
+    sourceStatus: true,
+    sourceCompany: true,
+    shippingTerms: true,
+    shippingWeight: true,
+    fiscalPosition: true,
+    salesTeam: true,
+    onlineSignature: true,
+    onlinePayment: true,
+    coverLetter: true,
+    closingNote: true,
+    closingImages: true,
+    sourceTotal: true,
+    sourceNetAmount: true,
+    sourceTaxAmount: true,
+    sourceRecurringTotal: true,
+    sourceMargin: true,
+    offerMailSentAt: true,
+    offerAcceptedAt: true,
+    offerMailRecipient: true,
+    offerAcceptanceToken: true,
+    customer: { select: { companyName: true } },
+    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+};
 class TenderRepository {
+    // Sayfadaki tekliflerin tutar/pozisyon sayısını TEK gruplu sorguda hesaplar.
+    // Önceden her teklifin bütün pozisyonları (+ her biri için calculation satırı)
+    // çekilip toplam JS'te reduce ediliyordu: yüzlerce pozisyonlu tekliflerde
+    // sayfa başına binlerce satır. CASE ifadesi eski reduce mantığının birebir
+    // karşılığı — birim fiyat varsa iskontolu satır tutarı, yoksa hesaplanan fiyat.
+    async loadPositionTotals(tenderIds) {
+        const totals = new Map();
+        if (tenderIds.length === 0)
+            return totals;
+        const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+            SELECT
+                p.tenderId AS tenderId,
+                COUNT(*) AS positionCount,
+                SUM(
+                    CASE
+                        WHEN p.unitPrice IS NOT NULL AND p.quantity > 0
+                            THEN p.quantity * p.unitPrice * (1 - COALESCE(p.discount, 0) / 100)
+                        ELSE GREATEST(0, COALESCE(c.totalCalculatedPrice, 0))
+                    END
+                ) AS grandTotal
+            FROM Position p
+            LEFT JOIN CalculationItem c ON c.positionId = p.id
+            WHERE p.tenderId IN (${client_1.Prisma.join(tenderIds)})
+            GROUP BY p.tenderId
+        `);
+        for (const row of rows) {
+            totals.set(row.tenderId, {
+                positionCount: Number(row.positionCount),
+                grandTotal: Number(row.grandTotal ?? 0),
+            });
+        }
+        return totals;
+    }
     mapToEntity(data) {
-        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency, data.directDiscountLabel);
+        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.closingNote, data.closingImages, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency, data.directDiscountLabel, data.extraDiscount, data.extraDiscountLabel, data.paymentStages);
     }
     async create(tenderData) {
         const data = await prisma_client_1.default.tender.create({
@@ -24,7 +128,7 @@ class TenderRepository {
         const data = await prisma_client_1.default.tender.findFirst({
             where: { id, tenantId },
             include: {
-                customer: { select: { id: true, companyName: true, addressName: true, address: true, postalCode: true, city: true, country: true, mainPhone: true, mainEmail: true, taxNumber: true } },
+                customer: { select: { id: true, companyName: true, addressName: true, address: true, addressSupplement: true, postalCode: true, city: true, state: true, country: true, mainPhone: true, mainEmail: true, taxNumber: true } },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } }
             }
         });
@@ -125,87 +229,50 @@ class TenderRepository {
         }
         const page = filter.page && filter.page > 0 ? filter.page : undefined;
         const pageSize = filter.pageSize && filter.pageSize > 0 ? Math.min(filter.pageSize, 100) : undefined;
+        const leanList = filter.fields === 'list';
         const [data, total] = await Promise.all([
             prisma_client_1.default.tender.findMany({
                 where,
-                select: {
-                    id: true,
-                    tenantId: true,
-                    customerId: true,
-                    tenderNumber: true,
-                    version: true,
-                    format: true,
-                    status: true,
-                    createdByEmployeeId: true,
-                    createdAt: true,
-                    projectId: true,
-                    validUntil: true,
-                    sourceCreatedAt: true,
-                    orderDate: true,
-                    billingAddress: true,
-                    installationAddress: true,
-                    deliveryAddress: true,
-                    billingSameAsInstallation: true,
-                    directDiscount: true,
-                    directDiscountLabel: true,
-                    internalDeliveryDate: true,
-                    priceList: true,
-                    paymentTerms: true,
-                    commissionNumber: true,
-                    currency: true,
-                    salespersonName: true,
-                    sourceStatus: true,
-                    sourceCompany: true,
-                    shippingTerms: true,
-                    shippingWeight: true,
-                    fiscalPosition: true,
-                    salesTeam: true,
-                    onlineSignature: true,
-                    onlinePayment: true,
-                    coverLetter: true,
-                    sourceTotal: true,
-                    sourceNetAmount: true,
-                    sourceTaxAmount: true,
-                    sourceRecurringTotal: true,
-                    sourceMargin: true,
-                    offerMailSentAt: true,
-                    offerAcceptedAt: true,
-                    offerMailRecipient: true,
-                    offerAcceptanceToken: true,
-                    customer: { select: { companyName: true } },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    positions: {
-                        select: {
-                            quantity: true,
-                            unitPrice: true,
-                            discount: true,
-                            calculation: { select: { totalCalculatedPrice: true } },
-                        }
-                    }
-                },
+                select: leanList ? TENDER_LIST_SELECT : TENDER_FULL_SELECT,
                 orderBy,
                 ...(page && pageSize ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
             }),
             page && pageSize ? prisma_client_1.default.tender.count({ where }) : Promise.resolve(0),
         ]);
+        // Tutarlar sayfadaki teklifler için tek gruplu sorguda gelir.
+        const positionTotals = await this.loadPositionTotals(data.map((d) => d.id));
         const items = data.map((d) => {
-            const grandTotal = d.positions.reduce((sum, p) => {
-                const qty = p.quantity ?? 0;
-                const price = p.unitPrice;
-                const disc = p.discount ?? 0;
-                if (price != null && qty > 0) {
-                    return sum + qty * price * (1 - disc / 100);
-                }
-                return sum + Math.max(0, p.calculation?.totalCalculatedPrice ?? 0);
-            }, 0);
-            const item = this.mapToEntity(d);
-            item.customerName = d.customer?.companyName ?? null;
-            item.createdByName = d.createdBy
+            const totals = positionTotals.get(d.id);
+            const customerName = d.customer?.companyName ?? null;
+            const createdByName = d.createdBy
                 ? `${d.createdBy.firstName} ${d.createdBy.lastName}`.trim()
                 : null;
-            item.createdByEmail = d.createdBy?.email ?? null;
-            item.positionCount = d.positions.length;
-            item.grandTotal = grandTotal;
+            const createdByEmail = d.createdBy?.email ?? null;
+            if (leanList) {
+                const row = {
+                    id: d.id,
+                    tenderNumber: d.tenderNumber,
+                    version: d.version,
+                    projectId: d.projectId ?? null,
+                    sourceStatus: d.sourceStatus ?? null,
+                    customerName,
+                    createdByEmployeeId: d.createdByEmployeeId,
+                    createdByName,
+                    createdByEmail,
+                    currency: d.currency ?? null,
+                    createdAt: d.createdAt,
+                    offerMailSentAt: d.offerMailSentAt ?? null,
+                    positionCount: totals?.positionCount ?? 0,
+                    grandTotal: totals?.grandTotal ?? 0,
+                };
+                return row;
+            }
+            const item = this.mapToEntity(d);
+            item.customerName = customerName;
+            item.createdByName = createdByName;
+            item.createdByEmail = createdByEmail;
+            item.positionCount = totals?.positionCount ?? 0;
+            item.grandTotal = totals?.grandTotal ?? 0;
             return item;
         });
         if (page && pageSize) {
@@ -291,6 +358,9 @@ class TenderRepository {
                     billingSameAsInstallation: existingTender.billingSameAsInstallation,
                     directDiscount: existingTender.directDiscount,
                     directDiscountLabel: existingTender.directDiscountLabel,
+                    extraDiscount: existingTender.extraDiscount,
+                    extraDiscountLabel: existingTender.extraDiscountLabel,
+                    paymentStages: existingTender.paymentStages,
                     internalDeliveryDate: existingTender.internalDeliveryDate,
                     priceList: existingTender.priceList,
                     paymentTerms: existingTender.paymentTerms,
@@ -306,6 +376,8 @@ class TenderRepository {
                     onlineSignature: existingTender.onlineSignature,
                     onlinePayment: existingTender.onlinePayment,
                     coverLetter: existingTender.coverLetter,
+                    closingNote: existingTender.closingNote,
+                    closingImages: existingTender.closingImages,
                     sourceTotal: existingTender.sourceTotal,
                     sourceNetAmount: existingTender.sourceNetAmount,
                     sourceTaxAmount: existingTender.sourceTaxAmount,

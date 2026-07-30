@@ -14,6 +14,8 @@ router.post("/public/:token/sign", (req, res) => controller.signByToken(req, res
 const canManage = requireAnyPermission(["projects.report", "projects.manage", "projects.view"]);
 router.get("/", requireAuth, canManage, (req, res) => controller.list(req, res));
 router.post("/", requireAuth, canManage, (req, res) => controller.create(req, res));
+router.get("/:id", requireAuth, canManage, (req, res) => controller.getOne(req, res));
+router.patch("/:id/sign", requireAuth, canManage, (req, res) => controller.sign(req, res));
 router.delete("/:id", requireAuth, canManage, (req, res) => controller.remove(req, res));
 
 export default router;

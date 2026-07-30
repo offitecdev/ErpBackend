@@ -13,19 +13,27 @@ class CustomerProductDiscountRepository {
             return [];
         const articles = await prisma_client_1.default.article.findMany({
             where: { id: { in: rows.map((r) => r.articleId) } },
-            select: { id: true, articleCode: true, name: true },
+            select: { id: true, articleCode: true, name: true, salePrice: true, unit: true },
         });
         const byId = new Map(articles.map((a) => [a.id, a]));
-        return rows.map((r) => ({
-            id: r.id,
-            customerId: r.customerId,
-            articleId: r.articleId,
-            discount: r.discount,
-            articleCode: byId.get(r.articleId)?.articleCode ?? null,
-            articleName: byId.get(r.articleId)?.name ?? null,
-            createdAt: r.createdAt,
-            updatedAt: r.updatedAt,
-        }));
+        return rows.map((r) => {
+            const article = byId.get(r.articleId);
+            const salePrice = article ? article.salePrice : null;
+            return {
+                id: r.id,
+                customerId: r.customerId,
+                articleId: r.articleId,
+                discount: r.discount,
+                articleCode: article?.articleCode ?? null,
+                articleName: article?.name ?? null,
+                salePrice,
+                // Auf 2 Stellen runden — der Client zeigt den Wert direkt an.
+                netPrice: salePrice === null ? null : Math.round(salePrice * (1 - r.discount / 100) * 100) / 100,
+                unit: article?.unit ?? null,
+                createdAt: r.createdAt,
+                updatedAt: r.updatedAt,
+            };
+        });
     }
     async findByCustomerId(customerId) {
         const rows = await prisma_client_1.default.customerProductDiscount.findMany({
@@ -67,6 +75,28 @@ class CustomerProductDiscountRepository {
     }
     async delete(id) {
         await prisma_client_1.default.customerProductDiscount.delete({ where: { id } });
+    }
+    /**
+     * Ein einziger Request für die ganze Preisliste. Der Client schickt alle
+     * geänderten Zeilen (`upserts`) und die gelöschten ids (`deleteIds`) auf
+     * einmal; alles läuft in einer Transaktion und die fertige Liste kommt
+     * zurück — kein Nachladen per GET, kein Request pro Zeile.
+     */
+    async bulkSave(input) {
+        const { tenantId, customerId, upserts, deleteIds } = input;
+        if (upserts.length > 0 || deleteIds.length > 0) {
+            await prisma_client_1.default.$transaction([
+                ...(deleteIds.length > 0
+                    ? [prisma_client_1.default.customerProductDiscount.deleteMany({ where: { id: { in: deleteIds }, customerId } })]
+                    : []),
+                ...upserts.map((item) => prisma_client_1.default.customerProductDiscount.upsert({
+                    where: { customerId_articleId: { customerId, articleId: item.articleId } },
+                    create: { id: (0, nanoid_1.nanoid)(10), tenantId, customerId, articleId: item.articleId, discount: item.discount },
+                    update: { discount: item.discount },
+                })),
+            ]);
+        }
+        return this.findByCustomerId(customerId);
     }
 }
 exports.CustomerProductDiscountRepository = CustomerProductDiscountRepository;

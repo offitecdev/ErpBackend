@@ -60,6 +60,10 @@ router.get('/technician/installations', requireAnyPermission(['projects.report',
 router.get('/technician/installations/:appointmentId/detail', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
 router.get('/technician/installations/:appointmentId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
+router.get('/technician/reports', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
+router.get('/technician/report-orders/:salesOrderId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
+router.get('/technician/reports/:reportId/resources', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
+router.get('/technician/reports/:reportId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
 router.get('/materials', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
 router.post('/materials', requirePermission('inventory.articles.create'), (req, res) => controller.createMaterial(req, res));
 router.patch('/materials/:materialId', requirePermission('inventory.articles.update'), (req, res) => controller.updateMaterial(req, res));
@@ -77,7 +81,7 @@ router.post('/:id/send-booking-mail', requirePermission('projects.mail'), (req, 
 
 router.post('/:id/reports', requirePermission('projects.report'), (req, res) => controller.addReport(req, res));
 router.patch('/reports/:reportId', requirePermission('projects.report'), (req, res) => controller.updateReport(req, res));
-router.patch('/reports/:reportId/sign', requirePermission('projects.report'), (req, res) => controller.signReport(req, res));
+router.patch('/reports/:reportId/sign', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.signReport(req, res));
 router.post('/reports/:reportId/materials', requirePermission('projects.report'), (req, res) => controller.addReportMaterials(req, res));
 router.post('/reports/:reportId/signature-request', requirePermission('projects.report'), (req, res) => controller.requestReportSignature(req, res));
 

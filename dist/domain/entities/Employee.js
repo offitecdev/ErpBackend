@@ -25,7 +25,10 @@ class Employee {
     passwordChangedAt;
     deletedAt;
     bannedAt;
-    constructor(id, tenantId, firstName, lastName, email, passwordHash, isActive, title, departmentId, roleName, phone, address, hireDate, terminationDate, annualLeaveEntitlement, profilePictureUrl, notes, createdAt, updatedAt, roleId, passwordChangedAt, deletedAt, bannedAt) {
+    moduleKeys;
+    constructor(id, tenantId, firstName, lastName, email, passwordHash, isActive, title, departmentId, roleName, phone, address, hireDate, terminationDate, annualLeaveEntitlement, profilePictureUrl, notes, createdAt, updatedAt, roleId, passwordChangedAt, deletedAt, bannedAt, 
+    /// Personal module package; null = no restriction.
+    moduleKeys) {
         this.id = id;
         this.tenantId = tenantId;
         this.firstName = firstName;
@@ -49,6 +52,7 @@ class Employee {
         this.passwordChangedAt = passwordChangedAt;
         this.deletedAt = deletedAt;
         this.bannedAt = bannedAt;
+        this.moduleKeys = moduleKeys;
     }
 }
 exports.Employee = Employee;

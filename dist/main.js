@@ -19,6 +19,7 @@ const tenant_routes_1 = __importDefault(require("./presentation/routes/tenant.ro
 const customer_routes_1 = __importDefault(require("./presentation/routes/customer.routes"));
 const attendance_routes_1 = __importDefault(require("./presentation/routes/attendance.routes"));
 const role_routes_1 = __importDefault(require("./presentation/routes/role.routes"));
+const moduleProfile_routes_1 = __importDefault(require("./presentation/routes/moduleProfile.routes"));
 const tender_routes_1 = __importDefault(require("./presentation/routes/tender.routes"));
 const article_routes_1 = __importDefault(require("./presentation/routes/article.routes"));
 const inventory_routes_1 = __importDefault(require("./presentation/routes/inventory.routes"));
@@ -313,6 +314,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/billing`, billing_routes_1.default);
     app.use(`${prefix}/attendance`, attendance_routes_1.default);
     app.use(`${prefix}/roles`, role_routes_1.default);
+    app.use(`${prefix}/module-profiles`, moduleProfile_routes_1.default);
     app.use(`${prefix}/tenders`, tender_routes_1.default);
     app.use(`${prefix}/articles`, article_routes_1.default);
     app.use(`${prefix}/inventory`, inventory_routes_1.default);

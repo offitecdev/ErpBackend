@@ -17,7 +17,13 @@ class CustomerLocation {
     notes;
     createdAt;
     updatedAt;
-    constructor(id, customerId, name, isPrimary, kind = "INSTALLATION", address, city, postalCode, country, phone, email, contactPerson, notes, createdAt, updatedAt) {
+    addressSupplement;
+    state;
+    constructor(id, customerId, name, isPrimary, kind = "INSTALLATION", address, city, postalCode, country, phone, email, contactPerson, notes, createdAt, updatedAt, 
+    /** Adres eki / daire — sokak satırının (`address`) devamı. */
+    addressSupplement, 
+    /** Eyalet / kanton / bölge. */
+    state) {
         this.id = id;
         this.customerId = customerId;
         this.name = name;
@@ -33,6 +39,8 @@ class CustomerLocation {
         this.notes = notes;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
+        this.addressSupplement = addressSupplement;
+        this.state = state;
     }
 }
 exports.CustomerLocation = CustomerLocation;

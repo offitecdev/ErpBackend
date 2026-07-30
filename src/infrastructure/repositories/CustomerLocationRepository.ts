@@ -20,7 +20,9 @@ export class CustomerLocationRepository implements ICustomerLocationRepository {
             data.contactPerson,
             data.notes,
             data.createdAt,
-            data.updatedAt
+            data.updatedAt,
+            data.addressSupplement,
+            data.state
         );
     }
 
@@ -43,8 +45,10 @@ export class CustomerLocationRepository implements ICustomerLocationRepository {
                     name: data.name!,
                     kind: data.kind ?? "INSTALLATION",
                     address: data.address ?? null,
+                    addressSupplement: data.addressSupplement ?? null,
                     city: data.city ?? null,
                     postalCode: data.postalCode ?? null,
+                    state: data.state ?? null,
                     country: data.country ?? null,
                     phone: data.phone ?? null,
                     email: data.email ?? null,

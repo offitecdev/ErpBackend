@@ -35,6 +35,8 @@ class Tender {
     onlineSignature;
     onlinePayment;
     coverLetter;
+    closingNote;
+    closingImages;
     sourceTotal;
     sourceNetAmount;
     sourceTaxAmount;
@@ -45,7 +47,10 @@ class Tender {
     directDiscount;
     currency;
     directDiscountLabel;
-    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency, directDiscountLabel) {
+    extraDiscount;
+    extraDiscountLabel;
+    paymentStages;
+    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, closingNote, closingImages, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency, directDiscountLabel, extraDiscount, extraDiscountLabel, paymentStages) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -79,6 +84,8 @@ class Tender {
         this.onlineSignature = onlineSignature;
         this.onlinePayment = onlinePayment;
         this.coverLetter = coverLetter;
+        this.closingNote = closingNote;
+        this.closingImages = closingImages;
         this.sourceTotal = sourceTotal;
         this.sourceNetAmount = sourceNetAmount;
         this.sourceTaxAmount = sourceTaxAmount;
@@ -89,6 +96,9 @@ class Tender {
         this.directDiscount = directDiscount;
         this.currency = currency;
         this.directDiscountLabel = directDiscountLabel;
+        this.extraDiscount = extraDiscount;
+        this.extraDiscountLabel = extraDiscountLabel;
+        this.paymentStages = paymentStages;
     }
 }
 exports.Tender = Tender;

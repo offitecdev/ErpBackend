@@ -57,6 +57,27 @@ router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(400).json({ error: error.message });
     }
 });
+// Accurate badge count for the active company — the list endpoint is capped,
+// so deriving the count client-side undercounts past the cap.
+router.get('/unread-count', AuthMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const user = req.user;
+        const count = await prisma_client_1.default.notification.count({
+            where: {
+                tenantId: user.tenantId,
+                isRead: false,
+                OR: [
+                    { recipientEmployeeId: user.id },
+                    { recipientEmployeeId: null },
+                ],
+            },
+        });
+        res.status(200).json({ count });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 router.patch('/:id/read', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;

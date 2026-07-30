@@ -77,7 +77,26 @@ class DeliveryReportController {
             });
             if (!report)
                 return res.status(404).json({ error: "Teslim raporu bulunamadı." });
-            res.status(200).json(report);
+            const [project, order] = await Promise.all([
+                report.projectId
+                    ? prisma_client_1.default.project.findFirst({
+                        where: { id: report.projectId, tenantId },
+                        select: { projectName: true, customer: { select: { companyName: true } } },
+                    })
+                    : null,
+                report.salesOrderId
+                    ? prisma_client_1.default.salesOrder.findFirst({
+                        where: { id: report.salesOrderId, tenantId },
+                        select: { orderNumber: true },
+                    })
+                    : null,
+            ]);
+            res.status(200).json({
+                ...report,
+                projectName: project?.projectName || null,
+                customerName: project?.customer?.companyName || null,
+                orderNumber: order?.orderNumber || null,
+            });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -119,13 +138,13 @@ class DeliveryReportController {
             const checklistTemplateId = body.checklistTemplateId ? String(body.checklistTemplateId) : null;
             const checklistName = body.checklistName ? String(body.checklistName) : null;
             const notes = body.notes ? String(body.notes) : null;
-            // One delivery report per order: the technician owns it and re-submitting
-            // updates the existing report instead of creating a duplicate. Scope by
-            // order when available, otherwise by appointment.
-            const dedupeWhere = salesOrderId
-                ? { tenantId, salesOrderId }
-                : appointmentId
-                    ? { tenantId, appointmentId }
+            // A delivery report belongs to the concrete appointment. The same
+            // sales order may have several visits, so order-level deduplication
+            // must only be the fallback for legacy records without appointmentId.
+            const dedupeWhere = appointmentId
+                ? { tenantId, appointmentId }
+                : salesOrderId
+                    ? { tenantId, salesOrderId, appointmentId: null }
                     : null;
             const existing = dedupeWhere
                 ? await prisma_client_1.default.deliveryReport.findFirst({ where: dedupeWhere, orderBy: { createdAt: "desc" } })

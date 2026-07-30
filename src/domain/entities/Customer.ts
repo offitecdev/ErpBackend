@@ -7,6 +7,7 @@ export class Customer {
         public segment? : string | null ,
         public taxOffice? : string | null ,
         public taxNumber? : string | null ,
+        /** Sokak + bina numarası (birleşik "adres" alanı yoktur). */
         public address? : string | null ,
         public mainPhone? : string | null ,
         public mainEmail? : string | null ,
@@ -23,6 +24,10 @@ export class Customer {
         public addressName? : string | null ,
         public postalCode? : string | null ,
         public city? : string | null ,
-        public country? : string | null
+        public country? : string | null ,
+        /** Adres eki / daire — sokak satırının devamı, ayrı bir bileşen. */
+        public addressSupplement? : string | null ,
+        /** Eyalet / kanton / bölge. */
+        public state? : string | null
     ) {}
 }

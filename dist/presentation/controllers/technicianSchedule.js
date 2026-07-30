@@ -29,7 +29,8 @@ async function validateTechnicians(technicianIds, tenantId) {
     const ids = [...new Set(technicianIds.filter(Boolean))];
     if (!ids.length)
         return [];
-    const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(tenantId);
+    // Personnel are shared company-wide -> technicians of the whole tree qualify.
+    const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
     const employees = await prisma_client_1.default.employee.findMany({
         where: {
             id: { in: ids },
@@ -63,7 +64,8 @@ async function validateTechnicians(technicianIds, tenantId) {
  * shaped identically for the project and tender option pickers.
  */
 async function listTechnicianOptions(tenantId) {
-    const tenantIds = await (0, serviceTenantScope_1.getServiceTenantScope)(tenantId);
+    // Personnel are shared company-wide -> offer the whole tree's technicians.
+    const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
     const technicians = await prisma_client_1.default.employee.findMany({
         where: {
             tenantId: { in: tenantIds },

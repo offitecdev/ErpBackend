@@ -173,6 +173,22 @@ class InventoryRepository {
             }
         });
     }
+    // Kritik stok kontrolü için tek ürünün toplamı. Eskiden tüm tenant bakiyeleri
+    // (article + location JOIN'leriyle) çekilip bellekte filtreleniyordu — toplu
+    // çıkışta satır başına bir tam tarama demekti.
+    async getArticleTotalQuantity(tenantId, articleId) {
+        const result = await prisma_client_1.default.stockBalance.aggregate({
+            where: { tenantId, articleId },
+            _sum: { currentQuantity: true },
+        });
+        return result._sum.currentQuantity || 0;
+    }
+    async hasPendingProposal(tenantId, articleId) {
+        const count = await prisma_client_1.default.purchaseProposal.count({
+            where: { tenantId, articleId, status: 'PENDING' },
+        });
+        return count > 0;
+    }
     async getArticleStockSummary(tenantId, includeImages = false) {
         const articles = await prisma_client_1.default.article.findMany({
             where: { tenantId, deletedAt: null },
@@ -254,7 +270,20 @@ class InventoryRepository {
         }
         if (columnFilters.length)
             where.AND = columnFilters;
-        const select = {
+        // Yalın mod (teklif ürün seçici): bir teklif satırını dolduran alanlar
+        // dışında hiçbir şey seçilmez ve `stockBalances` JOIN'i yapılmaz — o JOIN
+        // satır başına stok bakiyelerini okur, seçicide gösterilmeyen bir sayı için.
+        const leanSelect = {
+            id: true,
+            // Skalar, kein JOIN — Preislisten-/Produktwähler zeigen die Artikelnummer.
+            articleCode: true,
+            name: true,
+            description: true,
+            unit: true,
+            salePrice: true,
+            baseCost: true,
+        };
+        const select = options.lean ? leanSelect : {
             id: true,
             articleCode: true,
             name: true,
@@ -272,7 +301,16 @@ class InventoryRepository {
             createdAt: true,
             stockBalances: { select: { currentQuantity: true } },
         };
-        const mapRow = (article) => ({
+        const mapLeanRow = (article) => ({
+            id: article.id,
+            articleCode: article.articleCode,
+            name: article.name,
+            description: article.description ?? null,
+            unit: article.unit,
+            salePrice: article.salePrice ?? 0,
+            baseCost: article.baseCost ?? 0,
+        });
+        const mapFullRow = (article) => ({
             id: article.id,
             articleCode: article.articleCode,
             name: article.name,
@@ -290,6 +328,7 @@ class InventoryRepository {
             createdAt: article.createdAt,
             totalQuantity: article.stockBalances.reduce((sum, balance) => sum + (balance.currentQuantity || 0), 0),
         });
+        const mapRow = (article) => (options.lean ? mapLeanRow(article) : mapFullRow(article));
         const sortDirection = options.sortDirection === 'asc' ? 'asc' : 'desc';
         const sortableFields = {
             createdAt: 'createdAt',
@@ -339,26 +378,9 @@ class InventoryRepository {
             prisma_client_1.default.article.count({ where }),
             prisma_client_1.default.article.findMany({
                 where,
-                select: {
-                    id: true,
-                    articleCode: true,
-                    name: true,
-                    ...(options.includeDescription ? { description: true } : {}),
-                    category: true,
-                    itemType: true,
-                    systemBarcode: true,
-                    supplierBarcode: true,
-                    unit: true,
-                    salePrice: true,
-                    baseCost: true,
-                    status: true,
-                    minStockLevel: true,
-                    criticalStockLevel: true,
-                    createdAt: true,
-                    // Only the quantity is needed for the "in stock" column — no
-                    // location objects, reservations or movement history.
-                    stockBalances: { select: { currentQuantity: true } },
-                },
+                // Shared with the computed-sort path above, so lean mode drops the
+                // stockBalances JOIN here too instead of only in one branch.
+                select,
                 orderBy: [{ [databaseSortField]: sortDirection }, { id: 'asc' }],
                 skip: (page - 1) * pageSize,
                 take: pageSize,

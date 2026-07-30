@@ -8,6 +8,8 @@ import { IRoleRepository } from '../../domain/repositories/IRoleRepository';
 import { ICryptoService } from '../../application/interfaces/ICryptoService';
 import { assertPasswordPolicy } from '../../application/validation/password';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
+import { sanitizeModuleKeys } from '../../shared/moduleCatalog';
+import { getCompanyTreeTenantIds } from './serviceTenantScope';
 
 // TS Hatasını çözmek için Request objesini genişletiyoruz
 export interface AuthRequest extends Request {
@@ -29,10 +31,34 @@ export class EmployeeController {
         private cryptoService: ICryptoService
     ) {}
 
+    // Attaching a role or a personal module package to a personnel record is
+    // an admin act: only callers holding roles.manage may send roleId /
+    // moduleKeys (the permission checkboxes on the employee endpoints alone
+    // are not enough to hand out access).
+    private async assertCanAssignRole(req: AuthRequest): Promise<string | null> {
+        if (!req.body.roleId && req.body.moduleKeys === undefined) return null;
+        const callerPermissions = await this.roleRepository.getEmployeePermissions(req.user!.id);
+        if (!callerPermissions.includes('roles.manage')) {
+            return 'Rol ve modül paketi atama yalnızca yönetici (rol yönetimi yetkisi) tarafından yapılabilir.';
+        }
+        return null;
+    }
+
+    /** undefined = leave untouched; empty selection clears to null (= sees all). */
+    private normalizeModuleKeys(input: unknown): string[] | null | undefined {
+        if (input === undefined) return undefined;
+        const keys = sanitizeModuleKeys(input);
+        return keys.length ? keys : null;
+    }
+
     async create(req: AuthRequest, res: Response) {
         try {
+            const roleAssignError = await this.assertCanAssignRole(req);
+            if (roleAssignError) return res.status(403).json({ error: roleAssignError });
+
             const employeeData = {
                 ...req.body,
+                moduleKeys: this.normalizeModuleKeys(req.body.moduleKeys) ?? null,
                 tenantId: req.user?.tenantId
             };
             const result = await this.createEmployeeUseCase.execute(employeeData);
@@ -70,10 +96,13 @@ export class EmployeeController {
             // `light=1`: trimmed name/role listing for pickers & filters — skips the
             // employeeRoles join and heavy columns, so it answers in a fraction of
             // the full listing's time.
+            // Personnel are shared company-wide: the same staff pool shows under
+            // the main tenant and every sub-tenant.
+            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
             if (String(req.query.light || '') === '1') {
                 const rows = await prisma.employee.findMany({
                     where: {
-                        tenantId: req.user!.tenantId,
+                        tenantId: { in: treeTenantIds },
                         ...(req.query.isActive !== undefined ? { isActive: req.query.isActive === 'true' } : {}),
                     },
                     select: {
@@ -96,7 +125,8 @@ export class EmployeeController {
                 );
             }
             const filters = {
-                tenantId: req.user!.tenantId, 
+                tenantId: req.user!.tenantId,
+                tenantIds: treeTenantIds,
                 isActive: req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined,
                 departmentId: req.query.departmentId as string,
                 roleName: req.query.roleName as string,
@@ -114,9 +144,11 @@ export class EmployeeController {
         try {
             const id = req.params.id as string;
             const employee = await this.employeeRepository.findById(id);
-            // Ownership check: an id from another tenant answers 404, exactly like
-            // a non-existent id, so foreign employee records can't be read (IDOR).
-            if (!employee || employee.tenantId !== req.user!.tenantId) {
+            // Ownership check: an id outside the caller's company tree answers 404,
+            // exactly like a non-existent id, so foreign records can't be read (IDOR).
+            // Personnel are shared across the tree, so any tenant of it qualifies.
+            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
+            if (!employee || !treeTenantIds.includes(employee.tenantId)) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
             const { passwordHash, ...safeResult } = employee;
@@ -128,13 +160,21 @@ export class EmployeeController {
 
     async update(req: AuthRequest, res: Response) {
         try {
+            const roleAssignError = await this.assertCanAssignRole(req);
+            if (roleAssignError) return res.status(403).json({ error: roleAssignError });
+
             const id = req.params.id as string;
             const { roleId, password, ...employeeData } = req.body;
+            if ('moduleKeys' in employeeData) {
+                employeeData.moduleKeys = this.normalizeModuleKeys(employeeData.moduleKeys) ?? null;
+            }
 
             // Ownership check before any write — the row must belong to the
-            // caller's tenant (prevents cross-tenant employee updates).
+            // caller's company tree (prevents cross-company employee updates;
+            // personnel are shared across the tree's tenants).
             const existing = await this.employeeRepository.findById(id);
-            if (!existing || existing.tenantId !== req.user!.tenantId) {
+            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
+            if (!existing || !treeTenantIds.includes(existing.tenantId)) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
 

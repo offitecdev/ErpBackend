@@ -90,21 +90,32 @@ export class CreateInvoiceUseCase {
             throw new Error("Faturalandırılacak tutar bulunamadı (0).");
         }
 
-        // Check for existing active invoice for this order/project
-        const existingInvoice = salesOrderId
-            ? await this.invoiceRepository.findActiveByOrder(salesOrderId, tenantId)
-            : await this.invoiceRepository.findActiveByProject(projectId!, tenantId);
+        // Invoices accumulate: each billing action creates a NEW invoice and the
+        // summed billedPercent across active invoices is the billing progress
+        // (matches GetBillingSummaryUseCase). Corrections go through the cancel
+        // flow, which releases the cancelled invoice's percentage again.
+        const billedSoFar = salesOrderId
+            ? await this.invoiceRepository.sumBilledPercentForOrder(salesOrderId)
+            : await this.invoiceRepository.sumBilledPercentForProject(projectId!);
+        const remaining = Math.max(0, round2(100 - billedSoFar));
+        if (remaining <= 0.005) {
+            throw new Error("Bu hedef zaten tamamen faturalandırılmış.");
+        }
 
-        // Determine percent. FULL = 100%; PARTIAL = requested (default 60%).
+        // Determine percent. FULL = the open remainder; PARTIAL = requested
+        // (default 60%), capped by what is still open.
         let percent: number;
         if (input.billingType === "FULL") {
-            percent = 100;
+            percent = remaining;
         } else {
             const requested = input.percent == null ? DEFAULT_PARTIAL_PERCENT : Number(input.percent);
             if (!Number.isFinite(requested) || requested <= 0 || requested > 100) {
                 throw new Error("Geçersiz faturalandırma oranı. 0 ile 100 arasında olmalıdır.");
             }
-            percent = requested;
+            if (requested > remaining + 0.005) {
+                throw new Error(`En fazla %${remaining} faturalandırılabilir.`);
+            }
+            percent = round2(requested);
         }
 
         const amount = round2((baseAmount * percent) / 100);
@@ -136,12 +147,6 @@ export class CreateInvoiceUseCase {
             issuedByEmployeeId,
         };
 
-        if (existingInvoice) {
-            // Update existing invoice instead of creating a new one
-            return this.invoiceRepository.updateWithItems(existingInvoice.id, invoiceData, lineItems);
-        }
-
-        // Invoice number (only needed for new invoices)
         let invoiceNumber = input.invoiceNumber?.trim() || "";
         if (!invoiceNumber) {
             const year = new Date().getFullYear();

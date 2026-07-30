@@ -17,17 +17,17 @@ enum AppointmentStatus {
 }
 
 model Project {
-  id            String        @id
-  tenantId      String
-  customerId    String
-  tenderId      String?       @unique
-  managerId     String?
-  projectName   String
-  status        ProjectStatus @default(AWAITING_APPROVAL)
-  plannedBudget Float         @default(0)
-  actualCost    Float         @default(0)
-  overtimeHourlyRate Float     @default(0)
-  overtimeTolerancePercent Float @default(15)
+  id                       String        @id
+  tenantId                 String
+  customerId               String
+  tenderId                 String?       @unique
+  managerId                String?
+  projectName              String
+  status                   ProjectStatus @default(AWAITING_APPROVAL)
+  plannedBudget            Float         @default(0)
+  actualCost               Float         @default(0)
+  overtimeHourlyRate       Float         @default(0)
+  overtimeTolerancePercent Float         @default(15)
 
   startDate DateTime?
   endDate   DateTime?
@@ -70,39 +70,39 @@ model ProjectPhase {
 }
 
 model ProjectReport {
-  id         String   @id
-  projectId  String
-  salesOrderId String?
+  id            String   @id
+  projectId     String
+  salesOrderId  String?
   appointmentId String?
-  employeeId String
-  reportDate DateTime @default(now())
-  reportType String
+  employeeId    String
+  reportDate    DateTime @default(now())
+  reportType    String
 
-  workDate       DateTime @default(now())
-  startedAt      DateTime?
-  endedAt        DateTime?
-  workedMinutes  Int     @default(0)
-  plannedMinutesForDay Int @default(0)
-  overtimeMinutes Int    @default(0)
-  overtimeHourlyRate Float @default(0)
-  overtimeCost   Float   @default(0)
-  operationsDone String  @db.Text
-  technicalNotes String? @db.Text
+  workDate             DateTime  @default(now())
+  startedAt            DateTime?
+  endedAt              DateTime?
+  workedMinutes        Int       @default(0)
+  plannedMinutesForDay Int       @default(0)
+  overtimeMinutes      Int       @default(0)
+  overtimeHourlyRate   Float     @default(0)
+  overtimeCost         Float     @default(0)
+  operationsDone       String    @db.Text
+  technicalNotes       String?   @db.Text
 
-  customerSignature String? @db.LongText
-  isSigned          Boolean @default(false)
+  customerSignature String?   @db.LongText
+  isSigned          Boolean   @default(false)
   signedAt          DateTime?
 
   // Manager approval of the worked-hours / overtime. Set when an administrator
   // finishes the montaj, or automatically (autoApproved) by the end-of-day pass.
   hoursApprovedAt   DateTime?
   hoursApprovedById String?
-  autoApproved      Boolean  @default(false)
+  autoApproved      Boolean   @default(false)
 
-  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  salesOrder    SalesOrder?      @relation(fields: [salesOrderId], references: [id])
-  appointment   Appointment?     @relation("ProjectAppointmentReports", fields: [appointmentId], references: [id], onDelete: SetNull)
-  employee      Employee         @relation(fields: [employeeId], references: [id])
+  project       Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  salesOrder    SalesOrder?          @relation(fields: [salesOrderId], references: [id])
+  appointment   Appointment?         @relation("ProjectAppointmentReports", fields: [appointmentId], references: [id], onDelete: SetNull)
+  employee      Employee             @relation(fields: [employeeId], references: [id])
   usedMaterials ReportMaterial[]
   images        ProjectReportImage[]
 
@@ -110,6 +110,8 @@ model ProjectReport {
   @@index([salesOrderId])
   @@index([appointmentId])
   @@index([employeeId])
+  @@index([employeeId, reportDate])
+  @@index([employeeId, salesOrderId, reportDate])
 }
 
 model ProjectReportImage {
@@ -126,7 +128,7 @@ model ProjectReportImage {
 }
 
 model ReportMaterial {
-  id         String @id
+  id         String  @id
   reportId   String
   articleId  String?
   quantity   Float
@@ -142,17 +144,17 @@ model ReportMaterial {
 }
 
 model ProjectExpense {
-  id          String   @id
-  projectId   String
-  salesOrderId String?
+  id            String   @id
+  projectId     String
+  salesOrderId  String?
   appointmentId String?
-  expenseType String
-  amount      Float
-  description String?  @db.Text
-  expenseDate DateTime @default(now())
+  expenseType   String
+  amount        Float
+  description   String?  @db.Text
+  expenseDate   DateTime @default(now())
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id])
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  salesOrder  SalesOrder?  @relation(fields: [salesOrderId], references: [id])
   appointment Appointment? @relation("ProjectAppointmentExpenses", fields: [appointmentId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
@@ -161,63 +163,66 @@ model ProjectExpense {
 }
 
 model Appointment {
-  id         String            @id
-  tenantId   String
-  projectId  String?
-  salesOrderId String?
-  assignedTechId String?
-  customerId String?
-  startTime  DateTime
-  endTime    DateTime
-  status     AppointmentStatus @default(AVAILABLE)
-  notes      String?           @db.Text
-  isLocked   Boolean           @default(false)
+  id                         String                         @id
+  tenantId                   String
+  projectId                  String?
+  salesOrderId               String?
+  assignedTechId             String?
+  customerId                 String?
+  startTime                  DateTime
+  endTime                    DateTime
+  status                     AppointmentStatus              @default(AVAILABLE)
+  notes                      String?                        @db.Text
+  isLocked                   Boolean                        @default(false)
   installationReminderSentAt DateTime?
-  tenant     Tenant            @relation(fields: [tenantId], references: [id])
-  project    Project?          @relation(fields: [projectId], references: [id])
-  salesOrder SalesOrder?       @relation(fields: [salesOrderId], references: [id])
-  assignedTechnician Employee? @relation("ProjectAppointmentTechnician", fields: [assignedTechId], references: [id])
-  customer   Customer?         @relation(fields: [customerId], references: [id])
-  technicianAssignments ProjectAppointmentAssignment[]
-  reports ProjectReport[] @relation("ProjectAppointmentReports")
-  expenses ProjectExpense[] @relation("ProjectAppointmentExpenses")
-  extraMaterials ProjectExtraMaterial[] @relation("ProjectAppointmentExtraMaterials")
+  tenant                     Tenant                         @relation(fields: [tenantId], references: [id])
+  project                    Project?                       @relation(fields: [projectId], references: [id])
+  salesOrder                 SalesOrder?                    @relation(fields: [salesOrderId], references: [id])
+  assignedTechnician         Employee?                      @relation("ProjectAppointmentTechnician", fields: [assignedTechId], references: [id])
+  customer                   Customer?                      @relation(fields: [customerId], references: [id])
+  technicianAssignments      ProjectAppointmentAssignment[]
+  reports                    ProjectReport[]                @relation("ProjectAppointmentReports")
+  expenses                   ProjectExpense[]               @relation("ProjectAppointmentExpenses")
+  extraMaterials             ProjectExtraMaterial[]         @relation("ProjectAppointmentExtraMaterials")
 
   @@index([tenantId])
   @@index([salesOrderId])
   @@index([assignedTechId])
   @@index([startTime, endTime])
+  @@index([tenantId, status, startTime])
+  @@index([tenantId, assignedTechId, status, startTime])
 }
 
 model ProjectAppointmentAssignment {
-  id            String      @id
+  id            String   @id
   appointmentId String
   technicianId  String
-  assignedAt    DateTime    @default(now())
+  assignedAt    DateTime @default(now())
 
-  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
-  technician    Employee    @relation("ProjectAppointmentAssignmentTech", fields: [technicianId], references: [id])
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  technician  Employee    @relation("ProjectAppointmentAssignmentTech", fields: [technicianId], references: [id])
 
   @@unique([appointmentId, technicianId])
   @@index([appointmentId])
   @@index([technicianId])
+  @@index([technicianId, appointmentId])
 }
 
 model OfferScheduleSlot {
-  id          String   @id
-  tenantId    String
-  tenderId    String
-  customerId  String
+  id             String   @id
+  tenantId       String
+  tenderId       String
+  customerId     String
   assignedTechId String?
-  startTime   DateTime
-  endTime     DateTime
-  notes       String?  @db.Text
-  createdAt   DateTime @default(now())
+  startTime      DateTime
+  endTime        DateTime
+  notes          String?  @db.Text
+  createdAt      DateTime @default(now())
 
-  tenant   Tenant   @relation(fields: [tenantId], references: [id])
-  tender   Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  customer Customer @relation(fields: [customerId], references: [id])
-  assignedTechnician Employee? @relation("OfferScheduleSlotTechnician", fields: [assignedTechId], references: [id])
+  tenant                Tenant                        @relation(fields: [tenantId], references: [id])
+  tender                Tender                        @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  customer              Customer                      @relation(fields: [customerId], references: [id])
+  assignedTechnician    Employee?                     @relation("OfferScheduleSlotTechnician", fields: [assignedTechId], references: [id])
   technicianAssignments OfferScheduleSlotAssignment[]
 
   @@index([tenantId])
@@ -228,13 +233,13 @@ model OfferScheduleSlot {
 }
 
 model OfferScheduleSlotAssignment {
-  id            String   @id
-  slotId        String
-  technicianId  String
-  assignedAt    DateTime @default(now())
+  id           String   @id
+  slotId       String
+  technicianId String
+  assignedAt   DateTime @default(now())
 
-  slot          OfferScheduleSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
-  technician    Employee          @relation("OfferScheduleSlotAssignmentTech", fields: [technicianId], references: [id])
+  slot       OfferScheduleSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  technician Employee          @relation("OfferScheduleSlotAssignmentTech", fields: [technicianId], references: [id])
 
   @@unique([slotId, technicianId])
   @@index([slotId])
@@ -242,20 +247,20 @@ model OfferScheduleSlotAssignment {
 }
 
 model ProjectExtraMaterial {
-  id          String   @id
-  projectId   String
-  salesOrderId String?
+  id            String   @id
+  projectId     String
+  salesOrderId  String?
   appointmentId String?
-  materialId  String
-  quantity    Float
-  unitPrice   Float
-  description String?  @db.Text
-  addedAt     DateTime @default(now())
+  materialId    String
+  quantity      Float
+  unitPrice     Float
+  description   String?  @db.Text
+  addedAt       DateTime @default(now())
 
-  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id])
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  salesOrder  SalesOrder?  @relation(fields: [salesOrderId], references: [id])
   appointment Appointment? @relation("ProjectAppointmentExtraMaterials", fields: [appointmentId], references: [id], onDelete: SetNull)
-  material Material @relation(fields: [materialId], references: [id])
+  material    Material     @relation(fields: [materialId], references: [id])
 
   @@index([projectId])
   @@index([salesOrderId])
@@ -316,26 +321,26 @@ model ProjectAddonRequest {
 }
 
 model Material {
-  id                 String  @id
+  id                 String   @id
   tenantId           String
-  serialId           String  @unique
+  serialId           String   @unique
   name               String
-  stockQuantity      Float   @default(0)
-  unitCost           Float   @default(0)
-  minStockLevel      Float   @default(0)
-  criticalStockLevel Float   @default(0)
-  imageUrl           String? @db.Text
-  isActive           Boolean @default(true)
+  stockQuantity      Float    @default(0)
+  unitCost           Float    @default(0)
+  minStockLevel      Float    @default(0)
+  criticalStockLevel Float    @default(0)
+  imageUrl           String?  @db.Text
+  isActive           Boolean  @default(true)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
-  reportUsages ReportMaterial[]
-  variations   ProjectVariation[]
+  reportUsages        ReportMaterial[]
+  variations          ProjectVariation[]
   extraMaterialUsages ProjectExtraMaterial[]
-  tenderUsages TenderMaterialUsage[]
-  positionMappings PositionMaterialMapping[]
+  tenderUsages        TenderMaterialUsage[]
+  positionMappings    PositionMaterialMapping[]
 
   @@index([tenantId])
   @@index([tenantId, createdAt])
@@ -392,6 +397,7 @@ model DeliveryReport {
   @@index([appointmentId])
   @@index([projectId])
   @@index([salesOrderId])
+  @@index([tenantId, employeeId, createdAt])
 }
 
 /// A tokenized customer signature request that can target any report kind
@@ -421,6 +427,7 @@ model SignatureRequest {
   @@index([tenantId])
   @@index([reportType])
   @@index([reportId])
+  @@index([tenantId, reportType, reportId])
 }
 
 model MailSetting {
@@ -434,6 +441,12 @@ model MailSetting {
   smtpSecure   Boolean  @default(false)
   smtpUser     String?
   smtpPassword String?  @db.Text
+  // Tenant e-posta imzası: Outlook/Word'den yapıştırılabilen zengin HTML
+  // (satır içi data URI görseller dâhil — bu yüzden LongText) + eski kayıtlar
+  // için ayrı görsel alanı. Görseller gönderimde CID'li inline eke çevrilir —
+  // data URI çoğu mail istemcisinde engellendiği için gövdede bırakılmaz.
+  signatureHtml  String? @db.LongText
+  signatureImage String? @db.LongText
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

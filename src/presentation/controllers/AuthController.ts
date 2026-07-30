@@ -8,6 +8,7 @@ import { RequestPasswordResetUseCase, ResetPasswordUseCase } from "../../applica
 import { RequestAccountDeletionUseCase, ConfirmAccountDeletionUseCase } from "../../application/use-cases/auth/AccountDeletionUseCases";
 import { setAuthCookies, clearAuthCookies, REFRESH_COOKIE } from "../utils/authCookies";
 import { auditLog } from "../../infrastructure/services/AuditLogService";
+import prisma from "../../infrastructure/database/prisma.client";
 
 export class AuthController {
     constructor(
@@ -176,7 +177,39 @@ export class AuthController {
             }
 
             const employee = await this.getMeUseCase.execute(employeId);
-            return res.status(200).json(employee);
+
+            // Per-entity role packages: roles are shared across the company
+            // tree, but each entity configures the role's module package for
+            // itself (RoleModuleConfig). The map is keyed by tenant id; a
+            // tenant with no entry = no restriction from the role there. A
+            // tenant is restricted only when EVERY role of the user has a
+            // config row for it (a role without a row grants everything).
+            const roleLinks = await prisma.employeeRole.findMany({
+                where: { employeeId: employeId },
+                select: { roleId: true },
+            });
+            const roleIds = roleLinks.map((link) => link.roleId);
+            const roleModuleKeysByTenant: Record<string, string[]> = {};
+            if (roleIds.length) {
+                const configs = await (prisma as any).roleModuleConfig.findMany({
+                    where: { roleId: { in: roleIds } },
+                });
+                const rowsByTenant = new Map<string, any[]>();
+                for (const config of configs) {
+                    const rows = rowsByTenant.get(config.tenantId) || [];
+                    rows.push(config);
+                    rowsByTenant.set(config.tenantId, rows);
+                }
+                for (const [tenantId, rows] of rowsByTenant) {
+                    const coveredRoles = new Set(rows.map((row) => row.roleId));
+                    if (coveredRoles.size < roleIds.length) continue;
+                    roleModuleKeysByTenant[tenantId] = [...new Set(
+                        rows.flatMap((row) => (Array.isArray(row.moduleKeys) ? row.moduleKeys as string[] : [])),
+                    )];
+                }
+            }
+
+            return res.status(200).json({ ...employee, roleModuleKeysByTenant });
 
         }catch(error : any){
             res.status(500).json({error: error.message});

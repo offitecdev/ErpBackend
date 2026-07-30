@@ -15,11 +15,11 @@ model Invoice {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  tenant     Tenant      @relation(fields: [tenantId], references: [id])
-  customer   Customer?   @relation(fields: [customerId], references: [id])
-  project    Project?    @relation(fields: [projectId], references: [id])
-  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id])
-  issuedBy   Employee    @relation("EmployeeIssuedInvoices", fields: [issuedByEmployeeId], references: [id])
+  tenant     Tenant            @relation(fields: [tenantId], references: [id])
+  customer   Customer?         @relation(fields: [customerId], references: [id])
+  project    Project?          @relation(fields: [projectId], references: [id])
+  salesOrder SalesOrder?       @relation(fields: [salesOrderId], references: [id])
+  issuedBy   Employee          @relation("EmployeeIssuedInvoices", fields: [issuedByEmployeeId], references: [id])
   lineItems  InvoiceLineItem[]
 
   @@index([tenantId])
@@ -33,7 +33,7 @@ model InvoiceLineItem {
   id          String  @id
   invoiceId   String
   description String  @db.Text
-  sourceType  String  // ORDER | OVERTIME | EXPENSE | EXTRA_MATERIAL | MANUAL
+  sourceType  String // ORDER | OVERTIME | EXPENSE | EXTRA_MATERIAL | MANUAL
   sourceId    String?
   quantity    Float   @default(1)
   unitAmount  Float   @default(0)

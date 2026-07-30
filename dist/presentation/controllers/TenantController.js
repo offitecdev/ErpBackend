@@ -24,6 +24,9 @@ class TenantController {
                     parentTenantId: true,
                     isProjectModuleEnabled: true,
                     createdAt: true,
+                    moduleProfileId: true,
+                    // The company category drives menu/module filtering client-side.
+                    moduleProfile: { select: { id: true, profileNumber: true, name: true, moduleKeys: true } },
                 },
                 orderBy: [{ parentTenantId: 'asc' }, { tenantName: 'asc' }],
             });

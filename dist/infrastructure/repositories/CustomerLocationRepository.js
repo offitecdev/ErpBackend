@@ -9,7 +9,7 @@ const CustomerLocation_1 = require("../../domain/entities/CustomerLocation");
 const nanoid_1 = require("nanoid");
 class CustomerLocationRepository {
     mapToEntity(data) {
-        return new CustomerLocation_1.CustomerLocation(data.id, data.customerId, data.name, data.isPrimary, data.kind ?? "INSTALLATION", data.address, data.city, data.postalCode, data.country, data.phone, data.email, data.contactPerson, data.notes, data.createdAt, data.updatedAt);
+        return new CustomerLocation_1.CustomerLocation(data.id, data.customerId, data.name, data.isPrimary, data.kind ?? "INSTALLATION", data.address, data.city, data.postalCode, data.country, data.phone, data.email, data.contactPerson, data.notes, data.createdAt, data.updatedAt, data.addressSupplement, data.state);
     }
     async create(data) {
         const customerId = data.customerId;
@@ -30,8 +30,10 @@ class CustomerLocationRepository {
                     name: data.name,
                     kind: data.kind ?? "INSTALLATION",
                     address: data.address ?? null,
+                    addressSupplement: data.addressSupplement ?? null,
                     city: data.city ?? null,
                     postalCode: data.postalCode ?? null,
+                    state: data.state ?? null,
                     country: data.country ?? null,
                     phone: data.phone ?? null,
                     email: data.email ?? null,

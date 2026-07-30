@@ -70,13 +70,25 @@ class InvoiceRepository {
             include: invoiceInclude,
         }));
     }
+    // Feeds the batch billing summary only, so it selects the summary columns
+    // instead of the full `invoiceInclude` — no line items, no joined customer /
+    // project / order / employee rows for every invoice of every listed order.
     async listForOrders(tenantId, salesOrderIds) {
         if (salesOrderIds.length === 0)
             return [];
         return (await prisma_client_1.default.invoice.findMany({
             where: { tenantId, salesOrderId: { in: salesOrderIds } },
             orderBy: { createdAt: "desc" },
-            include: invoiceInclude,
+            select: {
+                id: true,
+                salesOrderId: true,
+                invoiceNumber: true,
+                billingType: true,
+                billedPercent: true,
+                amount: true,
+                status: true,
+                createdAt: true,
+            },
         }));
     }
     async countForTenant(tenantId) {

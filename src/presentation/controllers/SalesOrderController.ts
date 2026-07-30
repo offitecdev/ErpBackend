@@ -5,6 +5,7 @@ import prisma from '../../infrastructure/database/prisma.client';
 import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/GetBillingSummaryUseCase';
 import { InvoiceRepository } from '../../infrastructure/repositories/InvoiceRepository';
 import { orderTotal } from './salesOrder.pricing';
+import { parsePaymentStages, serializePaymentStages, validatePaymentStages } from '../../application/utils/paymentSchedule';
 
 const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository());
 
@@ -12,7 +13,7 @@ const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository
 // `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
 const safeBatchSummaries = async (
     tenantId: string,
-    targets: Array<{ salesOrderId: string; baseAmount: number }>
+    targets: Array<{ salesOrderId: string; baseAmount: number; paymentStages?: string | null }>
 ) => {
     try {
         return await billingSummaryUseCase.executeBatch(tenantId, targets);
@@ -20,6 +21,12 @@ const safeBatchSummaries = async (
         return new Map<string, Awaited<ReturnType<typeof billingSummaryUseCase.execute>>>();
     }
 };
+
+// The list only ever shows "total / invoiced / remaining", and remaining is
+// derived client-side as total - billed. Sending the whole summary would ship
+// every invoice row of every order, so the list gets just these two figures.
+const listBillingFigures = (summary: { baseAmount: number; billedAmount: number } | undefined) =>
+    summary ? { baseAmount: summary.baseAmount, billedAmount: summary.billedAmount } : null;
 
 type OrderMode = 'PROJECT_NEW' | 'PROJECT_EXISTING' | 'INVOICE';
 
@@ -60,7 +67,14 @@ export class SalesOrderController {
         }
     }
 
-    // "Siparişlerim" – top-level orders with addon hierarchy + billing summary
+    // "Siparişlerim" – top-level orders with their addon orders.
+    //
+    // This is a list feed, not a detail feed: it carries exactly the columns the
+    // My Orders table renders (order no, customer, status, total, invoiced,
+    // remaining) plus the ids the project flow screens group by. Everything else
+    // — the tender/project/creator relations, the customer's contact details, the
+    // per-order invoice list inside the billing summary — belongs to
+    // `getById` and is deliberately not selected here.
     async myOrders(req: Request, res: Response) {
         try {
             const tenantId = req.user!.tenantId;
@@ -77,14 +91,18 @@ export class SalesOrderController {
             const orders = await (prisma as any).salesOrder.findMany({
                 where,
                 orderBy: { createdAt: 'desc' },
-                include: {
-                    customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
-                    project: { select: { id: true, projectName: true, status: true, plannedBudget: true, actualCost: true } },
+                select: {
+                    id: true,
+                    orderNumber: true,
+                    totalAmount: true,
+                    createdAt: true,
+                    // Kept: the project screens filter the same feed by project.
+                    projectId: true,
+                    customer: { select: { id: true, companyName: true } },
                     addonSalesOrders: {
                         orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true, orderDate: true },
+                        select: { id: true, orderNumber: true, totalAmount: true },
                     },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                 },
             });
 
@@ -99,10 +117,10 @@ export class SalesOrderController {
 
             const enriched = orders.map((order: any) => ({
                 ...order,
-                billingSummary: summaries.get(order.id) ?? null,
+                billingSummary: listBillingFigures(summaries.get(order.id)),
                 addonSalesOrders: (order.addonSalesOrders || []).map((addon: any) => ({
                     ...addon,
-                    billingSummary: summaries.get(addon.id) ?? null,
+                    billingSummary: listBillingFigures(summaries.get(addon.id)),
                 })),
             }));
 
@@ -132,7 +150,7 @@ export class SalesOrderController {
                     parentSalesOrder: { select: { id: true, orderNumber: true } },
                     addonSalesOrders: {
                         orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, createdAt: true, orderDate: true },
+                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, paymentStages: true, createdAt: true, orderDate: true },
                     },
                     reports: {
                         orderBy: { workDate: 'asc' },
@@ -156,10 +174,11 @@ export class SalesOrderController {
             if (!order) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
 
             const summaries = await safeBatchSummaries(tenantId, [
-                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0) },
+                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0), paymentStages: order.paymentStages ?? null },
                 ...(order.addonSalesOrders || []).map((addon: any) => ({
                     salesOrderId: addon.id,
                     baseAmount: Number(addon.totalAmount || 0),
+                    paymentStages: addon.paymentStages ?? null,
                 })),
             ]);
             const billingSummary = summaries.get(order.id) ?? null;
@@ -186,6 +205,33 @@ export class SalesOrderController {
                     grandTotal: Number(order.totalAmount || 0) + addonTotal,
                 },
             });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // Set or clear the order's payment schedule (percent stages summing to 100).
+    async updatePaymentStages(req: Request, res: Response) {
+        try {
+            const tenantId = req.user!.tenantId;
+            const id = String(req.params.id);
+            const raw = req.body?.paymentStages;
+
+            let serialized: string | null = null;
+            if (raw !== null && raw !== undefined && raw !== '') {
+                const stages = Array.isArray(raw) ? raw.map(Number) : parsePaymentStages(String(raw));
+                const stageError = stages ? validatePaymentStages(stages) : 'Geçersiz ödeme planı.';
+                if (stageError) return res.status(400).json({ error: stageError });
+                serialized = serializePaymentStages(stages!);
+            }
+
+            const result = await (prisma as any).salesOrder.updateMany({
+                where: { id, tenantId },
+                data: { paymentStages: serialized },
+            });
+            if (result.count === 0) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+
+            res.status(200).json({ message: 'Ödeme planı güncellendi.', paymentStages: serialized });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -225,7 +271,7 @@ export class SalesOrderController {
                     };
                 }
 
-                const totalAmount = orderTotal(tender.positions || [], tender.directDiscount);
+                const totalAmount = orderTotal(tender.positions || [], tender.directDiscount, tender.extraDiscount);
                 let project: any = null;
                 let scheduleSlots: any[] = [];
 
@@ -281,6 +327,7 @@ export class SalesOrderController {
                         orderType: mode,
                         status: 'ORDERED',
                         totalAmount,
+                        paymentStages: tender.paymentStages ?? null,
                         createdByEmployeeId: employeeId,
                     },
                 });

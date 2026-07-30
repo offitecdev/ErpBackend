@@ -11,9 +11,51 @@ const nanoid_1 = require("nanoid");
 // Active, Potential and Problematic customers remain active relationships.
 const INACTIVE_CUSTOMER_STATUSES = new Set(["PASSIVE", "BLOCKED"]);
 const deriveIsActive = (status) => !INACTIVE_CUSTOMER_STATUSES.has(status);
+// Müşteri listesi tablosunun çizdiği kolonlar. `fields=list` ile istendiğinde
+// hem SELECT hem de JSON gövdesi bu yedi alana iner; tam gövde 24 alan taşıyor
+// ve satır başına ~4x daha büyük.
+const CUSTOMER_LIST_SELECT = {
+    id: true,
+    companyName: true,
+    address: true,
+    vatNumber: true,
+    mainEmail: true,
+    mainPhone: true,
+    status: true,
+};
+// Tam gövde — `fields=list` göndermeyen eski çağıranlar (teklif/sevkiyat
+// müşteri seçicileri, bakım fallback'i) bu şekle bağlı.
+const CUSTOMER_FULL_SELECT = {
+    id: true,
+    tenantId: true,
+    companyName: true,
+    isActive: true,
+    segment: true,
+    customerType: true,
+    taxOffice: true,
+    taxNumber: true,
+    addressName: true,
+    address: true,
+    addressSupplement: true,
+    postalCode: true,
+    city: true,
+    state: true,
+    country: true,
+    mainPhone: true,
+    mobilePhone: true,
+    mainEmail: true,
+    website: true,
+    language: true,
+    vatNumber: true,
+    priceList: true,
+    customerSource: true,
+    responsibleFirstName: true,
+    responsibleLastName: true,
+    status: true,
+};
 class CustomerRepository {
     mapToEntity(data) {
-        return new Customer_1.Customer(data.id, data.tenantId, data.companyName, data.isActive, data.segment, data.taxOffice, data.taxNumber, data.address, data.mainPhone, data.mainEmail, data.customerType ?? "PRIVATE", data.mobilePhone, data.website, data.language, data.vatNumber, data.customerSource, data.responsibleFirstName, data.responsibleLastName, data.status ?? "ACTIVE", data.priceList, data.addressName, data.postalCode, data.city, data.country);
+        return new Customer_1.Customer(data.id, data.tenantId, data.companyName, data.isActive, data.segment, data.taxOffice, data.taxNumber, data.address, data.mainPhone, data.mainEmail, data.customerType ?? "PRIVATE", data.mobilePhone, data.website, data.language, data.vatNumber, data.customerSource, data.responsibleFirstName, data.responsibleLastName, data.status ?? "ACTIVE", data.priceList, data.addressName, data.postalCode, data.city, data.country, data.addressSupplement, data.state);
     }
     async createCustomer(customerData) {
         const status = customerData.status ?? "ACTIVE";
@@ -28,8 +70,10 @@ class CustomerRepository {
                 taxNumber: customerData.taxNumber ?? null,
                 addressName: customerData.addressName ?? null,
                 address: customerData.address ?? null,
+                addressSupplement: customerData.addressSupplement ?? null,
                 postalCode: customerData.postalCode ?? null,
                 city: customerData.city ?? null,
+                state: customerData.state ?? null,
                 country: customerData.country ?? null,
                 mainPhone: customerData.mainPhone ?? null,
                 mobilePhone: customerData.mobilePhone ?? null,
@@ -146,41 +190,19 @@ class CustomerRepository {
         }
         const page = filter.page && filter.page > 0 ? filter.page : undefined;
         const pageSize = filter.pageSize && filter.pageSize > 0 ? Math.min(filter.pageSize, 100) : undefined;
+        const leanList = filter.fields === 'list';
         const [data, total] = await Promise.all([
             prisma_client_1.default.customer.findMany({
                 where: whereClause,
-                select: {
-                    id: true,
-                    tenantId: true,
-                    companyName: true,
-                    isActive: true,
-                    segment: true,
-                    customerType: true,
-                    taxOffice: true,
-                    taxNumber: true,
-                    addressName: true,
-                    address: true,
-                    postalCode: true,
-                    city: true,
-                    country: true,
-                    mainPhone: true,
-                    mobilePhone: true,
-                    mainEmail: true,
-                    website: true,
-                    language: true,
-                    vatNumber: true,
-                    priceList: true,
-                    customerSource: true,
-                    responsibleFirstName: true,
-                    responsibleLastName: true,
-                    status: true,
-                },
+                select: leanList ? CUSTOMER_LIST_SELECT : CUSTOMER_FULL_SELECT,
                 orderBy,
                 ...(page && pageSize ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
             }),
             page && pageSize ? prisma_client_1.default.customer.count({ where: whereClause }) : Promise.resolve(0),
         ]);
-        const items = data.map(d => this.mapToEntity(d));
+        // Lean modda satırlar zaten istenen şekilde; entity'ye sarmak yalnızca
+        // atılacak alanları geri ekler.
+        const items = leanList ? data : data.map(d => this.mapToEntity(d));
         if (page && pageSize) {
             return {
                 items,
@@ -214,8 +236,10 @@ class CustomerRepository {
                     responsibleLastName: true,
                     addressName: true,
                     address: true,
+                    addressSupplement: true,
                     postalCode: true,
                     city: true,
+                    state: true,
                     country: true,
                     status: true,
                     isActive: true,
@@ -262,6 +286,37 @@ class CustomerRepository {
             return { ...dashboardData, activities };
         }
         return dashboardData;
+    }
+    /**
+     * Kennzahlen für das "Allgemein"-Band der Kundenübersicht. Fünf parallele
+     * Aggregate statt drei vollständiger Listen-Fetches im Client — es werden
+     * nur Zähler und Summen übertragen, keine Datensätze.
+     */
+    async getOverviewStats(id, tenantId) {
+        const [tenderCount, projectCount, orderAgg, invoiceAgg] = await Promise.all([
+            prisma_client_1.default.tender.count({ where: { customerId: id, tenantId } }),
+            prisma_client_1.default.project.count({ where: { customerId: id, tenantId } }),
+            prisma_client_1.default.salesOrder.aggregate({
+                where: { customerId: id, tenantId },
+                _count: { _all: true },
+                _sum: { totalAmount: true },
+            }),
+            // Stornierte Rechnungen zählen nicht als verrechnet.
+            prisma_client_1.default.invoice.aggregate({
+                where: { customerId: id, tenantId, status: { not: 'CANCELLED' } },
+                _sum: { amount: true },
+            }),
+        ]);
+        const orderTotal = orderAgg._sum.totalAmount ?? 0;
+        const invoicedTotal = invoiceAgg._sum.amount ?? 0;
+        return {
+            tenderCount,
+            projectCount,
+            orderCount: orderAgg._count._all,
+            orderTotal,
+            invoicedTotal,
+            outstandingTotal: Math.max(0, orderTotal - invoicedTotal),
+        };
     }
 }
 exports.CustomerRepository = CustomerRepository;

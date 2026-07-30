@@ -4,10 +4,15 @@ export const DEFAULT_VAT = 8.1;
 
 // Final order amount (Bestellsumme) matching the tender's offer summary: each
 // product line's net (after its line discount) grossed up by its VAT rate, then
-// the whole sum reduced by the document-level direct discount. Mirrors the
-// frontend computeTenderPricingSummary().grossTotal so the stored total equals
-// the "total incl. VAT" shown on the offer — not the bare net sum.
-export const orderTotal = (positions: any[], directDiscount: number | null | undefined = 0) => {
+// the whole sum reduced by the document-level discounts — directDiscount first,
+// extraDiscount SEQUENTIALLY on its result (100 → -20% → 80 → -10% → 72).
+// Mirrors the frontend computeTenderPricingSummary().grossTotal so the stored
+// total equals the "total incl. VAT" shown on the offer — not the bare net sum.
+export const orderTotal = (
+    positions: any[],
+    directDiscount: number | null | undefined = 0,
+    extraDiscount: number | null | undefined = 0,
+) => {
     const grossBeforeDirectDiscount = positions.reduce((sum, position) => {
         const quantity = Number(position.quantity || 0);
         const unitPrice = position.unitPrice == null ? null : Number(position.unitPrice);
@@ -18,6 +23,7 @@ export const orderTotal = (positions: any[], directDiscount: number | null | und
         const taxRate = Number(position.taxRate || DEFAULT_VAT);
         return sum + net * (1 + taxRate / 100);
     }, 0);
-    const factor = 1 - Math.min(100, Math.max(0, Number(directDiscount || 0))) / 100;
-    return grossBeforeDirectDiscount * factor;
+    const clampFactor = (value: number | null | undefined) =>
+        1 - Math.min(100, Math.max(0, Number(value || 0))) / 100;
+    return grossBeforeDirectDiscount * clampFactor(directDiscount) * clampFactor(extraDiscount);
 };

@@ -25,6 +25,16 @@ export interface SendMailInput {
         contentType: string;
         contentBase64: string;
     }>;
+    /**
+     * Gövdedeki `cid:` referanslarıyla gösterilen inline görseller (ör. imza
+     * görseli). Normal eklerden farklı olarak multipart/related içinde,
+     * Content-ID başlığıyla gönderilirler.
+     */
+    inlineImages?: Array<{
+        cid: string;
+        contentType: string;
+        contentBase64: string;
+    }>;
 }
 
 const encodeHeader = (value: string) => {
@@ -94,6 +104,7 @@ export class SmtpMailService {
         const text = mail.text || mail.html?.replace(/<[^>]+>/g, " ") || "";
         const html = mail.html || `<pre>${text}</pre>`;
         const altBoundary = `offitec-alt-${Date.now()}`;
+        const relatedBoundary = `offitec-rel-${Date.now()}`;
         const mixedBoundary = `offitec-mixed-${Date.now()}`;
         const alternativePart = [
             `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
@@ -110,6 +121,31 @@ export class SmtpMailService {
             html,
             `--${altBoundary}--`,
         ].join("\r\n");
+
+        // Inline görseller varsa gövde multipart/related olur: HTML + Content-ID'li
+        // görsel parçaları bir arada; mail istemcisi `cid:` referansını bunlarla çözer.
+        const inlineImages = mail.inlineImages || [];
+        const bodyPart = inlineImages.length === 0
+            ? alternativePart
+            : [
+                `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
+                ``,
+                `--${relatedBoundary}`,
+                alternativePart,
+                ...inlineImages.map((image) => {
+                    const wrapped = image.contentBase64.replace(/\s+/g, "").replace(/(.{76})/g, "$1\r\n");
+                    return [
+                        `--${relatedBoundary}`,
+                        `Content-Type: ${image.contentType}`,
+                        `Content-Transfer-Encoding: base64`,
+                        `Content-ID: <${image.cid}>`,
+                        `Content-Disposition: inline`,
+                        ``,
+                        wrapped,
+                    ].join("\r\n");
+                }),
+                `--${relatedBoundary}--`,
+            ].join("\r\n");
 
         const attachmentParts = (mail.attachments || []).map((attachment) => {
             const safeName = attachment.filename.replace(/"/g, "");
@@ -135,7 +171,7 @@ export class SmtpMailService {
             `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
             ``,
             `--${mixedBoundary}`,
-            alternativePart,
+            bodyPart,
             ...attachmentParts,
             `--${mixedBoundary}--`,
             ``,

@@ -45,13 +45,11 @@ class ProcessStockMovementUseCase {
         }
         const movement = await this.inventoryRepository.processMovement(input, article.id, input.sourceLocationId || null, input.destLocationId || null, input.quantity);
         if (['OUT', 'ADJUSTMENT'].includes(input.movementType)) {
-            const allBalances = await this.inventoryRepository.getAllBalances(input.tenantId);
-            const totalStock = allBalances
-                .filter(b => b.articleId === article.id)
-                .reduce((sum, b) => sum + b.currentQuantity, 0);
+            // Sorgular ürüne daraltılmıştır: toplu çıkışta bu blok satır başına
+            // çalışır, tüm tenant bakiyelerini/önerilerini çekmek kabul edilemez.
+            const totalStock = await this.inventoryRepository.getArticleTotalQuantity(input.tenantId, article.id);
             if (article.criticalStockLevel > 0 && totalStock <= article.criticalStockLevel) {
-                const pendingProposals = await this.inventoryRepository.getPendingProposals(input.tenantId);
-                const hasPending = pendingProposals.some(p => p.articleId === article.id);
+                const hasPending = await this.inventoryRepository.hasPendingProposal(input.tenantId, article.id);
                 if (!hasPending) {
                     const proposedQuantity = Math.max((article.minStockLevel || 0) - totalStock, 1);
                     await this.inventoryRepository.createPurchaseProposal({

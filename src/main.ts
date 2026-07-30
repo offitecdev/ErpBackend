@@ -15,6 +15,7 @@ import tenantRoutes  from './presentation/routes/tenant.routes';
 import customerRoutes from './presentation/routes/customer.routes';
 import attendanceRoutes from './presentation/routes/attendance.routes';
 import roleRoutes from './presentation/routes/role.routes';
+import moduleProfileRoutes from './presentation/routes/moduleProfile.routes';
 import tenderRoutes from './presentation/routes/tender.routes';
 import articleRoutes from './presentation/routes/article.routes';
 import inventoryRoutes from './presentation/routes/inventory.routes';
@@ -356,6 +357,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/billing`, billingRoutes);
     app.use(`${prefix}/attendance`, attendanceRoutes);
     app.use(`${prefix}/roles`, roleRoutes);
+    app.use(`${prefix}/module-profiles`, moduleProfileRoutes);
     app.use(`${prefix}/tenders`, tenderRoutes);
     app.use(`${prefix}/articles`, articleRoutes);
     app.use(`${prefix}/inventory`, inventoryRoutes);

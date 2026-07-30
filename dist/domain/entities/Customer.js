@@ -26,7 +26,15 @@ class Customer {
     postalCode;
     city;
     country;
-    constructor(id, tenantId, companyName, isActive, segment, taxOffice, taxNumber, address, mainPhone, mainEmail, customerType = "PRIVATE", mobilePhone, website, language, vatNumber, customerSource, responsibleFirstName, responsibleLastName, status = "ACTIVE", priceList, addressName, postalCode, city, country) {
+    addressSupplement;
+    state;
+    constructor(id, tenantId, companyName, isActive, segment, taxOffice, taxNumber, 
+    /** Sokak + bina numarası (birleşik "adres" alanı yoktur). */
+    address, mainPhone, mainEmail, customerType = "PRIVATE", mobilePhone, website, language, vatNumber, customerSource, responsibleFirstName, responsibleLastName, status = "ACTIVE", priceList, addressName, postalCode, city, country, 
+    /** Adres eki / daire — sokak satırının devamı, ayrı bir bileşen. */
+    addressSupplement, 
+    /** Eyalet / kanton / bölge. */
+    state) {
         this.id = id;
         this.tenantId = tenantId;
         this.companyName = companyName;
@@ -51,6 +59,8 @@ class Customer {
         this.postalCode = postalCode;
         this.city = city;
         this.country = country;
+        this.addressSupplement = addressSupplement;
+        this.state = state;
     }
 }
 exports.Customer = Customer;

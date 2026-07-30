@@ -53,6 +53,27 @@ router.get('/', requireAuth, async (req, res) => {
     }
 });
 
+// Accurate badge count for the active company — the list endpoint is capped,
+// so deriving the count client-side undercounts past the cap.
+router.get('/unread-count', requireAuth, async (req, res) => {
+    try {
+        const user = (req as any).user!;
+        const count = await (prisma as any).notification.count({
+            where: {
+                tenantId: user.tenantId,
+                isRead: false,
+                OR: [
+                    { recipientEmployeeId: user.id },
+                    { recipientEmployeeId: null },
+                ],
+            },
+        });
+        res.status(200).json({ count });
+    } catch (error: any) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
 router.patch('/:id/read', requireAuth, async (req, res) => {
     try {
         const user = (req as any).user!;

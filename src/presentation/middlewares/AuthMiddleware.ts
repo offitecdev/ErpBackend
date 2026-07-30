@@ -14,7 +14,7 @@ declare module 'express-serve-static-core' {
     }
 }
 
-const findTenantRootId = async (tenantId: string): Promise<string | null> => {
+export const findTenantRootId = async (tenantId: string): Promise<string | null> => {
     const cached = tenantRootCache.get(tenantId);
     if (cached && cached.expiresAt > Date.now()) {
         return cached.rootId;

@@ -32,9 +32,9 @@ model Location {
   parentLocation Location?  @relation("LocationHierarchy", fields: [parentLocationId], references: [id])
   subLocations   Location[] @relation("LocationHierarchy")
 
-  balances        StockBalance[]
-  movementsSource StockMovement[] @relation("SourceLocation")
-  movementsDest   StockMovement[] @relation("DestLocation")
+  balances         StockBalance[]
+  movementsSource  StockMovement[]   @relation("SourceLocation")
+  movementsDest    StockMovement[]   @relation("DestLocation")
   articleSuppliers ArticleSupplier[]
 
   @@index([tenantId])
@@ -104,20 +104,31 @@ model PurchaseProposal {
   @@index([supplierId])
 }
 
+/// Tedarikçi. Adres AYRI BİLEŞENLER olarak tutulur (Customer ile aynı desen):
+/// `companyName` = firma/ad, `address` = sokak + bina no, `addressSupplement` =
+/// adres eki / daire, ardından PLZ / şehir / eyalet / ülke. Tek bir "adres"
+/// serbest metni YOKTUR — aynı anlamı taşıyan ikinci bir alan tutulmaz.
+/// Görüntülemede (ekran ve PDF) bu bileşenler en fazla 2 satıra indirgenir:
+/// `formatAddressLines()` (frontend `utils/address.ts`, backend `shared`).
 model Supplier {
-  id             String   @id
-  tenantId       String
-  companyName    String
-  contactName    String?
-  email          String?
-  phone          String?
-  address        String?  @db.Text
-  notes          String?  @db.Text
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                String   @id
+  tenantId          String
+  companyName       String
+  contactName       String?
+  email             String?
+  phone             String?
+  address           String?  @db.Text // sokak + bina no
+  addressSupplement String? // adres eki / daire
+  postalCode        String?
+  city              String?
+  state             String? // eyalet / kanton / bölge
+  country           String?
+  notes             String?  @db.Text
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  tenant            Tenant            @relation(fields: [tenantId], references: [id])
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
   articleSuppliers  ArticleSupplier[]
   purchaseProposals PurchaseProposal[]
   stockMovements    StockMovement[]
@@ -159,27 +170,70 @@ model SupplyRequest {
   @@index([supplierId])
 }
 
-model ArticleSupplier {
-  id               String   @id
-  tenantId         String
-  articleId        String
-  supplierId       String
-  locationId       String?
-  supplierSku      String?
-  purchasePrice    Float    @default(0)
-  quantity         Float    @default(0)
-  remainingQuantity Float  @default(0)
-  currency         String   @default("CHF")
-  lastPurchaseDate DateTime?
-  stockMovementId  String?
-  notes            String?  @db.Text
-  isPreferred      Boolean  @default(false)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+/// Satın alma siparişi (Purchase Order). Bir tedarikçiye gönderilen sipariş;
+/// tek sipariş = tek tedarikçi. Ürün satırları anlık görüntü (snapshot) olarak
+/// JSON kolonunda saklanır (SupplyRequest emsali: FK yok, listeleme join'siz).
+/// status: PENDING | TO_BE_STOCKED | COMPLETED | UPDATED
+///  - TO_BE_STOCKED: kullanıcı popup'tan elle işaretler (mail göndermek durumu DEĞİŞTİRMEZ)
+///  - UPDATED: mail gönderildikten sonra ürünler değişirse (revision+1); ad değişikliği durumu etkilemez
+///  - COMPLETED: stoğa eklendiğinde (mark-stocked)
+model PurchaseOrder {
+  id              String    @id
+  tenantId        String
+  referenceNumber String // "Auftrag" BE-2026-0001 — tenant başına benzersiz, kullanıcı düzenleyebilir
+  quoteNumber     String? // opsiyonel teklif numarası (PDF'te görünür)
+  orderedByName   String? // "Besteller" — siparişi veren kişi (varsayılan: oturumdaki kullanıcı)
+  projectName     String? // tedarik edilen projenin adı (PDF kapak kartında)
+  status          String    @default("PENDING")
+  supplierId      String?
+  supplierName    String // snapshot
+  supplierEmail   String?
+  supplierAddress String?   @db.Text // snapshot — bileşenlerden kurulmuş, satır başına \n (PDF alıcı bloğu)
+  // JSON [{itemType, articleId?, code, serialNumber?, name, quantity, unit?,
+  //        grossPrice, netPrice, discount, discount2, discount3, vatRate,
+  //        lineTotal, lineVat}]
+  // discount/discount2/discount3: SIRAYLA uygulanan yüzdeler (teklif
+  // directDiscount/extraDiscount deseniyle aynı) — lineTotal net tutardır.
+  items           String    @db.LongText
+  currency        String    @default("CHF")
+  totalNet        Float     @default(0)
+  totalGross      Float     @default(0)
+  totalVat        Float     @default(0)
+  revision        Int       @default(0) // >0 → sonraki mailler "güncellendi" etiketi taşır
+  emailSentAt     DateTime?
+  emailRecipient  String?
+  stockedAt       DateTime?
+  createdByEmpId  String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  tenant   Tenant   @relation(fields: [tenantId], references: [id])
-  article  Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
-  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  @@unique([tenantId, referenceNumber])
+  @@index([tenantId])
+  @@index([status])
+  @@index([supplierId])
+}
+
+model ArticleSupplier {
+  id                String    @id
+  tenantId          String
+  articleId         String
+  supplierId        String
+  locationId        String?
+  supplierSku       String?
+  purchasePrice     Float     @default(0)
+  quantity          Float     @default(0)
+  remainingQuantity Float     @default(0)
+  currency          String    @default("CHF")
+  lastPurchaseDate  DateTime?
+  stockMovementId   String?
+  notes             String?   @db.Text
+  isPreferred       Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  article  Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  supplier Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
   location Location? @relation(fields: [locationId], references: [id])
 
   @@index([tenantId])

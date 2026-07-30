@@ -62,14 +62,12 @@ export class ProcessStockMovementUseCase {
         );
 
         if (['OUT', 'ADJUSTMENT'].includes(input.movementType)) {
-            const allBalances = await this.inventoryRepository.getAllBalances(input.tenantId);
-            const totalStock = allBalances
-                .filter(b => b.articleId === article.id)
-                .reduce((sum, b) => sum + b.currentQuantity, 0);
+            // Sorgular ürüne daraltılmıştır: toplu çıkışta bu blok satır başına
+            // çalışır, tüm tenant bakiyelerini/önerilerini çekmek kabul edilemez.
+            const totalStock = await this.inventoryRepository.getArticleTotalQuantity(input.tenantId, article.id);
 
             if ((article as any).criticalStockLevel > 0 && totalStock <= (article as any).criticalStockLevel) {
-                const pendingProposals = await this.inventoryRepository.getPendingProposals(input.tenantId);
-                const hasPending = pendingProposals.some(p => p.articleId === article.id);
+                const hasPending = await this.inventoryRepository.hasPendingProposal(input.tenantId, article.id);
 
                 if (!hasPending) {
                    

@@ -1,5 +1,6 @@
 import { IInvoiceRepository } from "../../../domain/repositories/IInvoiceRepository";
 import prisma from "../../../infrastructure/database/prisma.client";
+import { NextStageInfo, nextStageInfo, parsePaymentStages } from "../../utils/paymentSchedule";
 
 const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
@@ -9,6 +10,10 @@ export interface BillingSummary {
     billedAmount: number;
     remainingPercent: number;
     remainingAmount: number;
+    // Order-level payment schedule (percent array) and the derived next stage
+    // to bill. Both null when the order has no schedule / target is a project.
+    paymentStages: number[] | null;
+    nextStage: NextStageInfo | null;
     invoices: Array<{
         id: string;
         invoiceNumber: string;
@@ -33,13 +38,15 @@ export class GetBillingSummaryUseCase {
         }
 
         let baseAmount = 0;
+        let paymentStagesRaw: string | null = null;
         if (salesOrderId) {
             const order: any = await (prisma as any).salesOrder.findFirst({
                 where: { id: salesOrderId, tenantId },
-                select: { totalAmount: true },
+                select: { totalAmount: true, paymentStages: true },
             });
             if (!order) throw new Error("Sipariş bulunamadı.");
             baseAmount = Number(order.totalAmount || 0);
+            paymentStagesRaw = order.paymentStages ?? null;
         } else {
             const project: any = await (prisma as any).project.findFirst({
                 where: { id: projectId, tenantId },
@@ -56,7 +63,7 @@ export class GetBillingSummaryUseCase {
             projectId: projectId || undefined,
         });
 
-        return this.buildSummary(baseAmount, invoices);
+        return this.buildSummary(baseAmount, invoices, paymentStagesRaw);
     }
 
     /**
@@ -66,7 +73,7 @@ export class GetBillingSummaryUseCase {
      */
     async executeBatch(
         tenantId: string,
-        targets: Array<{ salesOrderId: string; baseAmount: number }>
+        targets: Array<{ salesOrderId: string; baseAmount: number; paymentStages?: string | null }>
     ): Promise<Map<string, BillingSummary>> {
         const result = new Map<string, BillingSummary>();
         const ids = [...new Set(targets.map((t) => t.salesOrderId).filter(Boolean))];
@@ -83,22 +90,24 @@ export class GetBillingSummaryUseCase {
             else byOrder.set(key, [inv]);
         }
 
-        for (const { salesOrderId, baseAmount } of targets) {
+        for (const { salesOrderId, baseAmount, paymentStages } of targets) {
             if (result.has(salesOrderId)) continue;
-            result.set(salesOrderId, this.buildSummary(baseAmount, byOrder.get(salesOrderId) || []));
+            result.set(salesOrderId, this.buildSummary(baseAmount, byOrder.get(salesOrderId) || [], paymentStages ?? null));
         }
         return result;
     }
 
     private buildSummary(
         baseAmount: number,
-        invoices: Array<{ id: string; invoiceNumber: string; billingType: string; billedPercent: number; amount: number; status: string; createdAt: Date }>
+        invoices: Array<{ id: string; invoiceNumber: string; billingType: string; billedPercent: number; amount: number; status: string; createdAt: Date }>,
+        paymentStagesRaw?: string | null,
     ): BillingSummary {
         const active = invoices.filter((inv) => inv.status !== "CANCELLED");
         const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
         const remainingPercent = round2(Math.max(0, 100 - billedPercent));
         const remainingAmount = round2(Math.max(0, baseAmount - billedAmount));
+        const paymentStages = parsePaymentStages(paymentStagesRaw);
 
         return {
             baseAmount: round2(baseAmount),
@@ -106,6 +115,8 @@ export class GetBillingSummaryUseCase {
             billedAmount,
             remainingPercent,
             remainingAmount,
+            paymentStages,
+            nextStage: paymentStages ? nextStageInfo(paymentStages, billedPercent, remainingPercent) : null,
             invoices: invoices.map((inv) => ({
                 id: inv.id,
                 invoiceNumber: inv.invoiceNumber,

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MailController = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
+const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const nanoid_1 = require("nanoid");
 const smtp = new SmtpMailService_1.SmtpMailService();
 class MailController {
@@ -23,6 +24,8 @@ class MailController {
                     smtpPort: 587,
                     smtpSecure: false,
                     smtpUser: null,
+                    signatureHtml: null,
+                    signatureImage: null,
                     hasPassword: false
                 });
             }
@@ -44,6 +47,34 @@ class MailController {
             const password = body.smtpPassword === undefined || body.smtpPassword === ""
                 ? existing?.smtpPassword ?? null
                 : String(body.smtpPassword);
+            // İmza HTML'i kayıtta temizlenir (editörün üretebildiği biçimlendirme
+            // dışındaki her şey atılır); görsel yalnızca sınırlı boyutta PNG/JPG
+            // data URI olabilir. Alan gönderilmediyse mevcut değer korunur.
+            // Üst sınır cömerttir çünkü Outlook/Word'den yapıştırılan imzalar
+            // satır içi data URI görseller taşır (görsel başına ≤ 2 MB, base64
+            // ~4/3 şişirir).
+            let signatureHtml = existing?.signatureHtml ?? null;
+            if (body.signatureHtml !== undefined) {
+                const raw = String(body.signatureHtml || "");
+                if (raw.length > 8 * 1024 * 1024) {
+                    return res.status(400).json({ error: "İmza çok büyük." });
+                }
+                const sanitized = (0, mailSignature_1.sanitizeSignatureHtml)(raw);
+                signatureHtml = (0, mailSignature_1.signatureHasContent)(sanitized) ? sanitized : null;
+            }
+            let signatureImage = existing?.signatureImage ?? null;
+            if (body.signatureImage !== undefined) {
+                if (!body.signatureImage) {
+                    signatureImage = null;
+                }
+                else {
+                    const parsed = (0, mailSignature_1.parseSignatureImage)(String(body.signatureImage));
+                    if (!parsed) {
+                        return res.status(400).json({ error: "İmza görseli geçersiz. En fazla 2 MB PNG veya JPG yükleyin." });
+                    }
+                    signatureImage = `data:${parsed.contentType};base64,${parsed.contentBase64}`;
+                }
+            }
             const settings = await prisma_client_1.default.mailSetting.upsert({
                 where: { tenantId },
                 update: {
@@ -54,7 +85,9 @@ class MailController {
                     smtpPort: Number(body.smtpPort || 587),
                     smtpSecure: Boolean(body.smtpSecure),
                     smtpUser: body.smtpUser || null,
-                    smtpPassword: password
+                    smtpPassword: password,
+                    signatureHtml,
+                    signatureImage
                 },
                 create: {
                     id: (0, nanoid_1.nanoid)(8),
@@ -66,7 +99,9 @@ class MailController {
                     smtpPort: Number(body.smtpPort || 587),
                     smtpSecure: Boolean(body.smtpSecure),
                     smtpUser: body.smtpUser || null,
-                    smtpPassword: password
+                    smtpPassword: password,
+                    signatureHtml,
+                    signatureImage
                 }
             });
             res.status(200).json({ ...settings, smtpPassword: undefined, hasPassword: Boolean(settings.smtpPassword) });
@@ -89,15 +124,23 @@ class MailController {
             if (!to || !subject || (!text && !html)) {
                 return res.status(400).json({ error: "Alıcı, konu ve mesaj zorunludur." });
             }
+            // Tenant imzası varsa gövdenin sonuna eklenir; görseli CID'li inline
+            // ek olarak gider (test maili de gerçek gönderimle aynı görünür).
+            const signature = (0, mailSignature_1.buildSignatureParts)(settings);
+            const htmlWithSignature = signature.html
+                ? `${html || `<pre>${String(text || "")}</pre>`}${signature.html}`
+                : html;
+            const textWithSignature = text && signature.text ? `${text}${signature.text}` : text;
             const result = await smtp.send(settings || {}, {
                 fromEmail,
                 fromName,
                 to,
                 subject,
-                text,
-                html,
+                text: textWithSignature,
+                html: htmlWithSignature,
                 replyTo: body.replyTo || settings?.replyTo || null,
-                attachments: Array.isArray(body.attachments) ? body.attachments : []
+                attachments: Array.isArray(body.attachments) ? body.attachments : [],
+                inlineImages: signature.inlineImages
             });
             res.status(200).json({
                 message: result.preview

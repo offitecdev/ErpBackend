@@ -1,24 +1,42 @@
+/// Company category ("Numara 1/2/3…"): an admin-defined bundle of enabled
+/// module keys, scoped to a company tree (rootTenantId). A tenant mapped to a
+/// profile only exposes that profile's modules — menus are filtered by it and
+/// roles may only contain permissions of the enabled modules.
+model ModuleProfile {
+  id            String   @id
+  rootTenantId  String
+  profileNumber Int
+  name          String
+  moduleKeys    Json
+  createdAt     DateTime @default(now())
+  tenants       Tenant[]
+
+  @@unique([rootTenantId, profileNumber])
+}
+
 model Tenant {
-  id                     String        @id
+  id                     String                @id
   tenantName             String
-  isActive               Boolean       @default(true)
-  createdAt              DateTime      @default(now())
+  isActive               Boolean               @default(true)
+  createdAt              DateTime              @default(now())
   parentTenantId         String?
-  checkInQrSecret        String?       @db.VarChar(512)
-  checkOutQrSecret       String?       @db.VarChar(512)
+  moduleProfileId        String?
+  moduleProfile          ModuleProfile?        @relation(fields: [moduleProfileId], references: [id])
+  checkInQrSecret        String?               @db.VarChar(512)
+  checkOutQrSecret       String?               @db.VarChar(512)
   workScheduleJson       Json?
   customers              Customer[]
   employees              Employee[]
   leaveTypes             LeaveType[]
   roles                  Role[]
-  parentTenant           Tenant?       @relation("SubTenants", fields: [parentTenantId], references: [id])
-  subTenants             Tenant[]      @relation("SubTenants")
+  parentTenant           Tenant?               @relation("SubTenants", fields: [parentTenantId], references: [id])
+  subTenants             Tenant[]              @relation("SubTenants")
   tenders                Tender[]
   articles               Article[]
   suppliers              Supplier[]
   articleSuppliers       ArticleSupplier[]
   locations              Location[]
-  isProjectModuleEnabled Boolean       @default(false)
+  isProjectModuleEnabled Boolean               @default(false)
   projects               Project[]
   appointments           Appointment[]
   offerScheduleSlots     OfferScheduleSlot[]
@@ -35,66 +53,71 @@ model Tenant {
   deliveryReports        DeliveryReport[]
   signatureRequests      SignatureRequest[]
   meetingActivities      MeetingActivity[]
+  roleModuleConfigs      RoleModuleConfig[]
 
   @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
+  @@index([moduleProfileId], map: "Tenant_moduleProfileId_fkey")
 }
 
 model Employee {
-  id                     String             @id
-  tenantId               String
-  firstName              String
-  lastName               String
-  title                  String?
-  departmentId           String?
-  roleName               String?
-  email                  String             @unique
-  phone                  String?
-  address                String?            @db.Text
-  passwordHash           String
+  id                            String                         @id
+  tenantId                      String
+  firstName                     String
+  lastName                      String
+  title                         String?
+  departmentId                  String?
+  roleName                      String?
+  email                         String                         @unique
+  phone                         String?
+  address                       String?                        @db.Text
+  passwordHash                  String
   /// Set on every password change; JWTs carry it as the `pwdAt` claim so all
   /// tokens issued before the change become invalid.
-  passwordChangedAt      DateTime?
-  isActive               Boolean            @default(true)
+  passwordChangedAt             DateTime?
+  isActive                      Boolean                        @default(true)
   /// Soft delete: a non-null value blocks login, refresh and every authorized request.
   /// Recoverable by an admin for 30 days (restore endpoint), then considered final.
-  deletedAt              DateTime?
+  deletedAt                     DateTime?
   /// Admin ban: blocks login/refresh/restore permanently; the e-mail cannot re-register.
-  bannedAt               DateTime?
-  hireDate               DateTime?
-  terminationDate        DateTime?
-  annualLeaveEntitlement Int                @default(0)
-  profilePictureUrl      String?
-  notes                  String?            @db.Text
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @default(now()) @updatedAt
-  attendanceLogs         AttendanceLog[]
-  customerNotes          CustomerNote[]
-  uploadedDocs           Document[]
-  tenant                 Tenant             @relation(fields: [tenantId], references: [id])
-  employeeRoles          EmployeeRole[]
-  approvedLeaves         LeaveRequest[]     @relation("ApprovedLeaves")
-  leaveRequests          LeaveRequest[]     @relation("EmployeeLeaves")
-  createdTenders         Tender[]
-  stockMovements         StockMovement[]
-  purchaseProposals      PurchaseProposal[]
-  projects               Project[]          @relation("ProjectManager")
-  projectAppointments    Appointment[]      @relation("ProjectAppointmentTechnician")
+  bannedAt                      DateTime?
+  hireDate                      DateTime?
+  terminationDate               DateTime?
+  annualLeaveEntitlement        Int                            @default(0)
+  profilePictureUrl             String?
+  notes                         String?                        @db.Text
+  /// Personal module package: subset of module keys this employee can see.
+  /// null = no restriction (sees everything the company's category allows).
+  moduleKeys                    Json?
+  createdAt                     DateTime                       @default(now())
+  updatedAt                     DateTime                       @default(now()) @updatedAt
+  attendanceLogs                AttendanceLog[]
+  customerNotes                 CustomerNote[]
+  uploadedDocs                  Document[]
+  tenant                        Tenant                         @relation(fields: [tenantId], references: [id])
+  employeeRoles                 EmployeeRole[]
+  approvedLeaves                LeaveRequest[]                 @relation("ApprovedLeaves")
+  leaveRequests                 LeaveRequest[]                 @relation("EmployeeLeaves")
+  createdTenders                Tender[]
+  stockMovements                StockMovement[]
+  purchaseProposals             PurchaseProposal[]
+  projects                      Project[]                      @relation("ProjectManager")
+  projectAppointments           Appointment[]                  @relation("ProjectAppointmentTechnician")
   projectAppointmentAssignments ProjectAppointmentAssignment[] @relation("ProjectAppointmentAssignmentTech")
-  offerScheduleSlots     OfferScheduleSlot[] @relation("OfferScheduleSlotTechnician")
-  offerScheduleSlotAssignments OfferScheduleSlotAssignment[] @relation("OfferScheduleSlotAssignmentTech")
-  projectReports         ProjectReport[]
-  assignedMaintenanceTasks MaintenanceTask[] @relation("MaintenanceTech")
-  alternativeMaintenanceTasks MaintenanceTask[] @relation("MaintenanceAltTech")
-  maintenanceTaskAssignments MaintenanceTaskAssignment[] @relation("MaintenanceTaskAssignmentTech")
-  maintenanceReports     MaintenanceReport[] @relation("MaintenanceReportTech")
-  notifications          Notification[]      @relation("EmployeeNotifications")
-  assignedServiceCalls   ServiceCall[]      @relation("ServiceCallTech")
-  alternativeServiceCalls ServiceCall[]      @relation("ServiceCallAltTech")
-  serviceReports         ServiceReport[]    @relation("ServiceReportTech")
-  createdSalesOrders     SalesOrder[]
-  issuedInvoices         Invoice[]          @relation("EmployeeIssuedInvoices")
-  createdMeetingActivities MeetingActivity[] @relation("MeetingActivityCreator")
-  meetingParticipations  MeetingActivityParticipant[] @relation("MeetingParticipantEmployee")
+  offerScheduleSlots            OfferScheduleSlot[]            @relation("OfferScheduleSlotTechnician")
+  offerScheduleSlotAssignments  OfferScheduleSlotAssignment[]  @relation("OfferScheduleSlotAssignmentTech")
+  projectReports                ProjectReport[]
+  assignedMaintenanceTasks      MaintenanceTask[]              @relation("MaintenanceTech")
+  alternativeMaintenanceTasks   MaintenanceTask[]              @relation("MaintenanceAltTech")
+  maintenanceTaskAssignments    MaintenanceTaskAssignment[]    @relation("MaintenanceTaskAssignmentTech")
+  maintenanceReports            MaintenanceReport[]            @relation("MaintenanceReportTech")
+  notifications                 Notification[]                 @relation("EmployeeNotifications")
+  assignedServiceCalls          ServiceCall[]                  @relation("ServiceCallTech")
+  alternativeServiceCalls       ServiceCall[]                  @relation("ServiceCallAltTech")
+  serviceReports                ServiceReport[]                @relation("ServiceReportTech")
+  createdSalesOrders            SalesOrder[]
+  issuedInvoices                Invoice[]                      @relation("EmployeeIssuedInvoices")
+  createdMeetingActivities      MeetingActivity[]              @relation("MeetingActivityCreator")
+  meetingParticipations         MeetingActivityParticipant[]   @relation("MeetingParticipantEmployee")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }
@@ -118,15 +141,34 @@ model AuditLog {
   @@index([action])
 }
 
+/// Roles are shared across the whole company tree (one identical list under
+/// the main tenant and every sub-tenant); new roles are created under the
+/// root. Permissions are part of the shared role; the module package is
+/// configured per entity via RoleModuleConfig.
 model Role {
-  id          String           @id
-  tenantId    String
-  roleName    String
-  employees   EmployeeRole[]
-  tenant      Tenant           @relation(fields: [tenantId], references: [id])
-  permissions RolePermission[]
+  id            String             @id
+  tenantId      String
+  roleName      String
+  employees     EmployeeRole[]
+  tenant        Tenant             @relation(fields: [tenantId], references: [id])
+  permissions   RolePermission[]
+  moduleConfigs RoleModuleConfig[]
 
   @@index([tenantId], map: "Role_tenantId_fkey")
+}
+
+/// Per-entity module package of a shared role: the same role can enable
+/// different modules in each company of the tree (e.g. Offitec, Offitec AG,
+/// Offitec Group). No row for (role, tenant) = no restriction there.
+model RoleModuleConfig {
+  roleId     String
+  tenantId   String
+  moduleKeys Json
+  role       Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, tenantId])
+  @@index([tenantId])
 }
 
 model Permission {

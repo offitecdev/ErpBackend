@@ -5,7 +5,7 @@ import { MaintenanceReportUseCase } from '../../application/use-cases/maintenanc
 import { IMaintenanceRepository } from '../../domain/repositories/IMaintenanceRepository';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
-import { getCustomerInServiceTenantScope, getServiceTenantScope, isTenantInServiceTenantScope } from './serviceTenantScope';
+import { getCompanyTreeTenantIds, getCustomerInServiceTenantScope, getServiceTenantScope, isTenantInServiceTenantScope } from './serviceTenantScope';
 
 const smtp = new SmtpMailService();
 
@@ -88,7 +88,8 @@ export class MaintenanceController {
 
     private async validateTechniciansInScope(technicianIds: string[], tenantId: string) {
         if (!technicianIds.length) return [];
-        const tenantIds = await getServiceTenantScope(tenantId);
+        // Personnel are shared company-wide -> technicians of the whole tree qualify.
+        const tenantIds = await getCompanyTreeTenantIds(tenantId);
         const employees = await prisma.employee.findMany({
             where: { id: { in: technicianIds }, tenantId: { in: tenantIds }, isActive: true },
             select: { id: true },
@@ -165,7 +166,8 @@ export class MaintenanceController {
     async listTechnicians(req: Request, res: Response) {
         try {
             const tenantId = (req as any).user!.tenantId;
-            const tenantIds = await getServiceTenantScope(tenantId);
+            // Personnel are shared company-wide -> offer the whole tree's technicians.
+            const tenantIds = await getCompanyTreeTenantIds(tenantId);
             const technicians = await prisma.employee.findMany({
                 where: {
                     tenantId: { in: tenantIds },

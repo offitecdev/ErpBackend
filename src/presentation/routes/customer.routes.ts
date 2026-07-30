@@ -156,10 +156,17 @@ router.post(
  *                 type: string
  *               address:
  *                 type: string
+ *                 description: Sokak + bina numarasi (birlesik "adres" alani yoktur)
+ *               addressSupplement:
+ *                 type: string
+ *                 description: Adres eki / daire
  *               postalCode:
  *                 type: string
  *               city:
  *                 type: string
+ *               state:
+ *                 type: string
+ *                 description: Eyalet / kanton / bolge
  *               country:
  *                 type: string
  *               mainPhone:
@@ -256,6 +263,14 @@ router.get(
     requireAuth,
     requirePermission('crm.customers.view'),
     (req, res) => customerController.getDashboard(req, res)
+);
+
+// Zähler + Summen für das "Allgemein"-Band der Übersicht (nur Aggregate).
+router.get(
+    '/:id/overview-stats',
+    requireAuth,
+    requirePermission('crm.customers.view'),
+    (req, res) => customerController.getOverviewStats(req, res)
 );
 
 /**
@@ -427,6 +442,13 @@ router.post(
     requireAuth,
     requirePermission('crm.customers.create'),
     (req, res) => customerController.upsertProductDiscount(req, res)
+);
+// Ganze Preisliste in einem Request speichern (Anlegen/Ändern/Löschen gemischt).
+router.post(
+    '/:id/product-discounts/bulk',
+    requireAuth,
+    requirePermission('crm.customers.create'),
+    (req, res) => customerController.bulkSaveProductDiscounts(req, res)
 );
 router.patch(
     '/:id/product-discounts/:discountId',

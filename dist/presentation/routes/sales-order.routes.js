@@ -11,5 +11,6 @@ router.get('/', (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (
 router.get('/my-orders', (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => controller.myOrders(req, res));
 router.post('/from-tender', (0, RbacMiddleware_1.requirePermission)('tenders.approve'), (req, res) => controller.createFromTender(req, res));
 router.get('/:id', (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => controller.getById(req, res));
+router.patch('/:id/payment-stages', (0, RbacMiddleware_1.requirePermission)('billing.manage'), (req, res) => controller.updatePaymentStages(req, res));
 exports.default = router;
 //# sourceMappingURL=sales-order.routes.js.map

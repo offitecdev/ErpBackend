@@ -1,6 +1,6 @@
 import prisma from "../database/prisma.client";
 import { Invoice, InvoiceStatus } from "../../domain/entities/Invoice";
-import { IInvoiceFilter, IInvoiceRepository, InvoiceLineItemInput } from "../../domain/repositories/IInvoiceRepository";
+import { IInvoiceFilter, IInvoiceRepository, InvoiceLineItemInput, InvoiceSummaryRow } from "../../domain/repositories/IInvoiceRepository";
 
 const invoiceInclude = {
     lineItems: true,
@@ -70,13 +70,25 @@ export class InvoiceRepository implements IInvoiceRepository {
         })) as unknown as Invoice[];
     }
 
-    async listForOrders(tenantId: string, salesOrderIds: string[]): Promise<Invoice[]> {
+    // Feeds the batch billing summary only, so it selects the summary columns
+    // instead of the full `invoiceInclude` — no line items, no joined customer /
+    // project / order / employee rows for every invoice of every listed order.
+    async listForOrders(tenantId: string, salesOrderIds: string[]): Promise<InvoiceSummaryRow[]> {
         if (salesOrderIds.length === 0) return [];
         return (await (prisma as any).invoice.findMany({
             where: { tenantId, salesOrderId: { in: salesOrderIds } },
             orderBy: { createdAt: "desc" },
-            include: invoiceInclude,
-        })) as unknown as Invoice[];
+            select: {
+                id: true,
+                salesOrderId: true,
+                invoiceNumber: true,
+                billingType: true,
+                billedPercent: true,
+                amount: true,
+                status: true,
+                createdAt: true,
+            },
+        })) as unknown as InvoiceSummaryRow[];
     }
 
     async countForTenant(tenantId: string): Promise<number> {

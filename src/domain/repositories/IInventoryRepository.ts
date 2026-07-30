@@ -8,6 +8,8 @@ export interface IInventoryRepository {
     ensureDefaultLocation(tenantId: string): Promise<Location>;
     getStockBalance(articleId: string, locationId: string): Promise<StockBalance | null>;
     getAllBalances(tenantId: string , locationId?: string): Promise<any[]>;
+    /** Tek ürünün toplam stoğu — kritik seviye kontrolü tüm bakiyeleri çekmesin diye. */
+    getArticleTotalQuantity(tenantId: string, articleId: string): Promise<number>;
 
    processMovement(
         movementData: Partial<StockMovement>, 
@@ -20,6 +22,8 @@ export interface IInventoryRepository {
     getMovements(articleId:string): Promise<StockMovement[]>;
     createPurchaseProposal(proposal: Partial<PurchaseProposal>): Promise<PurchaseProposal>;
     getPendingProposals(tenantId: string): Promise<PurchaseProposal[]>;
+    /** Ürünün bekleyen satın alma önerisi var mı — liste çekmeden. */
+    hasPendingProposal(tenantId: string, articleId: string): Promise<boolean>;
     resolveProposal(proposalId: string, status: 'APPROVED' | 'REJECTED', employeeId: string): Promise<void>;
     findArticleByBarcodeOrCode(tenantId: string, codeOrBarcode: string): Promise<Article | null>;
     getArticleStockSummary(tenantId: string, includeImages?: boolean): Promise<any[]>;
@@ -35,6 +39,10 @@ export interface IInventoryRepository {
             status?: string | undefined;
             itemType?: string | undefined;
             includeDescription?: boolean;
+            // Teklif satırı seçicisi için yalın mod: yalnızca bir teklif satırını
+            // dolduran alanlar döner (id, ad, açıklama, birim, fiyat). Kategori,
+            // barkod, stok seviyeleri ve stok bakiyesi JOIN'i tamamen atlanır.
+            lean?: boolean;
             // Kolon bazlı filtreler (ürün listesi tablosundaki filtre satırı) —
             // `search` genel aramadır, bunlar tek kolona daraltır.
             code?: string | undefined;

@@ -10,6 +10,16 @@ export interface IInvoiceFilter {
 
 export type InvoiceLineItemInput = Omit<InvoiceLineItem, "id" | "invoiceId">;
 
+/**
+ * The only columns a billing summary is computed from. Deliberately narrower
+ * than `Invoice`: the batch path runs over every order of a list endpoint, so
+ * it must not drag line items and joined relations along.
+ */
+export type InvoiceSummaryRow = Pick<
+    Invoice,
+    "id" | "salesOrderId" | "invoiceNumber" | "billingType" | "billedPercent" | "amount" | "status" | "createdAt"
+>;
+
 export interface IInvoiceRepository {
     createWithItems(invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice>;
     updateWithItems(id: string, invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice>;
@@ -17,7 +27,7 @@ export interface IInvoiceRepository {
     findActiveByOrder(salesOrderId: string, tenantId: string): Promise<Invoice | null>;
     findActiveByProject(projectId: string, tenantId: string): Promise<Invoice | null>;
     list(filter: IInvoiceFilter): Promise<Invoice[]>;
-    listForOrders(tenantId: string, salesOrderIds: string[]): Promise<Invoice[]>;
+    listForOrders(tenantId: string, salesOrderIds: string[]): Promise<InvoiceSummaryRow[]>;
     countForTenant(tenantId: string): Promise<number>;
     sumBilledPercentForOrder(salesOrderId: string): Promise<number>;
     sumBilledPercentForProject(projectId: string): Promise<number>;

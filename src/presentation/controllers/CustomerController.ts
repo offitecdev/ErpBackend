@@ -87,7 +87,7 @@ export class CustomerController {
                 tenantId: string; isActive?: boolean; segment?: string; status?: string; search?: string;
                 companyName?: string; vatNumber?: string; email?: string;
                 sortBy?: 'companyName' | 'vatNumber' | 'status'; sortDirection?: 'asc' | 'desc';
-                page?: number; pageSize?: number;
+                page?: number; pageSize?: number; fields?: 'list' | 'full';
             } = {
                 tenantId: req.user!.tenantId,
             };
@@ -103,6 +103,9 @@ export class CustomerController {
             if (req.query.sortDirection) filter.sortDirection = req.query.sortDirection === 'asc' ? 'asc' : 'desc';
             if (req.query.page) filter.page = Math.max(1, Number(req.query.page) || 1);
             if (req.query.pageSize) filter.pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
+            // `fields=list` → yalnızca liste tablosunun kolonları döner. Bilinmeyen
+            // değerler tam gövdeye düşer, eski çağıranlar etkilenmez.
+            if (req.query.fields === 'list') filter.fields = 'list';
 
             const result = await this.listCustomersUseCase.execute(filter);
             res.status(200).json(result);
@@ -378,6 +381,66 @@ export class CustomerController {
             res.status(200).json(result);
         } catch (error: any) {
             res.status(400).json({ error: error.message || 'Produktrabatt konnte nicht aktualisiert werden.' });
+        }
+    }
+
+    /**
+     * Preisliste in einem Rutsch speichern. Body:
+     * `{ upserts: [{ articleId, discount }], deleteIds: [id] }`.
+     * Ersetzt N Einzel-Requests + N Nachlade-GETs durch genau einen Request,
+     * der die fertige Liste zurückgibt.
+     */
+    async bulkSaveProductDiscounts(req: Request, res: Response) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
+            const rawUpserts = Array.isArray(req.body?.upserts) ? req.body.upserts : [];
+            const rawDeleteIds = Array.isArray(req.body?.deleteIds) ? req.body.deleteIds : [];
+
+            const upserts: Array<{ articleId: string; discount: number }> = [];
+            for (const item of rawUpserts) {
+                const articleId = item?.articleId;
+                const discount = Number(item?.discount);
+                if (!articleId || typeof articleId !== 'string') {
+                    return res.status(400).json({ error: 'articleId ist erforderlich.' });
+                }
+                if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+                    return res.status(400).json({ error: 'Rabatt muss zwischen 0 und 100 liegen.' });
+                }
+                upserts.push({ articleId, discount });
+            }
+            const deleteIds = rawDeleteIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
+
+            if (!(await this.customerInTenant(customerId, req.user!.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
+            const result = await this.productDiscountRepository.bulkSave({
+                tenantId: req.user!.tenantId,
+                customerId,
+                upserts,
+                deleteIds,
+            });
+            res.status(200).json(result);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Produktrabatte konnten nicht gespeichert werden.' });
+        }
+    }
+
+    /**
+     * Kennzahlen-Band der Kundenübersicht: Anzahl Angebote/Projekte/Aufträge
+     * plus verrechnete und offene Auftragssummen. Ein Request statt drei
+     * Listen-Fetches (tenders + sales-orders + invoices), die der Client sonst
+     * nur zum Zählen laden müsste.
+     */
+    async getOverviewStats(req: Request, res: Response) {
+        try {
+            const customerId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string;
+            if (!(await this.customerInTenant(customerId, req.user!.tenantId))) {
+                return res.status(404).json({ error: 'Müşteri bulunamadı.' });
+            }
+            const stats = await this.customerRepository.getOverviewStats(customerId, req.user!.tenantId);
+            res.status(200).json(stats);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message || 'Kennzahlen konnten nicht geladen werden.' });
         }
     }
 

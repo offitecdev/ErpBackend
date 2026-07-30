@@ -5,11 +5,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EmployeeRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const client_1 = require("@prisma/client");
 const Employee_1 = require("../../domain/entities/Employee");
 class EmployeeRepository {
     mapToEntity(data) {
         const firstRole = data.employeeRoles?.[0]?.role;
-        const emp = new Employee_1.Employee(data.id, data.tenantId, data.firstName, data.lastName, data.email, data.passwordHash, data.isActive, data.title, data.departmentId, firstRole?.roleName ?? data.roleName, data.phone, data.address, data.hireDate, data.terminationDate, data.annualLeaveEntitlement, data.profilePictureUrl, data.notes, data.createdAt, data.updatedAt, firstRole?.id ?? null, data.passwordChangedAt, data.deletedAt, data.bannedAt);
+        const emp = new Employee_1.Employee(data.id, data.tenantId, data.firstName, data.lastName, data.email, data.passwordHash, data.isActive, data.title, data.departmentId, firstRole?.roleName ?? data.roleName, data.phone, data.address, data.hireDate, data.terminationDate, data.annualLeaveEntitlement, data.profilePictureUrl, data.notes, data.createdAt, data.updatedAt, firstRole?.id ?? null, data.passwordChangedAt, data.deletedAt, data.bannedAt, Array.isArray(data.moduleKeys) ? data.moduleKeys : null);
         return emp;
     }
     roleInclude = {
@@ -30,7 +31,9 @@ class EmployeeRepository {
         return data ? this.mapToEntity(data) : null;
     }
     async findAll(filters) {
-        const whereClause = { tenantId: filters.tenantId };
+        const whereClause = filters.tenantIds?.length
+            ? { tenantId: { in: filters.tenantIds } }
+            : { tenantId: filters.tenantId };
         if (filters.isActive !== undefined)
             whereClause.isActive = filters.isActive;
         if (filters.departmentId)
@@ -82,7 +85,8 @@ class EmployeeRepository {
             terminationDate: coreData.terminationDate ?? null,
             annualLeaveEntitlement: coreData.annualLeaveEntitlement ?? 0,
             profilePictureUrl: coreData.profilePictureUrl ?? null,
-            notes: coreData.notes ?? null
+            notes: coreData.notes ?? null,
+            moduleKeys: coreData.moduleKeys ?? undefined,
         };
         if (roleId) {
             createData.employeeRoles = {
@@ -98,6 +102,9 @@ class EmployeeRepository {
     }
     async update(id, updateData) {
         const { id: _id, tenantId: _tid, roleId: _roleId, ...safeData } = updateData;
+        // Json? columns cannot be cleared with plain null.
+        if (safeData.moduleKeys === null)
+            safeData.moduleKeys = client_1.Prisma.DbNull;
         const data = await prisma_client_1.default.employee.update({
             where: { id },
             data: safeData,

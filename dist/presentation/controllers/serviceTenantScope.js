@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isTenantInServiceTenantScope = void 0;
 exports.getServiceTenantScope = getServiceTenantScope;
+exports.getCompanyTreeTenantIds = getCompanyTreeTenantIds;
 exports.getCustomerInServiceTenantScope = getCustomerInServiceTenantScope;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const getDescendantTenantIds = (tenants, rootId) => {
@@ -31,6 +32,29 @@ async function getServiceTenantScope(selectedTenantId) {
     if (selectedTenant.parentTenantId)
         return [selectedTenant.id];
     return getDescendantTenantIds(tenants.filter((tenant) => tenant.isActive), selectedTenant.id);
+}
+/**
+ * Every active tenant id in the caller's company tree (root + all
+ * descendants), no matter which tenant is selected. Personnel are shared
+ * company-wide: the same staff pool appears under the main tenant and every
+ * sub-tenant — use this for employee queries, getServiceTenantScope for
+ * business data (calls, contracts, customers…), which stays per-tenant.
+ */
+async function getCompanyTreeTenantIds(selectedTenantId) {
+    const tenants = await prisma_client_1.default.tenant.findMany({
+        select: { id: true, parentTenantId: true, isActive: true },
+    });
+    const byId = new Map(tenants.map((tenant) => [tenant.id, tenant]));
+    let current = byId.get(selectedTenantId);
+    if (!current?.isActive)
+        return [];
+    for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
+        const parent = byId.get(current.parentTenantId);
+        if (!parent?.isActive)
+            return [];
+        current = parent;
+    }
+    return getDescendantTenantIds(tenants.filter((tenant) => tenant.isActive), current.id);
 }
 async function getCustomerInServiceTenantScope(customerId, selectedTenantId) {
     const tenantIds = await getServiceTenantScope(selectedTenantId);

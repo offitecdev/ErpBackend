@@ -24,5 +24,7 @@ export class Employee {
         public passwordChangedAt?: Date | null,
         public deletedAt?: Date | null,
         public bannedAt?: Date | null,
+        /// Personal module package; null = no restriction.
+        public moduleKeys?: string[] | null,
     )  {}
 }

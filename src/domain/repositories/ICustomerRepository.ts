@@ -15,6 +15,21 @@ export interface ICustomerFilter {
     sortDirection?: 'asc' | 'desc';
     page?: number;
     pageSize?: number;
+    // 'list' → yalnızca müşteri listesi tablosunun çizdiği kolonlar döner
+    // (CustomerListRow). Varsayılan 'full', eski çağıranlar için tüm alanlar.
+    fields?: 'list' | 'full';
+}
+
+// Müşteri listesi tablosunun gerçekten kullandığı alanlar. Tam Customer
+// entity'si 24 kolon taşır; tablo bunların yedisini çiziyor.
+export interface CustomerListRow {
+    id: string;
+    companyName: string;
+    address: string | null;
+    vatNumber: string | null;
+    mainEmail: string | null;
+    mainPhone: string | null;
+    status: string;
 }
 
 export interface PaginatedResult<T> {
@@ -25,11 +40,26 @@ export interface PaginatedResult<T> {
     totalPages: number;
 }
 
+// Kennzahlen-Band der Kundenübersicht ("Allgemein"): Zeilen statt Karten.
+export interface CustomerOverviewStats {
+    tenderCount: number;
+    projectCount: number;
+    orderCount: number;
+    orderTotal: number;
+    // Summe der ausgestellten (nicht stornierten) Rechnungen dieses Kunden.
+    invoicedTotal: number;
+    // orderTotal − invoicedTotal, nie negativ.
+    outstandingTotal: number;
+}
+
 export interface ICustomerRepository {
     createCustomer(customer: Partial<Customer>): Promise<Customer>;
     update(id: string, customer: Partial<Customer>): Promise<Customer>;
     delete(id: string, tenantId?: string): Promise<void>;
     findById(id: string): Promise<Customer | null>;
-    findAll(filter: ICustomerFilter): Promise<Customer[] | PaginatedResult<Customer>>;
+    findAll(
+        filter: ICustomerFilter
+    ): Promise<Customer[] | PaginatedResult<Customer> | CustomerListRow[] | PaginatedResult<CustomerListRow>>;
     getCustomerDashboard(id: string, tenantId?: string, summaryOnly?: boolean): Promise<any>;
+    getOverviewStats(id: string, tenantId: string): Promise<CustomerOverviewStats>;
 }

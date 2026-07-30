@@ -125,10 +125,17 @@ router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermi
  *                 type: string
  *               address:
  *                 type: string
+ *                 description: Sokak + bina numarasi (birlesik "adres" alani yoktur)
+ *               addressSupplement:
+ *                 type: string
+ *                 description: Adres eki / daire
  *               postalCode:
  *                 type: string
  *               city:
  *                 type: string
+ *               state:
+ *                 type: string
+ *                 description: Eyalet / kanton / bolge
  *               country:
  *                 type: string
  *               mainPhone:
@@ -209,6 +216,8 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
  *         description: Müşteri bulunamadı
  */
 router.get('/:id/dashboard', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => customerController.getDashboard(req, res));
+// Zähler + Summen für das "Allgemein"-Band der Übersicht (nur Aggregate).
+router.get('/:id/overview-stats', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => customerController.getOverviewStats(req, res));
 /**
  * @swagger
  * /customers/{id}/notes:
@@ -313,6 +322,8 @@ router.delete('/:id/locations/:locationId', AuthMiddleware_1.requireAuth, (0, Rb
 /* ----------------------------- Product discounts (Produktrabatte) ----------------------------- */
 router.get('/:id/product-discounts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => customerController.listProductDiscounts(req, res));
 router.post('/:id/product-discounts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.upsertProductDiscount(req, res));
+// Ganze Preisliste in einem Request speichern (Anlegen/Ändern/Löschen gemischt).
+router.post('/:id/product-discounts/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.bulkSaveProductDiscounts(req, res));
 router.patch('/:id/product-discounts/:discountId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.updateProductDiscount(req, res));
 router.delete('/:id/product-discounts/:discountId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.create'), (req, res) => customerController.deleteProductDiscount(req, res));
 /* ----------------------------- Notes edit/delete ----------------------------- */

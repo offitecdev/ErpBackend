@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GetBillingSummaryUseCase = void 0;
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const paymentSchedule_1 = require("../../utils/paymentSchedule");
 const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
 class GetBillingSummaryUseCase {
     invoiceRepository;
@@ -19,14 +20,16 @@ class GetBillingSummaryUseCase {
             throw new Error("Özet için tek bir hedef (sipariş veya proje) belirtin.");
         }
         let baseAmount = 0;
+        let paymentStagesRaw = null;
         if (salesOrderId) {
             const order = await prisma_client_1.default.salesOrder.findFirst({
                 where: { id: salesOrderId, tenantId },
-                select: { totalAmount: true },
+                select: { totalAmount: true, paymentStages: true },
             });
             if (!order)
                 throw new Error("Sipariş bulunamadı.");
             baseAmount = Number(order.totalAmount || 0);
+            paymentStagesRaw = order.paymentStages ?? null;
         }
         else {
             const project = await prisma_client_1.default.project.findFirst({
@@ -43,7 +46,7 @@ class GetBillingSummaryUseCase {
             salesOrderId: salesOrderId || undefined,
             projectId: projectId || undefined,
         });
-        return this.buildSummary(baseAmount, invoices);
+        return this.buildSummary(baseAmount, invoices, paymentStagesRaw);
     }
     /**
      * Computes billing summaries for many sales orders with a single invoice query
@@ -67,25 +70,28 @@ class GetBillingSummaryUseCase {
             else
                 byOrder.set(key, [inv]);
         }
-        for (const { salesOrderId, baseAmount } of targets) {
+        for (const { salesOrderId, baseAmount, paymentStages } of targets) {
             if (result.has(salesOrderId))
                 continue;
-            result.set(salesOrderId, this.buildSummary(baseAmount, byOrder.get(salesOrderId) || []));
+            result.set(salesOrderId, this.buildSummary(baseAmount, byOrder.get(salesOrderId) || [], paymentStages ?? null));
         }
         return result;
     }
-    buildSummary(baseAmount, invoices) {
+    buildSummary(baseAmount, invoices, paymentStagesRaw) {
         const active = invoices.filter((inv) => inv.status !== "CANCELLED");
         const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
         const remainingPercent = round2(Math.max(0, 100 - billedPercent));
         const remainingAmount = round2(Math.max(0, baseAmount - billedAmount));
+        const paymentStages = (0, paymentSchedule_1.parsePaymentStages)(paymentStagesRaw);
         return {
             baseAmount: round2(baseAmount),
             billedPercent,
             billedAmount,
             remainingPercent,
             remainingAmount,
+            paymentStages,
+            nextStage: paymentStages ? (0, paymentSchedule_1.nextStageInfo)(paymentStages, billedPercent, remainingPercent) : null,
             invoices: invoices.map((inv) => ({
                 id: inv.id,
                 invoiceNumber: inv.invoiceNumber,

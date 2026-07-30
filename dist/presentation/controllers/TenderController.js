@@ -6,8 +6,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenderController = void 0;
 const nanoid_1 = require("nanoid");
 const customerAddress_1 = require("../../application/utils/customerAddress");
+const paymentSchedule_1 = require("../../application/utils/paymentSchedule");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
+const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const technicianSchedule_1 = require("./technicianSchedule");
 const smtp = new SmtpMailService_1.SmtpMailService();
 const normalizeIdList = (value) => Array.isArray(value)
@@ -16,6 +18,40 @@ const normalizeIdList = (value) => Array.isArray(value)
 // Validation error whose message is safe to show the user. Carries status 400 so
 // controller catch blocks can distinguish it from unexpected/internal errors and
 // avoid leaking raw Prisma messages.
+/**
+ * Normalises the offer's closing images into the JSON string held by the
+ * `closingImages` column. Accepts either an array (from the panel) or an
+ * already-serialised string, and enforces the size caps: a data URI is roughly
+ * 4/3 the size of the file it encodes, so 6 MB of image is ~8 MB of text.
+ */
+const normalizeClosingImages = (raw) => {
+    let list = [];
+    if (Array.isArray(raw)) {
+        list = raw.map((item) => String(item)).filter(Boolean);
+    }
+    else if (typeof raw === 'string' && raw.trim()) {
+        try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed))
+                list = parsed.map((item) => String(item)).filter(Boolean);
+        }
+        catch {
+            if (raw.startsWith('data:'))
+                list = [raw];
+        }
+    }
+    if (list.length === 0)
+        return null;
+    const MAX_PER_IMAGE = 8_400_000; // ~6 MB binary, base64-encoded
+    const MAX_TOTAL = 40_000_000;
+    if (list.some((image) => image.length > MAX_PER_IMAGE)) {
+        throw new TenderValidationError("Görsel çok büyük (maks. 6 MB).");
+    }
+    if (list.reduce((sum, image) => sum + image.length, 0) > MAX_TOTAL) {
+        throw new TenderValidationError("Görsellerin toplam boyutu çok büyük.");
+    }
+    return JSON.stringify(list);
+};
 class TenderValidationError extends Error {
     status = 400;
     constructor(message) {
@@ -254,8 +290,10 @@ class TenderController {
                 companyName: true,
                 addressName: true,
                 address: true,
+                addressSupplement: true,
                 postalCode: true,
                 city: true,
+                state: true,
                 country: true,
                 mainEmail: true,
                 mainPhone: true,
@@ -297,6 +335,10 @@ class TenderController {
                 filter.page = Math.max(1, Number(req.query.page) || 1);
             if (req.query.pageSize)
                 filter.pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10));
+            // `fields=list` → yalnızca liste tablosunun kolonları döner. Bilinmeyen
+            // değerler tam gövdeye düşer, eski çağıranlar etkilenmez.
+            if (req.query.fields === 'list')
+                filter.fields = 'list';
             const tenders = await this.tenderRepository.findAll(filter);
             res.status(200).json(tenders);
         }
@@ -649,8 +691,51 @@ class TenderController {
                 }
                 metaData.directDiscountLabel = label || null;
             }
+            if (rawMeta.extraDiscount !== undefined) {
+                const value = rawMeta.extraDiscount === null || rawMeta.extraDiscount === ''
+                    ? 0
+                    : Number(rawMeta.extraDiscount);
+                if (!Number.isFinite(value) || value < 0 || value > 100) {
+                    throw new TenderValidationError("İndirim 0 ile 100 arasında olmalıdır.");
+                }
+                metaData.extraDiscount = value;
+            }
+            if (rawMeta.extraDiscountLabel !== undefined) {
+                const label = rawMeta.extraDiscountLabel === null ? '' : String(rawMeta.extraDiscountLabel).trim();
+                if (label.length > 80) {
+                    throw new TenderValidationError("İndirim adı en fazla 80 karakter olabilir.");
+                }
+                metaData.extraDiscountLabel = label || null;
+            }
+            if (rawMeta.paymentStages !== undefined) {
+                if (rawMeta.paymentStages === null || rawMeta.paymentStages === '') {
+                    metaData.paymentStages = null;
+                }
+                else {
+                    const stages = Array.isArray(rawMeta.paymentStages)
+                        ? rawMeta.paymentStages.map(Number)
+                        : (0, paymentSchedule_1.parsePaymentStages)(String(rawMeta.paymentStages));
+                    const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages) : "Geçersiz ödeme planı.";
+                    if (stageError) {
+                        throw new TenderValidationError(stageError);
+                    }
+                    metaData.paymentStages = (0, paymentSchedule_1.serializePaymentStages)(stages);
+                }
+            }
             if (rawMeta.billingSameAsInstallation !== undefined) {
                 metaData.billingSameAsInstallation = Boolean(rawMeta.billingSameAsInstallation);
+            }
+            // Optional PDF content blocks. This endpoint keeps its OWN whitelist
+            // separate from PATCH /meta, so a field added there is silently
+            // dropped here — which is what the Save button actually calls.
+            if (rawMeta.coverLetter !== undefined) {
+                metaData.coverLetter = rawMeta.coverLetter ? String(rawMeta.coverLetter) : null;
+            }
+            if (rawMeta.closingNote !== undefined) {
+                metaData.closingNote = rawMeta.closingNote ? String(rawMeta.closingNote) : null;
+            }
+            if (rawMeta.closingImages !== undefined) {
+                metaData.closingImages = normalizeClosingImages(rawMeta.closingImages);
             }
             if (rawMeta.internalDeliveryDate !== undefined) {
                 metaData.internalDeliveryDate = rawMeta.internalDeliveryDate ? new Date(rawMeta.internalDeliveryDate) : null;
@@ -1266,7 +1351,7 @@ class TenderController {
             const tenderId = req.params.id;
             const tenantId = req.user.tenantId;
             const employeeId = req.user.id;
-            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount, directDiscountLabel } = req.body;
+            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, paymentStages, coverLetter, closingNote, closingImages } = req.body;
             const tender = await this.getAccessibleTender(tenderId, req.user);
             if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
@@ -1310,12 +1395,53 @@ class TenderController {
                 }
                 data.directDiscount = parsedDirectDiscount;
             }
+            // Optional PDF content blocks. Rich text (HTML) for the two texts and a
+            // data URI for the image; an empty value clears the block, which is how
+            // the user removes it from the document.
+            if (coverLetter !== undefined) {
+                data.coverLetter = coverLetter ? String(coverLetter) : null;
+            }
+            if (closingNote !== undefined) {
+                data.closingNote = closingNote ? String(closingNote) : null;
+            }
+            if (closingImages !== undefined) {
+                data.closingImages = normalizeClosingImages(closingImages);
+            }
             if (directDiscountLabel !== undefined) {
                 const label = directDiscountLabel === null ? '' : String(directDiscountLabel).trim();
                 if (label.length > 80) {
                     return res.status(400).json({ error: "İndirim adı en fazla 80 karakter olabilir." });
                 }
                 data.directDiscountLabel = label || null;
+            }
+            if (extraDiscount !== undefined) {
+                const parsedExtraDiscount = extraDiscount === null || extraDiscount === '' ? 0 : Number(extraDiscount);
+                if (!Number.isFinite(parsedExtraDiscount) || parsedExtraDiscount < 0 || parsedExtraDiscount > 100) {
+                    return res.status(400).json({ error: "İndirim 0 ile 100 arasında olmalıdır." });
+                }
+                data.extraDiscount = parsedExtraDiscount;
+            }
+            if (extraDiscountLabel !== undefined) {
+                const label = extraDiscountLabel === null ? '' : String(extraDiscountLabel).trim();
+                if (label.length > 80) {
+                    return res.status(400).json({ error: "İndirim adı en fazla 80 karakter olabilir." });
+                }
+                data.extraDiscountLabel = label || null;
+            }
+            if (paymentStages !== undefined) {
+                if (paymentStages === null || paymentStages === '') {
+                    data.paymentStages = null;
+                }
+                else {
+                    const stages = Array.isArray(paymentStages)
+                        ? paymentStages.map(Number)
+                        : (0, paymentSchedule_1.parsePaymentStages)(String(paymentStages));
+                    const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages) : "Geçersiz ödeme planı.";
+                    if (stageError) {
+                        return res.status(400).json({ error: stageError });
+                    }
+                    data.paymentStages = (0, paymentSchedule_1.serializePaymentStages)(stages);
+                }
             }
             if (billingSameAsInstallation !== undefined) {
                 data.billingSameAsInstallation = !!billingSameAsInstallation;
@@ -2085,21 +2211,29 @@ class TenderController {
                 ? `<p><strong>Planlanan tarih ve saatler</strong></p>
                     <ul>${slots.map((slot) => `<li>${new Date(slot.startTime).toLocaleString('tr-TR')} - ${new Date(slot.endTime).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</li>`).join("")}</ul>`
                 : "";
+            // Tenant e-posta imzası (Mail Ayarları'nda tanımlanır) gövdenin sonuna
+            // eklenir; imza görseli CID'li inline ek olarak taşınır.
+            const signature = (0, mailSignature_1.buildSignatureParts)(settings);
             const html = `
                 <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
                     <p>${messageHtml}</p>
                     ${scheduleHtml}
+                    ${signature.html}
                 </div>
             `;
+            const plainText = slots.length > 0
+                ? `${messageText}\n\nPlanlanan tarih ve saatler:\n${scheduleText}`
+                : messageText;
             const result = await smtp.send(settings || {}, {
                 fromEmail,
                 fromName,
                 to,
                 subject,
-                text: slots.length > 0 ? `${messageText}\n\nPlanlanan tarih ve saatler:\n${scheduleText}` : messageText,
+                text: `${plainText}${signature.text}`,
                 html,
                 replyTo: settings?.replyTo || null,
-                attachments
+                attachments,
+                inlineImages: signature.inlineImages
             });
             await prisma_client_1.default.tender.update({
                 where: { id: tenderId },

@@ -1,50 +1,65 @@
 model Customer {
-  id           String             @id
-  tenantId     String
-  companyName  String
-  segment      String?
-  customerType String             @default("PRIVATE")
-  taxOffice    String?
-  taxNumber    String?
-  // Primary address, entered as separate fields on the customer profile.
-  // `address` holds the street line; addressName is an optional label.
-  addressName  String?
-  address      String?
-  postalCode   String?
-  city         String?
-  country      String?
-  mainPhone    String?
-  mobilePhone  String?
-  mainEmail    String?
-  website      String?
-  language     String?
-  vatNumber    String?
-  priceList    String?
-  customerSource String?
-  responsibleFirstName String?
-  responsibleLastName  String?
-  status       String             @default("ACTIVE")
-  isActive     Boolean            @default(true)
-  tenant       Tenant             @relation(fields: [tenantId], references: [id])
-  activities   CustomerActivity[]
-  contacts     CustomerContact[]
-  notes        CustomerNote[]
-  locations    CustomerLocation[]
-  tenders      Tender[]
-  projects     Project[]
-  appointments Appointment[]
-  offerScheduleSlots OfferScheduleSlot[]
-  shipments Shipment[]
-  maintenanceContracts MaintenanceContract[]
-  serviceCalls ServiceCall[]
-  workOrders WorkOrder[]
-  salesOrders SalesOrder[]
-  invoices Invoice[]
-  productDiscounts CustomerProductDiscount[]
-  meetingActivities MeetingActivity[]
+  id                    String                       @id
+  tenantId              String
+  companyName           String
+  segment               String?
+  customerType          String                       @default("PRIVATE")
+  taxOffice             String?
+  taxNumber             String?
+  // Primary address as DISTINCT components — there is deliberately no single
+  // free-text "address" field, and no component repeats another's meaning:
+  //   companyName        → company / name
+  //   address            → street + house number
+  //   addressSupplement  → address supplement / apartment
+  //   postalCode / city / state / country
+  // `addressName` is only the list label of the entry ("Head office"), not a
+  // part of the postal address. Screens and PDFs collapse the components to at
+  // most two lines via `formatAddressLines()` (frontend `utils/address.ts`).
+  addressName           String?
+  address               String?
+  addressSupplement     String?
+  postalCode            String?
+  city                  String?
+  state                 String?
+  country               String?
+  mainPhone             String?
+  mobilePhone           String?
+  mainEmail             String?
+  website               String?
+  language              String?
+  vatNumber             String?
+  priceList             String?
+  customerSource        String?
+  responsibleFirstName  String?
+  responsibleLastName   String?
+  status                String                       @default("ACTIVE")
+  isActive              Boolean                      @default(true)
+  tenant                Tenant                       @relation(fields: [tenantId], references: [id])
+  activities            CustomerActivity[]
+  contacts              CustomerContact[]
+  notes                 CustomerNote[]
+  locations             CustomerLocation[]
+  tenders               Tender[]
+  projects              Project[]
+  appointments          Appointment[]
+  offerScheduleSlots    OfferScheduleSlot[]
+  shipments             Shipment[]
+  maintenanceContracts  MaintenanceContract[]
+  serviceCalls          ServiceCall[]
+  workOrders            WorkOrder[]
+  salesOrders           SalesOrder[]
+  invoices              Invoice[]
+  productDiscounts      CustomerProductDiscount[]
+  meetingActivities     MeetingActivity[]
   meetingParticipations MeetingActivityParticipant[] @relation("MeetingParticipantCustomer")
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
+  // Liste sıralamaları tenant içinde yapılır. Tek başına tenantId indeksi
+  // MySQL'i her sayfada filesort'a zorluyordu; bileşik indeksler LIMIT'i
+  // doğrudan indeksten karşılar.
+  @@index([tenantId, companyName])
+  @@index([tenantId, status, companyName])
+  @@index([tenantId, vatNumber])
 }
 
 // Workspace "meeting activity" (a meeting or a lightweight task) shown on the
@@ -109,38 +124,41 @@ model CustomerProductDiscount {
 }
 
 model SalesOrder {
-  id                  String   @id
+  id                  String    @id
   tenantId            String
   customerId          String?
-  tenderId            String?  @unique
+  tenderId            String?   @unique
   projectId           String?
   parentSalesOrderId  String?
   revisionNumber      Int?
   orderNumber         String
   orderType           String
-  status              String   @default("ORDERED")
-  totalAmount         Float    @default(0)
+  status              String    @default("ORDERED")
+  totalAmount         Float     @default(0)
+  // Payment schedule copied from the tender at conversion (JSON percent array,
+  // e.g. "[30,20,10,40]"); drives "bill next stage" suggestions. Null = free-form.
+  paymentStages       String?
   createdByEmployeeId String
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
   // Business date shown to the user. For addon (Zusatzauftrag) orders this is the
   // original appointment date the extra work belongs to, which may predate createdAt
   // when the entry is made days later. createdAt stays the internal "unbilled since"
   // slice boundary; orderDate is display-only. Null falls back to createdAt.
   orderDate           DateTime?
 
-  tenant    Tenant    @relation(fields: [tenantId], references: [id])
-  customer  Customer? @relation(fields: [customerId], references: [id])
-  tender    Tender?   @relation(fields: [tenderId], references: [id])
-  project   Project?  @relation(fields: [projectId], references: [id])
-  parentSalesOrder SalesOrder? @relation("SalesOrderAddons", fields: [parentSalesOrderId], references: [id])
-  addonSalesOrders SalesOrder[] @relation("SalesOrderAddons")
-  createdBy Employee  @relation(fields: [createdByEmployeeId], references: [id])
-  reports   ProjectReport[]
-  expenses  ProjectExpense[]
-  appointments Appointment[]
-  extraMaterials ProjectExtraMaterial[]
-  invoices Invoice[]
+  tenant           Tenant                 @relation(fields: [tenantId], references: [id])
+  customer         Customer?              @relation(fields: [customerId], references: [id])
+  tender           Tender?                @relation(fields: [tenderId], references: [id])
+  project          Project?               @relation(fields: [projectId], references: [id])
+  parentSalesOrder SalesOrder?            @relation("SalesOrderAddons", fields: [parentSalesOrderId], references: [id])
+  addonSalesOrders SalesOrder[]           @relation("SalesOrderAddons")
+  createdBy        Employee               @relation(fields: [createdByEmployeeId], references: [id])
+  reports          ProjectReport[]
+  expenses         ProjectExpense[]
+  appointments     Appointment[]
+  extraMaterials   ProjectExtraMaterial[]
+  invoices         Invoice[]
 
   @@index([tenantId])
   @@index([customerId])
@@ -219,10 +237,14 @@ model CustomerLocation {
   // Address list this entry belongs to: INSTALLATION (Projekt/Montage),
   // DELIVERY (Lieferung) or BILLING (Rechnung).
   kind          String   @default("INSTALLATION")
-  address       String?
-  city          String?
-  postalCode    String?
-  country       String?
+  // Same distinct components as Customer: `address` is the street + house
+  // number, `addressSupplement` the supplement / apartment.
+  address           String?
+  addressSupplement String?
+  city              String?
+  postalCode        String?
+  state             String?
+  country           String?
   phone         String?
   email         String?
   contactPerson String?

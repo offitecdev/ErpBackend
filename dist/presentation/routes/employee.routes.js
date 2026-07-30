@@ -13,6 +13,7 @@ const ValidationMiddleware_1 = require("../middlewares/ValidationMiddleware");
 const employeeSchemas_1 = require("../validation/employeeSchemas");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
+const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 const router = (0, express_1.Router)();
 const employeeRepo = new EmployeeRepository_1.EmployeeRepository();
 const roleRepo = new RoleRepository_1.RoleRepository();
@@ -157,9 +158,11 @@ router.patch('/:id/deactivate', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
     try {
         // Repoyu kullanarak kişiyi pasife çekiyoruz
         const id = req.params.id;
-        // Ownership check: only employees of the caller's tenant can be deactivated.
+        // Ownership check: only employees of the caller's company tree can be
+        // deactivated (personnel are shared across the tree's tenants).
         const existing = await employeeRepo.findById(id);
-        if (!existing || existing.tenantId !== req.user.tenantId) {
+        const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
+        if (!existing || !treeTenantIds.includes(existing.tenantId)) {
             return res.status(404).json({ error: 'Personel bulunamadı.' });
         }
         const updated = await employeeRepo.update(id, { isActive: false, terminationDate: new Date() });
@@ -188,7 +191,8 @@ router.patch('/:id/restore', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
     try {
         const id = req.params.id;
         const existing = await employeeRepo.findById(id);
-        if (!existing || existing.tenantId !== req.user.tenantId) {
+        const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
+        if (!existing || !treeTenantIds.includes(existing.tenantId)) {
             return res.status(404).json({ error: 'Personel bulunamadı.' });
         }
         if (existing.bannedAt) {
@@ -228,7 +232,8 @@ router.patch('/:id/ban', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
     try {
         const id = req.params.id;
         const existing = await employeeRepo.findById(id);
-        if (!existing || existing.tenantId !== req.user.tenantId) {
+        const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
+        if (!existing || !treeTenantIds.includes(existing.tenantId)) {
             return res.status(404).json({ error: 'Personel bulunamadı.' });
         }
         if (id === req.user.id) {
