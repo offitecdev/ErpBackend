@@ -49,6 +49,7 @@ const TENDER_FULL_SELECT = {
     directDiscountLabel: true,
     extraDiscount: true,
     extraDiscountLabel: true,
+    totalDiscounts: true,
     paymentStages: true,
     internalDeliveryDate: true,
     priceList: true,
@@ -114,7 +115,7 @@ class TenderRepository {
         return totals;
     }
     mapToEntity(data) {
-        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.closingNote, data.closingImages, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency, data.directDiscountLabel, data.extraDiscount, data.extraDiscountLabel, data.paymentStages);
+        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.closingNote, data.closingImages, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency, data.directDiscountLabel, data.extraDiscount, data.extraDiscountLabel, data.totalDiscounts, data.paymentStages);
     }
     async create(tenderData) {
         const data = await prisma_client_1.default.tender.create({
@@ -360,6 +361,7 @@ class TenderRepository {
                     directDiscountLabel: existingTender.directDiscountLabel,
                     extraDiscount: existingTender.extraDiscount,
                     extraDiscountLabel: existingTender.extraDiscountLabel,
+                    totalDiscounts: existingTender.totalDiscounts,
                     paymentStages: existingTender.paymentStages,
                     internalDeliveryDate: existingTender.internalDeliveryDate,
                     priceList: existingTender.priceList,
@@ -412,6 +414,7 @@ class TenderRepository {
                         hierarchyLevel: pos.hierarchyLevel,
                         unitPrice: pos.unitPrice,
                         discount: pos.discount,
+                        discounts: pos.discounts,
                         taxRate: pos.taxRate,
                         imageUrl: pos.imageUrl,
                     }

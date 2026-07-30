@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sanitizeModuleKeys = exports.permissionsForModules = exports.CATALOG_PERMISSION_NAMES = exports.MODULE_KEYS = exports.MODULE_CATALOG = void 0;
+exports.sanitizeModuleKeys = exports.permissionsForModules = exports.CATALOG_PERMISSION_NAMES = exports.isModuleEnabledForCategory = exports.MODULE_KEYS = exports.MODULE_CATALOG = void 0;
 exports.MODULE_CATALOG = [
     {
         key: 'personnel',
@@ -57,7 +57,7 @@ exports.MODULE_CATALOG = [
         },
     },
     // Pure page-visibility modules (no role permissions of their own): used in
-    // company categories and personal employee packages to switch pages on/off.
+    // company categories and role module packages to switch pages on/off.
     {
         key: 'calendar',
         actions: {},
@@ -74,6 +74,10 @@ exports.MODULE_CATALOG = [
         },
     },
     {
+        key: 'settings',
+        actions: {},
+    },
+    {
         key: 'administration',
         alwaysAvailable: true,
         actions: {
@@ -82,6 +86,14 @@ exports.MODULE_CATALOG = [
     },
 ];
 exports.MODULE_KEYS = exports.MODULE_CATALOG.map((moduleDef) => moduleDef.key);
+const ALWAYS_AVAILABLE_MODULE_KEYS = new Set(exports.MODULE_CATALOG.filter((moduleDef) => moduleDef.alwaysAvailable).map((moduleDef) => moduleDef.key));
+/** Company-level module switch: the company category ("Numara" profile) is the
+    authority for every module — pass its moduleKeys, or null/undefined when the
+    company has no category (then everything is enabled, matching the frontend). */
+const isModuleEnabledForCategory = (categoryModuleKeys, moduleKey) => ALWAYS_AVAILABLE_MODULE_KEYS.has(moduleKey)
+    || !Array.isArray(categoryModuleKeys)
+    || categoryModuleKeys.map(String).includes(moduleKey);
+exports.isModuleEnabledForCategory = isModuleEnabledForCategory;
 const modulePermissionNames = (moduleDef) => Object.values(moduleDef.actions).flat().filter(Boolean);
 /** Every permission name that company categories can gate — names outside
     this set are never blocked (future/unmapped permissions and the

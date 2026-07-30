@@ -3,6 +3,7 @@ import { ITenderRepository } from "../../../domain/repositories/ITenderRepositor
 import { ITenantRepository } from "../../../domain/repositories/ITenantRepository";
 import { Project } from "../../../domain/entities/Project";
 import prisma from "../../../infrastructure/database/prisma.client";
+import { isModuleEnabledForTenant } from "../../../shared/tenantModules";
 import { nanoid } from "nanoid";
 import crypto from "crypto";
 
@@ -29,8 +30,8 @@ export class CreateProjectFromTenderUseCase {
         if (tender.status !== "Approved" && tender.status !== "Exported") {
             throw new Error("[BLOCKED] Sadece onaylanmış teklifler sipariş/projeye dönüştürülebilir.");
         }
-        const tenant = await this.tenantRepository.findById(tender.tenantId);
-        if (!tenant || !(tenant as any).isProjectModuleEnabled) {
+        // Company category ("Numara" profile) decides; no category = every module.
+        if (!await isModuleEnabledForTenant(tender.tenantId, 'projects')) {
             throw new Error("[BLOCKED] Bu şube/firma için Proje Yönetim Modülü aktif değildir. Lütfen sistem yöneticisiyle iletişime geçin.");
         }
 

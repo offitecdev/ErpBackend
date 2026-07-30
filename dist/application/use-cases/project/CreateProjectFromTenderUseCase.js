@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CreateProjectFromTenderUseCase = void 0;
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const tenantModules_1 = require("../../../shared/tenantModules");
 const nanoid_1 = require("nanoid");
 const crypto_1 = __importDefault(require("crypto"));
 class CreateProjectFromTenderUseCase {
@@ -27,8 +28,8 @@ class CreateProjectFromTenderUseCase {
         if (tender.status !== "Approved" && tender.status !== "Exported") {
             throw new Error("[BLOCKED] Sadece onaylanmış teklifler sipariş/projeye dönüştürülebilir.");
         }
-        const tenant = await this.tenantRepository.findById(tender.tenantId);
-        if (!tenant || !tenant.isProjectModuleEnabled) {
+        // Company category ("Numara" profile) decides; no category = every module.
+        if (!await (0, tenantModules_1.isModuleEnabledForTenant)(tender.tenantId, 'projects')) {
             throw new Error("[BLOCKED] Bu şube/firma için Proje Yönetim Modülü aktif değildir. Lütfen sistem yöneticisiyle iletişime geçin.");
         }
         const existingProjects = await this.projectRepository.findAll({ tenantId: tender.tenantId });

@@ -11,6 +11,7 @@ const GetBillingSummaryUseCase_1 = require("../../application/use-cases/billing/
 const InvoiceRepository_1 = require("../../infrastructure/repositories/InvoiceRepository");
 const salesOrder_pricing_1 = require("./salesOrder.pricing");
 const paymentSchedule_1 = require("../../application/utils/paymentSchedule");
+const tenantModules_1 = require("../../shared/tenantModules");
 const billingSummaryUseCase = new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(new InvoiceRepository_1.InvoiceRepository());
 // Resolve billing summaries for a set of orders with one invoice query (no N+1).
 // `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
@@ -261,12 +262,10 @@ class SalesOrderController {
                 let project = null;
                 let scheduleSlots = [];
                 if (mode === 'PROJECT_NEW' || mode === 'PROJECT_EXISTING') {
-                    const tenant = await tx.tenant.findUnique({
-                        where: { id: tenantId },
-                        select: { isProjectModuleEnabled: true },
-                    });
-                    if (!tenant?.isProjectModuleEnabled)
+                    // Company category ("Numara" profile) decides; no category = every module.
+                    if (!await (0, tenantModules_1.isModuleEnabledForTenant)(tenantId, 'projects', tx)) {
                         throw new Error('Proje modulu aktif degil.');
+                    }
                 }
                 if (mode === 'PROJECT_NEW') {
                     scheduleSlots = await tx.offerScheduleSlot.findMany({

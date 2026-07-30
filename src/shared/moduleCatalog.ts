@@ -71,7 +71,7 @@ export const MODULE_CATALOG: ModuleDefinition[] = [
         },
     },
     // Pure page-visibility modules (no role permissions of their own): used in
-    // company categories and personal employee packages to switch pages on/off.
+    // company categories and role module packages to switch pages on/off.
     {
         key: 'calendar',
         actions: {},
@@ -88,6 +88,10 @@ export const MODULE_CATALOG: ModuleDefinition[] = [
         },
     },
     {
+        key: 'settings',
+        actions: {},
+    },
+    {
         key: 'administration',
         alwaysAvailable: true,
         actions: {
@@ -97,6 +101,18 @@ export const MODULE_CATALOG: ModuleDefinition[] = [
 ];
 
 export const MODULE_KEYS = MODULE_CATALOG.map((moduleDef) => moduleDef.key);
+
+const ALWAYS_AVAILABLE_MODULE_KEYS: ReadonlySet<string> = new Set(
+    MODULE_CATALOG.filter((moduleDef) => moduleDef.alwaysAvailable).map((moduleDef) => moduleDef.key),
+);
+
+/** Company-level module switch: the company category ("Numara" profile) is the
+    authority for every module — pass its moduleKeys, or null/undefined when the
+    company has no category (then everything is enabled, matching the frontend). */
+export const isModuleEnabledForCategory = (categoryModuleKeys: unknown, moduleKey: string): boolean =>
+    ALWAYS_AVAILABLE_MODULE_KEYS.has(moduleKey)
+    || !Array.isArray(categoryModuleKeys)
+    || categoryModuleKeys.map(String).includes(moduleKey);
 
 const modulePermissionNames = (moduleDef: ModuleDefinition): string[] =>
     Object.values(moduleDef.actions).flat().filter(Boolean) as string[];

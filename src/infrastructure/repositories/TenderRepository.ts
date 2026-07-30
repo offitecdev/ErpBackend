@@ -48,6 +48,7 @@ const TENDER_FULL_SELECT = {
     directDiscountLabel: true,
     extraDiscount: true,
     extraDiscountLabel: true,
+    totalDiscounts: true,
     paymentStages: true,
     internalDeliveryDate: true,
     priceList: true,
@@ -142,6 +143,7 @@ export class TenderRepository implements ITenderRepository {
             data.directDiscountLabel,
             data.extraDiscount,
             data.extraDiscountLabel,
+            data.totalDiscounts,
             data.paymentStages
         );
     }
@@ -393,6 +395,7 @@ export class TenderRepository implements ITenderRepository {
                     directDiscountLabel: (existingTender as any).directDiscountLabel,
                     extraDiscount: (existingTender as any).extraDiscount,
                     extraDiscountLabel: (existingTender as any).extraDiscountLabel,
+                    totalDiscounts: (existingTender as any).totalDiscounts,
                     paymentStages: (existingTender as any).paymentStages,
                     internalDeliveryDate: (existingTender as any).internalDeliveryDate,
                     priceList: (existingTender as any).priceList,
@@ -449,6 +452,7 @@ export class TenderRepository implements ITenderRepository {
                         hierarchyLevel: pos.hierarchyLevel,
                         unitPrice: pos.unitPrice,
                         discount: pos.discount,
+                        discounts: (pos as any).discounts,
                         taxRate: pos.taxRate,
                         imageUrl: pos.imageUrl,
                     }

@@ -3,6 +3,8 @@ import { strongPasswordSchema } from './authSchemas';
 
 const nameSchema = z.string().trim().min(1, 'Bu alan zorunludur.').max(100, 'En fazla 100 karakter.');
 const emailSchema = z.string().trim().max(254).email('Geçerli bir e-posta adresi girin.');
+/** Company assignment: tenant ids (empty list / null = every company of the tree). */
+const allowedTenantIdsSchema = z.array(z.string().trim().min(1).max(64)).max(200).nullable().optional();
 
 /**
  * Loose objects: unknown extra keys pass through untouched (the use cases pick
@@ -13,6 +15,7 @@ export const employeeCreateSchema = z.looseObject({
     lastName: nameSchema,
     email: emailSchema,
     password: strongPasswordSchema,
+    allowedTenantIds: allowedTenantIdsSchema,
 });
 
 export const employeeUpdateSchema = z.looseObject({
@@ -20,4 +23,5 @@ export const employeeUpdateSchema = z.looseObject({
     lastName: nameSchema.optional(),
     email: emailSchema.optional(),
     password: strongPasswordSchema.optional(),
+    allowedTenantIds: allowedTenantIdsSchema,
 });

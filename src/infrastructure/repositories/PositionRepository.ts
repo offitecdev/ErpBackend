@@ -48,6 +48,7 @@ export class PositionRepository implements IPositionRepository {
             hierarchyLevel: true,
             unitPrice: true,
             discount: true,
+            discounts: true,
             taxRate: true,
             calculation: { select: { totalCalculatedPrice: true } },
         };
@@ -75,6 +76,7 @@ export class PositionRepository implements IPositionRepository {
             hierarchyLevel: true,
             unitPrice: true,
             discount: true,
+            discounts: true,
             taxRate: true,
         };
     }
@@ -97,6 +99,7 @@ export class PositionRepository implements IPositionRepository {
             hierarchyLevel: true,
             unitPrice: true,
             discount: true,
+            discounts: true,
             taxRate: true,
             ...(includeImages ? { imageUrl: true } : {}),
             calculation: true,

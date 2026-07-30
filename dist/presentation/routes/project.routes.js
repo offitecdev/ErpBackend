@@ -1,7 +1,4 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 // (Yukarıda oluşturduğumuz ProjectController ve UseCase/Repo sınıflarını import edin)
@@ -18,19 +15,20 @@ const ProjectReportRepository_1 = require("../../infrastructure/repositories/Pro
 const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepository");
 const TenantRepository_1 = require("../../infrastructure/repositories/TenantRepository");
 const MaterialRepository_1 = require("../../infrastructure/repositories/MaterialRepository");
-const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const tenantModules_1 = require("../../shared/tenantModules");
 const router = (0, express_1.Router)();
 const projectRepo = new ProjectRepository_1.ProjectRepository();
 const reportRepo = new ProjectReportRepository_1.ProjectReportRepository();
 const materialRepo = new MaterialRepository_1.MaterialRepository();
 const controller = new ProjectController_1.ProjectController(new CreateProjectFromTenderUseCase_1.CreateProjectFromTenderUseCase(projectRepo, new TenderRepository_1.TenderRepository(), new TenantRepository_1.TenantRepository()), new AddProjectReportUseCase_1.AddProjectReportUseCase(reportRepo, projectRepo, materialRepo), new RequestExtraMaterialUseCase_1.RequestExtraMaterialUseCase(projectRepo, materialRepo), new ApproveVariationUseCase_1.ApproveVariationUseCase(projectRepo), new AddProjectExpenseUseCase_1.AddProjectExpenseUseCase(projectRepo), projectRepo, reportRepo, materialRepo);
+// The company category ("Numara" profile) is the authority: it decides which
+// modules the selected company runs, and a company without a category runs all
+// of them. The legacy Tenant.isProjectModuleEnabled column is no longer
+// consulted — it had no UI and defaulted to off, so it kept answering 403 for
+// companies whose category granted the Projects module.
 const requireProjectModule = async (req, res, next) => {
     try {
-        const tenant = await prisma_client_1.default.tenant.findUnique({
-            where: { id: req.user.tenantId },
-            select: { isProjectModuleEnabled: true },
-        });
-        if (!tenant?.isProjectModuleEnabled) {
+        if (!await (0, tenantModules_1.isModuleEnabledForTenant)(req.user.tenantId, 'projects')) {
             res.status(403).json({ error: 'Seçili şirket için Proje Yönetimi modülü aktif değildir.' });
             return;
         }

@@ -47,6 +47,7 @@ export class CreateEmployeeUseCase {
             profilePictureUrl: data.profilePictureUrl,
             notes: data.notes,
             moduleKeys: data.moduleKeys ?? null,
+            allowedTenantIds: data.allowedTenantIds ?? null,
         });
    }
 }

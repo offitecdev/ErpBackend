@@ -44,9 +44,19 @@ class MailController {
             const tenantId = req.user.tenantId;
             const body = req.body || {};
             const existing = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId } });
-            const password = body.smtpPassword === undefined || body.smtpPassword === ""
-                ? existing?.smtpPassword ?? null
-                : String(body.smtpPassword);
+            // Boş şifre = "dokunma" (form kayıtlı şifreyi asla geri göstermez);
+            // şifreyi silmek için gövdede açıkça null gönderilir. Baştaki/sondaki
+            // boşluklar kırpılır: uygulama şifreleri çoğunlukla yapıştırılır.
+            const password = body.smtpPassword === null
+                ? null
+                : body.smtpPassword === undefined || String(body.smtpPassword).trim() === ""
+                    ? existing?.smtpPassword ?? null
+                    : String(body.smtpPassword).trim();
+            const port = Number(body.smtpPort);
+            if (body.smtpPort !== undefined && body.smtpPort !== null && body.smtpPort !== ""
+                && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+                return res.status(400).json({ error: "SMTP portu 1-65535 araliginda olmalidir." });
+            }
             // İmza HTML'i kayıtta temizlenir (editörün üretebildiği biçimlendirme
             // dışındaki her şey atılır); görsel yalnızca sınırlı boyutta PNG/JPG
             // data URI olabilir. Alan gönderilmediyse mevcut değer korunur.
@@ -81,10 +91,10 @@ class MailController {
                     fromName: body.fromName || null,
                     fromEmail: body.fromEmail || null,
                     replyTo: body.replyTo || null,
-                    smtpHost: body.smtpHost || null,
-                    smtpPort: Number(body.smtpPort || 587),
+                    smtpHost: String(body.smtpHost || "").trim() || null,
+                    smtpPort: port || 587,
                     smtpSecure: Boolean(body.smtpSecure),
-                    smtpUser: body.smtpUser || null,
+                    smtpUser: String(body.smtpUser || "").trim() || null,
                     smtpPassword: password,
                     signatureHtml,
                     signatureImage
@@ -95,10 +105,10 @@ class MailController {
                     fromName: body.fromName || null,
                     fromEmail: body.fromEmail || null,
                     replyTo: body.replyTo || null,
-                    smtpHost: body.smtpHost || null,
-                    smtpPort: Number(body.smtpPort || 587),
+                    smtpHost: String(body.smtpHost || "").trim() || null,
+                    smtpPort: port || 587,
                     smtpSecure: Boolean(body.smtpSecure),
-                    smtpUser: body.smtpUser || null,
+                    smtpUser: String(body.smtpUser || "").trim() || null,
                     smtpPassword: password,
                     signatureHtml,
                     signatureImage
@@ -124,6 +134,13 @@ class MailController {
             if (!to || !subject || (!text && !html)) {
                 return res.status(400).json({ error: "Alıcı, konu ve mesaj zorunludur." });
             }
+            // Bu uç nokta manuel/test gönderimidir: SMTP tanımlı değilse mail
+            // GERÇEKTEN gitmez, bu yüzden "önizleme" sessizce başarı sayılmaz.
+            if (!settings?.smtpHost || !settings?.smtpPort) {
+                return res.status(400).json({
+                    error: "SMTP sunucusu tanimli degil: mail gonderilmedi. Once SMTP sunucusu, port ve (gerekiyorsa) kullanici/sifre bilgilerini kaydedin.",
+                });
+            }
             // Tenant imzası varsa gövdenin sonuna eklenir; görseli CID'li inline
             // ek olarak gider (test maili de gerçek gönderimle aynı görünür).
             const signature = (0, mailSignature_1.buildSignatureParts)(settings);
@@ -143,9 +160,7 @@ class MailController {
                 inlineImages: signature.inlineImages
             });
             res.status(200).json({
-                message: result.preview
-                    ? "SMTP ayari olmadigi icin mail onizleme olarak hazirlandi."
-                    : "Mail gonderildi.",
+                message: `Mail gonderildi: ${to}`,
                 ...result
             });
         }

@@ -26,5 +26,7 @@ export class Employee {
         public bannedAt?: Date | null,
         /// Personal module package; null = no restriction.
         public moduleKeys?: string[] | null,
+        /// Companies of the tree the employee may work in; null = no restriction.
+        public allowedTenantIds?: string[] | null,
     )  {}
 }

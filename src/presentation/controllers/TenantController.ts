@@ -2,6 +2,7 @@ import { Request , Response } from "express";
 import { CreateTenantUseCase } from "../../application/use-cases/tenant/CreateTenantUseCase";
 import { UpdateTenantUseCase } from "../../application/use-cases/tenant/UpdateTenantUseCase";
 import prisma from "../../infrastructure/database/prisma.client";
+import { parseAllowedTenantIds } from "../utils/tenantAccess";
 
 export class TenantController {
     constructor(
@@ -12,6 +13,11 @@ export class TenantController {
     async list(req: Request, res: Response) {
         try {
             const homeTenantId = req.user!.homeTenantId ?? req.user!.tenantId;
+            const caller = await prisma.employee.findUnique({
+                where: { id: req.user!.id },
+                select: { allowedTenantIds: true },
+            });
+            const assignedTenantIds = parseAllowedTenantIds(caller?.allowedTenantIds);
             const tenants = await prisma.tenant.findMany({
                 where: { isActive: true },
                 select: {
@@ -41,8 +47,13 @@ export class TenantController {
             };
 
             const homeRootId = rootOf(homeTenantId);
+            // Personal company assignment narrows the switcher to the assigned
+            // companies (the same set the auth middleware accepts). Ids outside
+            // the own tree are dropped; nothing left = no restriction.
+            const assignedInTree = (assignedTenantIds ?? []).filter((tenantId) => rootOf(tenantId) === homeRootId);
             const visibleTenants = tenants
                 .filter((tenant) => rootOf(tenant.id) === homeRootId)
+                .filter((tenant) => !assignedInTree.length || assignedInTree.includes(tenant.id))
                 .sort((a, b) => {
                     if (!a.parentTenantId && b.parentTenantId) return -1;
                     if (a.parentTenantId && !b.parentTenantId) return 1;

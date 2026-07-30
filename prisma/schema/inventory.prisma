@@ -195,10 +195,15 @@ model PurchaseOrder {
   // discount/discount2/discount3: SIRAYLA uygulanan yüzdeler (teklif
   // directDiscount/extraDiscount deseniyle aynı) — lineTotal net tutardır.
   items           String    @db.LongText
+  // JSON [{name, amount}] — sipariş düzeyinde EK ÜCRETLER (nakliye, ambalaj…).
+  // Kalem değildir: miktarı/indirimi/KDV'si yoktur, genel toplama net olarak
+  // eklenir (`totalFees`).
+  additionalFees  String?   @db.Text
   currency        String    @default("CHF")
   totalNet        Float     @default(0)
   totalGross      Float     @default(0)
   totalVat        Float     @default(0)
+  totalFees       Float     @default(0) // ek ücretlerin toplamı — genel toplam = totalNet + totalFees + totalVat
   revision        Int       @default(0) // >0 → sonraki mailler "güncellendi" etiketi taşır
   emailSentAt     DateTime?
   emailRecipient  String?

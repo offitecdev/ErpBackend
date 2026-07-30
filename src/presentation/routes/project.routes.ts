@@ -14,7 +14,7 @@ import { ProjectReportRepository } from '../../infrastructure/repositories/Proje
 import { TenderRepository } from '../../infrastructure/repositories/TenderRepository';
 import { TenantRepository } from '../../infrastructure/repositories/TenantRepository';
 import { MaterialRepository } from '../../infrastructure/repositories/MaterialRepository';
-import prisma from '../../infrastructure/database/prisma.client';
+import { isModuleEnabledForTenant } from '../../shared/tenantModules';
 import { Request, Response, NextFunction } from 'express';
 
 const router = Router();
@@ -32,14 +32,14 @@ const controller = new ProjectController(
     materialRepo
 );
 
+// The company category ("Numara" profile) is the authority: it decides which
+// modules the selected company runs, and a company without a category runs all
+// of them. The legacy Tenant.isProjectModuleEnabled column is no longer
+// consulted — it had no UI and defaulted to off, so it kept answering 403 for
+// companies whose category granted the Projects module.
 const requireProjectModule = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const tenant = await prisma.tenant.findUnique({
-            where: { id: req.user!.tenantId },
-            select: { isProjectModuleEnabled: true },
-        });
-
-        if (!tenant?.isProjectModuleEnabled) {
+        if (!await isModuleEnabledForTenant(req.user!.tenantId, 'projects')) {
             res.status(403).json({ error: 'Seçili şirket için Proje Yönetimi modülü aktif değildir.' });
             return;
         }

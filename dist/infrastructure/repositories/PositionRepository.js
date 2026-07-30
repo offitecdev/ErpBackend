@@ -50,6 +50,7 @@ class PositionRepository {
             hierarchyLevel: true,
             unitPrice: true,
             discount: true,
+            discounts: true,
             taxRate: true,
             calculation: { select: { totalCalculatedPrice: true } },
         };
@@ -76,6 +77,7 @@ class PositionRepository {
             hierarchyLevel: true,
             unitPrice: true,
             discount: true,
+            discounts: true,
             taxRate: true,
         };
     }
@@ -97,6 +99,7 @@ class PositionRepository {
             hierarchyLevel: true,
             unitPrice: true,
             discount: true,
+            discounts: true,
             taxRate: true,
             ...(includeImages ? { imageUrl: true } : {}),
             calculation: true,

@@ -10,7 +10,7 @@ const Employee_1 = require("../../domain/entities/Employee");
 class EmployeeRepository {
     mapToEntity(data) {
         const firstRole = data.employeeRoles?.[0]?.role;
-        const emp = new Employee_1.Employee(data.id, data.tenantId, data.firstName, data.lastName, data.email, data.passwordHash, data.isActive, data.title, data.departmentId, firstRole?.roleName ?? data.roleName, data.phone, data.address, data.hireDate, data.terminationDate, data.annualLeaveEntitlement, data.profilePictureUrl, data.notes, data.createdAt, data.updatedAt, firstRole?.id ?? null, data.passwordChangedAt, data.deletedAt, data.bannedAt, Array.isArray(data.moduleKeys) ? data.moduleKeys : null);
+        const emp = new Employee_1.Employee(data.id, data.tenantId, data.firstName, data.lastName, data.email, data.passwordHash, data.isActive, data.title, data.departmentId, firstRole?.roleName ?? data.roleName, data.phone, data.address, data.hireDate, data.terminationDate, data.annualLeaveEntitlement, data.profilePictureUrl, data.notes, data.createdAt, data.updatedAt, firstRole?.id ?? null, data.passwordChangedAt, data.deletedAt, data.bannedAt, Array.isArray(data.moduleKeys) ? data.moduleKeys : null, Array.isArray(data.allowedTenantIds) ? data.allowedTenantIds : null);
         return emp;
     }
     roleInclude = {
@@ -87,6 +87,7 @@ class EmployeeRepository {
             profilePictureUrl: coreData.profilePictureUrl ?? null,
             notes: coreData.notes ?? null,
             moduleKeys: coreData.moduleKeys ?? undefined,
+            allowedTenantIds: coreData.allowedTenantIds ?? undefined,
         };
         if (roleId) {
             createData.employeeRoles = {
@@ -105,6 +106,8 @@ class EmployeeRepository {
         // Json? columns cannot be cleared with plain null.
         if (safeData.moduleKeys === null)
             safeData.moduleKeys = client_1.Prisma.DbNull;
+        if (safeData.allowedTenantIds === null)
+            safeData.allowedTenantIds = client_1.Prisma.DbNull;
         const data = await prisma_client_1.default.employee.update({
             where: { id },
             data: safeData,

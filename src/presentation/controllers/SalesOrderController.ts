@@ -6,6 +6,7 @@ import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/Ge
 import { InvoiceRepository } from '../../infrastructure/repositories/InvoiceRepository';
 import { orderTotal } from './salesOrder.pricing';
 import { parsePaymentStages, serializePaymentStages, validatePaymentStages } from '../../application/utils/paymentSchedule';
+import { isModuleEnabledForTenant } from '../../shared/tenantModules';
 
 const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository());
 
@@ -276,11 +277,10 @@ export class SalesOrderController {
                 let scheduleSlots: any[] = [];
 
                 if (mode === 'PROJECT_NEW' || mode === 'PROJECT_EXISTING') {
-                    const tenant = await tx.tenant.findUnique({
-                        where: { id: tenantId },
-                        select: { isProjectModuleEnabled: true },
-                    });
-                    if (!tenant?.isProjectModuleEnabled) throw new Error('Proje modulu aktif degil.');
+                    // Company category ("Numara" profile) decides; no category = every module.
+                    if (!await isModuleEnabledForTenant(tenantId, 'projects', tx)) {
+                        throw new Error('Proje modulu aktif degil.');
+                    }
                 }
 
                 if (mode === 'PROJECT_NEW') {

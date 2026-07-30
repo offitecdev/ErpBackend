@@ -7,8 +7,8 @@ exports.EmployeeController = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const password_1 = require("../../application/validation/password");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
-const moduleCatalog_1 = require("../../shared/moduleCatalog");
 const serviceTenantScope_1 = require("./serviceTenantScope");
+const tenantAccess_1 = require("../utils/tenantAccess");
 class EmployeeController {
     createEmployeeUseCase;
     getEmployeeUseCase;
@@ -24,25 +24,37 @@ class EmployeeController {
         this.roleRepository = roleRepository;
         this.cryptoService = cryptoService;
     }
-    // Attaching a role or a personal module package to a personnel record is
-    // an admin act: only callers holding roles.manage may send roleId /
-    // moduleKeys (the permission checkboxes on the employee endpoints alone
-    // are not enough to hand out access).
+    // Attaching a role or a company assignment to a personnel record is an admin
+    // act: only callers holding roles.manage may send roleId / allowedTenantIds
+    // (the permission checkboxes on the employee endpoints alone are not enough
+    // to hand out access).
     async assertCanAssignRole(req) {
-        if (!req.body.roleId && req.body.moduleKeys === undefined)
+        if (!req.body.roleId && req.body.allowedTenantIds === undefined)
             return null;
         const callerPermissions = await this.roleRepository.getEmployeePermissions(req.user.id);
         if (!callerPermissions.includes('roles.manage')) {
-            return 'Rol ve modül paketi atama yalnızca yönetici (rol yönetimi yetkisi) tarafından yapılabilir.';
+            return 'Rol ve şirket atama yalnızca yönetici (rol yönetimi yetkisi) tarafından yapılabilir.';
         }
         return null;
     }
-    /** undefined = leave untouched; empty selection clears to null (= sees all). */
-    normalizeModuleKeys(input) {
+    /**
+     * Company assignment: which tenants of the tree the staff member may work
+     * in. undefined = leave untouched; empty selection clears to null (= every
+     * company of the tree). Ids outside the caller's own tree are refused, so
+     * an admin can never hand out access to a foreign company.
+     */
+    async normalizeAllowedTenantIds(input, callerTenantId) {
         if (input === undefined)
             return undefined;
-        const keys = (0, moduleCatalog_1.sanitizeModuleKeys)(input);
-        return keys.length ? keys : null;
+        const tenantIds = (0, tenantAccess_1.parseAllowedTenantIds)(input);
+        if (!tenantIds)
+            return null;
+        const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(callerTenantId);
+        const outside = tenantIds.filter((tenantId) => !treeTenantIds.includes(tenantId));
+        if (outside.length) {
+            throw new Error('Seçilen şirketlerden biri bu şirket ağacına ait değil.');
+        }
+        return tenantIds;
     }
     async create(req, res) {
         try {
@@ -51,7 +63,10 @@ class EmployeeController {
                 return res.status(403).json({ error: roleAssignError });
             const employeeData = {
                 ...req.body,
-                moduleKeys: this.normalizeModuleKeys(req.body.moduleKeys) ?? null,
+                // Accessible pages are a property of the ROLE (RoleModuleConfig),
+                // never of the individual — a personal package is not accepted.
+                moduleKeys: undefined,
+                allowedTenantIds: await this.normalizeAllowedTenantIds(req.body.allowedTenantIds, req.user.tenantId) ?? null,
                 tenantId: req.user?.tenantId
             };
             const result = await this.createEmployeeUseCase.execute(employeeData);
@@ -154,9 +169,12 @@ class EmployeeController {
             if (roleAssignError)
                 return res.status(403).json({ error: roleAssignError });
             const id = req.params.id;
-            const { roleId, password, ...employeeData } = req.body;
-            if ('moduleKeys' in employeeData) {
-                employeeData.moduleKeys = this.normalizeModuleKeys(employeeData.moduleKeys) ?? null;
+            // moduleKeys is dropped, not normalized: accessible pages belong to
+            // the ROLE (RoleModuleConfig), so the employee form cannot set them.
+            const { roleId, password, moduleKeys: _ignoredModuleKeys, ...employeeData } = req.body;
+            if ('allowedTenantIds' in employeeData) {
+                employeeData.allowedTenantIds =
+                    await this.normalizeAllowedTenantIds(employeeData.allowedTenantIds, req.user.tenantId) ?? null;
             }
             // Ownership check before any write — the row must belong to the
             // caller's company tree (prevents cross-company employee updates;

@@ -1875,10 +1875,18 @@ const poPercent = (value) => {
 // Satır doğrulama + toplamların sunucu tarafında hesaplanması (frontend'e
 // güvenilmez). Miktar verilmezse 1 varsayılır — sipariş stok yönetimi değildir.
 //
-// İNDİRİMLER: discount / discount2 / discount3 SIRAYLA uygulanır (teklifin
-// directDiscount + extraDiscount deseniyle birebir: 100 → −20% → 80 → −10% → 72),
-// net birim fiyatın üzerine iner ve `lineTotal` indirimli NET tutardır.
-// KDV satır düzeyindedir (`vatRate`); `lineVat` net tutar üzerinden hesaplanır.
+// HESAP SIRASI (kullanıcı isteği 2026-07-30 — eski davranış HATALIYDI):
+//   1. brüt birim fiyat × miktar   → BRÜT satır tutarı
+//   2. − indirim                   → ilk indirim BRÜT tutarın üzerine iner
+//   3. − indirim 2 / 3             → her ek indirim zaten indirimli tutara iner
+//   4. net tutar × KDV oranı       → satır KDV'si
+// Eskiden indirimler GÖNDERİLEN net fiyatın üzerine inerdi (brüt 100 / net 90 /
+// indirim %20 → 72; doğrusu 80). Artık **brüt fiyat tek fiyat girişidir** ve
+// `netPrice` indirimlerden TÜRETİLİR — istekte ne gelirse gelsin yeniden
+// hesaplanır, yalnızca brüt fiyat boşsa taban olarak kullanılır (eski kayıtlar
+// ve tek fiyat taşıyan içe aktarımlar).
+//
+// ⚠ Frontend eşi: `pages/inventory/utils/orderPricing.ts` → `computeOrderLine`.
 const normalizePurchaseOrderItems = (raw) => {
     if (!Array.isArray(raw) || raw.length === 0)
         throw new Error('Sipariş için en az bir ürün satırı gereklidir.');
@@ -1890,16 +1898,17 @@ const normalizePurchaseOrderItems = (raw) => {
             throw new Error(`Satır ${index + 1}: ürün adı zorunludur.`);
         const rawQty = Number(r?.quantity);
         const quantity = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1;
-        // Tek fiyat verildiyse ikisi de o kabul edilir (brüt ≥ net varsayımı bozulmasın).
+        // Brüt fiyat satırın TEK fiyat girişidir; yalnızca boşsa net fiyat taban olur.
         const grossPrice = Number(r?.grossPrice) || Number(r?.netPrice) || 0;
-        const netPrice = Number(r?.netPrice) || Number(r?.grossPrice) || 0;
         const discount = poPercent(r?.discount);
         const discount2 = poPercent(r?.discount2);
         const discount3 = poPercent(r?.discount3);
         const vatRate = poPercent(r?.vatRate);
-        // Üç indirim sırayla çarpılır; sonuç satırın net tutarıdır.
+        // Üç indirim sırayla çarpılır ve BRÜT tutarın üzerine iner.
         const discountFactor = (1 - discount / 100) * (1 - discount2 / 100) * (1 - discount3 / 100);
-        const lineTotal = Math.round(quantity * netPrice * discountFactor * 100) / 100;
+        const lineTotal = Math.round(quantity * grossPrice * discountFactor * 100) / 100;
+        // Net birim fiyat TÜRETİLİR — gönderilen değer yok sayılır.
+        const netPrice = Math.round(grossPrice * discountFactor * 100) / 100;
         return {
             itemType: r?.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
             articleId: r?.articleId ? String(r.articleId) : null,
@@ -1923,7 +1932,41 @@ const normalizePurchaseOrderItems = (raw) => {
     const totalVat = Math.round(items.reduce((sum, it) => sum + it.lineVat, 0) * 100) / 100;
     return { items, totalNet, totalGross, totalVat };
 };
-// DB satırı → API yanıtı: items JSON'u parse edilir, itemCount eklenir.
+/**
+ * EK ÜCRETLER (nakliye, ambalaj, montaj…) — sipariş düzeyinde ad + tutar.
+ * Kalem DEĞİLDİR: miktarı, indirimi ve KDV oranı yoktur; tutar NET kabul edilir
+ * ve genel toplama olduğu gibi eklenir (`totalFees`).
+ *
+ * ⚠ Frontend eşi: `ErpFront/offitec-frontend/src/pages/inventory/utils/orderPricing.ts`
+ * (`sumOrderFees` / `orderGrandTotal`) — ikisi birlikte güncellenmelidir.
+ *
+ * Adı da tutarı da boş olan satırlar (ekranda açık duran boş taslaklar) sessizce
+ * atılır; tutarı olup adı olmayan satır hatadır.
+ */
+const normalizePurchaseOrderFees = (raw) => {
+    if (raw === null || raw === undefined)
+        return { fees: [], totalFees: 0 };
+    if (!Array.isArray(raw))
+        throw new Error('Ek ücretler liste olmalıdır.');
+    if (raw.length > 20)
+        throw new Error('Bir siparişe en fazla 20 ek ücret eklenebilir.');
+    const fees = [];
+    raw.forEach((r, index) => {
+        const name = String(r?.name ?? '').trim().replace(/\s+/g, ' ');
+        const rawAmount = Number(r?.amount);
+        const amount = Number.isFinite(rawAmount) ? Math.round(rawAmount * 100) / 100 : 0;
+        if (!name && !amount)
+            return;
+        if (!name)
+            throw new Error(`Ek ücret ${index + 1}: ücret adı zorunludur.`);
+        if (name.length > 80)
+            throw new Error(`Ek ücret ${index + 1}: ücret adı 80 karakteri aşamaz.`);
+        fees.push({ name, amount });
+    });
+    const totalFees = Math.round(fees.reduce((sum, fee) => sum + fee.amount, 0) * 100) / 100;
+    return { fees, totalFees };
+};
+// DB satırı → API yanıtı: items ve ek ücret JSON'u parse edilir, itemCount eklenir.
 const parsePurchaseOrderRow = (row) => {
     let items = [];
     try {
@@ -1932,7 +1975,16 @@ const parsePurchaseOrderRow = (row) => {
     catch {
         items = [];
     }
-    return { ...row, items, itemCount: items.length };
+    let additionalFees = [];
+    try {
+        additionalFees = JSON.parse(row.additionalFees || '[]');
+    }
+    catch {
+        additionalFees = [];
+    }
+    if (!Array.isArray(additionalFees))
+        additionalFees = [];
+    return { ...row, items, additionalFees, itemCount: items.length };
 };
 // BE-{yıl}-{sıra} ("Auftrag") — tenant başına max-scan (MaintenanceRepository
 // emsali). Yalnızca ÖNERİDİR: kullanıcı sipariş kodunu elle değiştirebilir
@@ -2107,6 +2159,7 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
         const prepared = [];
         for (const raw of rawOrders) {
             const { items, totalNet, totalGross, totalVat } = normalizePurchaseOrderItems(raw?.items);
+            const { fees, totalFees } = normalizePurchaseOrderFees(raw?.additionalFees);
             const supplier = await resolvePurchaseOrderSupplier(tenantId, raw || {});
             prepared.push({
                 // Boş bırakılırsa sunucu BE-{yıl}-{sıra} üretir.
@@ -2117,9 +2170,11 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
                 currency: raw?.currency ? String(raw.currency) : 'CHF',
                 ...supplier,
                 items,
+                additionalFees: fees,
                 totalNet,
                 totalGross,
                 totalVat,
+                totalFees,
             });
         }
         const created = [];
@@ -2144,10 +2199,12 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
                             supplierEmail: order.supplierEmail,
                             supplierAddress: order.supplierAddress,
                             items: JSON.stringify(order.items),
+                            additionalFees: JSON.stringify(order.additionalFees),
                             currency: order.currency,
                             totalNet: order.totalNet,
                             totalGross: order.totalGross,
                             totalVat: order.totalVat,
+                            totalFees: order.totalFees,
                             createdByEmpId: req.user.id,
                         },
                     });
@@ -2203,6 +2260,7 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             data.projectName = b.projectName === null ? null : String(b.projectName).trim() || null;
         }
         const wantsContentChange = b.items !== undefined || b.currency !== undefined
+            || b.additionalFees !== undefined
             || b.supplierId !== undefined || b.supplierName !== undefined || b.supplierEmail !== undefined;
         if (wantsContentChange && existing.status === 'COMPLETED') {
             return res.status(400).json({ error: 'Tamamlanmış (stoğa eklenmiş) sipariş düzenlenemez.' });
@@ -2213,6 +2271,13 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             data.totalNet = totalNet;
             data.totalGross = totalGross;
             data.totalVat = totalVat;
+            contentChanged = true;
+        }
+        // Ek ücretler tedarikçinin ödeyeceği tutarı değiştirir → içerik değişikliği.
+        if (b.additionalFees !== undefined) {
+            const { fees, totalFees } = normalizePurchaseOrderFees(b.additionalFees);
+            data.additionalFees = JSON.stringify(fees);
+            data.totalFees = totalFees;
             contentChanged = true;
         }
         if (b.currency !== undefined) {

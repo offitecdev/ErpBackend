@@ -15,6 +15,7 @@ import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
+import { MAX_TOTAL_DISCOUNTS, normalizeDiscountList, resolveLineDiscount } from './tender.discounts';
 
 const smtp = new SmtpMailService();
 
@@ -728,6 +729,13 @@ export class TenderController {
                 }
                 metaData.extraDiscountLabel = label || null;
             }
+            // Belge düzeyi iskonto yığını. Liste geldiğinde `directDiscount`
+            // onun birleşik yüzdesini taşır ve `extraDiscount` sıfırlanır —
+            // aksi hâlde eski çift iskonto listenin ÜSTÜNE bir kez daha inerdi.
+            if (rawMeta.totalDiscounts !== undefined) {
+                metaData.totalDiscounts = normalizeDiscountList(rawMeta.totalDiscounts, MAX_TOTAL_DISCOUNTS);
+                if (metaData.totalDiscounts) metaData.extraDiscount = 0;
+            }
             if (rawMeta.paymentStages !== undefined) {
                 if (rawMeta.paymentStages === null || rawMeta.paymentStages === '') {
                     metaData.paymentStages = null;
@@ -834,6 +842,7 @@ export class TenderController {
                             hierarchyLevel: true,
                             unitPrice: true,
                             discount: true,
+                            discounts: true,
                             taxRate: true,
                         },
                     })
@@ -945,13 +954,22 @@ export class TenderController {
                             ? (position.unitPrice === null ? null : Number(position.unitPrice))
                             : null));
                 const explicitDiscount = position.discount !== undefined && position.discount !== null;
-                const resolvedDiscount = isPricedRow
+                const baseDiscount = isPricedRow
                     ? (explicitDiscount
                         ? Number(position.discount || 0)
                         : (isProduct && sourceArticle
                             ? (customerDiscountMap.get(sourceArticle.id) ?? 0)
                             : 0))
                     : 0;
+                // İskonto yığını varsa yüzde ondan TÜRETİLİR; istemcinin
+                // gönderdiği `discount` yalnızca liste yokken geçerlidir.
+                const resolvedQuantity = isPricedRow ? Number(position.quantity ?? (isProduct ? 1 : 0)) : 0;
+                const stackedDiscounts = isPricedRow
+                    ? resolveLineDiscount(position.discounts, { quantity: resolvedQuantity, unitPrice: resolvedUnitPrice })
+                    : { discounts: null as string | null, discount: undefined as number | undefined };
+                const resolvedDiscount = stackedDiscounts.discounts !== null
+                    ? (stackedDiscounts.discount ?? 0)
+                    : baseDiscount;
                 const resolvedImageUrl = canHaveImage
                     ? (isProduct
                         ? (sourceArticle ? null : (position.imageUrl || null))
@@ -974,12 +992,13 @@ export class TenderController {
                         positionNumber: '',
                         shortDescription: resolvedShortDescription,
                         longDescription: resolvedLongDescription,
-                        quantity: isPricedRow ? Number(position.quantity ?? (isProduct ? 1 : 0)) : 0,
+                        quantity: resolvedQuantity,
                         unit: resolvedUnit,
                         npkCode: position.npkCode || null,
                         hierarchyLevel: parent ? Number(parent.hierarchyLevel || 0) + 1 : 0,
                         unitPrice: resolvedUnitPrice,
                         discount: resolvedDiscount,
+                        discounts: stackedDiscounts.discounts,
                         taxRate: isPricedRow && position.taxRate !== undefined ? Number(position.taxRate || 0) : 0,
                         imageUrl: resolvedImageUrl,
                     },
@@ -996,6 +1015,7 @@ export class TenderController {
                 unit: "Birim",
                 unitPrice: "Birim fiyat",
                 discount: "İndirim",
+                discounts: "İndirimler",
                 taxRate: "KDV",
                 imageUrl: "Görsel",
                 npkCode: "Eski kod",
@@ -1003,7 +1023,7 @@ export class TenderController {
                 sourceArticleId: "Kaynak ürün",
                 displayOrder: "Sıra",
             };
-            const priceFields = new Set(['quantity', 'unitPrice', 'discount', 'taxRate']);
+            const priceFields = new Set(['quantity', 'unitPrice', 'discount', 'discounts', 'taxRate']);
             const preparedUpdates = updates.map(({ positionId, input }) => {
                 const before = affectedPositionMap.get(positionId)!;
                 const targetRowType = input.rowType !== undefined
@@ -1025,11 +1045,27 @@ export class TenderController {
                     if (input.unitPrice !== undefined) patch.unitPrice = input.unitPrice === null ? null : Number(input.unitPrice);
                     if (input.discount !== undefined) patch.discount = input.discount === null ? null : Number(input.discount);
                     if (input.taxRate !== undefined) patch.taxRate = input.taxRate === null ? null : Number(input.taxRate);
+                    // İskonto yığını `discount` sütununu OTORİTER biçimde belirler.
+                    // Miktar/fiyat da aynı kayıtta değişebildiği için yüzde,
+                    // güncellemeden SONRAKİ tabana göre hesaplanır.
+                    const baseMoved = input.quantity !== undefined || input.unitPrice !== undefined;
+                    if (input.discounts !== undefined || (baseMoved && before.discounts)) {
+                        const nextQuantity = patch.quantity !== undefined ? patch.quantity : before.quantity;
+                        const nextUnitPrice = patch.unitPrice !== undefined ? patch.unitPrice : before.unitPrice;
+                        // Taban değiştiyse liste gelmese bile yeniden türetilir:
+                        // sabit tutarlı bir iskonto parasını korur, yüzdesi ise
+                        // yeni tabana göre başka bir sayıdır.
+                        const source = input.discounts !== undefined ? input.discounts : before.discounts;
+                        const resolved = resolveLineDiscount(source, { quantity: nextQuantity, unitPrice: nextUnitPrice });
+                        patch.discounts = resolved.discounts;
+                        if (resolved.discounts !== null) patch.discount = resolved.discount ?? 0;
+                    }
                 } else {
                     patch.quantity = 0;
                     patch.unit = null;
                     patch.unitPrice = null;
                     patch.discount = 0;
+                    patch.discounts = null;
                     patch.taxRate = 0;
                 }
                 if (input.imageUrl !== undefined) patch.imageUrl = targetCanHaveImage ? (input.imageUrl || null) : null;
@@ -1410,7 +1446,7 @@ export class TenderController {
             const tenderId = req.params.id as string;
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, paymentStages, coverLetter, closingNote, closingImages } = req.body;
+            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, totalDiscounts, paymentStages, coverLetter, closingNote, closingImages } = req.body;
 
             const tender = await this.getAccessibleTender(tenderId, (req as any).user!);
             if (!tender) {
@@ -1487,6 +1523,12 @@ export class TenderController {
                     return res.status(400).json({ error: "İndirim adı en fazla 80 karakter olabilir." });
                 }
                 data.extraDiscountLabel = label || null;
+            }
+            // Belge düzeyi iskonto yığını — `addPositionsBatch`'teki meta yolu
+            // ile aynı kural: liste varsa eski ikinci iskonto sıfırlanır.
+            if (totalDiscounts !== undefined) {
+                data.totalDiscounts = normalizeDiscountList(totalDiscounts, MAX_TOTAL_DISCOUNTS);
+                if (data.totalDiscounts) data.extraDiscount = 0;
             }
             if (paymentStages !== undefined) {
                 if (paymentStages === null || paymentStages === '') {

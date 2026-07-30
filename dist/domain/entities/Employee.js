@@ -26,9 +26,12 @@ class Employee {
     deletedAt;
     bannedAt;
     moduleKeys;
+    allowedTenantIds;
     constructor(id, tenantId, firstName, lastName, email, passwordHash, isActive, title, departmentId, roleName, phone, address, hireDate, terminationDate, annualLeaveEntitlement, profilePictureUrl, notes, createdAt, updatedAt, roleId, passwordChangedAt, deletedAt, bannedAt, 
     /// Personal module package; null = no restriction.
-    moduleKeys) {
+    moduleKeys, 
+    /// Companies of the tree the employee may work in; null = no restriction.
+    allowedTenantIds) {
         this.id = id;
         this.tenantId = tenantId;
         this.firstName = firstName;
@@ -53,6 +56,7 @@ class Employee {
         this.deletedAt = deletedAt;
         this.bannedAt = bannedAt;
         this.moduleKeys = moduleKeys;
+        this.allowedTenantIds = allowedTenantIds;
     }
 }
 exports.Employee = Employee;

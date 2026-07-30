@@ -42,6 +42,11 @@ model Tender {
   // (100 → -20% → 80 → -10% → 72). Same factor scales net and VAT.
   extraDiscount        Float?                @default(0)
   extraDiscountLabel   String?
+  // Belge düzeyi iskonto YIĞINI — JSON [{name, kind, value}] (kind: PERCENT |
+  // AMOUNT), SIRAYLA uygulanır. Düzenlenebilir kaynak budur; `directDiscount`
+  // bu listenin birleşik yüzdesini yansıtır (eski tüketiciler onu okumaya
+  // devam eder) ve liste kullanıldığında `extraDiscount` 0'a çekilir.
+  totalDiscounts       String?               @db.Text
   // Payment schedule as a JSON array of stage percents, e.g. "[30,20,10,40]".
   // Stages must sum to 100. Null = no schedule (free-form invoicing).
   paymentStages        String?
@@ -109,7 +114,13 @@ model Position {
   hierarchyLevel   Int        @default(0)
   imageUrl         String?    @db.LongText
   unitPrice        Float?
+  // Satırın iskontolarının BİRLEŞİK yüzdesi. Fiyat matematiğinin tek girdisi
+  // budur (quantity × unitPrice × (1 − discount/100)); `discounts` listesinden
+  // sunucuda yeniden türetilir.
   discount         Float?     @default(0)
+  // En fazla 5 satır iskontosu — JSON [{name, kind, value}] (kind: PERCENT |
+  // AMOUNT), miktar × birim fiyat üzerine SIRAYLA uygulanır.
+  discounts        String?    @db.Text
   taxRate          Float?     @default(0)
   tender           Tender     @relation(fields: [tenderId], references: [id])
   parentPosition   Position?  @relation("PositionHierarchy", fields: [parentPositionId], references: [id])

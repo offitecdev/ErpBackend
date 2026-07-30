@@ -16,6 +16,7 @@ export class EmployeeRepository implements IEmployeeRepository {
             firstRole?.id ?? null,
             data.passwordChangedAt, data.deletedAt, data.bannedAt,
             Array.isArray(data.moduleKeys) ? data.moduleKeys : null,
+            Array.isArray(data.allowedTenantIds) ? data.allowedTenantIds : null,
         );
         return emp;
     }
@@ -101,6 +102,7 @@ export class EmployeeRepository implements IEmployeeRepository {
             profilePictureUrl: coreData.profilePictureUrl ?? null,
             notes: coreData.notes ?? null,
             moduleKeys: coreData.moduleKeys ?? undefined,
+            allowedTenantIds: coreData.allowedTenantIds ?? undefined,
         };
 
         if (roleId) {
@@ -122,6 +124,7 @@ export class EmployeeRepository implements IEmployeeRepository {
         const { id: _id, tenantId: _tid, roleId: _roleId, ...safeData } = updateData as any;
         // Json? columns cannot be cleared with plain null.
         if (safeData.moduleKeys === null) safeData.moduleKeys = Prisma.DbNull;
+        if (safeData.allowedTenantIds === null) safeData.allowedTenantIds = Prisma.DbNull;
         const data = await prisma.employee.update({
             where: { id },
             data: safeData as any,

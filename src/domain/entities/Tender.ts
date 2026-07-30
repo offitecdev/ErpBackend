@@ -47,6 +47,8 @@ export class Tender {
         public directDiscountLabel?: string | null,
         public extraDiscount?: number | null,
         public extraDiscountLabel?: string | null,
+        /** JSON [{name, kind, value}] — belge düzeyi yığılmış iskontolar. */
+        public totalDiscounts?: string | null,
         public paymentStages?: string | null,
     ){}
 }

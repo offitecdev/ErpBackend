@@ -88,6 +88,10 @@ model Employee {
   /// Personal module package: subset of module keys this employee can see.
   /// null = no restriction (sees everything the company's category allows).
   moduleKeys                    Json?
+  /// Companies (tenants) of the tree this employee may work in / switch to.
+  /// null = no restriction (every tenant of the company tree, as before).
+  /// Ids outside the own tree are ignored — the list may only ever narrow it.
+  allowedTenantIds              Json?
   createdAt                     DateTime                       @default(now())
   updatedAt                     DateTime                       @default(now()) @updatedAt
   attendanceLogs                AttendanceLog[]

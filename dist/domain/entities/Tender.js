@@ -49,8 +49,11 @@ class Tender {
     directDiscountLabel;
     extraDiscount;
     extraDiscountLabel;
+    totalDiscounts;
     paymentStages;
-    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, closingNote, closingImages, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency, directDiscountLabel, extraDiscount, extraDiscountLabel, paymentStages) {
+    constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, closingNote, closingImages, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency, directDiscountLabel, extraDiscount, extraDiscountLabel, 
+    /** JSON [{name, kind, value}] — belge düzeyi yığılmış iskontolar. */
+    totalDiscounts, paymentStages) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -98,6 +101,7 @@ class Tender {
         this.directDiscountLabel = directDiscountLabel;
         this.extraDiscount = extraDiscount;
         this.extraDiscountLabel = extraDiscountLabel;
+        this.totalDiscounts = totalDiscounts;
         this.paymentStages = paymentStages;
     }
 }
