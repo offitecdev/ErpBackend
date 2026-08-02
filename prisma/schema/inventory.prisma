@@ -173,14 +173,20 @@ model SupplyRequest {
 /// Satın alma siparişi (Purchase Order). Bir tedarikçiye gönderilen sipariş;
 /// tek sipariş = tek tedarikçi. Ürün satırları anlık görüntü (snapshot) olarak
 /// JSON kolonunda saklanır (SupplyRequest emsali: FK yok, listeleme join'siz).
-/// status: PENDING | TO_BE_STOCKED | COMPLETED | UPDATED
-///  - TO_BE_STOCKED: kullanıcı popup'tan elle işaretler (mail göndermek durumu DEĞİŞTİRMEZ)
-///  - UPDATED: mail gönderildikten sonra ürünler değişirse (revision+1); ad değişikliği durumu etkilemez
-///  - COMPLETED: stoğa eklendiğinde (mark-stocked)
+/// status — sipariş yaşam döngüsü (2026-08-01 genişletildi):
+///   DRAFT                 → fiyat talebi taslağı: fiyatsız, henüz resmileşmemiş liste
+///   ORDER_DRAFT           → SİPARİŞ TASLAĞI: fiyatlı, kaydedilmiş ama ONAYLANMAMIŞ
+///                           ("Kaydet" bunu yazar; "Onayla" PENDING yapar ve kilitler)
+///   PRICE_REQUEST         → fiyat talebi: fiyatsız satırlar (seri no + ad + miktar) tedarikçiye sorulur
+///   AWAITING_CONFIRMATION → fiyat talebi maili gönderildi, tedarikçi onayı bekleniyor
+///   PENDING               → resmî satın alma siparişi (onaylanınca fiyat talebi buraya döner)
+///   UPDATED               → mail gönderildikten sonra içerik değişti (revision+1); ad değişikliği durumu etkilemez
+///   TO_BE_STOCKED         → mal kabul bekleniyor (goods receipt); satırlar tek tek/toplu stoğa gönderilebilir
+///   COMPLETED             → stoğa aktarıldı (mal kabul tamamlandı / mark-stocked)
 model PurchaseOrder {
   id              String    @id
   tenantId        String
-  referenceNumber String // "Auftrag" BE-2026-0001 — tenant başına benzersiz, kullanıcı düzenleyebilir
+  referenceNumber String // "Auftrag" AU-2026-001 (eski kayıtlar BE-2026-0001) — tenant başına benzersiz, kullanıcı düzenleyebilir
   quoteNumber     String? // opsiyonel teklif numarası (PDF'te görünür)
   orderedByName   String? // "Besteller" — siparişi veren kişi (varsayılan: oturumdaki kullanıcı)
   projectName     String? // tedarik edilen projenin adı (PDF kapak kartında)
@@ -189,17 +195,37 @@ model PurchaseOrder {
   supplierName    String // snapshot
   supplierEmail   String?
   supplierAddress String?   @db.Text // snapshot — bileşenlerden kurulmuş, satır başına \n (PDF alıcı bloğu)
+  // ALICI ADI ("Empfänger" / z.Hd.) — OPSİYONEL. Sipariş detaylarından girilir;
+  // doluysa PDF'in alıcı bloğunda firma adının ALTINDA tek küçük satır olarak
+  // basılır. Tedarikçi kaydından bağımsızdır: siparişe özgü kişi/departmandır.
+  recipientName   String? // max 120
+
+  // ANSCHREIBEN (ön yazı): PDF'in ilk sayfasında başlığın altında, pozisyon
+  // tablosundan ÖNCE basılan hitap + giriş metni. Düz metindir (satır sonları
+  // korunur). NULL = şablonun kendi standart metni kullanılır — yani "varsayılan
+  // metin" belgede yaşar, kayıtta değil (kullanıcı isteği 2026-08-02).
+  coverLetter     String?   @db.Text
   // JSON [{itemType, articleId?, code, serialNumber?, name, quantity, unit?,
   //        grossPrice, netPrice, discount, discount2, discount3, vatRate,
-  //        lineTotal, lineVat}]
+  //        lineTotal, lineVat, calcMode?, receivedQuantity?, receivedAt?}]
   // discount/discount2/discount3: SIRAYLA uygulanan yüzdeler (teklif
   // directDiscount/extraDiscount deseniyle aynı) — lineTotal net tutardır.
+  // calcMode: AUTO (hesaplanır) | DIRECT (gönderilen tutarlar saklanır, eski
+  // directCopy) | SUPPLIER (tedarikçi hesabı: net birim fiyat sabit, indirim
+  // kilitli, tutar miktarla orantılı). receivedQuantity/receivedAt: mal kabulde
+  // stoğa aktarılan miktar + son aktarım zamanı (receive endpoint'i yazar).
   items           String    @db.LongText
   // JSON [{name, amount}] — sipariş düzeyinde EK ÜCRETLER (nakliye, ambalaj…).
   // Kalem değildir: miktarı/indirimi/KDV'si yoktur, genel toplama net olarak
   // eklenir (`totalFees`).
   additionalFees  String?   @db.Text
   currency        String    @default("CHF")
+  // KDV kipi: LINE = satır başına oran (eski davranış), TOTAL = tek oran genel
+  // toplam üzerinden (totalNet + totalFees) — detay popup'ındaki KDV ayarları
+  // penceresinden seçilir. TOTAL kipinde satır KDV'leri kullanılmaz.
+  vatMode         String    @default("LINE")
+  orderVatRate    Float     @default(0) // TOTAL kipindeki oran (%)
+  orderVatCountry String? // TOTAL kipinde seçilen ülke etiketi (yalnızca gösterim)
   totalNet        Float     @default(0)
   totalGross      Float     @default(0)
   totalVat        Float     @default(0)
@@ -216,6 +242,25 @@ model PurchaseOrder {
   @@index([tenantId])
   @@index([status])
   @@index([supplierId])
+}
+
+/// Sipariş ANSCHREIBEN (ön yazı) TASLAKLARI — tenant genelinde paylaşılan,
+/// yeniden kullanılabilir metin şablonları. Teklif tarafındaki
+/// `TenderTextTemplate` ile aynı erişim modeli: kayıt siparişe DEĞİL tenant'a
+/// bağlıdır, her sipariş detayından seçilip uygulanabilir.
+/// Varsayılan metin BURADA TUTULMAZ (PDF şablonundadır) — bu tablo yalnızca
+/// kullanıcının kendi kaydettiği taslakları taşır.
+model PurchaseOrderTextTemplate {
+  id        String   @id
+  tenantId  String
+  title     String   @default("")
+  /// Düz metin (satır sonları korunur) — PurchaseOrder.coverLetter ile aynı biçim.
+  content   String?  @db.Text
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model ArticleSupplier {

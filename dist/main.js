@@ -43,6 +43,7 @@ const AuthMiddleware_1 = require("./presentation/middlewares/AuthMiddleware");
 const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
 const RbacMiddleware_1 = require("./presentation/middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("./infrastructure/database/prisma.client"));
+const tenantTree_1 = require("./shared/tenantTree");
 const nanoid_1 = require("nanoid");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3000;
@@ -118,24 +119,9 @@ const normalizeTenderRef = (value) => {
         return raw;
     }
 };
-const tenantRootId = async (tenantId) => {
-    let current = await prisma_client_1.default.tenant.findUnique({
-        where: { id: tenantId },
-        select: { id: true, parentTenantId: true, isActive: true },
-    });
-    if (!current?.isActive)
-        return null;
-    for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
-        const parent = await prisma_client_1.default.tenant.findUnique({
-            where: { id: current.parentTenantId },
-            select: { id: true, parentTenantId: true, isActive: true },
-        });
-        if (!parent?.isActive)
-            return null;
-        current = parent;
-    }
-    return current.id;
-};
+// Şirket ağacı önbellekten yürünür — seviye başına bir `findUnique` turu yerine
+// sıfır sorgu (bkz. shared/tenantTree).
+const tenantRootId = tenantTree_1.findTenantRootIdCached;
 const canAccessTenant = async (targetTenantId, requestTenantId) => {
     if (targetTenantId === requestTenantId)
         return true;

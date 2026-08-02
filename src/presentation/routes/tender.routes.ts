@@ -289,6 +289,36 @@ router.delete(
     (req, res) => tenderController.deleteMailDraft(req, res)
 );
 
+// Tenant-wide intro-text templates (Textbausteine) for the Einleitungstext.
+// Same placement rule as mail-drafts: BEFORE '/:id'.
+router.get(
+    '/text-templates',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.listTextTemplates(req, res)
+);
+
+router.post(
+    '/text-templates',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.createTextTemplate(req, res)
+);
+
+router.patch(
+    '/text-templates/:templateId',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.updateTextTemplate(req, res)
+);
+
+router.delete(
+    '/text-templates/:templateId',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.deleteTextTemplate(req, res)
+);
+
 router.get(
     '/:id/schedule-slots',
     requireAuth,
@@ -361,6 +391,22 @@ router.get(
     requireAuth,
     requirePermission('tenders.view'),
     (req, res) => tenderController.getDetails(req, res)
+);
+
+/**
+ * @swagger
+ * /tenders/{id}/pdf-content:
+ *   get:
+ *     tags: [Tender]
+ *     summary: PDF'e özel metin ve kapanış görsellerini gerektiğinde getir
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+    '/:id/pdf-content',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getPdfContent(req, res)
 );
 
 /**

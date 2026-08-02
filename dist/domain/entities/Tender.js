@@ -51,9 +51,12 @@ class Tender {
     extraDiscountLabel;
     totalDiscounts;
     paymentStages;
+    customerReference;
     constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, closingNote, closingImages, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency, directDiscountLabel, extraDiscount, extraDiscountLabel, 
     /** JSON [{name, kind, value}] — belge düzeyi yığılmış iskontolar. */
-    totalDiscounts, paymentStages) {
+    totalDiscounts, paymentStages, 
+    /** Kundenreferenz — "Referenz" on the offer PDF (customer-supplied). */
+    customerReference) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -103,6 +106,7 @@ class Tender {
         this.extraDiscountLabel = extraDiscountLabel;
         this.totalDiscounts = totalDiscounts;
         this.paymentStages = paymentStages;
+        this.customerReference = customerReference;
     }
 }
 exports.Tender = Tender;

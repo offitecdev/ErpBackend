@@ -459,6 +459,7 @@ export class ProjectRepository {
         const where: any = { tenantId: filter.tenantId };
         if (filter.status) where.status = filter.status;
         if (filter.managerId) where.managerId = filter.managerId;
+        if (filter.customerId) where.customerId = filter.customerId;
         if (filter.search) {
             where.OR = [
                 { projectName: { contains: filter.search } },

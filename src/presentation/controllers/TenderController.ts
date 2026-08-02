@@ -13,9 +13,11 @@ import { ICustomerActivityRepository } from '../../domain/repositories/ICustomer
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
+import { getArticleThumbnails, getPositionThumbnails } from '../../infrastructure/services/PdfImageThumbnailService';
 import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import { MAX_TOTAL_DISCOUNTS, normalizeDiscountList, resolveLineDiscount } from './tender.discounts';
+import { findTenantRootIdCached } from '../../shared/tenantTree';
 
 const smtp = new SmtpMailService();
 
@@ -23,6 +25,24 @@ const normalizeIdList = (value: unknown) =>
     Array.isArray(value)
         ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
         : [];
+
+const isSourceSalesOrder = (value: unknown) => {
+    const normalized = String(value || '')
+        .trim()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+    return [
+        'verkaufsauftrag',
+        'sales_order',
+        'sale_order',
+        'sales order',
+        'sale order',
+        'sipariste',
+        'siparis',
+        'auftrag',
+    ].includes(normalized);
+};
 
 // Validation error whose message is safe to show the user. Carries status 400 so
 // controller catch blocks can distinguish it from unexpected/internal errors and
@@ -208,23 +228,10 @@ export class TenderController {
         }
     }
 
+    // Şirket ağacı paylaşılan önbellekten yürünür (bkz. shared/tenantTree);
+    // eskiden her seviye ayrı bir uzak sorgu turuydu.
     private async tenantRootId(tenantId: string): Promise<string | null> {
-        let current = await (prisma as any).tenant.findUnique({
-            where: { id: tenantId },
-            select: { id: true, parentTenantId: true, isActive: true }
-        });
-        if (!current?.isActive) return null;
-
-        for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
-            const parent = await (prisma as any).tenant.findUnique({
-                where: { id: current.parentTenantId },
-                select: { id: true, parentTenantId: true, isActive: true }
-            });
-            if (!parent?.isActive) return null;
-            current = parent;
-        }
-
-        return current.id;
+        return findTenantRootIdCached(tenantId);
     }
 
     private async canAccessTenant(targetTenantId: string, requestTenantId: string) {
@@ -279,16 +286,23 @@ export class TenderController {
     // then loads the full tender scoped to that tenant. Returns null when the tender
     // does not exist OR is not accessible — callers return 404 either way, so we do
     // not leak whether another tenant's tender exists.
-    private async getAccessibleTender(tenderId: string, user: { tenantId: string }) {
+    private async getAccessibleTender(
+        tenderId: string,
+        user: { tenantId: string },
+        options?: { deferOrderPdfContent?: boolean; omitPdfContent?: boolean }
+    ) {
         const raw = String(tenderId || '').trim();
         if (!raw) return null;
         const light = await (prisma as any).tender.findUnique({
             where: { id: raw },
-            select: { tenantId: true }
+            select: { tenantId: true, projectId: true, sourceStatus: true }
         });
         if (!light) return null;
         if (!await this.canAccessTenant(light.tenantId, user.tenantId)) return null;
-        return this.tenderRepository.findById(raw, light.tenantId);
+        const isOrder = Boolean(light.projectId) || isSourceSalesOrder(light.sourceStatus);
+        const includePdfContent = !options?.omitPdfContent
+            && !(options?.deferOrderPdfContent && isOrder);
+        return this.tenderRepository.findById(raw, light.tenantId, { includePdfContent });
     }
 
     private async findCustomerForTenant(customerId: string, tenantId: string) {
@@ -685,6 +699,7 @@ export class TenderController {
             if (rawMeta.installationAddress !== undefined) metaData.installationAddress = rawMeta.installationAddress ? String(rawMeta.installationAddress) : null;
             if (rawMeta.deliveryAddress !== undefined) metaData.deliveryAddress = rawMeta.deliveryAddress ? String(rawMeta.deliveryAddress) : null;
             if (rawMeta.commissionNumber !== undefined) metaData.commissionNumber = rawMeta.commissionNumber ? String(rawMeta.commissionNumber) : null;
+            if (rawMeta.customerReference !== undefined) metaData.customerReference = rawMeta.customerReference ? String(rawMeta.customerReference) : null;
             if (rawMeta.priceList !== undefined) metaData.priceList = rawMeta.priceList ? String(rawMeta.priceList) : null;
             if (rawMeta.currency !== undefined) {
                 if (rawMeta.currency === null || rawMeta.currency === '') {
@@ -1446,7 +1461,7 @@ export class TenderController {
             const tenderId = req.params.id as string;
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, totalDiscounts, paymentStages, coverLetter, closingNote, closingImages } = req.body;
+            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, customerReference, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, totalDiscounts, paymentStages, coverLetter, closingNote, closingImages } = req.body;
 
             const tender = await this.getAccessibleTender(tenderId, (req as any).user!);
             if (!tender) {
@@ -1468,6 +1483,9 @@ export class TenderController {
             }
             if (commissionNumber !== undefined) {
                 data.commissionNumber = commissionNumber ? String(commissionNumber) : null;
+            }
+            if (customerReference !== undefined) {
+                data.customerReference = customerReference ? String(customerReference) : null;
             }
             if (priceList !== undefined) {
                 data.priceList = priceList ? String(priceList) : null;
@@ -2028,6 +2046,99 @@ export class TenderController {
         }
     }
 
+    // ── Tenant-wide intro-text templates (Textbausteine) ─────────────────────
+    // Reusable Einleitungstext templates for the offer's cover letter. Same
+    // access model as the mail drafts: shared by ALL tenders of the tenant.
+
+    async listTextTemplates(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const templates = await (prisma as any).tenderTextTemplate.findMany({
+                where: { tenantId },
+                orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }],
+            });
+            res.status(200).json(templates);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async createTextTemplate(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const { title, content, isDefault } = req.body;
+            const template = await (prisma as any).$transaction(async (tx: any) => {
+                // Tek varsayılan olabilir: yeni kayıt varsayılan işaretlendiyse
+                // eskisinin işareti kaldırılır.
+                if (isDefault) {
+                    await tx.tenderTextTemplate.updateMany({ where: { tenantId, isDefault: true }, data: { isDefault: false } });
+                }
+                return tx.tenderTextTemplate.create({
+                    data: {
+                        id: nanoid(10),
+                        tenantId,
+                        title: String(title ?? '').slice(0, 191),
+                        content: content ? String(content) : null,
+                        isDefault: Boolean(isDefault),
+                        createdBy: (req as any).user!.id || null,
+                    },
+                });
+            });
+            res.status(201).json(template);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async updateTextTemplate(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const templateId = req.params.templateId as string;
+            const existing = await (prisma as any).tenderTextTemplate.findFirst({
+                where: { id: templateId, tenantId },
+                select: { id: true },
+            });
+            if (!existing) return res.status(404).json({ error: "Şablon bulunamadı." });
+
+            const { title, content, isDefault } = req.body;
+            const data: any = {};
+            if (title !== undefined) data.title = String(title ?? '').slice(0, 191);
+            if (content !== undefined) data.content = content ? String(content) : null;
+            if (isDefault !== undefined) data.isDefault = Boolean(isDefault);
+            if (Object.keys(data).length === 0) {
+                return res.status(400).json({ error: "Güncellenecek alan bulunamadı." });
+            }
+            const template = await (prisma as any).$transaction(async (tx: any) => {
+                if (data.isDefault === true) {
+                    await tx.tenderTextTemplate.updateMany({
+                        where: { tenantId, isDefault: true, NOT: { id: templateId } },
+                        data: { isDefault: false },
+                    });
+                }
+                return tx.tenderTextTemplate.update({ where: { id: templateId }, data });
+            });
+            res.status(200).json(template);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async deleteTextTemplate(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const templateId = req.params.templateId as string;
+            const existing = await (prisma as any).tenderTextTemplate.findFirst({
+                where: { id: templateId, tenantId },
+                select: { id: true },
+            });
+            if (!existing) return res.status(404).json({ error: "Şablon bulunamadı." });
+            await (prisma as any).tenderTextTemplate.delete({ where: { id: templateId } });
+            res.status(200).json({ message: "Şablon silindi.", templateId });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     private offerSlotTechnicianIdsFromBody(body: any, fallbackIds: string[] = []) {
         if (body.technicianIds !== undefined) return normalizeIdList(body.technicianIds);
         if (body.assignedTechId !== undefined) return normalizeIdList([body.assignedTechId]);
@@ -2494,17 +2605,58 @@ export class TenderController {
             // light=true: plain position figures only (no mappings, long descriptions
             // or activities) — used by read-only summaries like the project positions tab.
             const light = req.query.light === 'true';
+            const includeActivities = !light && req.query.includeActivities !== 'false';
+            const deferOrderPdfContent = req.query.deferOrderPdfContent === 'true';
 
-            // The three queries are independent; run them concurrently and only check
-            // the access result before responding, instead of paying for them in series.
+            // These queries are independent. The app deliberately excludes activities:
+            // it loads them from /activities only when the chatter panel is opened.
+            // Read-only summaries never need PDF blocks, and sales-order detail defers
+            // those multi-megabyte fields until PDF view/export/mail time.
             const [tender, positions, activities] = await Promise.all([
-                this.getAccessibleTender(tenderId, (req as any).user!),
+                this.getAccessibleTender(tenderId, (req as any).user!, {
+                    deferOrderPdfContent,
+                    omitPdfContent: light,
+                }),
                 this.positionRepository.findByTenderId(tenderId, { includeImages, light }),
-                light ? Promise.resolve([]) : this.customerActivityRepo.getActivitiesByReference(tenderId),
+                includeActivities
+                    ? this.customerActivityRepo.getActivitiesByReference(tenderId)
+                    : Promise.resolve([]),
             ]);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
 
             res.status(200).json({ tender, positions, activities });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    // The detail screen keeps PDF-only LONGTEXT fields out of the critical path
+    // for read-only sales orders. Load them explicitly only when a PDF workflow
+    // needs them.
+    async getPdfContent(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            if (!tenderId) return res.status(400).json({ error: "İhale ID zorunludur." });
+
+            const requestTenantId = (req as any).user!.tenantId;
+            const owner = await (prisma as any).tender.findUnique({
+                where: { id: tenderId },
+                select: { tenantId: true },
+            });
+            if (!owner || !await this.canAccessTenant(owner.tenantId, requestTenantId)) {
+                return res.status(404).json({ error: "İhale bulunamadı." });
+            }
+
+            const content = await (prisma as any).tender.findFirst({
+                where: { id: tenderId, tenantId: owner.tenantId },
+                select: {
+                    coverLetter: true,
+                    closingNote: true,
+                    closingImages: true,
+                },
+            });
+            if (!content) return res.status(404).json({ error: "İhale bulunamadı." });
+            res.status(200).json(content);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -2519,30 +2671,59 @@ export class TenderController {
             if (!tenderId) return res.status(400).json({ error: "İhale ID zorunludur." });
 
             const tenantId = (req as any).user!.tenantId;
-            const tender = await this.tenderRepository.findById(tenderId, tenantId);
-            if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
 
             const ids = normalizeIdList(req.body?.ids);
             const positionIds = normalizeIdList(req.body?.positionIds);
             if (ids.length === 0 && positionIds.length === 0) return res.status(200).json([]);
 
+            // The ownership guard reads ONLY the id. `tenderRepository.findById`
+            // would select every Tender column — including the LongText PDF
+            // content blocks (`closingImages` alone can be megabytes of base64
+            // data URIs) plus the customer/creator joins — none of which this
+            // endpoint uses. Loading them turned a ~150 ms lookup into a
+            // multi-second one on offers that carry closing images.
+            // The image queries are independent of the guard and already scoped
+            // by tenantId (and tenderId), so they run concurrently and their
+            // result is simply discarded when the guard fails.
+            //
             // Article images (product rows) + per-position uploaded images (manual
             // products / description rows) — both only ever fetched here, for the PDF.
-            const [articleRows, positionRows] = await Promise.all([
+            //
+            // Articles are read in two steps on purpose: this first query touches
+            // no LongText at all, it only asks WHICH articles have an image and
+            // what version it is. `getArticleThumbnails` then reads the originals
+            // for the ids it has no cached thumbnail for — usually none.
+            const [owned, articleVersions, positionRows] = await Promise.all([
+                (prisma as any).tender.findFirst({
+                    where: { id: tenderId, tenantId },
+                    select: { id: true },
+                }),
                 ids.length > 0
                     ? (prisma as any).article.findMany({
-                        where: { tenantId, id: { in: ids }, imageUrl: { not: null } },
-                        select: { id: true, imageUrl: true },
+                        // `not: ''` matters: articles saved without a picture hold an
+                        // empty string rather than NULL, and used to be returned as
+                        // image rows the PDF then threw away.
+                        where: { tenantId, id: { in: ids }, imageUrl: { not: null, notIn: [''] } },
+                        select: { id: true, updatedAt: true },
                     })
                     : [],
                 positionIds.length > 0
                     ? (prisma as any).position.findMany({
-                        where: { tenantId, tenderId, id: { in: positionIds }, imageUrl: { not: null } },
-                        select: { id: true, imageUrl: true },
+                        where: { tenantId, tenderId, id: { in: positionIds }, imageUrl: { not: null, notIn: [''] } },
+                        select: { id: true },
                     })
                     : [],
             ]);
-            res.status(200).json([...articleRows, ...positionRows]);
+            if (!owned) return res.status(404).json({ error: "İhale bulunamadı." });
+
+            // Downscaled to the 24 mm square the PDF draws them into — see
+            // PdfImageThumbnailService for why the originals never travel.
+            const [articleThumbs, positionThumbs] = await Promise.all([
+                getArticleThumbnails(tenantId, articleVersions),
+                getPositionThumbnails(tenantId, tenderId, positionRows),
+            ]);
+
+            res.status(200).json([...articleThumbs, ...positionThumbs]);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

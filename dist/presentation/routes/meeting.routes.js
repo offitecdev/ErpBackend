@@ -20,6 +20,19 @@ const PARTICIPANT_INCLUDE = {
     customer: { select: { id: true, companyName: true } },
     createdBy: { select: { id: true, firstName: true, lastName: true } },
 };
+// CC listesi: dizi ya da virgüllü tek satır kabul edilir; boşlar ve
+// yinelenenler ayıklanır, adres kabaca doğrulanır (bir '@' içermeli).
+const sanitizeCcEmails = (raw) => {
+    const values = Array.isArray(raw) ? raw : String(raw ?? '').split(',');
+    const out = [];
+    for (const value of values) {
+        const email = String(value ?? '').trim();
+        if (!email || !email.includes('@') || out.includes(email))
+            continue;
+        out.push(email);
+    }
+    return out;
+};
 // Normalise + validate the participants payload; throws on malformed rows.
 const sanitizeParticipants = (raw) => {
     if (!Array.isArray(raw))
@@ -88,6 +101,7 @@ router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
                 notes: notes ? String(notes) : null,
                 startTime,
                 endTime,
+                ccEmails: sanitizeCcEmails(req.body?.ccEmails),
                 customerId: customerId ? String(customerId) : null,
                 createdByEmployeeId: user.id,
                 participants: {
@@ -120,6 +134,8 @@ router.patch('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
             data.kind = req.body.kind === 'TASK' ? 'TASK' : 'MEETING';
         if (req.body?.customerId !== undefined)
             data.customerId = req.body.customerId ? String(req.body.customerId) : null;
+        if (req.body?.ccEmails !== undefined)
+            data.ccEmails = sanitizeCcEmails(req.body.ccEmails);
         if (req.body?.startTime !== undefined) {
             const startTime = new Date(String(req.body.startTime));
             if (Number.isNaN(startTime.getTime()))

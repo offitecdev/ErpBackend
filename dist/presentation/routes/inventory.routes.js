@@ -15,6 +15,8 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const postalAddress_1 = require("../../shared/postalAddress");
+const articleImage_1 = require("../../shared/articleImage");
+const richText_1 = require("../../shared/richText");
 const nanoid_1 = require("nanoid");
 /** Tedarikçi adresinin ayrı bileşenleri (tek serbest metin alanı yoktur). */
 const SUPPLIER_ADDRESS_FIELDS = ['address', 'addressSupplement', 'postalCode', 'city', 'state', 'country'];
@@ -193,6 +195,395 @@ router.get('/articles/summary/paged', AuthMiddleware_1.requireAuth, (0, RbacMidd
  *         schema: { type: string }
  */
 router.get('/articles/:id/stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getArticleStockInfo(req, res));
+/**
+ * Bir ürünün AÇIK sipariş adedi: henüz stoğa alınmamış satın alma
+ * siparişlerindeki (PENDING | TO_BE_STOCKED | UPDATED) satır miktarlarının
+ * toplamı. Sipariş satırları JSON snapshot olduğu için SQL ile toplanamaz;
+ * bu yüzden yalnızca açık siparişlerin `items` kolonu çekilip taranır.
+ * Siparişi olmayan ürün 0 döner.
+ */
+const openOrderQuantityFor = async (tenantId, articleId, articleCode) => {
+    const orders = await prisma_client_1.default.purchaseOrder.findMany({
+        where: { tenantId, status: { in: ['PENDING', 'TO_BE_STOCKED', 'UPDATED'] } },
+        select: { items: true },
+    });
+    let total = 0;
+    for (const order of orders) {
+        let lines;
+        try {
+            lines = JSON.parse(order.items || '[]');
+        }
+        catch {
+            continue; // Bozuk snapshot tek siparişi atlar, isteği düşürmez.
+        }
+        if (!Array.isArray(lines))
+            continue;
+        for (const line of lines) {
+            const matches = line?.articleId
+                ? line.articleId === articleId
+                : Boolean(articleCode) && String(line?.code || '') === articleCode;
+            if (matches)
+                total += Math.max(0, Number(line?.quantity) || 0);
+        }
+    }
+    return total;
+};
+/**
+ * Ürünün tedarikçi bazlı alım partileri — ortalama birim maliyetin TABANI.
+ * İki kaynak birleştirilir: (1) ArticleSupplier alım partileri ve (2) tedarikçisi
+ * işaretli stok GİRİŞ hareketleri. Aynı tedarikçinin partileri tek satırda
+ * toplanır: `quantity` = alınan toplam adet, `totalCost` = adet × birim fiyat.
+ * Ortalama = Σ(birim maliyet × adet) / Σ(adet) — kullanıcı formülünün birebir
+ * karşılığı.
+ */
+const articleSupplierCostRows = async (tenantId, articleId) => {
+    const [links, movements] = await Promise.all([
+        prisma_client_1.default.articleSupplier.findMany({
+            where: { tenantId, articleId },
+            select: {
+                supplierId: true,
+                quantity: true,
+                purchasePrice: true,
+                currency: true,
+                lastPurchaseDate: true,
+                supplier: { select: { id: true, companyName: true } },
+            },
+        }),
+        prisma_client_1.default.stockMovement.findMany({
+            where: { tenantId, articleId, supplierId: { not: null }, movementType: 'IN', quantity: { gt: 0 } },
+            select: {
+                supplierId: true,
+                quantity: true,
+                unitCost: true,
+                transactionDate: true,
+                supplier: { select: { id: true, companyName: true } },
+            },
+        }),
+    ]);
+    const bySupplier = new Map();
+    const add = (supplier, quantity, unitCost, date, currency) => {
+        if (!supplier)
+            return;
+        const qty = Math.max(0, Number(quantity) || 0);
+        const cost = Math.max(0, Number(unitCost) || 0);
+        const row = bySupplier.get(supplier.id) ?? {
+            supplierId: supplier.id,
+            companyName: supplier.companyName,
+            quantity: 0,
+            totalCost: 0,
+            averageUnitCost: 0,
+            purchaseCount: 0,
+            lastPurchaseDate: null,
+            currency: currency || 'CHF',
+        };
+        row.quantity += qty;
+        row.totalCost += qty * cost;
+        row.purchaseCount += 1;
+        if (date && (!row.lastPurchaseDate || date > row.lastPurchaseDate))
+            row.lastPurchaseDate = date;
+        bySupplier.set(supplier.id, row);
+    };
+    for (const link of links) {
+        add(link.supplier, link.quantity, link.purchasePrice, link.lastPurchaseDate ?? null, link.currency);
+    }
+    for (const movement of movements) {
+        add(movement.supplier, movement.quantity, movement.unitCost, movement.transactionDate ?? null, null);
+    }
+    const rows = Array.from(bySupplier.values()).map((row) => ({
+        ...row,
+        averageUnitCost: row.quantity > 0 ? row.totalCost / row.quantity : 0,
+    }));
+    rows.sort((a, b) => b.quantity - a.quantity || a.companyName.localeCompare(b.companyName));
+    const quantity = rows.reduce((sum, row) => sum + row.quantity, 0);
+    const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
+    return { rows, quantity, totalCost, averageUnitCost: quantity > 0 ? totalCost / quantity : 0 };
+};
+/**
+ * Detay ekranının ilk yüklemesinde tedarikçi adları/tarihleri gerekmez. Bu hafif
+ * özet yalnızca hesabın ihtiyaç duyduğu kolonları okur; popup açıldığında üstteki
+ * ayrıntılı sorgu ayrıca çalışır.
+ */
+const articleCostSummary = async (tenantId, articleId) => {
+    const [links, movements] = await Promise.all([
+        prisma_client_1.default.articleSupplier.findMany({
+            where: { tenantId, articleId },
+            select: { supplierId: true, quantity: true, purchasePrice: true },
+        }),
+        prisma_client_1.default.stockMovement.findMany({
+            where: { tenantId, articleId, supplierId: { not: null }, movementType: 'IN', quantity: { gt: 0 } },
+            select: { supplierId: true, quantity: true, unitCost: true },
+        }),
+    ]);
+    let quantity = 0;
+    let totalCost = 0;
+    const supplierIds = new Set();
+    const add = (supplierId, rawQuantity, rawUnitCost) => {
+        const rowQuantity = Math.max(0, Number(rawQuantity) || 0);
+        const unitCost = Math.max(0, Number(rawUnitCost) || 0);
+        quantity += rowQuantity;
+        totalCost += rowQuantity * unitCost;
+        if (supplierId)
+            supplierIds.add(String(supplierId));
+    };
+    for (const link of links)
+        add(link.supplierId, link.quantity, link.purchasePrice);
+    for (const movement of movements)
+        add(movement.supplierId, movement.quantity, movement.unitCost);
+    return {
+        averageUnitCost: quantity > 0 ? totalCost / quantity : 0,
+        supplierCount: supplierIds.size,
+    };
+};
+/**
+ * Ürün detay ekranının kritik AÇILIŞ verisi. Büyük LONGTEXT görseli, açık
+ * sipariş JSON'ları ve maliyet hareketleri bu sorguya bilinçli olarak girmez;
+ * ekran bu küçük yanıtla açılır, diğerleri paralel uçlardan tamamlanır.
+ *
+ * Hem GET hem de kaydetme (PATCH) aynı gövdeyi döndürsün diye tek yerde
+ * durur — ekran kaydettikten sonra yanıttan tazelenir.
+ */
+const buildArticleDetail = async (tenantId, id) => {
+    const article = await prisma_client_1.default.article.findFirst({
+        where: { id, tenantId, deletedAt: null },
+        select: {
+            id: true,
+            articleCode: true,
+            name: true,
+            unit: true,
+            description: true,
+            salePrice: true,
+            itemType: true,
+            updatedAt: true,
+            stockBalances: { select: { currentQuantity: true } },
+        },
+    });
+    if (!article)
+        return null;
+    return {
+        id: article.id,
+        articleCode: article.articleCode,
+        name: article.name,
+        unit: article.unit,
+        description: article.description,
+        salePrice: article.salePrice ?? 0,
+        itemType: article.itemType ?? 'PRODUCT',
+        // Görsel değişince Article.updatedAt değişir. Frontend bu sürümü URL'ye
+        // eklediği için eski binary güvenle uzun süre önbellekte kalabilir.
+        imageVersion: article.updatedAt.toISOString(),
+        totalQuantity: article.stockBalances.reduce((sum, balance) => sum + (Number(balance.currentQuantity) || 0), 0),
+    };
+};
+/**
+ * @swagger
+ * /inventory/articles/{id}/detail:
+ *   get:
+ *     tags: [Inventory]
+ *     summary: Ürün detay ekranının BAŞLIK tablosu — yalnızca ekranda görünen alanlar
+ *     description: >
+ *       Görsel, tedarikçi listesi ve hareket geçmişi ÇEKİLMEZ; onlar kendi
+ *       uçlarından yalnızca kullanıcı ilgili düğmeye bastığında yüklenir.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ */
+router.get('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+    try {
+        const detail = await buildArticleDetail(req.user.tenantId, String(req.params.id));
+        if (!detail)
+            return res.status(404).json({ error: 'Ürün bulunamadı.' });
+        return res.status(200).json(detail);
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/** Hesaplanan alanlar ana detay isteğini bekletmeden paralel yüklenir. */
+router.get('/articles/:id/detail-stats', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const id = String(req.params.id);
+        const article = await prisma_client_1.default.article.findFirst({
+            where: { id, tenantId, deletedAt: null },
+            select: { articleCode: true },
+        });
+        if (!article)
+            return res.status(404).json({ error: 'Ürün bulunamadı.' });
+        const [cost, openOrderQuantity] = await Promise.all([
+            articleCostSummary(tenantId, id),
+            openOrderQuantityFor(tenantId, id, article.articleCode),
+        ]);
+        return res.status(200).json({ ...cost, openOrderQuantity });
+    }
+    catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * Base64 veriyi JSON'a gömmek yerine gerçek görsel baytlarını döndürür. Sürüm
+ * query parametresi değişmez URL üretir; tarayıcı aynı görseli tekrar indirmez.
+ */
+router.get('/articles/:id/image', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+    try {
+        const article = await prisma_client_1.default.article.findFirst({
+            where: { id: String(req.params.id), tenantId: req.user.tenantId, deletedAt: null },
+            select: { imageUrl: true },
+        });
+        if (!article)
+            return res.status(404).json({ error: 'Ürün bulunamadı.' });
+        res.removeHeader('Pragma');
+        res.removeHeader('Expires');
+        res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+        if (!article.imageUrl)
+            return res.status(204).end();
+        const parsed = (0, articleImage_1.parseArticleImage)(article.imageUrl);
+        if (!parsed)
+            return res.status(404).json({ error: 'Geçerli ürün görseli bulunamadı.' });
+        const separator = parsed.imageUrl.indexOf(',');
+        const bytes = Buffer.from(parsed.imageUrl.slice(separator + 1), 'base64');
+        res.setHeader('Content-Type', parsed.contentType);
+        res.setHeader('Content-Length', String(bytes.length));
+        return res.status(200).send(bytes);
+    }
+    catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/articles/{id}/detail:
+ *   patch:
+ *     tags: [Inventory]
+ *     summary: Ürün detayını TEK istekte kaydet — alanlar, açıklama ve görsel birlikte
+ *     description: >
+ *       Ekrandaki "Kaydet" düğmesinin tek ucu. Alanlar, biçimli açıklama ve
+ *       görsel aynı transaction içinde yazılır; biri reddedilirse hiçbiri
+ *       yazılmaz (alanları kaydedip görseli düşüren yarım kayıt oluşmaz).
+ *       `imageUrl` gönderilmezse görsel DEĞİŞMEZ, `null` gönderilirse silinir.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               articleCode: { type: string }
+ *               name: { type: string }
+ *               unit: { type: string }
+ *               salePrice: { type: number }
+ *               description: { type: string, nullable: true }
+ *               imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... | null = sil" }
+ */
+router.patch('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.articles.update'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const id = String(req.params.id);
+        const body = req.body ?? {};
+        const current = await prisma_client_1.default.article.findFirst({
+            where: { id, tenantId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!current)
+            return res.status(404).json({ error: 'Ürün bulunamadı.' });
+        const data = {};
+        if (body.articleCode !== undefined) {
+            const articleCode = String(body.articleCode).trim();
+            if (!articleCode)
+                return res.status(400).json({ error: 'Ürün kodu zorunludur.' });
+            // Kod kiracı içinde benzersizdir; çakışmayı Prisma hatasına
+            // bırakmak yerine anlaşılır bir mesajla döneriz.
+            const clash = await prisma_client_1.default.article.findFirst({
+                where: { tenantId, articleCode, deletedAt: null, NOT: { id } },
+                select: { name: true },
+            });
+            if (clash) {
+                return res.status(400).json({ error: `"${articleCode}" kodu zaten kullanılıyor: ${clash.name}` });
+            }
+            data.articleCode = articleCode;
+        }
+        if (body.name !== undefined) {
+            const name = String(body.name).trim();
+            if (!name)
+                return res.status(400).json({ error: 'Ürün adı zorunludur.' });
+            data.name = name;
+        }
+        if (body.unit !== undefined) {
+            const unit = String(body.unit).trim();
+            if (!unit)
+                return res.status(400).json({ error: 'Birim zorunludur.' });
+            data.unit = unit;
+        }
+        if (body.salePrice !== undefined) {
+            const salePrice = Number(body.salePrice);
+            if (!Number.isFinite(salePrice) || salePrice < 0) {
+                return res.status(400).json({ error: 'Satış fiyatı geçersiz.' });
+            }
+            data.salePrice = salePrice;
+        }
+        // Açıklama biçimli metindir — dar beyaz listeden geçer.
+        if (body.description !== undefined)
+            data.description = (0, richText_1.normalizeRichText)(body.description);
+        // Görsel: alan yoksa dokunulmaz, null ise silinir, doluysa doğrulanır.
+        if (body.imageUrl !== undefined) {
+            if (body.imageUrl === null || body.imageUrl === '') {
+                data.imageUrl = null;
+            }
+            else {
+                const parsed = (0, articleImage_1.parseArticleImage)(body.imageUrl);
+                if (!parsed) {
+                    return res.status(400).json({ error: 'Görsel geçersiz. En fazla 2 MB PNG, JPG, GIF veya WebP yükleyin.' });
+                }
+                data.imageUrl = parsed.imageUrl;
+            }
+        }
+        if (Object.keys(data).length) {
+            await prisma_client_1.default.article.update({ where: { id }, data });
+        }
+        const detail = await buildArticleDetail(tenantId, id);
+        return res.status(200).json(detail);
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/articles/{id}/suppliers-summary:
+ *   get:
+ *     tags: [Inventory]
+ *     summary: Ürün detayındaki tedarikçi POPUP'ı — yalnızca açıldığında çağrılır
+ *     description: Tedarikçi başına alınan adet, ödenen toplam ve ortalama birim maliyet.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ */
+router.get('/articles/:id/suppliers-summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const id = String(req.params.id);
+        const exists = await prisma_client_1.default.article.count({ where: { id, tenantId, deletedAt: null } });
+        if (!exists)
+            return res.status(404).json({ error: 'Ürün bulunamadı.' });
+        const cost = await articleSupplierCostRows(tenantId, id);
+        return res.status(200).json({
+            suppliers: cost.rows,
+            totalQuantity: cost.quantity,
+            totalCost: cost.totalCost,
+            averageUnitCost: cost.averageUnitCost,
+        });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 router.get('/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
     try {
         const suppliers = await prisma_client_1.default.supplier.findMany({
@@ -952,6 +1343,10 @@ const bulkUpdateArticlePurchases = async (tx, tenantId, preferredByArticle) => {
  *         name: name
  *         schema: { type: string }
  *       - in: query
+ *         name: articleId
+ *         schema: { type: string }
+ *         description: Tek bir ürünün hareketleri (ürün detay ekranı)
+ *       - in: query
  *         name: type
  *         schema: { type: string, enum: [IN, OUT, DEFINITION, TRANSFER, RETURN, ADJUSTMENT] }
  *       - in: query
@@ -972,6 +1367,8 @@ router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
         const name = toStr(req.query.name);
         const description = toStr(req.query.description);
         const type = toStr(req.query.type).toUpperCase();
+        // Ürün detayındaki "bu ürünün hareketleri" görünümü — tek ürüne daraltır.
+        const articleId = toStr(req.query.articleId);
         const parseDate = (value, endOfDay) => {
             const raw = toStr(value);
             if (!raw)
@@ -983,6 +1380,8 @@ router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
         const dateFrom = parseDate(req.query.dateFrom, false);
         const dateTo = parseDate(req.query.dateTo, true);
         const and = [];
+        if (articleId)
+            and.push({ articleId });
         if (search) {
             and.push({
                 OR: [
@@ -1082,6 +1481,9 @@ router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
  *                 type: string
  *                 enum: [PRODUCT, MATERIAL]
  *                 description: "Tüm satırlar için varsayılan tür (ürün / malzeme ekranı)"
+ *               overwrite:
+ *                 type: boolean
+ *                 description: "true: kodu zaten kayıtlı satır hata yerine mevcut ürünü GÜNCELLER (dosya kazanır)"
  */
 router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.articles.create'), async (req, res) => {
     try {
@@ -1094,6 +1496,11 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
             return res.status(400).json({ error: 'Tek seferde en fazla 500 satır eklenebilir.' });
         // Ürün ve malzeme aynı tabloyu (Article) paylaşır; ekran türü gövdeden gelir.
         const defaultItemType = req.body.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT';
+        // ÜZERİNE YAZMA (kullanıcı isteği 2026-08-02, sipariş Excel aktarımı):
+        // kodu zaten kayıtlı satır hata VERMEZ, mevcut ürün dosyadaki değerlerle
+        // güncellenir (ad/birim/fiyatlar; çöpteyse geri alınır). Stok DOKUNULMAZ —
+        // güncellenen ürün için hareket/bakiye/parti yazılmaz.
+        const overwrite = req.body.overwrite === true;
         const errors = [];
         const created = [];
         // Yük içi mükerrer kod kontrolü
@@ -1116,14 +1523,14 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
         const [existing, defaultLocation, invalidSupplierIds] = await Promise.all([
             prisma_client_1.default.article.findMany({
                 where: { tenantId, articleCode: { in: [...seenCodes.keys()] } },
-                select: { articleCode: true, deletedAt: true, itemType: true },
+                select: { id: true, articleCode: true, deletedAt: true, itemType: true },
             }),
             repository.ensureDefaultLocation(tenantId),
             warmSupplierCache(tenantId, items, supplierCache),
         ]);
         // Kod havuzu ürün ve malzeme için ORTAK: aynı kod ikisinde birden
         // olamaz, bu yüzden hata hangi türde durduğunu söyler.
-        const existingCodes = new Map(existing.map((row) => [row.articleCode, { deleted: Boolean(row.deletedAt), itemType: row.itemType || 'PRODUCT' }]));
+        const existingCodes = new Map(existing.map((row) => [row.articleCode, { id: row.id, deleted: Boolean(row.deletedAt), itemType: row.itemType || 'PRODUCT' }]));
         const clashMessage = (info) => {
             const kind = info.itemType === 'MATERIAL' ? 'malzemede' : 'üründe';
             return info.deleted ? `Bu kod çöpteki bir ${kind} kayıtlı.` : `Bu kod zaten bir ${kind} kayıtlı.`;
@@ -1132,6 +1539,7 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
         // sonra tek transaction içinde toplu INSERT'lerle yazılır. Yeni ürünler
         // olduğu için bakiye/parti satırlarının çakışma ihtimali yok.
         const articleCreates = [];
+        const articleUpdates = [];
         const balanceCreates = [];
         const movementCreates = [];
         const lotCreates = [];
@@ -1146,7 +1554,7 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
                 if (!name)
                     throw new Error('Ürün adı zorunludur.');
                 const clash = existingCodes.get(articleCode);
-                if (clash)
+                if (clash && !overwrite)
                     throw new Error(clashMessage(clash));
                 const quantity = Math.max(0, Number(item.quantity) || 0);
                 const purchasePrice = Math.max(0, Number(item.purchasePrice) || 0);
@@ -1157,6 +1565,28 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
                 const supplier = supplierCache.get(item.supplierId
                     ? `id:${String(item.supplierId)}`
                     : `name:${item.supplierName ? String(item.supplierName).trim().toLowerCase() : ''}`) || null;
+                // ÜZERİNE YAZMA: kodu kayıtlı ürün DOSYADAKİ değerlerle güncellenir
+                // (ad her zaman; birim/fiyat/tedarikçi doluysa), çöpteyse geri
+                // alınır. Stok DOKUNULMAZ — sipariş akışı stok hareketi değildir.
+                if (clash) {
+                    articleUpdates.push({
+                        id: clash.id,
+                        data: {
+                            name,
+                            ...(item.unit ? { unit: String(item.unit).trim() } : {}),
+                            ...(purchasePrice > 0 ? { baseCost: purchasePrice } : {}),
+                            ...(salePrice > 0 ? { salePrice } : {}),
+                            ...(supplier ? { defaultSupplierId: supplier.id } : {}),
+                            deletedAt: null,
+                            isActive: true,
+                            status: 'ACTIVE',
+                        },
+                    });
+                    // Güncellenen ürün de `created` listesinde döner: çağıran taraf
+                    // satırı aynı yolla (kod eşleşmesiyle) bu id'ye bağlar.
+                    created.push({ id: clash.id, articleCode, name });
+                    return;
+                }
                 const articleId = (0, nanoid_1.nanoid)(10);
                 const movementId = (0, nanoid_1.nanoid)(12);
                 articleCreates.push({
@@ -1216,26 +1646,34 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
                         isPreferred: true,
                     });
                 }
-                existingCodes.set(articleCode, { deleted: false, itemType: item.itemType === 'MATERIAL' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType });
+                existingCodes.set(articleCode, { id: articleId, deleted: false, itemType: item.itemType === 'MATERIAL' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType });
                 created.push({ id: articleId, articleCode, name });
             }
             catch (error) {
                 errors.push({ index, articleCode, error: error.message });
             }
         });
-        if (articleCreates.length) {
-            const writes = [prisma_client_1.default.article.createMany({ data: articleCreates })];
-            if (balanceCreates.length)
-                writes.push(prisma_client_1.default.stockBalance.createMany({ data: balanceCreates }));
-            if (movementCreates.length)
-                writes.push(prisma_client_1.default.stockMovement.createMany({ data: movementCreates }));
-            if (lotCreates.length)
-                writes.push(prisma_client_1.default.articleSupplier.createMany({ data: lotCreates }));
-            await prisma_client_1.default.$transaction(writes);
+        if (articleCreates.length || articleUpdates.length) {
+            await prisma_client_1.default.$transaction(async (tx) => {
+                if (articleCreates.length)
+                    await tx.article.createMany({ data: articleCreates });
+                if (balanceCreates.length)
+                    await tx.stockBalance.createMany({ data: balanceCreates });
+                if (movementCreates.length)
+                    await tx.stockMovement.createMany({ data: movementCreates });
+                if (lotCreates.length)
+                    await tx.articleSupplier.createMany({ data: lotCreates });
+                // Üzerine yazılan ürünler tek tek güncellenir (dosyalar küçük;
+                // satır başına UPDATE transaction içinde kalır).
+                for (const update of articleUpdates) {
+                    await tx.article.update({ where: { id: update.id }, data: update.data });
+                }
+            });
         }
         errors.sort((a, b) => a.index - b.index);
         res.status(errors.length && !created.length ? 400 : 201).json({
             createdCount: created.length,
+            updatedCount: articleUpdates.length,
             created,
             errors,
         });
@@ -1850,12 +2288,33 @@ router.delete('/supply/requests/:id', AuthMiddleware_1.requireAuth, (0, RbacMidd
 });
 // ── Satın Alma Siparişleri (Purchase Orders) ─────────────────────────────────
 // Tek sipariş = tek tedarikçi; ürün satırları JSON snapshot olarak `items`
-// kolonunda saklanır (SupplyRequest emsali — listeleme join'siz). Mail
-// göndermek durumu DEĞİŞTİRMEZ; TO_BE_STOCKED popup'tan elle işaretlenir,
-// stoğa ekleme mark-stocked ile COMPLETED yapar. Mail gönderildikten sonra
-// ürün/tedarikçi değişikliği UPDATED + revision+1 üretir; sipariş ADI
-// değişikliği durumu asla etkilemez (kullanıcı kararı, 2026-07-29).
-const PO_STATUSES = new Set(['PENDING', 'TO_BE_STOCKED', 'COMPLETED', 'UPDATED']);
+// kolonunda saklanır (SupplyRequest emsali — listeleme join'siz).
+//
+// YAŞAM DÖNGÜSÜ (2026-08-01 genişletildi, 2026-08-02 ORDER_DRAFT eklendi):
+//   DRAFT → PRICE_REQUEST → AWAITING_CONFIRMATION ┐
+//   ORDER_DRAFT ──────────────────────────────────┴→ PENDING → TO_BE_STOCKED → COMPLETED
+//   - ORDER_DRAFT: SİPARİŞ TASLAĞI — fiyatlı, kaydedilmiş ama ONAYLANMAMIŞ
+//     sipariş. "Kaydet" bunu yazar; sipariş ancak "Onayla" ile resmîleşir
+//     (kullanıcı isteği 2026-08-02) ve o andan sonra düzenlenemez.
+//   - DRAFT: fiyat talebi taslağı (fiyatsız), henüz resmî değil.
+//   - PRICE_REQUEST: fiyatsız satırlar (seri no + ad + miktar) tedarikçiye sorulur.
+//     Fiyat talebi maili GERÇEKTEN gönderilince otomatik AWAITING_CONFIRMATION olur.
+//   - PENDING: resmî satın alma siparişi (fiyat talebi onaylanınca ya da doğrudan).
+//   - UPDATED: mail gönderildikten sonra içerik değişirse (revision+1); sipariş ADI
+//     değişikliği durumu asla etkilemez (kullanıcı kararı, 2026-07-29).
+//   - TO_BE_STOCKED: mal kabul — satırlar receive endpoint'iyle tek tek/toplu stoğa
+//     gönderilir; sipariş maili göndermek durumu DEĞİŞTİRMEZ.
+//   - COMPLETED: stoğa aktarıldı (receive `complete` ya da mark-stocked).
+const PO_STATUSES = new Set(['DRAFT', 'ORDER_DRAFT', 'PRICE_REQUEST', 'AWAITING_CONFIRMATION', 'PENDING', 'TO_BE_STOCKED', 'COMPLETED', 'UPDATED']);
+// Yeni sipariş bu durumlardan biriyle açılabilir: fiyat talebi taslağı,
+// SİPARİŞ TASLAĞI (kaydet) ya da doğrudan resmî sipariş (onayla).
+const PO_INITIAL_STATUSES = new Set(['DRAFT', 'ORDER_DRAFT', 'PRICE_REQUEST', 'PENDING']);
+// FİYAT TALEBİ AŞAMALARI — satırlar fiyatsızdır, belge "Preisanfrage"dir.
+// Frontend eşi: `utils/orderStatus.ts` → `isPriceRequestStage`.
+const PO_PRICE_REQUEST_STATUSES = new Set(['DRAFT', 'PRICE_REQUEST', 'AWAITING_CONFIRMATION']);
+// Satır hesap kipleri: AUTO hesaplar, DIRECT gönderileni saklar (eski directCopy),
+// SUPPLIER tedarikçi hesabından gelen SABİT net birim fiyatla çarpar (indirim kilitli).
+const PO_CALC_MODES = new Set(['AUTO', 'DIRECT', 'SUPPLIER']);
 const PO_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // CR/LF temizliği: SMTP başlığına yerleşen değer ek başlık enjekte edemesin.
 const poStripHeader = (value) => value.replace(/[\r\n]+/g, ' ').trim();
@@ -1886,7 +2345,28 @@ const poPercent = (value) => {
 // hesaplanır, yalnızca brüt fiyat boşsa taban olarak kullanılır (eski kayıtlar
 // ve tek fiyat taşıyan içe aktarımlar).
 //
-// ⚠ Frontend eşi: `pages/inventory/utils/orderPricing.ts` → `computeOrderLine`.
+// HESAP KİPLERİ (`calcMode`, 2026-08-01 — `directCopy` bayrağının genellemesi):
+//   AUTO     → yukarıdaki hesap: brüt fiyat tek giriştir, net TÜRETİLİR.
+//   DIRECT   → hesap ATLANIR: net birim fiyat ve satır tutarı gönderildiği gibi
+//              saklanır, 2 haneye bile YUVARLANMAZ (tedarikçi listeleri 3 ondalık
+//              kullanabilir). Gönderilen bir net fiyat ZATEN indirimlidir, bu
+//              yüzden yüzdeler onun üzerine İNMEZ — belgeden gelen nottur.
+//              YALNIZCA net fiyat hiç gelmemişse (brüt fiyat + indirim girilmiş
+//              satır) fiyat indirimden türetilir, aksi hâlde satır 0 kaydedilirdi.
+//              Eski `directCopy: true` bayrağı bu kipe eşlenir ve geriye
+//              uyumluluk için snapshot'ta da korunur.
+//   SUPPLIER → tedarikçi hesabı: NET BİRİM FİYAT SABİTTİR (tedarikçi kartındaki
+//              son alış fiyatı), indirim kilitlidir ve tutarı etkilemez; satır
+//              tutarı miktarla ORANTILI büyür (miktar × sabit net fiyat).
+// Satır KDV'si her kipte tek türetilen değerdir (tutar × oran) — KDV sütunu ORAN
+// taşır. Kip anlık görüntüde saklanır ki düzenlemede tablo aynı kiple açılsın.
+//
+// MAL KABUL: `receivedQuantity` / `receivedAt` receive endpoint'inin yazdığı
+// alanlardır; düzenleme sırasında gönderilen değerler AYNEN korunur ki bir
+// PATCH kabul geçmişini silmesin (kırpma: 0 ≤ received ≤ miktar).
+//
+// ⚠ Frontend eşi: `pages/inventory/utils/orderPricing.ts` → `computeOrderLine`
+// ve `OrderCreatePage.tsx` → `rowFigures` (kip dalları).
 const normalizePurchaseOrderItems = (raw) => {
     if (!Array.isArray(raw) || raw.length === 0)
         throw new Error('Sipariş için en az bir ürün satırı gereklidir.');
@@ -1904,11 +2384,57 @@ const normalizePurchaseOrderItems = (raw) => {
         const discount2 = poPercent(r?.discount2);
         const discount3 = poPercent(r?.discount3);
         const vatRate = poPercent(r?.vatRate);
-        // Üç indirim sırayla çarpılır ve BRÜT tutarın üzerine iner.
+        const requestedMode = String(r?.calcMode || '').toUpperCase();
+        const calcMode = PO_CALC_MODES.has(requestedMode)
+            ? requestedMode
+            : (r?.directCopy === true ? 'DIRECT' : 'AUTO');
+        // Üç indirim sırayla çarpılır ve BRÜT tutarın üzerine iner (yalnızca AUTO).
         const discountFactor = (1 - discount / 100) * (1 - discount2 / 100) * (1 - discount3 / 100);
-        const lineTotal = Math.round(quantity * grossPrice * discountFactor * 100) / 100;
-        // Net birim fiyat TÜRETİLİR — gönderilen değer yok sayılır.
-        const netPrice = Math.round(grossPrice * discountFactor * 100) / 100;
+        const sentNet = Number.isFinite(Number(r?.netPrice)) ? Number(r?.netPrice) : 0;
+        let netPrice;
+        let lineTotal;
+        if (calcMode === 'DIRECT') {
+            // Net fiyat GÖNDERİLMEMİŞSE (yalnızca brüt fiyat + indirim girilmiş
+            // satır) fiyat İNDİRİMDEN TÜRETİLİR — eskiden 0 kaydediliyordu ve
+            // girilen indirim tutara hiç yansımıyordu (kullanıcı hatası
+            // 2026-08-02: "indirimli fiyatlar kaydedilmiyor"). Net fiyat
+            // gönderilmişse o fiyat zaten indirimlidir: indirim İKİNCİ KEZ
+            // uygulanmaz, değer aynen saklanır.
+            // ⚠ Frontend eşi: `utils/orderRowMode.ts` → `draftRowFigures` DIRECT dalı.
+            netPrice = sentNet || Math.round(grossPrice * discountFactor * 100) / 100;
+            lineTotal = Number.isFinite(Number(r?.lineTotal))
+                ? Number(r?.lineTotal)
+                : Math.round(quantity * netPrice * 100) / 100;
+        }
+        else if (calcMode === 'SUPPLIER') {
+            // Sabit net birim fiyat; miktar değişince tutar orantılı ölçeklenir.
+            // ⚠ Birim fiyat YUVARLANMAZ (2026-08-02): 3 ondalıklı tedarikçi fiyatı
+            // aynen saklanır, yalnızca satır TUTARI para olarak yuvarlanır —
+            // frontend `computeOrderLine` SUPPLIER dalıyla birebir aynı kural.
+            netPrice = sentNet;
+            lineTotal = Math.round(quantity * sentNet * 100) / 100;
+        }
+        else {
+            // AUTO: net birim fiyat TÜRETİLİR — gönderilen değer yok sayılır.
+            netPrice = Math.round(grossPrice * discountFactor * 100) / 100;
+            lineTotal = Math.round(quantity * grossPrice * discountFactor * 100) / 100;
+        }
+        // GÖSTERİLEN NET FİYAT (kullanıcı isteği 2026-08-02): tedarikçi kipinde
+        // ekranda ve belgelerde TEDARİKÇİ LİSTESİNDEKİ / Excel'den gelen fiyat
+        // görünür (ör. 18.98), oysa satır tutarı belgedeki tutardır (56.93) ve
+        // tam duyarlıklı birim (18.9766…) ile hesaplanır — Excel'in kendi
+        // yuvarlaması yüzünden ikisi birbirini tutmayabilir. `netPrice` HESABIN
+        // tabanıdır, bu alan yalnızca GÖSTERİMDİR; hiçbir tutarı etkilemez.
+        const rawDisplayNet = Number(r?.displayNetPrice);
+        const displayNetPrice = Number.isFinite(rawDisplayNet) && rawDisplayNet > 0 ? rawDisplayNet : null;
+        // Mal kabul durumu düzenlemelerde kaybolmasın diye aynen taşınır.
+        const rawReceived = Number(r?.receivedQuantity);
+        const receivedQuantity = Number.isFinite(rawReceived)
+            ? Math.min(quantity, Math.max(0, rawReceived))
+            : 0;
+        const receivedAt = r?.receivedAt && !isNaN(new Date(r.receivedAt).getTime())
+            ? new Date(r.receivedAt).toISOString()
+            : null;
         return {
             itemType: r?.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
             articleId: r?.articleId ? String(r.articleId) : null,
@@ -1925,12 +2451,44 @@ const normalizePurchaseOrderItems = (raw) => {
             vatRate,
             lineTotal,
             lineVat: Math.round(lineTotal * (vatRate / 100) * 100) / 100,
+            calcMode,
+            ...(displayNetPrice !== null ? { displayNetPrice } : {}),
+            ...(receivedQuantity > 0 ? { receivedQuantity, receivedAt } : {}),
+            // Eski bayrak geriye uyumluluk için korunur (eski frontend sürümleri
+            // ve mevcut snapshot okuyucuları DIRECT kipini bundan tanır).
+            ...(calcMode === 'DIRECT' ? { directCopy: true } : {}),
         };
     });
     const totalNet = Math.round(items.reduce((sum, it) => sum + it.lineTotal, 0) * 100) / 100;
     const totalGross = Math.round(items.reduce((sum, it) => sum + it.quantity * it.grossPrice, 0) * 100) / 100;
     const totalVat = Math.round(items.reduce((sum, it) => sum + it.lineVat, 0) * 100) / 100;
     return { items, totalNet, totalGross, totalVat };
+};
+/**
+ * Sipariş düzeyi KDV kipi: LINE = satır KDV'lerinin toplamı (eski davranış),
+ * TOTAL = tek oran genel toplam üzerinden — KDV ayarları penceresinden ülke +
+ * oran seçilir ve `totalVat = (totalNet + totalFees) × oran` olarak hesaplanır.
+ *
+ * ⚠ Frontend eşi: `orderPricing.ts` → `orderVatTotal` — birlikte güncellenmelidir.
+ */
+const normalizePurchaseOrderVat = (input) => {
+    const vatMode = String(input.vatMode || 'LINE').toUpperCase() === 'TOTAL' ? 'TOTAL' : 'LINE';
+    const orderVatRate = poPercent(input.orderVatRate);
+    const orderVatCountry = input.orderVatCountry ? String(input.orderVatCountry).trim().slice(0, 80) || null : null;
+    return { vatMode, orderVatRate, orderVatCountry };
+};
+/**
+ * TOTAL kipinde sipariş KDV'si — HESAP SIRASI (kullanıcı isteği 2026-08-02):
+ *   satır tutarları toplamı + ek ücretler = MATRAH → matrah × oran = KDV.
+ * Matrah da sonuç da iki ondalığa yuvarlanır (43'721.34768 → 43'721.35).
+ *
+ * ⚠ Frontend eşi: `orderPricing.ts` → `computeOrderTotals` / `orderVatTotal`.
+ */
+const purchaseOrderTotalVat = (vat, totalNet, totalFees, lineVatSum) => {
+    if (vat.vatMode !== 'TOTAL')
+        return lineVatSum;
+    const base = Math.round((totalNet + totalFees) * 100) / 100;
+    return Math.round(base * (vat.orderVatRate / 100) * 100) / 100;
 };
 /**
  * EK ÜCRETLER (nakliye, ambalaj, montaj…) — sipariş düzeyinde ad + tutar.
@@ -1986,10 +2544,22 @@ const parsePurchaseOrderRow = (row) => {
         additionalFees = [];
     return { ...row, items, additionalFees, itemCount: items.length };
 };
-// BE-{yıl}-{sıra} ("Auftrag") — tenant başına max-scan (MaintenanceRepository
-// emsali). Yalnızca ÖNERİDİR: kullanıcı sipariş kodunu elle değiştirebilir
-// (create ve patch gövdesinde `referenceNumber`), benzersizliği DB indeksi korur.
-const PO_REFERENCE_PREFIX = 'BE-';
+/**
+ * SİPARİŞ KODU: **AU-{yıl}-{sıra3}** — AU-2026-001, AU-2026-002 … (kullanıcı
+ * isteği 2026-08-02; önceki biçim BE-{yıl}-{sıra4} idi). Tenant başına max-scan
+ * (MaintenanceRepository emsali). Yalnızca ÖNERİDİR: kullanıcı sipariş kodunu
+ * elle değiştirebilir (create ve patch gövdesinde `referenceNumber`),
+ * benzersizliği DB indeksi korur.
+ *
+ * ⚠ ESKİ "BE-" KAYITLARA DOKUNULMAZ: tarama önekle sınırlıdır, dolayısıyla AU
+ * dizisi 001'den başlar ve mevcut BE-… numaraları olduğu gibi kalır.
+ * ⚠ `PO_REFERENCE_PREFIX`, `PO_REFERENCE_SEQ_PAD` ve `PO_REFERENCE_SCAN_RE`
+ * BİRLİKTE değişmelidir — regex öneki bulamazsa sıra her seferinde 1'e döner
+ * ve P2002 çakışmasıyla kaydetme başarısız olur.
+ */
+const PO_REFERENCE_PREFIX = 'AU-';
+const PO_REFERENCE_SEQ_PAD = 3;
+const PO_REFERENCE_SCAN_RE = /^AU-\d{4}-(\d+)$/;
 const nextPurchaseOrderReference = async (tenantId) => {
     const prefix = `${PO_REFERENCE_PREFIX}${new Date().getFullYear()}-`;
     const rows = await prisma_client_1.default.purchaseOrder.findMany({
@@ -1997,10 +2567,11 @@ const nextPurchaseOrderReference = async (tenantId) => {
         select: { referenceNumber: true },
     });
     const max = rows.reduce((value, row) => {
-        const m = /^BE-\d{4}-(\d+)$/.exec(row.referenceNumber || '');
+        const m = PO_REFERENCE_SCAN_RE.exec(row.referenceNumber || '');
         return m ? Math.max(value, Number(m[1]) || 0) : value;
     }, 0);
-    return `${prefix}${String(max + 1).padStart(4, '0')}`;
+    // 999'dan sonra doğal olarak dört haneye taşar (AU-2026-1000).
+    return `${prefix}${String(max + 1).padStart(PO_REFERENCE_SEQ_PAD, '0')}`;
 };
 /** Elle girilen sipariş kodu: boş olamaz, 60 karakteri aşamaz. */
 const normalizeReferenceNumber = (value) => {
@@ -2118,6 +2689,165 @@ router.get('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
     }
 });
 /**
+ * ── ANSCHREIBEN (ön yazı) ───────────────────────────────────────────────────
+ * PDF'in ilk sayfasında pozisyon tablosundan önce basılan hitap + giriş metni.
+ * DÜZ METİNDİR: satır sonları korunur, HTML yorumlanmaz. Boş gönderilirse NULL
+ * yazılır ve PDF şablonunun KENDİ standart metni basılır — "varsayılan metin"
+ * belgede yaşar, kayıtta değil (kullanıcı isteği 2026-08-02).
+ */
+/**
+ * ALICI ADI ("Empfänger" / z.Hd.) — opsiyonel, TEK SATIR. PDF'in alıcı bloğunda
+ * firma adının altına küçük puntoyla basılır, bu yüzden kısa tutulur: satır
+ * sonları boşluğa iner ve 120 karakterde kesilir.
+ */
+const poRecipientName = (value) => {
+    if (value === null || value === undefined)
+        return null;
+    const name = String(value).replace(/[\r\n]+/g, ' ').trim().replace(/\s+/g, ' ');
+    return name ? name.slice(0, 120) : null;
+};
+const PO_COVER_LETTER_MAX = 4000;
+const poCoverLetter = (value) => {
+    if (value === null || value === undefined)
+        return null;
+    // Yalnızca satır sonu bırakan boşluklar temizlenir; iç girinti korunur.
+    const text = String(value).replace(/\r\n/g, '\n').trim();
+    if (!text)
+        return null;
+    return text.slice(0, PO_COVER_LETTER_MAX);
+};
+// ── Ön yazı TASLAKLARI (tenant geneli) ──────────────────────────────────────
+// Teklif tarafındaki `TenderTextTemplate` emsali: kayıt siparişe değil TENANT'a
+// bağlıdır, her siparişin detay penceresinden seçilip uygulanabilir. Liste
+// sayfalıdır (arayüz 15'erli gösterir) — sayfalama sunucuda yapılır ki taslak
+// sayısı büyüdükçe pencere yavaşlamasın.
+//
+// ⚠ Sıra önemli: bu yollar `/purchase-orders/:id` GET'inden ÖNCE tanımlanmalıdır,
+// aksi hâlde "text-templates" bir sipariş kimliği sanılır.
+/**
+ * @swagger
+ * /inventory/purchase-orders/text-templates:
+ *   get:
+ *     tags: [Inventory]
+ *     summary: Sipariş ön yazı taslakları (sayfalı)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/purchase-orders/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const pageSize = Math.min(50, Math.max(1, Number(req.query.pageSize) || 15));
+        const [rows, total] = await Promise.all([
+            prisma_client_1.default.purchaseOrderTextTemplate.findMany({
+                where: { tenantId },
+                orderBy: { updatedAt: 'desc' },
+                skip: (page - 1) * pageSize,
+                take: pageSize,
+            }),
+            prisma_client_1.default.purchaseOrderTextTemplate.count({ where: { tenantId } }),
+        ]);
+        res.status(200).json({ items: rows, total, page, pageSize });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/text-templates:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Ön yazı taslağı kaydet
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/purchase-orders/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const title = String(req.body?.title ?? '').trim().slice(0, 191);
+        if (!title)
+            return res.status(400).json({ error: 'Taslak başlığı zorunludur.' });
+        const content = poCoverLetter(req.body?.content);
+        if (!content)
+            return res.status(400).json({ error: 'Taslak metni boş olamaz.' });
+        const template = await prisma_client_1.default.purchaseOrderTextTemplate.create({
+            data: { id: (0, nanoid_1.nanoid)(12), tenantId, title, content, createdBy: req.user.id || null },
+        });
+        res.status(201).json(template);
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/text-templates/{templateId}:
+ *   patch:
+ *     tags: [Inventory]
+ *     summary: Ön yazı taslağını güncelle
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch('/purchase-orders/text-templates/:templateId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const templateId = String(req.params.templateId);
+        const existing = await prisma_client_1.default.purchaseOrderTextTemplate.findFirst({
+            where: { id: templateId, tenantId },
+            select: { id: true },
+        });
+        if (!existing)
+            return res.status(404).json({ error: 'Taslak bulunamadı.' });
+        const data = {};
+        if (req.body?.title !== undefined) {
+            const title = String(req.body.title ?? '').trim().slice(0, 191);
+            if (!title)
+                return res.status(400).json({ error: 'Taslak başlığı zorunludur.' });
+            data.title = title;
+        }
+        if (req.body?.content !== undefined) {
+            const content = poCoverLetter(req.body.content);
+            if (!content)
+                return res.status(400).json({ error: 'Taslak metni boş olamaz.' });
+            data.content = content;
+        }
+        if (!Object.keys(data).length)
+            return res.status(400).json({ error: 'Güncellenecek alan yok.' });
+        const template = await prisma_client_1.default.purchaseOrderTextTemplate.update({ where: { id: templateId }, data });
+        res.status(200).json(template);
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/text-templates/{templateId}:
+ *   delete:
+ *     tags: [Inventory]
+ *     summary: Ön yazı taslağını sil
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/purchase-orders/text-templates/:templateId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const templateId = String(req.params.templateId);
+        const existing = await prisma_client_1.default.purchaseOrderTextTemplate.findFirst({
+            where: { id: templateId, tenantId },
+            select: { id: true },
+        });
+        if (!existing)
+            return res.status(404).json({ error: 'Taslak bulunamadı.' });
+        await prisma_client_1.default.purchaseOrderTextTemplate.delete({ where: { id: templateId } });
+        res.status(200).json({ message: 'Taslak silindi.', templateId });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
  * @swagger
  * /inventory/purchase-orders/{id}:
  *   get:
@@ -2160,20 +2890,33 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
         for (const raw of rawOrders) {
             const { items, totalNet, totalGross, totalVat } = normalizePurchaseOrderItems(raw?.items);
             const { fees, totalFees } = normalizePurchaseOrderFees(raw?.additionalFees);
+            const vat = normalizePurchaseOrderVat(raw || {});
             const supplier = await resolvePurchaseOrderSupplier(tenantId, raw || {});
+            // Üç giriş yolu: taslak (DRAFT), fiyat talebi (PRICE_REQUEST — satırlar
+            // fiyatsız olabilir), doğrudan sipariş (PENDING, varsayılan).
+            const requestedStatus = String(raw?.status || 'PENDING').toUpperCase();
+            if (!PO_INITIAL_STATUSES.has(requestedStatus)) {
+                throw new Error('Yeni sipariş yalnızca DRAFT, PRICE_REQUEST veya PENDING durumuyla açılabilir.');
+            }
             prepared.push({
-                // Boş bırakılırsa sunucu BE-{yıl}-{sıra} üretir.
+                // Boş bırakılırsa sunucu AU-{yıl}-{sıra} üretir.
                 referenceNumber: raw?.referenceNumber ? normalizeReferenceNumber(raw.referenceNumber) : null,
                 quoteNumber: raw?.quoteNumber ? String(raw.quoteNumber).trim() || null : null,
                 orderedByName: raw?.orderedByName ? String(raw.orderedByName).trim() || null : null,
                 projectName: raw?.projectName ? String(raw.projectName).trim() || null : null,
+                // Alıcı adı opsiyoneldir; boşsa PDF bloğu bugünkü hâlinde kalır.
+                recipientName: poRecipientName(raw?.recipientName),
+                // Boş ön yazı NULL yazılır: PDF standart metnine döner.
+                coverLetter: poCoverLetter(raw?.coverLetter),
                 currency: raw?.currency ? String(raw.currency) : 'CHF',
+                status: requestedStatus,
+                ...vat,
                 ...supplier,
                 items,
                 additionalFees: fees,
                 totalNet,
                 totalGross,
-                totalVat,
+                totalVat: purchaseOrderTotalVat(vat, totalNet, totalFees, totalVat),
                 totalFees,
             });
         }
@@ -2193,7 +2936,12 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
                             quoteNumber: order.quoteNumber,
                             orderedByName: order.orderedByName,
                             projectName: order.projectName,
-                            status: 'PENDING',
+                            recipientName: order.recipientName,
+                            coverLetter: order.coverLetter,
+                            status: order.status,
+                            vatMode: order.vatMode,
+                            orderVatRate: order.orderVatRate,
+                            orderVatCountry: order.orderVatCountry,
                             supplierId: order.supplierId,
                             supplierName: order.supplierName,
                             supplierEmail: order.supplierEmail,
@@ -2259,8 +3007,19 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         if (b.projectName !== undefined) {
             data.projectName = b.projectName === null ? null : String(b.projectName).trim() || null;
         }
+        // Alıcı adı da üstbilgi alanıdır (PDF'te görünür, tutarı etkilemez).
+        if (b.recipientName !== undefined) {
+            data.recipientName = poRecipientName(b.recipientName);
+        }
+        // ÖN YAZI da üstbilgi alanıdır: proje adı gibi PDF'te görünür ama
+        // tedarikçinin ödeyeceği tutarı değiştirmediği için siparişi
+        // "güncellendi" durumuna DÜŞÜRMEZ.
+        if (b.coverLetter !== undefined) {
+            data.coverLetter = poCoverLetter(b.coverLetter);
+        }
+        const vatChanged = b.vatMode !== undefined || b.orderVatRate !== undefined || b.orderVatCountry !== undefined;
         const wantsContentChange = b.items !== undefined || b.currency !== undefined
-            || b.additionalFees !== undefined
+            || b.additionalFees !== undefined || vatChanged
             || b.supplierId !== undefined || b.supplierName !== undefined || b.supplierEmail !== undefined;
         if (wantsContentChange && existing.status === 'COMPLETED') {
             return res.status(400).json({ error: 'Tamamlanmış (stoğa eklenmiş) sipariş düzenlenemez.' });
@@ -2280,6 +3039,18 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             data.totalFees = totalFees;
             contentChanged = true;
         }
+        // KDV kipi / oranı / ülkesi — tedarikçinin ödeyeceği tutarı değiştirir.
+        if (vatChanged) {
+            const vat = normalizePurchaseOrderVat({
+                vatMode: b.vatMode !== undefined ? b.vatMode : existing.vatMode,
+                orderVatRate: b.orderVatRate !== undefined ? b.orderVatRate : existing.orderVatRate,
+                orderVatCountry: b.orderVatCountry !== undefined ? b.orderVatCountry : existing.orderVatCountry,
+            });
+            data.vatMode = vat.vatMode;
+            data.orderVatRate = vat.orderVatRate;
+            data.orderVatCountry = vat.orderVatCountry;
+            contentChanged = true;
+        }
         if (b.currency !== undefined) {
             data.currency = String(b.currency || 'CHF');
             contentChanged = true;
@@ -2296,11 +3067,39 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             data.supplierAddress = supplier.supplierAddress;
             contentChanged = true;
         }
+        // KDV toplamı üç girdinin fonksiyonu (satırlar, ek ücretler, KDV ayarı) —
+        // hangisi değişirse değişsin efektif değerlerle yeniden hesaplanır.
+        // TOTAL kipinde satır KDV toplamı yerine (net + ücretler) × oran yazılır.
+        if (vatChanged || b.items !== undefined || b.additionalFees !== undefined) {
+            let lineVatSum;
+            if (b.items !== undefined) {
+                lineVatSum = data.totalVat;
+            }
+            else {
+                let parsedItems = [];
+                try {
+                    parsedItems = JSON.parse(existing.items || '[]');
+                }
+                catch {
+                    parsedItems = [];
+                }
+                lineVatSum = Math.round(parsedItems.reduce((sum, it) => sum + (Number(it?.lineVat) || 0), 0) * 100) / 100;
+            }
+            data.totalVat = purchaseOrderTotalVat({
+                vatMode: data.vatMode ?? existing.vatMode ?? 'LINE',
+                orderVatRate: data.orderVatRate ?? existing.orderVatRate ?? 0,
+            }, data.totalNet ?? existing.totalNet ?? 0, data.totalFees ?? existing.totalFees ?? 0, lineVatSum);
+        }
         if (!Object.keys(data).length)
             return res.status(400).json({ error: 'Güncellenecek alan yok.' });
         // "Güncellendi" yalnızca mail atılmış (tedarikçinin elindeki PDF eskimiş)
-        // siparişlerde anlamlıdır; ad değişikliği bu bloğa hiç girmez.
-        if (contentChanged && existing.emailSentAt) {
+        // ve HENÜZ MAL KABULE GEÇMEMİŞ siparişlerde anlamlıdır; ad değişikliği
+        // bu bloğa hiç girmez. Fiyat talebi aşamasındaki değişiklik durumu
+        // DEĞİŞTİRMEZ (talep bağlayıcı değil), TO_BE_STOCKED'daki değişiklik de
+        // DEĞİŞTİRMEZ: mal kabul ekranında satır eklemek/silmek siparişi akışın
+        // başına döndürmemelidir (kullanıcı akışı 2026-08-02).
+        const stageTakesUpdatedFlag = existing.status === 'PENDING' || existing.status === 'UPDATED';
+        if (contentChanged && existing.emailSentAt && stageTakesUpdatedFlag) {
             data.status = 'UPDATED';
             data.revision = (existing.revision || 0) + 1;
         }
@@ -2324,7 +3123,7 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
  * /inventory/purchase-orders/{id}/status:
  *   patch:
  *     tags: [Inventory]
- *     summary: Sipariş durumunu elle değiştir (PENDING ↔ TO_BE_STOCKED)
+ *     summary: Sipariş durumunu elle değiştir (COMPLETED dışındaki durumlar arasında serbest geçiş)
  *     security:
  *       - bearerAuth: []
  */
@@ -2335,11 +3134,24 @@ router.patch('/purchase-orders/:id/status', AuthMiddleware_1.requireAuth, (0, Rb
         if (!existing)
             return res.status(404).json({ error: 'Sipariş bulunamadı.' });
         const status = String(req.body?.status || '').toUpperCase();
-        if (status !== 'PENDING' && status !== 'TO_BE_STOCKED') {
-            return res.status(400).json({ error: 'Geçersiz durum. Yalnızca PENDING veya TO_BE_STOCKED seçilebilir.' });
+        // COMPLETED yalnızca mal kabul (receive) / mark-stocked ile yazılır; buradan
+        // ne COMPLETED'a geçilebilir ne de COMPLETED'dan çıkılabilir. Diğer durumlar
+        // arasında geçiş serbesttir (onay = PRICE_REQUEST/AWAITING_CONFIRMATION →
+        // PENDING; geri alma dahil — kullanıcı akışı yönetir).
+        if (!PO_STATUSES.has(status) || status === 'COMPLETED') {
+            return res.status(400).json({ error: 'Geçersiz durum.' });
         }
         if (existing.status === 'COMPLETED') {
             return res.status(400).json({ error: 'Tamamlanmış siparişin durumu değiştirilemez.' });
+        }
+        // FİYAT TALEBİNDEN DOĞRUDAN RESMÎ SİPARİŞE GEÇİLEMEZ (kullanıcı isteği
+        // 2026-08-02): talep fiyatsızdır ve onaylanan sipariş kilitlendiği için
+        // fiyatı bir daha girilemezdi. Yol: talep → ORDER_DRAFT (siparişe
+        // dönüştür, fiyat + KDV girilir) → PENDING (siparişi oluştur).
+        if (status === 'PENDING' && PO_PRICE_REQUEST_STATUSES.has(existing.status)) {
+            return res.status(400).json({
+                error: 'Fiyat talebi doğrudan siparişe çevrilemez: önce sipariş taslağına dönüştürün ve fiyatları girin.',
+            });
         }
         const updated = await prisma_client_1.default.purchaseOrder.update({ where: { id: existing.id }, data: { status } });
         res.status(200).json(parsePurchaseOrderRow(updated));
@@ -2368,6 +3180,233 @@ router.post('/purchase-orders/:id/mark-stocked', AuthMiddleware_1.requireAuth, (
             data: { status: 'COMPLETED', stockedAt: new Date() },
         });
         res.status(200).json(parsePurchaseOrderRow(updated));
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/receive:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Mal kabul — sipariş satırlarını stoğa aktar (tek satır, seçili satırlar ya da tamamı)
+ *     security:
+ *       - bearerAuth: []
+ */
+// Mal kabul (goods receipt, 2026-08-01). Satır stoğa TEK İSTEKTE atomik aktarılır:
+// stok hareketi (IN, referenceId = sipariş id'si — hareket dökümünde siparişin
+// parçası olarak görünür) + bakiye + tedarikçi partisi + siparişin
+// `receivedQuantity` alanı birlikte yazılır; movements/bulk + ayrı durum PATCH'i
+// ikilisi yarıda kalıp stok ile sipariş kabul durumunu ayrıştırabilirdi.
+//
+// Gövde: { lines?: [{ index, quantity?, unitCost? }], complete?: boolean }
+//   - lines: satır indeksleri (tek ok = 1 satır, seçili gönder = n satır).
+//     quantity verilmezse satırın KALAN miktarı aktarılır.
+//   - complete: "mal kabulü tamamla" — lines yok sayılır, kalan TÜM satırlar
+//     aktarılır ve sipariş doğrudan COMPLETED (stoğa aktarıldı) olur.
+// Sipariş kartında olmayan ürünler (kod eşleşmedi) otomatik ürün olarak açılır
+// (kodsuz satır hata verir — kod ürün kimliğidir). Tüm satırlar aktarılınca
+// durum kendiliğinden COMPLETED + stockedAt olur, aksi halde TO_BE_STOCKED kalır.
+router.post('/purchase-orders/:id/receive', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const employeeId = req.user.id;
+        const existing = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!existing)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        if (existing.status === 'COMPLETED') {
+            return res.status(400).json({ error: 'Sipariş zaten stoğa aktarılmış.' });
+        }
+        let items = [];
+        try {
+            items = JSON.parse(existing.items || '[]');
+        }
+        catch {
+            items = [];
+        }
+        if (!items.length)
+            return res.status(400).json({ error: 'Siparişte aktarılacak satır yok.' });
+        const complete = req.body?.complete === true;
+        const rawLines = Array.isArray(req.body?.lines) ? req.body.lines : [];
+        if (!complete && !rawLines.length)
+            return res.status(400).json({ error: 'Aktarılacak satır seçilmedi.' });
+        const remainingOf = (item) => Math.max(0, (Number(item.quantity) || 0) - (Number(item.receivedQuantity) || 0));
+        // Plan: satır indeksi → aktarılacak miktar (+ opsiyonel birim maliyet).
+        const plan = new Map();
+        if (complete) {
+            items.forEach((item, index) => {
+                const remaining = remainingOf(item);
+                if (remaining > 0)
+                    plan.set(index, { quantity: remaining, unitCost: null });
+            });
+            if (!plan.size)
+                return res.status(400).json({ error: 'Tüm satırlar zaten stoğa aktarılmış.' });
+        }
+        else {
+            for (const line of rawLines) {
+                const index = Number(line?.index);
+                if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+                    return res.status(400).json({ error: `Geçersiz satır indeksi: ${line?.index}` });
+                }
+                const remaining = remainingOf(items[index]);
+                if (remaining <= 0)
+                    continue; // zaten aktarılmış satır sessizce atlanır
+                const requested = Number(line?.quantity);
+                const quantity = Number.isFinite(requested) && requested > 0 ? Math.min(requested, remaining) : remaining;
+                const rawCost = Number(line?.unitCost);
+                plan.set(index, { quantity, unitCost: Number.isFinite(rawCost) && rawCost > 0 ? rawCost : null });
+            }
+            if (!plan.size)
+                return res.status(400).json({ error: 'Seçilen satırların tamamı zaten stoğa aktarılmış.' });
+        }
+        // Ürün çözümü: önce articleId, sonra kod. Bulunamayan KODLU satırlar
+        // otomatik ürün olarak açılır; kodsuz satır aktarılamaz (kod = kimlik).
+        const planItems = Array.from(plan.keys()).map((index) => items[index]);
+        const wantedIds = planItems.map((it) => (it.articleId ? String(it.articleId) : null)).filter(Boolean);
+        const wantedCodes = planItems.map((it) => String(it.code || '').trim()).filter(Boolean);
+        const [defaultLocation, articleRows, supplierRow] = await Promise.all([
+            repository.ensureDefaultLocation(tenantId),
+            wantedIds.length || wantedCodes.length
+                ? prisma_client_1.default.article.findMany({
+                    where: {
+                        tenantId,
+                        deletedAt: null,
+                        OR: [
+                            ...(wantedIds.length ? [{ id: { in: wantedIds } }] : []),
+                            ...(wantedCodes.length ? [{ articleCode: { in: wantedCodes } }] : []),
+                        ],
+                    },
+                    select: { id: true, articleCode: true },
+                })
+                : Promise.resolve([]),
+            existing.supplierId
+                ? prisma_client_1.default.supplier.findFirst({ where: { id: existing.supplierId, tenantId }, select: { id: true } })
+                : Promise.resolve(null),
+        ]);
+        const articleById = new Map(articleRows.map((row) => [row.id, row]));
+        const articleByCode = new Map(articleRows.map((row) => [row.articleCode, row]));
+        const supplierId = supplierRow?.id || null;
+        const errors = [];
+        const articleCreates = [];
+        const movementCreates = [];
+        const lotCreates = [];
+        const deltaByArticle = new Map();
+        const preferredByArticle = new Map();
+        const received = [];
+        const now = new Date();
+        for (const [index, entry] of plan) {
+            const item = items[index];
+            const code = String(item.code || '').trim();
+            let article = item.articleId ? articleById.get(String(item.articleId)) : undefined;
+            if (!article && code)
+                article = articleByCode.get(code);
+            if (!article) {
+                if (!code) {
+                    errors.push({ index, error: 'Satırın ürün kodu yok; stoğa aktarılamaz.' });
+                    continue;
+                }
+                // Otomatik ürün açılışı (mal kabulden gelen tanım) — bulk ürün
+                // girişindeki alan seti, miktar hareketi aşağıda ayrıca yazılır.
+                article = { id: (0, nanoid_1.nanoid)(10), articleCode: code };
+                articleCreates.push({
+                    id: article.id,
+                    tenantId,
+                    articleCode: code,
+                    name: String(item.name || code),
+                    unit: item.unit ? String(item.unit) : 'Adet',
+                    baseCost: entry.unitCost ?? (Number(item.netPrice) > 0 ? Number(item.netPrice) : 0),
+                    salePrice: 0,
+                    defaultSupplierId: supplierId,
+                    itemType: item.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
+                    status: 'ACTIVE',
+                    isActive: true,
+                    lastPurchaseDate: now,
+                });
+                articleByCode.set(code, article);
+            }
+            // Birim maliyet: satırdan gelmezse siparişteki NET birim fiyat
+            // (ağırlıklı ortalama maliyeti sipariş gerçeğiyle besler).
+            const unitCost = entry.unitCost ?? (Number(item.netPrice) > 0 ? Number(item.netPrice) : null);
+            const movementId = (0, nanoid_1.nanoid)(12);
+            movementCreates.push({
+                id: movementId,
+                tenantId,
+                articleId: article.id,
+                movementType: 'IN',
+                quantity: entry.quantity,
+                unitCost,
+                sourceLocationId: null,
+                destinationLocationId: defaultLocation.id,
+                employeeId,
+                supplierId,
+                // Hareket dökümünde siparişin parçası olarak görünür.
+                referenceId: existing.id,
+                // AÇIKLAMA = YALNIZCA TEDARİKÇİ ADI (kullanıcı isteği
+                // 2026-08-02): stok hareketleri listesinde "malı kimden
+                // aldık" okunur olsun. Sipariş bağlantısı `referenceId` ile
+                // zaten duruyor, bu yüzden "Wareneingang {Auftrag}" metni
+                // kaldırıldı; tedarikçi adı yoksa alan boş bırakılır.
+                description: existing.supplierName ? String(existing.supplierName).trim() || null : null,
+                transactionDate: now,
+            });
+            deltaByArticle.set(article.id, (deltaByArticle.get(article.id) ?? 0) + entry.quantity);
+            if (supplierId) {
+                const purchasePrice = unitCost && unitCost > 0 ? unitCost : 0;
+                lotCreates.push({
+                    id: (0, nanoid_1.nanoid)(10),
+                    tenantId,
+                    articleId: article.id,
+                    supplierId,
+                    locationId: defaultLocation.id,
+                    purchasePrice,
+                    quantity: entry.quantity,
+                    remainingQuantity: entry.quantity,
+                    lastPurchaseDate: now,
+                    stockMovementId: movementId,
+                    isPreferred: true,
+                });
+                preferredByArticle.set(article.id, { supplierId, purchasePrice });
+            }
+            item.articleId = article.id;
+            item.receivedQuantity = Math.min(Number(item.quantity) || 0, (Number(item.receivedQuantity) || 0) + entry.quantity);
+            item.receivedAt = now.toISOString();
+            received.push({ index, quantity: entry.quantity });
+        }
+        if (!movementCreates.length) {
+            return res.status(400).json({ error: errors[0]?.error || 'Aktarılabilecek satır yok.', errors });
+        }
+        const allReceived = items.every((item) => remainingOf(item) <= 0);
+        const updated = await prisma_client_1.default.$transaction(async (tx) => {
+            if (articleCreates.length)
+                await tx.article.createMany({ data: articleCreates });
+            await tx.stockMovement.createMany({ data: movementCreates });
+            await bulkApplyStockBalanceDeltas(tx, tenantId, defaultLocation.id, deltaByArticle);
+            if (lotCreates.length) {
+                await tx.articleSupplier.updateMany({
+                    where: { tenantId, articleId: { in: Array.from(preferredByArticle.keys()) } },
+                    data: { isPreferred: false },
+                });
+                await tx.articleSupplier.createMany({ data: lotCreates });
+                await bulkUpdateArticlePurchases(tx, tenantId, preferredByArticle);
+            }
+            return tx.purchaseOrder.update({
+                where: { id: existing.id },
+                data: {
+                    items: JSON.stringify(items),
+                    // Kısmî kabul siparişi "mal kabul" aşamasında tutar; son satır
+                    // da aktarılınca sipariş kendiliğinden stoğa aktarıldı olur.
+                    status: allReceived ? 'COMPLETED' : 'TO_BE_STOCKED',
+                    ...(allReceived ? { stockedAt: now } : {}),
+                },
+            });
+        });
+        res.status(200).json({
+            processedCount: received.length,
+            received,
+            errors,
+            order: parsePurchaseOrderRow(updated),
+        });
     }
     catch (error) {
         res.status(400).json({ error: error.message });
@@ -2423,7 +3462,16 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
             return res.status(400).json({ error: 'Gönderici e-posta adresi yapılandırılmamış.' });
         }
         const fromName = poStripHeader(String(settings?.fromName || 'Offitec ERP')).slice(0, 100) || 'Offitec ERP';
-        const subject = poStripHeader(String(req.body?.subject || `Bestellung ${existing.referenceNumber}`));
+        // Fiyat talebi aşamasındaki siparişin maili "Preisanfrage" konusuyla
+        // çıkar. DRAFT da bu aşamadadır (kaydedilmiş fiyat talebi taslağı);
+        // ORDER_DRAFT ise FİYATLI bir sipariş taslağıdır → normal sipariş maili.
+        const isPriceRequestMail = existing.status === 'DRAFT'
+            || existing.status === 'PRICE_REQUEST'
+            || existing.status === 'AWAITING_CONFIRMATION';
+        // Almanca belge adı "Auftrag"dır (kullanıcı isteği 2026-08-02) —
+        // PDF başlığıyla ve arayüzdeki sözlükle aynı kelime.
+        const defaultSubject = `${isPriceRequestMail ? 'Preisanfrage' : 'Auftrag'} ${existing.referenceNumber}`;
+        const subject = poStripHeader(String(req.body?.subject || defaultSubject));
         if (!subject)
             return res.status(400).json({ error: 'Konu boş olamaz.' });
         if (subject.length > 200)
@@ -2431,6 +3479,30 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
         const message = String(req.body?.message || '').trim();
         if (message.length > 5000)
             return res.status(400).json({ error: 'Mesaj çok uzun.' });
+        // ── CC (kullanıcı isteği 2026-08-02) ─────────────────────────────
+        // ALICI (`to`) tedarikçinin adresiyle SINIRLIDIR (açık relay engeli);
+        // CC ise serbesttir — takvim tarafındaki `sanitizeCcEmails` emsali:
+        // kullanıcı kendi ekibinden birini ya da tedarikçinin ikinci bir
+        // adresini kopyaya alabilir. Sertleştirme: başlık kırpma (CRLF
+        // enjeksiyonu), biçim denetimi, ALICININ KENDİSİ elenir (aynı adrese
+        // iki kopya gitmesin), tekrarlar atılır ve liste 10 adresle sınırlıdır.
+        const ccSeen = new Set([to.toLowerCase()]);
+        const ccEmails = [];
+        const rawCc = Array.isArray(req.body?.ccEmails)
+            ? req.body.ccEmails
+            : String(req.body?.ccEmails ?? '').split(',');
+        for (const value of rawCc) {
+            const email = poStripHeader(String(value ?? ''));
+            if (!email || !PO_EMAIL_RE.test(email))
+                continue;
+            const key = email.toLowerCase();
+            if (ccSeen.has(key))
+                continue;
+            ccSeen.add(key);
+            ccEmails.push(email);
+        }
+        if (ccEmails.length > 10)
+            return res.status(400).json({ error: 'En fazla 10 CC adresi eklenebilir.' });
         // Ekler: yalnızca gövde içi PDF/PNG/JPG, adet + boyut sınırlı (tender emsali).
         const rawAttachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
         if (rawAttachments.length > 5)
@@ -2467,6 +3539,7 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
             fromEmail,
             fromName,
             to,
+            cc: ccEmails,
             subject,
             text: `${message}${signature.text}`,
             html,
@@ -2476,11 +3549,19 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
         });
         // preview = SMTP yapılandırılmamış, gerçek gönderim yok → emailSentAt
         // damgalanmaz; UPDATED/revizyon mantığı gerçek gönderime bağlıdır.
+        // Fiyat talebi (taslak dahil) GERÇEKTEN gönderilince sipariş
+        // kendiliğinden "onay bekliyor" durumuna ilerler (kullanıcı akışı).
         let order = existing;
         if (!result.preview) {
             order = await prisma_client_1.default.purchaseOrder.update({
                 where: { id: existing.id },
-                data: { emailSentAt: new Date(), emailRecipient: to },
+                data: {
+                    emailSentAt: new Date(),
+                    emailRecipient: to,
+                    ...(existing.status === 'DRAFT' || existing.status === 'PRICE_REQUEST'
+                        ? { status: 'AWAITING_CONFIRMATION' }
+                        : {}),
+                },
             });
         }
         res.status(200).json({

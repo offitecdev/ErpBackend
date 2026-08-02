@@ -173,6 +173,8 @@ model Appointment {
   endTime                    DateTime
   status                     AppointmentStatus              @default(AVAILABLE)
   notes                      String?                        @db.Text
+  // Bilgi (CC) e-posta adresleri — ["a@b.com", ...]; randevu maillerinde kullanılır.
+  ccEmails                   Json?
   isLocked                   Boolean                        @default(false)
   installationReminderSentAt DateTime?
   tenant                     Tenant                         @relation(fields: [tenantId], references: [id])

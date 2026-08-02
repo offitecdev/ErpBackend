@@ -50,6 +50,8 @@ export class Tender {
         /** JSON [{name, kind, value}] — belge düzeyi yığılmış iskontolar. */
         public totalDiscounts?: string | null,
         public paymentStages?: string | null,
+        /** Kundenreferenz — "Referenz" on the offer PDF (customer-supplied). */
+        public customerReference?: string | null,
     ){}
 }
 

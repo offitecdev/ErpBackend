@@ -8,24 +8,13 @@ exports.getServiceTenantScope = getServiceTenantScope;
 exports.getCompanyTreeTenantIds = getCompanyTreeTenantIds;
 exports.getCustomerInServiceTenantScope = getCustomerInServiceTenantScope;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
-const getDescendantTenantIds = (tenants, rootId) => {
-    const result = new Set([rootId]);
-    let changed = true;
-    while (changed) {
-        changed = false;
-        for (const tenant of tenants) {
-            if (tenant.parentTenantId && result.has(tenant.parentTenantId) && !result.has(tenant.id)) {
-                result.add(tenant.id);
-                changed = true;
-            }
-        }
-    }
-    return Array.from(result);
-};
+const tenantTree_1 = require("../../shared/tenantTree");
+// Tenant tablosu artık istek başına değil, paylaşılan önbellekten okunuyor —
+// aşağıdaki iki yardımcı her CRM/servis isteğinde çağrıldığı için bu tek başına
+// istek başına ~170 ms'lik bir ağ turunu kaldırıyor.
+const getDescendantTenantIds = tenantTree_1.collectDescendantIds;
 async function getServiceTenantScope(selectedTenantId) {
-    const tenants = await prisma_client_1.default.tenant.findMany({
-        select: { id: true, parentTenantId: true, isActive: true },
-    });
+    const tenants = await (0, tenantTree_1.getAllTenants)();
     const selectedTenant = tenants.find((tenant) => tenant.id === selectedTenantId);
     if (!selectedTenant?.isActive)
         return [];
@@ -41,9 +30,7 @@ async function getServiceTenantScope(selectedTenantId) {
  * business data (calls, contracts, customers…), which stays per-tenant.
  */
 async function getCompanyTreeTenantIds(selectedTenantId) {
-    const tenants = await prisma_client_1.default.tenant.findMany({
-        select: { id: true, parentTenantId: true, isActive: true },
-    });
+    const tenants = await (0, tenantTree_1.getAllTenants)();
     const byId = new Map(tenants.map((tenant) => [tenant.id, tenant]));
     let current = byId.get(selectedTenantId);
     if (!current?.isActive)

@@ -1,32 +1,13 @@
 import prisma from '../../infrastructure/database/prisma.client';
+import { collectDescendantIds, getAllTenants } from '../../shared/tenantTree';
 
-type TenantLite = {
-    id: string;
-    parentTenantId: string | null;
-    isActive: boolean;
-};
-
-const getDescendantTenantIds = (tenants: TenantLite[], rootId: string) => {
-    const result = new Set<string>([rootId]);
-    let changed = true;
-
-    while (changed) {
-        changed = false;
-        for (const tenant of tenants) {
-            if (tenant.parentTenantId && result.has(tenant.parentTenantId) && !result.has(tenant.id)) {
-                result.add(tenant.id);
-                changed = true;
-            }
-        }
-    }
-
-    return Array.from(result);
-};
+// Tenant tablosu artık istek başına değil, paylaşılan önbellekten okunuyor —
+// aşağıdaki iki yardımcı her CRM/servis isteğinde çağrıldığı için bu tek başına
+// istek başına ~170 ms'lik bir ağ turunu kaldırıyor.
+const getDescendantTenantIds = collectDescendantIds;
 
 export async function getServiceTenantScope(selectedTenantId: string): Promise<string[]> {
-    const tenants = await prisma.tenant.findMany({
-        select: { id: true, parentTenantId: true, isActive: true },
-    });
+    const tenants = await getAllTenants();
     const selectedTenant = tenants.find((tenant) => tenant.id === selectedTenantId);
 
     if (!selectedTenant?.isActive) return [];
@@ -46,9 +27,7 @@ export async function getServiceTenantScope(selectedTenantId: string): Promise<s
  * business data (calls, contracts, customers…), which stays per-tenant.
  */
 export async function getCompanyTreeTenantIds(selectedTenantId: string): Promise<string[]> {
-    const tenants = await prisma.tenant.findMany({
-        select: { id: true, parentTenantId: true, isActive: true },
-    });
+    const tenants = await getAllTenants();
     const byId = new Map(tenants.map((tenant) => [tenant.id, tenant]));
     let current = byId.get(selectedTenantId);
     if (!current?.isActive) return [];

@@ -30,6 +30,9 @@ model Tender {
   priceList                 String?
   paymentTerms              String?
   commissionNumber          String?
+  // Kundenreferenz — the reference the CUSTOMER supplied ("Referenz" on the
+  // offer PDF). Distinct from commissionNumber (our commission label).
+  customerReference         String?
   // Currency the offer is denominated in (CHF/EUR/USD/GBP/TRY). Symbol-only:
   // it changes how amounts are displayed/exported, not their numeric value.
   currency                  String?
@@ -62,7 +65,8 @@ model Tender {
   // ── Optional PDF content blocks ──
   // Rich text (HTML: bold / italic / colour). All three are optional and the
   // document renders without them.
-  // Letter printed on its own page, straight after the cover page.
+  // Intro text (Einleitungstext) printed on page 1, directly below the offer
+  // title — not on a separate page. Usually applied from a TenderTextTemplate.
   coverLetter          String?               @db.LongText
   // Note printed after the totals, at the end of the document.
   closingNote          String?               @db.LongText
@@ -248,6 +252,23 @@ model TenderMailDraft {
   @@index([tenantId])
 }
 
+// Tenant-wide reusable intro-text templates (Textbausteine) for the offer's
+// Einleitungstext. `isDefault` marks the one pre-filled into new offers; the
+// picker popup lists all of them and "+" adds more.
+model TenderTextTemplate {
+  id        String   @id
+  tenantId  String
+  title     String   @default("")
+  // Rich HTML (bold / italic / bullet lists) — same dialect as coverLetter.
+  content   String?  @db.LongText
+  isDefault Boolean  @default(false)
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
 model TenderActivityLog {
   id          String   @id
   tenantId    String
@@ -268,4 +289,19 @@ model TenderActivityLog {
   @@index([positionId])
   @@index([mappingId])
   @@index([articleId])
+}
+
+// Durable, small derivatives used by offer PDFs. This is a separate table so
+// ordinary Article/Position reads never accidentally select another image blob.
+model PdfImageThumbnail {
+  id            String   @id
+  tenantId      String
+  sourceType    String
+  sourceId      String
+  sourceVersion String?
+  imageUrl      String   @db.LongText
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([tenantId, sourceType, sourceId])
 }

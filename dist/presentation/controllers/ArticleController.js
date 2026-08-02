@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ArticleController = void 0;
 const nanoid_1 = require("nanoid");
+const richText_1 = require("../../shared/richText");
 class ArticleController {
     articleRepository;
     inventoryRepository;
@@ -77,7 +78,8 @@ class ArticleController {
                 salePrice: Number(salePrice ?? 0),
                 defaultSupplierId: defaultSupplierId ?? null,
                 unit,
-                description: description ?? null,
+                // Açıklama biçimli metindir (kalın/italik/madde) — dar beyaz listeden geçer.
+                description: (0, richText_1.normalizeRichText)(description),
                 systemBarcode: systemBarcode ?? null,
                 supplierBarcode: supplierBarcode ?? null,
                 imageUrl: imageUrl ?? null,
@@ -107,6 +109,8 @@ class ArticleController {
             delete patch.tenderId;
             delete patch.positionId;
             delete patch.mappingId;
+            if ('description' in patch)
+                patch.description = (0, richText_1.normalizeRichText)(patch.description);
             if (patch.baseCost != null)
                 patch.baseCost = Number(patch.baseCost);
             if (patch.salePrice != null)

@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { IPositionRepository } from "../../domain/repositories/IPositionRepository";
 import { Position } from "../../domain/entities/Position";
 import { CalculationItem } from "../../domain/entities/CalculationItem";
+import { persistPdfThumbnail } from "../services/PdfImageThumbnailService";
 
 export class PositionRepository implements IPositionRepository {
 
@@ -174,30 +175,43 @@ export class PositionRepository implements IPositionRepository {
             return;
         }
 
-        const data = positions.map(p => ({
-            id: p.id!,
-            tenantId: p.tenantId!,
-            tenderId: p.tenderId!,
-            parentPositionId: p.parentPositionId || null,
-            rowType: (p as any).rowType || 'SECTION',
-            sourceArticleId: (p as any).sourceArticleId || null,
-            displayOrder: Number((p as any).displayOrder ?? 0),
-            positionNumber: p.positionNumber!,
-            shortDescription: p.shortDescription!,
-            longDescription: p.longDescription || null,
-            hierarchyLevel: p.hierarchyLevel ?? 0,
-            quantity: p.quantity ?? 0,
-            unit: p.unit || null,
-            npkCode: p.npkCode || null,
-            unitPrice: (p as any).unitPrice ?? null,
-            discount: (p as any).discount ?? 0,
-            taxRate: (p as any).taxRate ?? 0,
-            imageUrl: (p as any).imageUrl ?? null
-        }));
+        const data = positions.map((p) => {
+            const imageUrl = (p as any).imageUrl ?? null;
+            return {
+                id: p.id!,
+                tenantId: p.tenantId!,
+                tenderId: p.tenderId!,
+                parentPositionId: p.parentPositionId || null,
+                rowType: (p as any).rowType || 'SECTION',
+                sourceArticleId: (p as any).sourceArticleId || null,
+                displayOrder: Number((p as any).displayOrder ?? 0),
+                positionNumber: p.positionNumber!,
+                shortDescription: p.shortDescription!,
+                longDescription: p.longDescription || null,
+                hierarchyLevel: p.hierarchyLevel ?? 0,
+                quantity: p.quantity ?? 0,
+                unit: p.unit || null,
+                npkCode: p.npkCode || null,
+                unitPrice: (p as any).unitPrice ?? null,
+                discount: (p as any).discount ?? 0,
+                taxRate: (p as any).taxRate ?? 0,
+                imageUrl,
+            };
+        });
 
         await prisma.position.createMany({
             data
         });
+        await Promise.all(positions.map(async (position) => {
+            const imageUrl = (position as any).imageUrl ?? null;
+            if (!imageUrl) return;
+            await persistPdfThumbnail(
+                position.tenantId!,
+                'POSITION',
+                position.id!,
+                imageUrl,
+            );
+        }));
     }
 
     async findById(positionId: string, options?: { includeImages?: boolean }): Promise<any | null> {
@@ -267,7 +281,7 @@ export class PositionRepository implements IPositionRepository {
     }
 
     async deletePosition(positionId: string): Promise<void> {
-        await prisma.$transaction(async (tx) => {
+        const deletedIds = await prisma.$transaction(async (tx) => {
             // Collect the whole subtree breadth-first: one query per depth level
             // instead of one query per node (avoids the N+1 tree walk).
             const allIds: string[] = [positionId];
@@ -286,7 +300,13 @@ export class PositionRepository implements IPositionRepository {
             // The parentPosition relation is optional (onDelete: SetNull), so a single
             // bulk delete is FK-safe regardless of parent/child ordering.
             await tx.position.deleteMany({ where: { id: { in: allIds } } });
+            return allIds;
         });
+        // Thumbnail cleanup is independent and must not make the real deletion
+        // fail during a rolling deployment where the cache table is not ready yet.
+        await prisma.pdfImageThumbnail.deleteMany({
+            where: { sourceType: 'POSITION', sourceId: { in: deletedIds } },
+        }).catch(() => undefined);
     }
 
     async updatePosition(positionId: string, patch: {
@@ -308,17 +328,28 @@ export class PositionRepository implements IPositionRepository {
         if (patch.unitPrice !== undefined) data.unitPrice = patch.unitPrice;
         if (patch.discount !== undefined) data.discount = patch.discount;
         if (patch.taxRate !== undefined) data.taxRate = patch.taxRate;
-        if (patch.imageUrl !== undefined) data.imageUrl = patch.imageUrl;
+        if (patch.imageUrl !== undefined) {
+            data.imageUrl = patch.imageUrl;
+        }
         if (patch.npkCode !== undefined) data.npkCode = patch.npkCode;
         if ((patch as any).rowType !== undefined) data.rowType = (patch as any).rowType;
         if ((patch as any).sourceArticleId !== undefined) data.sourceArticleId = (patch as any).sourceArticleId;
         if ((patch as any).displayOrder !== undefined) data.displayOrder = Number((patch as any).displayOrder);
         // Scalar-only and image-less: avoids downloading base64 data and avoids
         // relation queries that the client already has in local state.
-        return await prisma.position.update({
+        const updated = await prisma.position.update({
             where: { id: positionId },
             data,
             select: this.positionMutationSelect(),
         });
+        if (patch.imageUrl !== undefined) {
+            await persistPdfThumbnail(
+                updated.tenantId,
+                'POSITION',
+                updated.id,
+                patch.imageUrl,
+            );
+        }
+        return updated;
     }
 }

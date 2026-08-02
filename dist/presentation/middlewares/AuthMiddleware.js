@@ -1,43 +1,17 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.requireAuth = exports.findTenantRootId = void 0;
-const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService");
 const authCookies_1 = require("../utils/authCookies");
 const tenantAccess_1 = require("../utils/tenantAccess");
-const findTenantRootId = async (tenantId) => {
-    const cached = tenantRootCache.get(tenantId);
-    if (cached && cached.expiresAt > Date.now()) {
-        return cached.rootId;
-    }
-    const first = await prisma_client_1.default.tenant.findUnique({
-        where: { id: tenantId },
-        select: { id: true, parentTenantId: true, isActive: true },
-    });
-    if (!first?.isActive)
-        return null;
-    let current = first;
-    for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
-        const parent = await prisma_client_1.default.tenant.findUnique({
-            where: { id: current.parentTenantId },
-            select: { id: true, parentTenantId: true, isActive: true },
-        });
-        if (!parent?.isActive)
-            return null;
-        current = parent;
-    }
-    tenantRootCache.set(tenantId, {
-        rootId: current.id,
-        expiresAt: Date.now() + TENANT_ROOT_CACHE_TTL_MS,
-    });
-    return current.id;
-};
-exports.findTenantRootId = findTenantRootId;
-const TENANT_ROOT_CACHE_TTL_MS = 60_000;
-const tenantRootCache = new Map();
+const authIdentityCache_1 = require("../../shared/authIdentityCache");
+const tenantTree_1 = require("../../shared/tenantTree");
+/**
+ * Şirket ağacındaki kök tenant. Zincir artık tenant tablosunun paylaşılan
+ * önbelleğinden bellekte yürünüyor: eskiden her seviye ayrı bir `findUnique`
+ * turuydu ve tenant başına ayrı bir kök önbelleği tutuluyordu.
+ */
+exports.findTenantRootId = tenantTree_1.findTenantRootIdCached;
 /**
  * The employee's assigned companies, reduced to the ones that really sit in
  * their own company tree and are still active. An assignment may only ever
@@ -111,19 +85,11 @@ const requireAuth = async (req, res, next) => {
         // and carrying typ=access is accepted here — a refresh (or activation,
         // reset, deletion) token can never authorize an API request.
         const decoded = JwtTokenService_1.jwtTokenService.verifyToken('access', token);
-        // The token being valid is not enough: the account's current state is
-        // checked in the database on every authorized request.
-        const employee = await prisma_client_1.default.employee.findUnique({
-            where: { id: decoded.id },
-            select: {
-                isActive: true,
-                deletedAt: true,
-                bannedAt: true,
-                passwordChangedAt: true,
-                // Company assignment: which tenants of the tree this account may use.
-                allowedTenantIds: true,
-            },
-        });
+        // The token being valid is not enough: the account's current state
+        // (active / banned / deleted, password generation, company assignment)
+        // still gates every authorized request. It is read through a short-lived
+        // cache that every account mutation invalidates — see authIdentityCache.
+        const employee = await (0, authIdentityCache_1.getAuthIdentity)(decoded.id);
         // These states mean the whole session is dead (refresh would fail
         // too), so the server clears its cookies. An *expired* access token, in
         // contrast, must NOT clear anything — the refresh cookie is still valid

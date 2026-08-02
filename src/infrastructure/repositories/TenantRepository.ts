@@ -1,6 +1,7 @@
 import prisma from "../database/prisma.client";
 import { ITenantRepository } from "../../domain/repositories/ITenantRepository";
 import { Tenant } from "../../domain/entities/Tenant";
+import { invalidateTenantTree } from "../../shared/tenantTree";
 import { nanoid } from 'nanoid';
 export class TenantRepository implements ITenantRepository{
 
@@ -30,14 +31,17 @@ export class TenantRepository implements ITenantRepository{
                 isProjectModuleEnabled: tenantData.isProjectModuleEnabled ?? false,
             }
         });
+        // Şirket ağacı önbelleği (tenantTree) yeni/değişen tenant'ı hemen görmeli.
+        invalidateTenantTree();
         return this.mapToEntity(data);
     }
-    
-    async update(id: string, tenantData: Partial<Tenant>): Promise<Tenant> {  
+
+    async update(id: string, tenantData: Partial<Tenant>): Promise<Tenant> {
         const data = await prisma.tenant.update({
             where: { id },
             data: tenantData as any
         });
+        invalidateTenantTree();
         return this.mapToEntity(data);
     }
      async findById(id: string): Promise<Tenant | null> {

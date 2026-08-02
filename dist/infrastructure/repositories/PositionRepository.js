@@ -8,6 +8,7 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const nanoid_1 = require("nanoid");
 const Position_1 = require("../../domain/entities/Position");
 const CalculationItem_1 = require("../../domain/entities/CalculationItem");
+const PdfImageThumbnailService_1 = require("../services/PdfImageThumbnailService");
 class PositionRepository {
     articleSelect(includeImages = false) {
         return {
@@ -145,29 +146,38 @@ class PositionRepository {
         if (!positions || positions.length === 0) {
             return;
         }
-        const data = positions.map(p => ({
-            id: p.id,
-            tenantId: p.tenantId,
-            tenderId: p.tenderId,
-            parentPositionId: p.parentPositionId || null,
-            rowType: p.rowType || 'SECTION',
-            sourceArticleId: p.sourceArticleId || null,
-            displayOrder: Number(p.displayOrder ?? 0),
-            positionNumber: p.positionNumber,
-            shortDescription: p.shortDescription,
-            longDescription: p.longDescription || null,
-            hierarchyLevel: p.hierarchyLevel ?? 0,
-            quantity: p.quantity ?? 0,
-            unit: p.unit || null,
-            npkCode: p.npkCode || null,
-            unitPrice: p.unitPrice ?? null,
-            discount: p.discount ?? 0,
-            taxRate: p.taxRate ?? 0,
-            imageUrl: p.imageUrl ?? null
-        }));
+        const data = positions.map((p) => {
+            const imageUrl = p.imageUrl ?? null;
+            return {
+                id: p.id,
+                tenantId: p.tenantId,
+                tenderId: p.tenderId,
+                parentPositionId: p.parentPositionId || null,
+                rowType: p.rowType || 'SECTION',
+                sourceArticleId: p.sourceArticleId || null,
+                displayOrder: Number(p.displayOrder ?? 0),
+                positionNumber: p.positionNumber,
+                shortDescription: p.shortDescription,
+                longDescription: p.longDescription || null,
+                hierarchyLevel: p.hierarchyLevel ?? 0,
+                quantity: p.quantity ?? 0,
+                unit: p.unit || null,
+                npkCode: p.npkCode || null,
+                unitPrice: p.unitPrice ?? null,
+                discount: p.discount ?? 0,
+                taxRate: p.taxRate ?? 0,
+                imageUrl,
+            };
+        });
         await prisma_client_1.default.position.createMany({
             data
         });
+        await Promise.all(positions.map(async (position) => {
+            const imageUrl = position.imageUrl ?? null;
+            if (!imageUrl)
+                return;
+            await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(position.tenantId, 'POSITION', position.id, imageUrl);
+        }));
     }
     async findById(positionId, options) {
         return await prisma_client_1.default.position.findUnique({
@@ -229,7 +239,7 @@ class PositionRepository {
         return data ? this.mapToCalculationEntity(data) : null;
     }
     async deletePosition(positionId) {
-        await prisma_client_1.default.$transaction(async (tx) => {
+        const deletedIds = await prisma_client_1.default.$transaction(async (tx) => {
             // Collect the whole subtree breadth-first: one query per depth level
             // instead of one query per node (avoids the N+1 tree walk).
             const allIds = [positionId];
@@ -247,7 +257,13 @@ class PositionRepository {
             // The parentPosition relation is optional (onDelete: SetNull), so a single
             // bulk delete is FK-safe regardless of parent/child ordering.
             await tx.position.deleteMany({ where: { id: { in: allIds } } });
+            return allIds;
         });
+        // Thumbnail cleanup is independent and must not make the real deletion
+        // fail during a rolling deployment where the cache table is not ready yet.
+        await prisma_client_1.default.pdfImageThumbnail.deleteMany({
+            where: { sourceType: 'POSITION', sourceId: { in: deletedIds } },
+        }).catch(() => undefined);
     }
     async updatePosition(positionId, patch) {
         const data = {};
@@ -265,8 +281,9 @@ class PositionRepository {
             data.discount = patch.discount;
         if (patch.taxRate !== undefined)
             data.taxRate = patch.taxRate;
-        if (patch.imageUrl !== undefined)
+        if (patch.imageUrl !== undefined) {
             data.imageUrl = patch.imageUrl;
+        }
         if (patch.npkCode !== undefined)
             data.npkCode = patch.npkCode;
         if (patch.rowType !== undefined)
@@ -277,11 +294,15 @@ class PositionRepository {
             data.displayOrder = Number(patch.displayOrder);
         // Scalar-only and image-less: avoids downloading base64 data and avoids
         // relation queries that the client already has in local state.
-        return await prisma_client_1.default.position.update({
+        const updated = await prisma_client_1.default.position.update({
             where: { id: positionId },
             data,
             select: this.positionMutationSelect(),
         });
+        if (patch.imageUrl !== undefined) {
+            await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(updated.tenantId, 'POSITION', updated.id, patch.imageUrl);
+        }
+        return updated;
     }
 }
 exports.PositionRepository = PositionRepository;

@@ -97,6 +97,31 @@ router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermi
 router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.view'), (req, res) => employeeController.list(req, res));
 /**
  * @swagger
+ * /employees/directory:
+ *   get:
+ *     tags: [Employees]
+ *     summary: Şirket rehberi (ad, rol, e-posta) — toplantı/CC seçicileri için
+ *     description: >
+ *       Her oturum açmış personel erişebilir; `employees.view` yetkisi gerektirmez.
+ *       Yalnızca ad, unvan/rol ve iş e-postası döner.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: isActive
+ *         schema:
+ *           type: boolean
+ *         description: Varsayılan true — yalnızca aktif personel
+ *     responses:
+ *       200:
+ *         description: Personel rehberi
+ *       401:
+ *         description: Yetkisiz
+ */
+// Must stay above '/:id', otherwise "directory" is read as an employee id.
+router.get('/directory', AuthMiddleware_1.requireAuth, (req, res) => employeeController.directory(req, res));
+/**
+ * @swagger
  * /employees/{id}:
  *   get:
  *     tags: [Employees]

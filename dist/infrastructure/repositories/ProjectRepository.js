@@ -435,6 +435,8 @@ class ProjectRepository {
             where.status = filter.status;
         if (filter.managerId)
             where.managerId = filter.managerId;
+        if (filter.customerId)
+            where.customerId = filter.customerId;
         if (filter.search) {
             where.OR = [
                 { projectName: { contains: filter.search } },

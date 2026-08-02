@@ -163,6 +163,12 @@ router.get('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
 router.post('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.createMailDraft(req, res));
 router.patch('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.updateMailDraft(req, res));
 router.delete('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.deleteMailDraft(req, res));
+// Tenant-wide intro-text templates (Textbausteine) for the Einleitungstext.
+// Same placement rule as mail-drafts: BEFORE '/:id'.
+router.get('/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listTextTemplates(req, res));
+router.post('/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.createTextTemplate(req, res));
+router.patch('/text-templates/:templateId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.updateTextTemplate(req, res));
+router.delete('/text-templates/:templateId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.deleteTextTemplate(req, res));
 router.get('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getScheduleSlots(req, res));
 router.post('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.createScheduleSlot(req, res));
 router.patch('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateScheduleSlot(req, res));
@@ -189,6 +195,16 @@ router.post('/:id/export', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
  *       - bearerAuth: []
  */
 router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDetails(req, res));
+/**
+ * @swagger
+ * /tenders/{id}/pdf-content:
+ *   get:
+ *     tags: [Tender]
+ *     summary: PDF'e özel metin ve kapanış görsellerini gerektiğinde getir
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/:id/pdf-content', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getPdfContent(req, res));
 /**
  * @swagger
  * /tenders/{id}/product-images:

@@ -7,6 +7,7 @@ exports.ArticleRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Article_1 = require("../../domain/entities/Article");
 const nanoid_1 = require("nanoid");
+const PdfImageThumbnailService_1 = require("../services/PdfImageThumbnailService");
 const mappingArticleSelect = {
     id: true,
     tenantId: true,
@@ -57,6 +58,7 @@ class ArticleRepository {
         return new Article_1.PositionArticleMapping(data.id, data.positionId, data.articleId, data.quantityMultiplier, data.discount, articleEntity);
     }
     async createArticle(articleData) {
+        const imageUrl = articleData.imageUrl ?? null;
         const data = await prisma_client_1.default.article.create({
             data: {
                 id: articleData.id || (0, nanoid_1.nanoid)(10),
@@ -70,7 +72,7 @@ class ArticleRepository {
                 description: articleData.description ?? null,
                 systemBarcode: articleData.systemBarcode ?? null,
                 supplierBarcode: articleData.supplierBarcode ?? null,
-                imageUrl: articleData.imageUrl ?? null,
+                imageUrl,
                 category: articleData.category ?? null,
                 itemType: articleData.itemType ?? 'PRODUCT',
                 status: articleData.status ?? 'ACTIVE',
@@ -81,6 +83,7 @@ class ArticleRepository {
                 lastPurchaseDate: articleData.lastPurchaseDate ?? null,
             }
         });
+        await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(data.tenantId, 'ARTICLE', data.id, imageUrl, String(data.updatedAt.getTime()));
         return this.mapToEntity(data);
     }
     async updateArticle(id, patch) {
@@ -97,6 +100,9 @@ class ArticleRepository {
                 updateData[f] = patch[f];
         }
         const data = await prisma_client_1.default.article.update({ where: { id }, data: updateData });
+        if (patch.imageUrl !== undefined) {
+            await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(data.tenantId, 'ARTICLE', data.id, patch.imageUrl, String(data.updatedAt.getTime()));
+        }
         return this.mapToEntity(data);
     }
     async deleteArticle(id) {

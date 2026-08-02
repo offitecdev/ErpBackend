@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import prisma from "../../infrastructure/database/prisma.client";
 import { nanoid } from "nanoid";
 
@@ -38,43 +39,62 @@ function normalizeResponses(raw: any): Array<{
 }
 
 export class DeliveryReportController {
-    /** Admin listing of delivery reports, optionally scoped to an order/project/appointment. */
+    /**
+     * Admin listing of delivery reports, optionally scoped to an order/project/appointment.
+     *
+     * LİSTE GÖVDESİ — rapor içeriği taşınmaz. `responses` (kontrol listesi
+     * cevapları) ve `customerSignature` (LongText, base64 imza görseli) satır
+     * başına yüz kilobaytlara çıkabiliyor ve tablo bunların HİÇBİRİNİ çizmiyor;
+     * yalnızca PDF üretilirken gerekiyorlar ve o an `GET /delivery-reports/:id`
+     * ile tek rapor için çekiliyorlar.
+     *
+     * Etiketler (proje / müşteri / sipariş) tek JOIN'de gelir: DeliveryReport'un
+     * Prisma ilişkisi yok, eskiden ayrı toplu sorgularla çözülüyordu ve uzak
+     * veritabanında her ifade ~100 ms.
+     */
     async list(req: Request, res: Response) {
         try {
             const tenantId = req.user!.tenantId;
-            const where: any = { tenantId };
-            if (req.query.appointmentId) where.appointmentId = String(req.query.appointmentId);
-            if (req.query.projectId) where.projectId = String(req.query.projectId);
-            if (req.query.salesOrderId) where.salesOrderId = String(req.query.salesOrderId);
-            const reports = await prisma.deliveryReport.findMany({
-                where,
-                orderBy: { createdAt: "desc" },
-            });
+            const conditions: Prisma.Sql[] = [Prisma.sql`dr.tenantId = ${tenantId}`];
+            if (req.query.appointmentId) conditions.push(Prisma.sql`dr.appointmentId = ${String(req.query.appointmentId)}`);
+            if (req.query.projectId) conditions.push(Prisma.sql`dr.projectId = ${String(req.query.projectId)}`);
+            if (req.query.salesOrderId) conditions.push(Prisma.sql`dr.salesOrderId = ${String(req.query.salesOrderId)}`);
 
-            // Enrich with project + customer + order labels (no Prisma relation on
-            // DeliveryReport, so we resolve names in a couple of batched lookups).
-            const projectIds = [...new Set(reports.map((r) => r.projectId).filter(Boolean) as string[])];
-            const orderIds = [...new Set(reports.map((r) => r.salesOrderId).filter(Boolean) as string[])];
-            const [projects, orders] = await Promise.all([
-                projectIds.length
-                    ? prisma.project.findMany({
-                          where: { id: { in: projectIds } },
-                          select: { id: true, projectName: true, customer: { select: { companyName: true } } },
-                      })
-                    : Promise.resolve([]),
-                orderIds.length
-                    ? prisma.salesOrder.findMany({ where: { id: { in: orderIds } }, select: { id: true, orderNumber: true } })
-                    : Promise.resolve([]),
-            ]);
-            const projectMap = new Map(projects.map((p) => [p.id, p]));
-            const orderMap = new Map(orders.map((o) => [o.id, o]));
-            const enriched = reports.map((r) => ({
-                ...r,
-                projectName: r.projectId ? projectMap.get(r.projectId)?.projectName ?? null : null,
-                customerName: r.projectId ? projectMap.get(r.projectId)?.customer?.companyName ?? null : null,
-                orderNumber: r.salesOrderId ? orderMap.get(r.salesOrderId)?.orderNumber ?? null : null,
+            const rows = await prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                SELECT
+                    dr.id, dr.tenantId, dr.projectId, dr.salesOrderId, dr.appointmentId,
+                    dr.employeeId, dr.checklistTemplateId, dr.checklistName,
+                    dr.isSigned, dr.signedAt, dr.sentAt, dr.createdAt, dr.updatedAt,
+                    p.projectName AS projectName,
+                    c.companyName AS customerName,
+                    so.orderNumber AS orderNumber
+                FROM DeliveryReport dr
+                LEFT JOIN Project p ON p.id = dr.projectId AND p.tenantId = dr.tenantId
+                LEFT JOIN Customer c ON c.id = p.customerId
+                LEFT JOIN SalesOrder so ON so.id = dr.salesOrderId AND so.tenantId = dr.tenantId
+                WHERE ${Prisma.join(conditions, ' AND ')}
+                ORDER BY dr.createdAt DESC
+            `);
+
+            const reports = rows.map((row) => ({
+                id: row.id,
+                tenantId: row.tenantId,
+                projectId: row.projectId ?? null,
+                salesOrderId: row.salesOrderId ?? null,
+                appointmentId: row.appointmentId ?? null,
+                employeeId: row.employeeId ?? null,
+                checklistTemplateId: row.checklistTemplateId ?? null,
+                checklistName: row.checklistName ?? null,
+                isSigned: Boolean(row.isSigned),
+                signedAt: row.signedAt ?? null,
+                sentAt: row.sentAt ?? null,
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt,
+                projectName: row.projectName ?? null,
+                customerName: row.customerName ?? null,
+                orderNumber: row.orderNumber ?? null,
             }));
-            res.status(200).json(enriched);
+            res.status(200).json(reports);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

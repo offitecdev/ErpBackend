@@ -59,6 +59,15 @@ class GetBillingSummaryUseCase {
         if (ids.length === 0)
             return result;
         const invoices = await this.invoiceRepository.listForOrders(tenantId, ids);
+        return this.buildBatchFromInvoices(targets, invoices);
+    }
+    /**
+     * `executeBatch`'in sorgusuz hâli: faturaları ZATEN yüklemiş çağıranlar için.
+     * Liste uç noktaları fatura sorgusunu sipariş sorgusuyla PARALEL çalıştırıp
+     * sonucu buraya veriyor — böylece iki uzak tur ardışık değil eş zamanlı olur.
+     */
+    buildBatchFromInvoices(targets, invoices) {
+        const result = new Map();
         const byOrder = new Map();
         for (const inv of invoices) {
             const key = inv.salesOrderId ?? inv.salesOrder?.id;

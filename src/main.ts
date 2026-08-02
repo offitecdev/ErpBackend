@@ -39,6 +39,7 @@ import { requireAuth } from './presentation/middlewares/AuthMiddleware';
 import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
 import { requirePermission } from './presentation/middlewares/RbacMiddleware';
 import prisma from './infrastructure/database/prisma.client';
+import { findTenantRootIdCached } from './shared/tenantTree';
 import { nanoid } from 'nanoid';
 
 
@@ -124,25 +125,9 @@ const normalizeTenderRef = (value?: string) => {
     }
 };
 
-const tenantRootId = async (tenantId: string): Promise<string | null> => {
-    let current: any = await (prisma as any).tenant.findUnique({
-        where: { id: tenantId },
-        select: { id: true, parentTenantId: true, isActive: true },
-    });
-
-    if (!current?.isActive) return null;
-
-    for (let depth = 0; current.parentTenantId && depth < 20; depth += 1) {
-        const parent: any = await (prisma as any).tenant.findUnique({
-            where: { id: current.parentTenantId },
-            select: { id: true, parentTenantId: true, isActive: true },
-        });
-        if (!parent?.isActive) return null;
-        current = parent;
-    }
-
-    return current.id;
-};
+// Şirket ağacı önbellekten yürünür — seviye başına bir `findUnique` turu yerine
+// sıfır sorgu (bkz. shared/tenantTree).
+const tenantRootId = findTenantRootIdCached;
 
 const canAccessTenant = async (targetTenantId: string, requestTenantId: string) => {
     if (targetTenantId === requestTenantId) return true;

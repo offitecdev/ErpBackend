@@ -2,6 +2,7 @@ import prisma from '../database/prisma.client';
 import { Prisma } from '@prisma/client';
 import { IEmployeeRepository, IEmployeeFilter } from '../../domain/repositories/IEmployeeRepository';
 import { Employee } from '../../domain/entities/Employee';
+import { invalidateAuthIdentity } from '../../shared/authIdentityCache';
 
 export class EmployeeRepository implements IEmployeeRepository {
     
@@ -130,6 +131,10 @@ export class EmployeeRepository implements IEmployeeRepository {
             data: safeData as any,
             include: this.roleInclude,
         });
+        // Ban / pasifleştirme / silme / parola değişimi / şirket ataması — hepsi
+        // buradan geçer. Önbelleği hemen düşür ki oturum kontrolü bir sonraki
+        // istekte güncel durumu görsün.
+        invalidateAuthIdentity(id);
         return this.mapToEntity(data);
     }
 }

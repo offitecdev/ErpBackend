@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import { nanoid } from 'nanoid';
 import prisma from '../../infrastructure/database/prisma.client';
 import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/GetBillingSummaryUseCase';
@@ -23,6 +24,20 @@ const safeBatchSummaries = async (
     }
 };
 
+// Aynı özet hesabı, faturalar zaten yüklendiğinde (liste uç noktaları fatura
+// sorgusunu sipariş sorgusuyla paralel çalıştırır). Hata durumunda liste
+// çökmesin diye özetler boş kalır — `safeBatchSummaries` ile aynı davranış.
+const summariesFromInvoices = (
+    targets: Array<{ salesOrderId: string; baseAmount: number; paymentStages?: string | null }>,
+    invoices: any[],
+) => {
+    try {
+        return billingSummaryUseCase.buildBatchFromInvoices(targets, invoices);
+    } catch {
+        return new Map<string, Awaited<ReturnType<typeof billingSummaryUseCase.execute>>>();
+    }
+};
+
 // The list only ever shows "total / invoiced / remaining", and remaining is
 // derived client-side as total - billed. Sending the whole summary would ship
 // every invoice row of every order, so the list gets just these two figures.
@@ -34,33 +49,102 @@ type OrderMode = 'PROJECT_NEW' | 'PROJECT_EXISTING' | 'INVOICE';
 const allowedOrderModes = new Set<OrderMode>(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
 
 export class SalesOrderController {
+    /**
+     * Sipariş listesi. Dört ilişki de çoktan-bire olduğu için hepsi TEK sorguda
+     * JOIN'lenir; cevap şekli eski `include` çıktısıyla birebir aynı.
+     *
+     * Prisma her `include`u ayrı bir sorgu turu olarak çalıştırıyordu ve
+     * veritabanı uzak (ifade başına ~100 ms): bu uç nokta beş ARDIŞIK ifade
+     * harcıyordu, artık bir tane.
+     */
     async list(req: Request, res: Response) {
         try {
             const tenantId = req.user!.tenantId;
-            const where: any = { tenantId };
+            const conditions: Prisma.Sql[] = [Prisma.sql`so.tenantId = ${tenantId}`];
             if (req.query.customerId) {
-                where.customerId = String(req.query.customerId);
+                conditions.push(Prisma.sql`so.customerId = ${String(req.query.customerId)}`);
             }
             if (req.query.search) {
-                const search = String(req.query.search);
-                where.OR = [
-                    { orderNumber: { contains: search } },
-                    { tender: { tenderNumber: { contains: search } } },
-                    { customer: { companyName: { contains: search } } },
-                    { project: { projectName: { contains: search } } },
-                ];
+                const pattern = `%${String(req.query.search)}%`;
+                conditions.push(Prisma.sql`(
+                    so.orderNumber LIKE ${pattern}
+                    OR t.tenderNumber LIKE ${pattern}
+                    OR c.companyName LIKE ${pattern}
+                    OR p.projectName LIKE ${pattern}
+                )`);
             }
 
-            const orders = await (prisma as any).salesOrder.findMany({
-                where,
-                orderBy: { createdAt: 'desc' },
-                include: {
-                    customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
-                    tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
-                    project: { select: { id: true, projectName: true, status: true } },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                },
-            });
+            const rows = await prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                SELECT
+                    so.id, so.tenantId, so.customerId, so.tenderId, so.projectId,
+                    so.parentSalesOrderId, so.revisionNumber, so.orderNumber, so.orderType,
+                    so.status, so.totalAmount, so.paymentStages, so.createdByEmployeeId,
+                    so.createdAt, so.updatedAt, so.orderDate,
+                    c.companyName AS customerCompanyName,
+                    c.mainEmail AS customerMainEmail,
+                    c.mainPhone AS customerMainPhone,
+                    t.tenderNumber AS tenderNumber,
+                    t.status AS tenderStatus,
+                    t.projectId AS tenderProjectId,
+                    p.projectName AS projectName,
+                    p.status AS projectStatus,
+                    e.firstName AS creatorFirstName,
+                    e.lastName AS creatorLastName,
+                    e.email AS creatorEmail
+                FROM SalesOrder so
+                LEFT JOIN Customer c ON c.id = so.customerId
+                LEFT JOIN Tender t ON t.id = so.tenderId
+                LEFT JOIN Project p ON p.id = so.projectId
+                LEFT JOIN Employee e ON e.id = so.createdByEmployeeId
+                WHERE ${Prisma.join(conditions, ' AND ')}
+                ORDER BY so.createdAt DESC
+            `);
+
+            const orders = rows.map((row) => ({
+                id: row.id,
+                tenantId: row.tenantId,
+                customerId: row.customerId ?? null,
+                tenderId: row.tenderId ?? null,
+                projectId: row.projectId ?? null,
+                parentSalesOrderId: row.parentSalesOrderId ?? null,
+                revisionNumber: row.revisionNumber ?? null,
+                orderNumber: row.orderNumber,
+                orderType: row.orderType,
+                status: row.status,
+                totalAmount: Number(row.totalAmount ?? 0),
+                paymentStages: row.paymentStages ?? null,
+                createdByEmployeeId: row.createdByEmployeeId,
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt,
+                orderDate: row.orderDate ?? null,
+                customer: row.customerId
+                    ? {
+                        id: row.customerId,
+                        companyName: row.customerCompanyName,
+                        mainEmail: row.customerMainEmail ?? null,
+                        mainPhone: row.customerMainPhone ?? null,
+                    }
+                    : null,
+                tender: row.tenderId
+                    ? {
+                        id: row.tenderId,
+                        tenderNumber: row.tenderNumber,
+                        status: row.tenderStatus,
+                        projectId: row.tenderProjectId ?? null,
+                    }
+                    : null,
+                project: row.projectId
+                    ? { id: row.projectId, projectName: row.projectName, status: row.projectStatus }
+                    : null,
+                createdBy: row.createdByEmployeeId
+                    ? {
+                        id: row.createdByEmployeeId,
+                        firstName: row.creatorFirstName,
+                        lastName: row.creatorLastName,
+                        email: row.creatorEmail,
+                    }
+                    : null,
+            }));
 
             res.status(200).json(orders);
         } catch (error: any) {
@@ -89,23 +173,51 @@ export class SalesOrderController {
                 ];
             }
 
-            const orders = await (prisma as any).salesOrder.findMany({
-                where,
-                orderBy: { createdAt: 'desc' },
-                select: {
-                    id: true,
-                    orderNumber: true,
-                    totalAmount: true,
-                    createdAt: true,
-                    // Kept: the project screens filter the same feed by project.
-                    projectId: true,
-                    customer: { select: { id: true, companyName: true } },
-                    addonSalesOrders: {
-                        orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, totalAmount: true },
+            // Üç ilişki sorgusu (üst siparişler + müşteri + ek siparişler) tek
+            // JOIN'e indi ve fatura özetleri artık sipariş sorgusunu BEKLEMİYOR:
+            // aynı WHERE'i alt sorgu olarak kullandığı için ikisi paralel koşuyor.
+            // Uzak veritabanında her ifade ~100 ms olduğundan bu uç nokta dört
+            // ardışık turdan iki paralel tura indi.
+            const [orders, invoiceRows] = await Promise.all([
+                (prisma as any).salesOrder.findMany({
+                    where,
+                    orderBy: { createdAt: 'desc' },
+                    select: {
+                        id: true,
+                        orderNumber: true,
+                        totalAmount: true,
+                        createdAt: true,
+                        // Kept: the project screens filter the same feed by project.
+                        projectId: true,
+                        customer: { select: { id: true, companyName: true } },
+                        addonSalesOrders: {
+                            orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
+                            select: { id: true, orderNumber: true, totalAmount: true },
+                        },
                     },
-                },
-            });
+                }),
+                // Listelenen siparişlerin (ve ek siparişlerinin) faturaları.
+                (prisma as any).invoice.findMany({
+                    where: {
+                        tenantId,
+                        OR: [
+                            { salesOrder: { is: where } },
+                            { salesOrder: { is: { tenantId, parentSalesOrder: { is: where } } } },
+                        ],
+                    },
+                    orderBy: { createdAt: 'desc' },
+                    select: {
+                        id: true,
+                        salesOrderId: true,
+                        invoiceNumber: true,
+                        billingType: true,
+                        billedPercent: true,
+                        amount: true,
+                        status: true,
+                        createdAt: true,
+                    },
+                }),
+            ]);
 
             const targets = orders.flatMap((order: any) => [
                 { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0) },
@@ -114,7 +226,7 @@ export class SalesOrderController {
                     baseAmount: Number(addon.totalAmount || 0),
                 })),
             ]);
-            const summaries = await safeBatchSummaries(tenantId, targets);
+            const summaries = summariesFromInvoices(targets, invoiceRows);
 
             const enriched = orders.map((order: any) => ({
                 ...order,

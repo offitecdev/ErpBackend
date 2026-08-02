@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { IArticleRepository } from '../../domain/repositories/IArticleRepository';
 import { IInventoryRepository } from '../../domain/repositories/IInventoryRepository';
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
+import { normalizeRichText } from '../../shared/richText';
 
 export class ArticleController {
     constructor(
@@ -81,7 +82,8 @@ export class ArticleController {
                 salePrice: Number(salePrice ?? 0),
                 defaultSupplierId: defaultSupplierId ?? null,
                 unit,
-                description: description ?? null,
+                // Açıklama biçimli metindir (kalın/italik/madde) — dar beyaz listeden geçer.
+                description: normalizeRichText(description),
                 systemBarcode: systemBarcode ?? null,
                 supplierBarcode: supplierBarcode ?? null,
                 imageUrl: imageUrl ?? null,
@@ -111,6 +113,7 @@ export class ArticleController {
             delete patch.tenderId;
             delete patch.positionId;
             delete patch.mappingId;
+            if ('description' in patch) patch.description = normalizeRichText(patch.description);
             if (patch.baseCost != null) patch.baseCost = Number(patch.baseCost);
             if (patch.salePrice != null) patch.salePrice = Number(patch.salePrice);
             if (patch.minStockLevel != null) patch.minStockLevel = Number(patch.minStockLevel);

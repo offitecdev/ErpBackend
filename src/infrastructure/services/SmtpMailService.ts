@@ -16,6 +16,8 @@ export interface SendMailInput {
     fromEmail: string;
     fromName?: string | null;
     to: string;
+    /** Bilgi (CC) alıcıları; başlıkta görünür ve her biri RCPT alır. */
+    cc?: string[] | null;
     subject: string;
     text?: string | null;
     html?: string | null;
@@ -169,8 +171,9 @@ export class SmtpMailService {
     async send(settings: MailSettings, mail: SendMailInput): Promise<{ accepted: string[]; preview: boolean }> {
         const host = settings.smtpHost?.trim();
         const port = Number(settings.smtpPort || 0);
+        const ccList = (mail.cc || []).map((value) => String(value || "").trim()).filter(Boolean);
         if (!host || !port) {
-            return { accepted: [mail.to], preview: true };
+            return { accepted: [mail.to, ...ccList], preview: true };
         }
 
         // 465 gelenekesel olarak örtük TLS'tir; kutucuğu işaretlemeyi unutmak
@@ -288,6 +291,7 @@ export class SmtpMailService {
             const body = [
                 `From: ${address(mail.fromEmail, mail.fromName)}`,
                 `To: ${mail.to}`,
+                ccList.length ? `Cc: ${ccList.join(", ")}` : null,
                 `Subject: ${encodeHeader(mail.subject)}`,
                 `Date: ${new Date().toUTCString()}`,
                 `MIME-Version: 1.0`,
@@ -303,6 +307,9 @@ export class SmtpMailService {
 
             await command(`MAIL FROM:<${mail.fromEmail.trim()}>`, [250], "MAIL FROM");
             await command(`RCPT TO:<${mail.to.trim()}>`, [250, 251], "RCPT TO");
+            for (const ccAddress of ccList) {
+                await command(`RCPT TO:<${ccAddress}>`, [250, 251], "RCPT TO (CC)");
+            }
             await command("DATA", [354], "DATA");
 
             socket.write(`${escapeDotLines(body)}\r\n.\r\n`);
@@ -313,7 +320,7 @@ export class SmtpMailService {
 
             // QUIT'in cevabı gelmese de mail kabul edilmiştir: kapanışta hata yutulur.
             await command("QUIT", [221], "QUIT").catch(() => undefined);
-            return { accepted: [mail.to], preview: false };
+            return { accepted: [mail.to, ...ccList], preview: false };
         } finally {
             socket.destroy();
         }

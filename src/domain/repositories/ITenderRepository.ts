@@ -63,7 +63,11 @@ export interface ITenderRepository{
     create(tender: Partial<Tender>): Promise<Tender>;
     // tenantId is required: tenant isolation is enforced in the query layer so a
     // forgotten controller check can no longer leak/mutate another tenant's data.
-    findById(id:string, tenantId:string): Promise<Tender | null>;
+    findById(
+        id: string,
+        tenantId: string,
+        options?: { includePdfContent?: boolean }
+    ): Promise<Tender | null>;
     findAll(
         filter: ITenderFilter
     ): Promise<TenderListItem[] | PaginatedResult<TenderListItem> | TenderListRow[] | PaginatedResult<TenderListRow>>;

@@ -4,6 +4,7 @@ import prisma from "../database/prisma.client";
 import { IArticleRepository, IArticleFilter } from "../../domain/repositories/IArticleRepository";
 import { Article, PositionArticleMapping, ArticleStatus } from "../../domain/entities/Article";
 import { nanoid } from "nanoid";
+import { persistPdfThumbnail } from "../services/PdfImageThumbnailService";
 
 const mappingArticleSelect = {
     id: true,
@@ -88,6 +89,7 @@ export class ArticleRepository implements IArticleRepository {
     }
 
     async createArticle(articleData: Partial<Article>): Promise<Article> {
+        const imageUrl = articleData.imageUrl ?? null;
         const data = await prisma.article.create({
             data: {
                 id: articleData.id || nanoid(10),
@@ -101,7 +103,7 @@ export class ArticleRepository implements IArticleRepository {
                 description: articleData.description ?? null,
                 systemBarcode: articleData.systemBarcode ?? null,
                 supplierBarcode: articleData.supplierBarcode ?? null,
-                imageUrl: articleData.imageUrl ?? null,
+                imageUrl,
                 category: articleData.category ?? null,
                 itemType: (articleData as any).itemType ?? 'PRODUCT',
                 status: articleData.status ?? 'ACTIVE',
@@ -112,6 +114,13 @@ export class ArticleRepository implements IArticleRepository {
                 lastPurchaseDate: articleData.lastPurchaseDate ?? null,
             } as any
         });
+        await persistPdfThumbnail(
+            data.tenantId,
+            'ARTICLE',
+            data.id,
+            imageUrl,
+            String(data.updatedAt.getTime()),
+        );
         return this.mapToEntity(data);
     }
 
@@ -128,6 +137,15 @@ export class ArticleRepository implements IArticleRepository {
             if (patch[f] !== undefined) updateData[f] = patch[f];
         }
         const data = await prisma.article.update({ where: { id }, data: updateData });
+        if (patch.imageUrl !== undefined) {
+            await persistPdfThumbnail(
+                data.tenantId,
+                'ARTICLE',
+                data.id,
+                patch.imageUrl,
+                String(data.updatedAt.getTime()),
+            );
+        }
         return this.mapToEntity(data);
     }
 

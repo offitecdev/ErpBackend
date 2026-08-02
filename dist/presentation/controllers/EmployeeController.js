@@ -98,36 +98,57 @@ class EmployeeController {
             res.status(400).json({ error: error.message });
         }
     }
+    /** Trimmed name/role/e-mail rows for pickers & filters: skips the heavy
+        columns, so it answers in a fraction of the full listing's time. */
+    async lightStaffRows(treeTenantIds, isActive, hideDeleted = false) {
+        const rows = await prisma_client_1.default.employee.findMany({
+            where: {
+                tenantId: { in: treeTenantIds },
+                ...(isActive !== undefined ? { isActive } : {}),
+                ...(hideDeleted ? { deletedAt: null } : {}),
+            },
+            select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                roleName: true,
+                title: true,
+                // Some employees only carry their role via the RBAC join.
+                employeeRoles: { select: { role: { select: { roleName: true } } }, take: 1 },
+            },
+            orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+        });
+        return rows.map(({ employeeRoles, ...rest }) => ({
+            ...rest,
+            roleName: employeeRoles?.[0]?.role?.roleName ?? rest.roleName,
+        }));
+    }
+    /* GET /employees/directory — the company phone-book: who can be invited to a
+       meeting, put on an appointment or CC'd on a mail. Every signed-in employee
+       needs it, so it is NOT gated behind the HR permission `employees.view`;
+       without that split a salesperson simply saw no colleagues in the pickers.
+       Only name, role/title and the work e-mail leave the server here — never
+       HR data (salary, leave, notes, password state). */
+    async directory(req, res) {
+        try {
+            const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
+            const isActive = req.query.isActive !== undefined ? req.query.isActive === 'true' : true;
+            // A directory never suggests someone who has left: soft-deleted
+            // records stay out, unlike in the HR listing where admins need them.
+            return res.status(200).json(await this.lightStaffRows(treeTenantIds, isActive, true));
+        }
+        catch (error) {
+            return res.status(400).json({ error: error.message });
+        }
+    }
     async list(req, res) {
         try {
-            // `light=1`: trimmed name/role listing for pickers & filters — skips the
-            // employeeRoles join and heavy columns, so it answers in a fraction of
-            // the full listing's time.
             // Personnel are shared company-wide: the same staff pool shows under
             // the main tenant and every sub-tenant.
             const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
             if (String(req.query.light || '') === '1') {
-                const rows = await prisma_client_1.default.employee.findMany({
-                    where: {
-                        tenantId: { in: treeTenantIds },
-                        ...(req.query.isActive !== undefined ? { isActive: req.query.isActive === 'true' } : {}),
-                    },
-                    select: {
-                        id: true,
-                        firstName: true,
-                        lastName: true,
-                        email: true,
-                        roleName: true,
-                        title: true,
-                        // Some employees only carry their role via the RBAC join.
-                        employeeRoles: { select: { role: { select: { roleName: true } } }, take: 1 },
-                    },
-                    orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
-                });
-                return res.status(200).json(rows.map(({ employeeRoles, ...rest }) => ({
-                    ...rest,
-                    roleName: employeeRoles?.[0]?.role?.roleName ?? rest.roleName,
-                })));
+                return res.status(200).json(await this.lightStaffRows(treeTenantIds, req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined));
             }
             const filters = {
                 tenantId: req.user.tenantId,

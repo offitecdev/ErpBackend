@@ -22,10 +22,11 @@ const getAttr = (attrs: string, name: string): string | undefined => {
     return match?.[1] ?? match?.[2] ?? match?.[3];
 };
 
-// İnline stil beyaz listesi: tipografi + kutu modeli. url(...) / expression /
-// javascript içeren hiçbir kural geçmez.
+// İnline stil beyaz listesi: tipografi + kutu modeli + renkler. url(...) /
+// expression / javascript içeren hiçbir kural geçmez (bu yüzden `background`
+// kısayolu da yalnızca düz renk taşıdığında hayatta kalır).
 const STYLE_RULE_RE =
-    /^(color|background-color|font-size|font-family|font-weight|font-style|font|text-decoration|text-align|line-height|letter-spacing|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|border(?:-[a-z]+)*|border-radius|width|height|max-width|min-width|vertical-align|display|white-space)\s*:\s*[^;]+$/i;
+    /^(color|background-color|background|font-size|font-family|font-weight|font-style|font|text-decoration|text-align|text-transform|line-height|letter-spacing|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|border(?:-[a-z]+)*|border-radius|width|height|max-width|min-width|vertical-align|display|float|opacity|white-space)\s*:\s*[^;]+$/i;
 
 const sanitizeStyle = (value: string): string =>
     value
@@ -37,6 +38,24 @@ const sanitizeStyle = (value: string): string =>
 const numericAttr = (attrs: string, name: string): string => {
     const value = getAttr(attrs, name);
     return value && /^\d{1,4}(%|px)?$/.test(value) ? ` ${name}="${value}"` : "";
+};
+
+// Outlook/Word imzaları arka planı çoğunlukla `bgcolor` özniteliğiyle taşır.
+// Bu öznitelik atılırsa koyu zemine yazılmış BEYAZ metinler ve beyaz logolar
+// beyaz kâğıt üzerinde görünmez olur — bu yüzden renk değeri doğrulanıp
+// korunur.
+const COLOR_VALUE_RE = /^(#[0-9a-f]{3,8}|[a-z]{3,20}|rgba?\([\d.,%\s/]+\))$/i;
+
+const colorAttr = (attrs: string, name: string): string => {
+    const value = getAttr(attrs, name)?.trim();
+    return value && COLOR_VALUE_RE.test(value) ? ` ${name}="${value}"` : "";
+};
+
+const ALIGN_VALUE_RE = /^(left|right|center|justify|top|middle|bottom|baseline)$/i;
+
+const alignAttr = (attrs: string, name: string): string => {
+    const value = getAttr(attrs, name)?.trim();
+    return value && ALIGN_VALUE_RE.test(value) ? ` ${name}="${value.toLowerCase()}"` : "";
 };
 
 export const sanitizeSignatureHtml = (html: string): string =>
@@ -58,6 +77,9 @@ export const sanitizeSignatureHtml = (html: string): string =>
                 if (!src || !(DATA_IMAGE_RE.test(src) || HTTP_URL_RE.test(src))) return "";
                 safeAttrs += ` src="${src}"`;
                 safeAttrs += numericAttr(attrText, "width") + numericAttr(attrText, "height");
+                safeAttrs += alignAttr(attrText, "align");
+                const alt = getAttr(attrText, "alt");
+                if (alt && !/["'<>]/.test(alt)) safeAttrs += ` alt="${alt}"`;
             } else if (lower === "a") {
                 const href = getAttr(attrText, "href");
                 if (href && /^(https?:\/\/|mailto:)/i.test(href) && !/["'<>]/.test(href)) {
@@ -66,9 +88,15 @@ export const sanitizeSignatureHtml = (html: string): string =>
             } else if (lower === "td" || lower === "th") {
                 safeAttrs += numericAttr(attrText, "colspan") + numericAttr(attrText, "rowspan");
                 safeAttrs += numericAttr(attrText, "width") + numericAttr(attrText, "height");
+                safeAttrs += colorAttr(attrText, "bgcolor");
+                safeAttrs += alignAttr(attrText, "align") + alignAttr(attrText, "valign");
+            } else if (lower === "tr") {
+                safeAttrs += colorAttr(attrText, "bgcolor");
+                safeAttrs += alignAttr(attrText, "align") + alignAttr(attrText, "valign");
             } else if (lower === "table") {
                 safeAttrs += numericAttr(attrText, "width") + numericAttr(attrText, "border");
                 safeAttrs += numericAttr(attrText, "cellpadding") + numericAttr(attrText, "cellspacing");
+                safeAttrs += colorAttr(attrText, "bgcolor") + alignAttr(attrText, "align");
             } else if (lower === "font") {
                 const color = getAttr(attrText, "color");
                 if (color && /^#?[a-z0-9(),.%\s-]+$/i.test(color)) safeAttrs += ` color="${color}"`;
@@ -176,8 +204,12 @@ export const buildSignatureParts = (
     if (!bodyHtml && !legacyHtml) return empty;
 
     const text = bodyHtml ? signatureHtmlToText(bodyHtml) : "";
+    // Sarmalayıcı yalnızca VARSAYILAN yazı tipi/rengi verir (Outlook'un Segoe
+    // UI'ı): imzanın kendi satır içi bildirimleri daha öncelikli olduğu için
+    // markalı fontlar korunur, hiç font belirtmeyen imzalar da istemcinin
+    // serif varsayılanına düşmez.
     return {
-        html: `<div style="margin-top:18px;padding-top:12px;border-top:1px solid #e2e8f0">${bodyHtml}${legacyHtml}</div>`,
+        html: `<div style="margin-top:18px;padding-top:12px;border-top:1px solid #e2e8f0;font-family:'Segoe UI','Segoe UI Web (West European)',Tahoma,Geneva,Verdana,sans-serif;color:#1f2937">${bodyHtml}${legacyHtml}</div>`,
         text: text ? `\n\n-- \n${text}` : "",
         inlineImages,
     };

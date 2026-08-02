@@ -7,6 +7,7 @@ exports.EmployeeRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const client_1 = require("@prisma/client");
 const Employee_1 = require("../../domain/entities/Employee");
+const authIdentityCache_1 = require("../../shared/authIdentityCache");
 class EmployeeRepository {
     mapToEntity(data) {
         const firstRole = data.employeeRoles?.[0]?.role;
@@ -113,6 +114,10 @@ class EmployeeRepository {
             data: safeData,
             include: this.roleInclude,
         });
+        // Ban / pasifleştirme / silme / parola değişimi / şirket ataması — hepsi
+        // buradan geçer. Önbelleği hemen düşür ki oturum kontrolü bir sonraki
+        // istekte güncel durumu görsün.
+        (0, authIdentityCache_1.invalidateAuthIdentity)(id);
         return this.mapToEntity(data);
     }
 }

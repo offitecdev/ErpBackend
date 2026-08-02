@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenantRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Tenant_1 = require("../../domain/entities/Tenant");
+const tenantTree_1 = require("../../shared/tenantTree");
 const nanoid_1 = require("nanoid");
 class TenantRepository {
     mapToEntity(data) {
@@ -23,6 +24,8 @@ class TenantRepository {
                 isProjectModuleEnabled: tenantData.isProjectModuleEnabled ?? false,
             }
         });
+        // Şirket ağacı önbelleği (tenantTree) yeni/değişen tenant'ı hemen görmeli.
+        (0, tenantTree_1.invalidateTenantTree)();
         return this.mapToEntity(data);
     }
     async update(id, tenantData) {
@@ -30,6 +33,7 @@ class TenantRepository {
             where: { id },
             data: tenantData
         });
+        (0, tenantTree_1.invalidateTenantTree)();
         return this.mapToEntity(data);
     }
     async findById(id) {

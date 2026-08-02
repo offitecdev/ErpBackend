@@ -353,9 +353,36 @@ export class ProjectController {
     async list(req: Request, res: Response) {
         try {
             const tenantId = req.user!.tenantId;
+            // `view=picker` — seçim pencereleri için yalın liste: proje + sipariş
+            // başlıkları, rapor/malzeme ağaçları olmadan (takvim sihirbazı kullanır).
+            if (req.query.view === "picker") {
+                const where: any = { tenantId };
+                if (req.query.customerId) where.customerId = String(req.query.customerId);
+                // Seçim kutusu yalnızca ilk birkaç satırı ister (take=7); "tümünü
+                // gör" penceresi take olmadan tam listeyi çeker.
+                const take = Math.min(100, Math.max(0, Number(req.query.take) || 0));
+                const projects = await (prisma as any).project.findMany({
+                    where,
+                    ...(take ? { take } : {}),
+                    orderBy: { createdAt: "desc" },
+                    select: {
+                        id: true,
+                        projectName: true,
+                        status: true,
+                        customerId: true,
+                        customer: { select: { id: true, companyName: true } },
+                        salesOrders: {
+                            orderBy: { createdAt: "asc" },
+                            select: { id: true, orderNumber: true, status: true, orderType: true, parentSalesOrderId: true, totalAmount: true },
+                        },
+                    },
+                });
+                return res.status(200).json(projects);
+            }
             const filter: any = { tenantId };
             if (req.query.status) filter.status = req.query.status;
             if (req.query.managerId) filter.managerId = req.query.managerId;
+            if (req.query.customerId) filter.customerId = req.query.customerId;
             if (req.query.search) filter.search = req.query.search;
             const projects = await this.projectRepository.findAll(filter);
             res.status(200).json(projects);
@@ -520,6 +547,7 @@ export class ProjectController {
             endTime: true,
             status: true,
             notes: true,
+            ccEmails: true,
             assignedTechnician: {
                 select: { id: true, firstName: true, lastName: true },
             },
@@ -1554,34 +1582,80 @@ export class ProjectController {
             const startRaw = req.query.start ? new Date(String(req.query.start)) : null;
             const endRaw = req.query.end ? new Date(String(req.query.end)) : null;
 
-            const where: any = { project: { tenantId } };
+            // LİSTE GÖVDESİ — rapor İÇERİĞİ taşınmaz. Tablolar yalnızca tarih,
+            // süre/mesai kolonları, etiketler ve onay/imza durumunu çiziyor.
+            // `operationsDone` / `technicalNotes` / `customerSignature` (base64
+            // imza) ile `usedMaterials`, `images`, `employee`, `appointment`
+            // ilişkileri sadece PDF üretilirken gerekiyor; PDF yolu zaten projeyi
+            // `GET /projects/:id` ile baştan çekip tam raporu oradan okuyor.
+            //
+            // Bu ilişkiler Prisma'da ilişki başına AYRI bir sorgu turu demekti
+            // (usedMaterials iki seviye olduğu için iki tur) — uzak veritabanında
+            // ifade başına ~100 ms. Kalan iki ilişki tek ham JOIN'de geliyor.
+            const whereSql: Prisma.Sql[] = [Prisma.sql`pj.tenantId = ${tenantId}`];
             if (startRaw && !Number.isNaN(startRaw.getTime())) {
-                where.workDate = { ...(where.workDate || {}), gte: startOfDay(startRaw) };
+                whereSql.push(Prisma.sql`pr.workDate >= ${startOfDay(startRaw)}`);
             }
             if (endRaw && !Number.isNaN(endRaw.getTime())) {
-                where.workDate = { ...(where.workDate || {}), lte: endOfDay(endRaw) };
+                whereSql.push(Prisma.sql`pr.workDate <= ${endOfDay(endRaw)}`);
             }
             if (search) {
-                where.OR = [
-                    { project: { is: { projectName: { contains: search } } } },
-                    { project: { is: { customer: { is: { companyName: { contains: search } } } } } },
-                    { operationsDone: { contains: search } },
-                ];
+                const pattern = `%${search}%`;
+                whereSql.push(Prisma.sql`(
+                    pj.projectName LIKE ${pattern}
+                    OR c.companyName LIKE ${pattern}
+                    OR pr.operationsDone LIKE ${pattern}
+                )`);
             }
 
-            const reports = await (prisma as any).projectReport.findMany({
-                where,
-                orderBy: { reportDate: "desc" },
-                take: 500,
-                include: {
-                    project: { select: { id: true, projectName: true, customer: { select: { id: true, companyName: true } } } },
-                    salesOrder: { select: { id: true, orderNumber: true } },
-                    appointment: { select: { id: true, startTime: true, endTime: true } },
-                    employee: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    usedMaterials: { include: { material: true } },
-                    images: { select: { id: true } },
+            const rows = await prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                SELECT
+                    pr.id, pr.projectId, pr.salesOrderId, pr.appointmentId,
+                    pr.reportDate, pr.workDate, pr.startedAt, pr.endedAt,
+                    pr.workedMinutes, pr.plannedMinutesForDay, pr.overtimeMinutes,
+                    pr.overtimeHourlyRate, pr.overtimeCost,
+                    pr.isSigned, pr.hoursApprovedAt, pr.autoApproved,
+                    pj.projectName AS projectName,
+                    c.id AS customerId,
+                    c.companyName AS customerName,
+                    so.orderNumber AS orderNumber
+                FROM ProjectReport pr
+                INNER JOIN Project pj ON pj.id = pr.projectId
+                LEFT JOIN Customer c ON c.id = pj.customerId
+                LEFT JOIN SalesOrder so ON so.id = pr.salesOrderId
+                WHERE ${Prisma.join(whereSql, ' AND ')}
+                ORDER BY pr.reportDate DESC
+                LIMIT 500
+            `);
+
+            const reports = rows.map((row) => ({
+                id: row.id,
+                projectId: row.projectId,
+                salesOrderId: row.salesOrderId ?? null,
+                appointmentId: row.appointmentId ?? null,
+                reportDate: row.reportDate,
+                workDate: row.workDate,
+                startedAt: row.startedAt ?? null,
+                endedAt: row.endedAt ?? null,
+                workedMinutes: Number(row.workedMinutes ?? 0),
+                plannedMinutesForDay: Number(row.plannedMinutesForDay ?? 0),
+                overtimeMinutes: Number(row.overtimeMinutes ?? 0),
+                overtimeHourlyRate: Number(row.overtimeHourlyRate ?? 0),
+                overtimeCost: Number(row.overtimeCost ?? 0),
+                isSigned: Boolean(row.isSigned),
+                hoursApprovedAt: row.hoursApprovedAt ?? null,
+                autoApproved: Boolean(row.autoApproved),
+                project: {
+                    id: row.projectId,
+                    projectName: row.projectName ?? null,
+                    customer: row.customerId
+                        ? { id: row.customerId, companyName: row.customerName ?? null }
+                        : null,
                 },
-            });
+                salesOrder: row.salesOrderId
+                    ? { id: row.salesOrderId, orderNumber: row.orderNumber ?? null }
+                    : null,
+            }));
             res.status(200).json(reports);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
@@ -2565,10 +2639,17 @@ export class ProjectController {
         if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime()) || endTime <= startTime) {
             throw new Error("Geçerli bir başlangıç ve bitiş saati girin.");
         }
+        // CC listesi gönderilmediyse undefined kalır (update mevcut değeri korur).
+        const ccEmails = body.ccEmails === undefined
+            ? undefined
+            : (Array.isArray(body.ccEmails) ? body.ccEmails : String(body.ccEmails || "").split(","))
+                .map((value: unknown) => String(value ?? "").trim())
+                .filter((email: string, index: number, list: string[]) => email.includes("@") && list.indexOf(email) === index);
         return {
             startTime,
             endTime,
-            notes: body.notes === undefined ? undefined : String(body.notes || "").trim() || null
+            notes: body.notes === undefined ? undefined : String(body.notes || "").trim() || null,
+            ccEmails
         };
     }
 
@@ -2656,6 +2737,7 @@ export class ProjectController {
                     startTime: parsed.startTime,
                     endTime: parsed.endTime,
                     notes: parsed.notes ?? null,
+                    ccEmails: parsed.ccEmails ?? [],
                     status: "BOOKED",
                     isLocked: true
                 },
@@ -2717,6 +2799,7 @@ export class ProjectController {
                     salesOrderId,
                     assignedTechId: responsibleTechnician?.id || null,
                     notes: parsed.notes ?? appointment.notes,
+                    ...(parsed.ccEmails !== undefined ? { ccEmails: parsed.ccEmails } : {}),
                     status: "BOOKED",
                     isLocked: true
                 },
