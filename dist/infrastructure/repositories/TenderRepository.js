@@ -109,10 +109,12 @@ class TenderRepository {
             conditions.push(client_1.Prisma.sql `t.status = ${filter.status}`);
         // Genel arama teklif numarasında; Prisma `contains` gibi joker kaçışı yok
         // (davranış birebir korunuyor), değer yine parametre olarak bağlanıyor.
+        // Eski kodu (A-2026-4474) elinde olan kullanıcı da kaydı bulabilsin diye
+        // arama `legacyNumber`ı da tarar.
         if (filter.search)
-            conditions.push(client_1.Prisma.sql `t.tenderNumber LIKE ${`%${filter.search}%`}`);
+            conditions.push(client_1.Prisma.sql `(t.tenderNumber LIKE ${`%${filter.search}%`} OR t.legacyNumber LIKE ${`%${filter.search}%`})`);
         if (filter.tenderNumber)
-            conditions.push(client_1.Prisma.sql `t.tenderNumber LIKE ${`%${filter.tenderNumber}%`}`);
+            conditions.push(client_1.Prisma.sql `(t.tenderNumber LIKE ${`%${filter.tenderNumber}%`} OR t.legacyNumber LIKE ${`%${filter.tenderNumber}%`})`);
         if (filter.customerName)
             conditions.push(client_1.Prisma.sql `c.companyName LIKE ${`%${filter.customerName}%`}`);
         if (filter.creatorName) {
@@ -242,7 +244,7 @@ class TenderRepository {
         return totals;
     }
     mapToEntity(data) {
-        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.closingNote, data.closingImages, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency, data.directDiscountLabel, data.extraDiscount, data.extraDiscountLabel, data.totalDiscounts, data.paymentStages, data.customerReference);
+        return new Tender_1.Tender(data.id, data.tenantId, data.customerId, data.tenderNumber, data.version, data.format, data.status, data.createdByEmployeeId, data.createdAt, data.projectId, data.validUntil, data.offerMailSentAt, data.offerAcceptedAt, data.offerMailRecipient, data.offerAcceptanceToken, data.sourceCreatedAt, data.orderDate, data.billingAddress, data.deliveryAddress, data.internalDeliveryDate, data.priceList, data.paymentTerms, data.commissionNumber, data.salespersonName, data.sourceStatus, data.sourceCompany, data.shippingTerms, data.shippingWeight, data.fiscalPosition, data.salesTeam, data.onlineSignature, data.onlinePayment, data.coverLetter, data.closingNote, data.closingImages, data.sourceTotal, data.sourceNetAmount, data.sourceTaxAmount, data.sourceRecurringTotal, data.sourceMargin, data.billingSameAsInstallation, data.installationAddress, data.directDiscount, data.currency, data.directDiscountLabel, data.extraDiscount, data.extraDiscountLabel, data.totalDiscounts, data.paymentStages, data.customerReference, data.legacyNumber);
     }
     async create(tenderData) {
         const data = await prisma_client_1.default.tender.create({
@@ -261,11 +263,17 @@ class TenderRepository {
                     : TENDER_FULL_SELECT),
                 customer: { select: TENDER_DETAIL_CUSTOMER_SELECT },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                // Teklifin siparişi (1:1). Teklif ekranındaki ana düğme buna
+                // bakar: sipariş varsa "Zum Auftrag" olur ve siparişi DOĞRUDAN
+                // açar — sipariş otomatik üretildiği için ikinci bir "sipariş
+                // oluştur" denemesi anlamsızdır.
+                salesOrder: { select: { id: true, orderNumber: true, projectId: true } },
             },
         });
         if (!data)
             return null;
         const entity = this.mapToEntity(data);
+        entity.salesOrder = data.salesOrder ?? null;
         entity.pdfContentDeferred = options?.includePdfContent === false;
         entity.customerName = data.customer?.companyName ?? null;
         // The customer's primary address (street / postal + city / country) formatted
@@ -289,12 +297,22 @@ class TenderRepository {
         if (filter.search) {
             where.OR = [
                 { tenderNumber: { contains: filter.search } },
+                { legacyNumber: { contains: filter.search } },
             ];
         }
         // Kolon bazlı filtreler — üstteki genel arama ile AND'lenir (MySQL collation
         // varsayılan olarak büyük/küçük harf duyarsız, ayrıca `mode` gerekmez).
-        if (filter.tenderNumber)
-            where.tenderNumber = { contains: filter.tenderNumber };
+        if (filter.tenderNumber) {
+            where.AND = [
+                ...(where.AND || []),
+                {
+                    OR: [
+                        { tenderNumber: { contains: filter.tenderNumber } },
+                        { legacyNumber: { contains: filter.tenderNumber } },
+                    ],
+                },
+            ];
+        }
         if (filter.customerName) {
             where.customer = { is: { companyName: { contains: filter.customerName } } };
         }

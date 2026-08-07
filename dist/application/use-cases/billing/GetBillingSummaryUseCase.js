@@ -90,6 +90,9 @@ class GetBillingSummaryUseCase {
         const active = invoices.filter((inv) => inv.status !== "CANCELLED");
         const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
+        const paid = active.filter((inv) => inv.status === "PAID");
+        const paidPercent = round2(paid.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
+        const paidAmount = round2(paid.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
         const remainingPercent = round2(Math.max(0, 100 - billedPercent));
         const remainingAmount = round2(Math.max(0, baseAmount - billedAmount));
         const paymentStages = (0, paymentSchedule_1.parsePaymentStages)(paymentStagesRaw);
@@ -97,6 +100,8 @@ class GetBillingSummaryUseCase {
             baseAmount: round2(baseAmount),
             billedPercent,
             billedAmount,
+            paidPercent,
+            paidAmount,
             remainingPercent,
             remainingAmount,
             paymentStages,
@@ -105,6 +110,7 @@ class GetBillingSummaryUseCase {
                 id: inv.id,
                 invoiceNumber: inv.invoiceNumber,
                 billingType: inv.billingType,
+                kind: inv.kind ?? "RECHNUNG",
                 billedPercent: inv.billedPercent,
                 amount: inv.amount,
                 status: inv.status,

@@ -157,5 +157,47 @@ router.patch('/assign/tenant', async (req, res) => {
         res.status(400).json({ error: error.message });
     }
 });
+/**
+ * ŞİRKET NUMARASI — belge kodundaki bloğu belirler (numara × 10000, yani 4 →
+ * AN-2026-40001). Modül kategorisinden bağımsızdır.
+ *
+ * ⚠ Yalnızca BUNDAN SONRA üretilecek kodları etkiler; dağıtılmış kodlar
+ * değişmez. Sayaç geri gitmediği için numarayı küçültmek eski bloğa dönmez —
+ * sıra yeni blok eşiğinin altında kalırsa olduğu yerden devam eder.
+ */
+router.patch('/assign/tenant-number', async (req, res) => {
+    try {
+        const rootTenantId = await callerRootId(req.user.homeTenantId);
+        const tenantId = String(req.body?.tenantId || '');
+        const companyNumber = Number(req.body?.companyNumber);
+        if (!Number.isInteger(companyNumber) || companyNumber < 0 || companyNumber > 99) {
+            return res.status(400).json({ error: 'Şirket numarası 0 ile 99 arasında bir tam sayı olmalıdır.' });
+        }
+        const tenantRootId = await (0, AuthMiddleware_1.findTenantRootId)(tenantId);
+        if (!tenantId || tenantRootId !== rootTenantId) {
+            return res.status(404).json({ error: 'Şirket bulunamadı.' });
+        }
+        // 0 "bloksuz" demektir ve birden fazla şirkette bulunabilir; blok taşıyan
+        // bir numara ise ağaç içinde tekil olmalı, yoksa iki şirket aynı kod
+        // aralığından sayar ve numaranın şirketi ayırt etme amacı kaybolur.
+        if (companyNumber > 0) {
+            const clash = await prisma_client_1.default.tenant.findFirst({
+                where: { companyNumber, id: { not: tenantId } },
+                select: { id: true, tenantName: true, parentTenantId: true },
+            });
+            if (clash && await (0, AuthMiddleware_1.findTenantRootId)(clash.id) === rootTenantId) {
+                return res.status(400).json({ error: `${companyNumber} numarası zaten "${clash.tenantName}" şirketinde kullanılıyor.` });
+            }
+        }
+        await prisma_client_1.default.tenant.update({
+            where: { id: tenantId },
+            data: { companyNumber },
+        });
+        res.status(200).json({ message: 'Şirket numarası güncellendi.', companyNumber });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=moduleProfile.routes.js.map

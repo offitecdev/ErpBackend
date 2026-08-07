@@ -10,6 +10,7 @@ const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService
 const serviceTenantScope_1 = require("./serviceTenantScope");
 const technicianSchedule_1 = require("./technicianSchedule");
 const nanoid_1 = require("nanoid");
+const documentNumber_1 = require("../../shared/documentNumber");
 const smtp = new SmtpMailService_1.SmtpMailService();
 const startOfDay = (date) => {
     const d = new Date(date);
@@ -24,7 +25,6 @@ const endOfDay = (date) => {
 const normalizeIdList = (value) => Array.isArray(value)
     ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
     : [];
-const PROJECT_EXPENSE_TYPES = ["Nakliye", "Ekipman Kiralama", "Dış hizmetler", "Taşeron", "Diğer"];
 class ProjectController {
     createProjectUseCase;
     addReportUseCase;
@@ -217,28 +217,51 @@ class ProjectController {
         // Date the addon to the appointment the extra work belongs to (never the
         // possibly-later entry time). createdAt still bounds the next slice.
         const resolvedOrderDate = orderDate ?? await this.resolveAddonOrderDate(tenantId, { expenses, extraMaterials, reports });
-        const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
-        const addonOrder = await prisma_client_1.default.salesOrder.create({
-            data: {
-                id: (0, nanoid_1.nanoid)(10),
-                tenantId,
-                customerId: parentOrder.customerId || project.customerId,
-                tenderId: null,
-                projectId: project.id,
-                parentSalesOrderId,
-                revisionNumber: nextRevision,
-                orderNumber,
-                orderType: "PROJECT_ADDON",
-                status: "ORDERED",
-                totalAmount,
-                orderDate: resolvedOrderDate,
-                createdByEmployeeId: employeeId,
-            },
-            include: {
-                customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
-                tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
-                createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-            },
+        // Ek sipariş (Nachtrag) kodu artık üst siparişten TÜRETİLMEZ (eskiden
+        // "<üst kod>-N1"); kendi NT- serisinden gelir. Üst siparişe bağ
+        // `parentSalesOrderId`, kaçıncı ek olduğu `revisionNumber` ile durur.
+        //
+        // Süpürülen kayıtlar EK SİPARİŞİN ÜZERİNE DAMGALANIR (kullanıcı isteği
+        // 2026-08-07): maliyet/malzeme listeleri artık ek siparişe göre gruplar
+        // ve iptal, kayıtlarını doğrudan bulur. Zaman-penceresi çıkarımı yalnızca
+        // bu değişiklikten ÖNCE oluşturulmuş ekler için (okuma tarafında) yaşar.
+        // Damga da süpürme havuzunu boşaltır: üst siparişte damgası kalan kayıt =
+        // henüz faturalanmamış iş.
+        const addonOrder = await prisma_client_1.default.$transaction(async (tx) => {
+            const orderNumber = await (0, documentNumber_1.nextDocumentNumber)(tenantId, 'ADDON', tx);
+            const created = await tx.salesOrder.create({
+                data: {
+                    id: (0, nanoid_1.nanoid)(10),
+                    tenantId,
+                    customerId: parentOrder.customerId || project.customerId,
+                    tenderId: null,
+                    projectId: project.id,
+                    parentSalesOrderId,
+                    revisionNumber: nextRevision,
+                    orderNumber,
+                    orderType: "PROJECT_ADDON",
+                    status: "ORDERED",
+                    totalAmount,
+                    orderDate: resolvedOrderDate,
+                    createdByEmployeeId: employeeId,
+                },
+                include: {
+                    customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
+                    tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                },
+            });
+            const stamp = { salesOrderId: created.id };
+            if (expenses.length) {
+                await tx.projectExpense.updateMany({ where: { id: { in: expenses.map((row) => row.id) } }, data: stamp });
+            }
+            if (extraMaterials.length) {
+                await tx.projectExtraMaterial.updateMany({ where: { id: { in: extraMaterials.map((row) => row.id) } }, data: stamp });
+            }
+            if (reports.length) {
+                await tx.projectReport.updateMany({ where: { id: { in: reports.map((row) => row.id) } }, data: stamp });
+            }
+            return created;
         });
         return {
             salesOrder: addonOrder,
@@ -1066,6 +1089,7 @@ class ProjectController {
                     where: {
                         tenantId,
                         OR: [
+                            { projectNumber: { contains: search } },
                             { projectName: { contains: search } },
                             { customer: { is: { companyName: { contains: search } } } },
                         ],
@@ -1077,7 +1101,10 @@ class ProjectController {
                 ? await prisma_client_1.default.salesOrder.findMany({
                     where: {
                         tenantId,
-                        orderNumber: { contains: search },
+                        OR: [
+                            { orderNumber: { contains: search } },
+                            { legacyNumber: { contains: search } },
+                        ],
                     },
                     select: { id: true },
                 })
@@ -1434,23 +1461,23 @@ class ProjectController {
             if (requestedView && !allowedViews.has(requestedView)) {
                 return res.status(400).json({ error: "Geçersiz proje detay görünümü." });
             }
-            const project = requestedView
-                ? await this.projectRepository.findDetailById(req.params.id, req.user.tenantId, requestedView)
-                : await this.projectRepository.findById(req.params.id, req.user.tenantId);
+            const projectId = req.params.id;
+            const tenantId = req.user.tenantId;
+            const projectPromise = requestedView
+                ? this.projectRepository.findDetailById(projectId, tenantId, requestedView)
+                : this.projectRepository.findById(projectId, tenantId);
+            // Independent relation: run it beside the main read model so a
+            // remote database pays one critical-path round trip instead of two.
+            const addonRequestsPromise = prisma_client_1.default.projectAddonRequest.findMany({
+                where: { projectId, tenantId },
+                orderBy: { createdAt: "desc" },
+            }).catch((addonError) => {
+                console.error("[getById] could not load addon requests:", addonError?.message || addonError);
+                return [];
+            });
+            const [project, addonRequests] = await Promise.all([projectPromise, addonRequestsPromise]);
             if (!project) {
                 return res.status(404).json({ error: "Proje bulunamadı veya seçili şirkette değil." });
-            }
-            // Attached separately (not via the shared findById include) so the
-            // project keeps loading even if the addon-request table is absent.
-            let addonRequests = [];
-            try {
-                addonRequests = await prisma_client_1.default.projectAddonRequest.findMany({
-                    where: { projectId: project.id, tenantId: req.user.tenantId },
-                    orderBy: { createdAt: "desc" },
-                });
-            }
-            catch (addonError) {
-                console.error("[getById] could not load addon requests:", addonError?.message || addonError);
             }
             res.status(200).json({ ...project, addonRequests });
         }
@@ -2007,10 +2034,11 @@ class ProjectController {
             }
             const cleanExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
             for (const expense of cleanExpenses) {
+                // Tutar ZORUNLU DEĞİL: metni olan gider 0 bedelle de kaydedilir.
                 const amount = Number(expense.amount || 0);
-                if (!expense.expenseType || amount <= 0)
+                if (!String(expense.expenseType || "").trim())
                     continue;
-                await this.addExpenseUseCase.execute(appointment.projectId, String(expense.expenseType).trim(), amount, expense.description ? String(expense.description).trim() : "", salesOrderId, appointment.id);
+                await this.addExpenseUseCase.execute(appointment.projectId, String(expense.expenseType).trim(), Number.isFinite(amount) && amount > 0 ? amount : 0, expense.description ? String(expense.description).trim() : "", salesOrderId, appointment.id);
             }
             const cleanMaterials = Array.isArray(req.body.materials) ? req.body.materials : [];
             for (const material of cleanMaterials) {
@@ -2126,18 +2154,19 @@ class ProjectController {
                 return res.status(404).json({ error: "Harici gider bulunamadı." });
             }
             const patch = {};
+            // Sabit tür listesi KALDIRILDI: harici gider serbest metindir, tek
+            // koşul boş olmamasıdır (bkz. AddProjectExpenseUseCase).
             if (req.body.expenseType !== undefined) {
                 const expenseType = String(req.body.expenseType || "").trim();
-                if (!PROJECT_EXPENSE_TYPES.includes(expenseType)) {
-                    return res.status(400).json({ error: "Geçersiz harici gider türü." });
+                if (!expenseType) {
+                    return res.status(400).json({ error: "Harici gider açıklaması zorunludur." });
                 }
                 patch.expenseType = expenseType;
             }
+            // Tutar zorunlu değil: 0 da geçerlidir (bedel sonra girilebilir).
             if (req.body.amount !== undefined) {
-                const amount = Number(req.body.amount || 0);
-                if (amount <= 0)
-                    return res.status(400).json({ error: "Tutar sıfırdan büyük olmalıdır." });
-                patch.amount = amount;
+                const amount = Number(req.body.amount);
+                patch.amount = Number.isFinite(amount) && amount > 0 ? amount : 0;
             }
             if (req.body.description !== undefined) {
                 patch.description = String(req.body.description || "").trim() || null;
@@ -2270,12 +2299,84 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
-    // Admin/manager-facing: delete a project sales order. Addon (Zusatzauftrag)
-    // orders are billing snapshots that own no records, so they just drop the row.
-    // A main order underpins its addons and scoped records, so it is guarded: it is
-    // rejected while it still has addons, and any order that has been invoiced is
-    // rejected outright. When a main order is removed its own scoped reports /
-    // expenses / extra materials (restocked) / appointments are cleaned up too.
+    // Admin/manager-facing: delete a project sales order. An addon (Nachtrag)
+    // order releases its records on cancel (user request 2026-08-07): its extra
+    // materials are RESTOCKED and removed, its expenses/reports/appointments are
+    // re-stamped onto the parent order (field history survives and becomes
+    // billable again). Any order that has been invoiced is rejected outright.
+    // When a main order is removed its own scoped reports / expenses / extra
+    // materials (restocked) / appointments are cleaned up too.
+    /**
+     * Projeyi TÜM operasyonel kayıtlarıyla siler (kullanıcı isteği; onay için
+     * istemci "DELETE" yazdırır): raporlar (görselleri/malzemeleri cascade),
+     * ek malzemeler (stok İADE edilir), giderler, randevular (atamalar cascade),
+     * teslimat raporları, imza istekleri ve projenin TÜM siparişleri; faz /
+     * varyasyon / ek sipariş istekleri projeyle birlikte cascade düşer. Teklif
+     * ve sevkiyatlar SİLİNMEZ — projectId bağları koparılır (SetNull), teklif
+     * yeniden dönüştürülebilir hâle gelir.
+     *
+     * Faturalanmış proje silinemez (iptal edilmiş fatura dahil) — sipariş
+     * silmedeki kuralın aynısı.
+     */
+    async deleteProject(req, res) {
+        try {
+            const projectId = req.params.id;
+            const tenantId = req.user.tenantId;
+            const project = await prisma_client_1.default.project.findFirst({
+                where: { id: projectId, tenantId },
+                select: { id: true },
+            });
+            if (!project)
+                return res.status(404).json({ error: "Proje bulunamadı." });
+            const orders = await prisma_client_1.default.salesOrder.findMany({
+                where: { projectId, tenantId },
+                select: { id: true },
+            });
+            const orderIds = orders.map((order) => order.id);
+            const invoiceCount = await prisma_client_1.default.invoice.count({
+                where: {
+                    OR: [
+                        { projectId },
+                        ...(orderIds.length ? [{ salesOrderId: { in: orderIds } }] : []),
+                    ],
+                },
+            });
+            if (invoiceCount > 0) {
+                return res.status(400).json({ error: "Faturalandırılmış bir proje silinemez." });
+            }
+            await prisma_client_1.default.$transaction(async (tx) => {
+                // Stok iadesi silmeden ÖNCE — sipariş silmedeki kuralın aynısı.
+                const extraMaterials = await tx.projectExtraMaterial.findMany({
+                    where: { projectId },
+                    select: { id: true, materialId: true, quantity: true },
+                });
+                for (const row of extraMaterials) {
+                    await tx.material.update({
+                        where: { id: row.materialId },
+                        data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                    });
+                }
+                if (extraMaterials.length) {
+                    await tx.projectExtraMaterial.deleteMany({ where: { projectId } });
+                }
+                // Raporlar randevulardan ÖNCE (rapor→randevu bağı var); rapor
+                // görselleri ve malzemeleri cascade ile düşer.
+                await tx.projectReport.deleteMany({ where: { projectId } });
+                await tx.projectExpense.deleteMany({ where: { projectId } });
+                await tx.appointment.deleteMany({ where: { projectId } });
+                await tx.deliveryReport.deleteMany({ where: { projectId, tenantId } });
+                await tx.signatureRequest.deleteMany({ where: { projectId, tenantId } });
+                if (orderIds.length) {
+                    await tx.salesOrder.deleteMany({ where: { id: { in: orderIds } } });
+                }
+                await tx.project.delete({ where: { id: projectId } });
+            });
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async deleteSalesOrder(req, res) {
         try {
             const projectId = req.params.id;
@@ -2301,6 +2402,47 @@ class ProjectController {
                 return res.status(400).json({ error: "Faturalandırılmış bir sipariş silinemez." });
             }
             await prisma_client_1.default.$transaction(async (tx) => {
+                if (isAddon) {
+                    // EK SİPARİŞ İPTALİ (kullanıcı isteği 2026-08-07): kullanılan
+                    // ek malzemeler STOĞA İADE edilir. Yeni model ekleri kayıtlarını
+                    // kendi id'siyle damgalı taşır; ESKİ ekler için aynı iade, üst
+                    // siparişe damgalı kalmış ZAMAN DİLİMİ kayıtlarına uygulanır
+                    // (önceki ek → bu ek; okuma tarafındaki pencereyle birebir).
+                    const siblings = await tx.salesOrder.findMany({
+                        where: { parentSalesOrderId: order.parentSalesOrderId, projectId, tenantId, NOT: { id: order.id } },
+                        select: { id: true, createdAt: true },
+                    });
+                    const previousAddon = siblings
+                        .filter((sibling) => new Date(sibling.createdAt).getTime() < new Date(order.createdAt).getTime())
+                        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] || null;
+                    const legacyWindow = {
+                        salesOrderId: order.parentSalesOrderId,
+                        addedAt: {
+                            ...(previousAddon ? { gt: previousAddon.createdAt } : {}),
+                            lte: order.createdAt,
+                        },
+                    };
+                    const extraMaterials = await tx.projectExtraMaterial.findMany({
+                        where: { projectId, OR: [{ salesOrderId: order.id }, legacyWindow] },
+                        select: { id: true, materialId: true, quantity: true },
+                    });
+                    for (const row of extraMaterials) {
+                        await tx.material.update({
+                            where: { id: row.materialId },
+                            data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                        });
+                    }
+                    if (extraMaterials.length) {
+                        await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((row) => row.id) } } });
+                    }
+                    // Gider, rapor ve randevular SİLİNMEZ — saha kaydı yok edilmez.
+                    // Üst siparişe geri damgalanır ve bekleyen havuza döner; bir
+                    // sonraki ek sipariş isterse yeniden faturalar.
+                    const returnStamp = { salesOrderId: order.parentSalesOrderId };
+                    await tx.projectExpense.updateMany({ where: { projectId, salesOrderId: order.id }, data: returnStamp });
+                    await tx.projectReport.updateMany({ where: { projectId, salesOrderId: order.id }, data: returnStamp });
+                    await tx.appointment.updateMany({ where: { projectId, salesOrderId: order.id }, data: returnStamp });
+                }
                 if (!isAddon) {
                     // Records normally carry the parent order id, but sweep the whole
                     // family in case anything was ever stamped with an addon id.
@@ -2407,7 +2549,9 @@ class ProjectController {
             // Date the addon to the appointment its billed extra work belongs to, even
             // when the manager creates it days later. createdAt still bounds the next slice.
             const resolvedOrderDate = await this.resolveAddonOrderDate(tenantId, { expenses, extraMaterials, reports });
-            const orderNumber = `${parentOrder.orderNumber}-N${nextRevision}`;
+            // Ek sipariş (Nachtrag) kodu kendi NT- serisinden gelir — bkz.
+            // `createAddonOrderForParent`.
+            const orderNumber = await (0, documentNumber_1.nextDocumentNumber)(tenantId, 'ADDON');
             const addonOrder = await prisma_client_1.default.salesOrder.create({
                 data: {
                     id: (0, nanoid_1.nanoid)(10),

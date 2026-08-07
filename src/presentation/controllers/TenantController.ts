@@ -28,6 +28,8 @@ export class TenantController {
                     isProjectModuleEnabled: true,
                     createdAt: true,
                     moduleProfileId: true,
+                    // Belge kodundaki blok (numara × 10000) — kategoriden bağımsız.
+                    companyNumber: true,
                     // The company category drives menu/module filtering client-side.
                     moduleProfile: { select: { id: true, profileNumber: true, name: true, moduleKeys: true } },
                 },

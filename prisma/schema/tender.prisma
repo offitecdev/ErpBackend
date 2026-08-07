@@ -14,7 +14,13 @@ model Tender {
   tenantId                  String
   customerId                String?
   projectId                 String?
+  // Teklif kodu — AN-2026-10001. Sunucuda DocumentCounter'dan üretilir, her dilde
+  // aynıdır ve istemciden gelen değer YOK SAYILIR. Bir teklifin tüm sürümleri
+  // (version 1,2,3…) AYNI tenderNumber'ı paylaşır; bu yüzden tekil değildir.
   tenderNumber              String
+  // Yeni numaralandırmadan önceki kod (A-2026-4474, TKF-…, CSV içe aktarımının
+  // dış referansı). Eski bağlantı/arama ve içe aktarım eşleşmesi için saklanır.
+  legacyNumber              String?
   version                   Int          @default(1)
   format                    TenderFormat
   validUntil                DateTime?
@@ -99,6 +105,7 @@ model Tender {
   // karşılamadığı için her sayfa filesort'a düşüyordu.
   @@index([tenantId, createdAt])
   @@index([tenantId, tenderNumber])
+  @@index([tenantId, legacyNumber])
 }
 
 model Position {

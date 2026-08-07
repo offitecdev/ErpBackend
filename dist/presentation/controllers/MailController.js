@@ -24,15 +24,24 @@ class MailController {
                     smtpPort: 587,
                     smtpSecure: false,
                     smtpUser: null,
+                    imapHost: null,
+                    imapPort: 993,
+                    imapSecure: true,
+                    imapUser: null,
+                    sentFolder: null,
+                    saveToSent: true,
                     signatureHtml: null,
                     signatureImage: null,
-                    hasPassword: false
+                    hasPassword: false,
+                    hasImapPassword: false
                 });
             }
             res.status(200).json({
                 ...settings,
                 smtpPassword: undefined,
-                hasPassword: Boolean(settings.smtpPassword)
+                imapPassword: undefined,
+                hasPassword: Boolean(settings.smtpPassword),
+                hasImapPassword: Boolean(settings.imapPassword)
             });
         }
         catch (error) {
@@ -52,11 +61,44 @@ class MailController {
                 : body.smtpPassword === undefined || String(body.smtpPassword).trim() === ""
                     ? existing?.smtpPassword ?? null
                     : String(body.smtpPassword).trim();
+            // IMAP şifresi SMTP'ninkiyle aynı kurala uyar: boş = dokunma,
+            // açıkça null = sil.
+            const imapPassword = body.imapPassword === null
+                ? null
+                : body.imapPassword === undefined || String(body.imapPassword).trim() === ""
+                    ? existing?.imapPassword ?? null
+                    : String(body.imapPassword).trim();
             const port = Number(body.smtpPort);
             if (body.smtpPort !== undefined && body.smtpPort !== null && body.smtpPort !== ""
                 && (!Number.isInteger(port) || port < 1 || port > 65535)) {
                 return res.status(400).json({ error: "SMTP portu 1-65535 araliginda olmalidir." });
             }
+            const imapPort = Number(body.imapPort);
+            if (body.imapPort !== undefined && body.imapPort !== null && body.imapPort !== ""
+                && (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535)) {
+                return res.status(400).json({ error: "IMAP portu 1-65535 araliginda olmalidir." });
+            }
+            // Gönderilenler kopyası alanları: alan gönderilmediyse mevcut
+            // değer korunur (kısmi kayıtlar ayarı sıfırlamasın).
+            const imapFields = {
+                imapHost: body.imapHost === undefined
+                    ? existing?.imapHost ?? null
+                    : String(body.imapHost || "").trim() || null,
+                imapPort: imapPort || existing?.imapPort || 993,
+                imapSecure: body.imapSecure === undefined
+                    ? existing?.imapSecure ?? true
+                    : Boolean(body.imapSecure),
+                imapUser: body.imapUser === undefined
+                    ? existing?.imapUser ?? null
+                    : String(body.imapUser || "").trim() || null,
+                imapPassword,
+                sentFolder: body.sentFolder === undefined
+                    ? existing?.sentFolder ?? null
+                    : String(body.sentFolder || "").trim() || null,
+                saveToSent: body.saveToSent === undefined
+                    ? existing?.saveToSent ?? true
+                    : Boolean(body.saveToSent),
+            };
             // İmza HTML'i kayıtta temizlenir (editörün üretebildiği biçimlendirme
             // dışındaki her şey atılır); görsel yalnızca sınırlı boyutta PNG/JPG
             // data URI olabilir. Alan gönderilmediyse mevcut değer korunur.
@@ -96,6 +138,7 @@ class MailController {
                     smtpSecure: Boolean(body.smtpSecure),
                     smtpUser: String(body.smtpUser || "").trim() || null,
                     smtpPassword: password,
+                    ...imapFields,
                     signatureHtml,
                     signatureImage
                 },
@@ -110,11 +153,18 @@ class MailController {
                     smtpSecure: Boolean(body.smtpSecure),
                     smtpUser: String(body.smtpUser || "").trim() || null,
                     smtpPassword: password,
+                    ...imapFields,
                     signatureHtml,
                     signatureImage
                 }
             });
-            res.status(200).json({ ...settings, smtpPassword: undefined, hasPassword: Boolean(settings.smtpPassword) });
+            res.status(200).json({
+                ...settings,
+                smtpPassword: undefined,
+                imapPassword: undefined,
+                hasPassword: Boolean(settings.smtpPassword),
+                hasImapPassword: Boolean(settings.imapPassword)
+            });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -163,6 +213,11 @@ class MailController {
                 replyTo: body.replyTo || settings?.replyTo || null,
                 attachments: Array.isArray(body.attachments) ? body.attachments : [],
                 inlineImages: signature.inlineImages
+            }, {
+                // Test gönderimi Gönderilenler kopyasının DURUMUNU da bildirir
+                // ("kopya klasöre yazıldı / yazılamadı"), bu yüzden burada —
+                // ve yalnızca burada — kopya beklenir.
+                waitForSentCopy: true,
             });
             res.status(200).json({
                 message: `Mail gonderildi: ${to}`,

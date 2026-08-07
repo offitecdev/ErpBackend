@@ -174,19 +174,21 @@ model SupplyRequest {
 /// tek sipariş = tek tedarikçi. Ürün satırları anlık görüntü (snapshot) olarak
 /// JSON kolonunda saklanır (SupplyRequest emsali: FK yok, listeleme join'siz).
 /// status — sipariş yaşam döngüsü (2026-08-01 genişletildi):
-///   DRAFT                 → fiyat talebi taslağı: fiyatsız, henüz resmileşmemiş liste
+///   DRAFT                 → TALEP TASLAĞI: fiyatsız, kaydedilmiş ama HENÜZ GÖNDERİLMEMİŞ talep
 ///   ORDER_DRAFT           → SİPARİŞ TASLAĞI: fiyatlı, kaydedilmiş ama ONAYLANMAMIŞ
 ///                           ("Kaydet" bunu yazar; "Onayla" PENDING yapar ve kilitler)
 ///   PRICE_REQUEST         → fiyat talebi: fiyatsız satırlar (seri no + ad + miktar) tedarikçiye sorulur
-///   AWAITING_CONFIRMATION → fiyat talebi maili gönderildi, tedarikçi onayı bekleniyor
-///   PENDING               → resmî satın alma siparişi (onaylanınca fiyat talebi buraya döner)
-///   UPDATED               → mail gönderildikten sonra içerik değişti (revision+1); ad değişikliği durumu etkilemez
+///                           (talep maili gönderilince DRAFT kendiliğinden buraya ilerler;
+///                           "onay bekleniyor" ayrı durumu 2026-08-03'te kaldırıldı)
+///   PENDING               → SİPARİŞ ONAYLANDI: resmî sipariş, ama tedarikçiye mail HENÜZ gitmedi
+///   ORDERED               → SİPARİŞ VERİLDİ: sipariş maili gerçekten gönderildi (2026-08-03)
+///                           (mail sonrası içerik değişikliği yalnızca revision+1 yapar; durum geri alınmaz)
 ///   TO_BE_STOCKED         → mal kabul bekleniyor (goods receipt); satırlar tek tek/toplu stoğa gönderilebilir
 ///   COMPLETED             → stoğa aktarıldı (mal kabul tamamlandı / mark-stocked)
 model PurchaseOrder {
   id              String    @id
   tenantId        String
-  referenceNumber String // "Auftrag" AU-2026-001 (eski kayıtlar BE-2026-0001) — tenant başına benzersiz, kullanıcı düzenleyebilir
+  referenceNumber String // "Bestellung" BE-2026-001 (arada üretilen AU-2026-001 ve eski BE-2026-0001 kayıtları da geçerlidir) — tenant başına benzersiz, kullanıcı düzenleyebilir
   quoteNumber     String? // opsiyonel teklif numarası (PDF'te görünür)
   orderedByName   String? // "Besteller" — siparişi veren kişi (varsayılan: oturumdaki kullanıcı)
   projectName     String? // tedarik edilen projenin adı (PDF kapak kartında)

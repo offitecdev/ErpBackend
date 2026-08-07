@@ -22,6 +22,9 @@ model Project {
   customerId               String
   tenderId                 String?       @unique
   managerId                String?
+  // Proje kodu — PR-2026-10001. Sunucuda DocumentCounter'dan üretilir, her dilde
+  // aynıdır. `projectName` serbest metindir ve kodun yerini TUTMAZ.
+  projectNumber            String
   projectName              String
   status                   ProjectStatus @default(AWAITING_APPROVAL)
   plannedBudget            Float         @default(0)
@@ -55,6 +58,7 @@ model Project {
 
   @@index([tenantId])
   @@index([customerId])
+  @@index([tenantId, projectNumber])
 }
 
 model ProjectPhase {
@@ -188,6 +192,7 @@ model Appointment {
   extraMaterials             ProjectExtraMaterial[]         @relation("ProjectAppointmentExtraMaterials")
 
   @@index([tenantId])
+  @@index([projectId])
   @@index([salesOrderId])
   @@index([assignedTechId])
   @@index([startTime, endTime])
@@ -386,6 +391,9 @@ model DeliveryReport {
   checklistName       String?
   responses           Json
   notes               String?   @db.Text
+  /// Report-eigene Fotoanhänge: [{ imageData: base64-DataURL, caption? }] —
+  /// zusätzlich zu den live referenzierten Feldbericht-Bildern.
+  images              Json?
   customerSignature   String?   @db.LongText
   isSigned            Boolean   @default(false)
   signedAt            DateTime?
@@ -443,6 +451,21 @@ model MailSetting {
   smtpSecure   Boolean  @default(false)
   smtpUser     String?
   smtpPassword String?  @db.Text
+  // GÖNDERİLENLER KOPYASI (2026-08-04): SMTP yalnızca teslim protokolüdür,
+  // gönderenin kutusunda iz bırakmaz. Mailin Outlook'un "Gönderilmiş Öğeler"
+  // klasöründe görünmesi için gönderim sonrası IMAP APPEND yapılır.
+  // imapHost boşsa özellik kapalıdır. Kullanıcı/şifre boş bırakılırsa
+  // SMTP'ninkiler kullanılır (çoğu sunucuda aynı hesap).
+  imapHost     String?
+  imapPort     Int      @default(993)
+  imapSecure   Boolean  @default(true)
+  imapUser     String?
+  imapPassword String?  @db.Text
+  // Boşsa klasör sunucudan bulunur (RFC 6154 `\Sent`, sonra bilinen adlar).
+  sentFolder   String?
+  // Exchange gibi kopyayı sunucu tarafında dosyalayan kurulumlarda kapatılır
+  // (MessageCopyForSMTPClientSubmissionEnabled) — yoksa mail iki kez görünür.
+  saveToSent   Boolean  @default(true)
   // Tenant e-posta imzası: Outlook/Word'den yapıştırılabilen zengin HTML
   // (satır içi data URI görseller dâhil — bu yüzden LongText) + eski kayıtlar
   // için ayrı görsel alanı. Görseller gönderimde CID'li inline eke çevrilir —

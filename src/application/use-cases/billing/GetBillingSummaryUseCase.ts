@@ -1,6 +1,6 @@
 import { IInvoiceRepository } from "../../../domain/repositories/IInvoiceRepository";
 import prisma from "../../../infrastructure/database/prisma.client";
-import { NextStageInfo, nextStageInfo, parsePaymentStages } from "../../utils/paymentSchedule";
+import { NextStageInfo, nextStageInfo, parsePaymentStages, PaymentStage } from "../../utils/paymentSchedule";
 
 const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
@@ -8,16 +8,23 @@ export interface BillingSummary {
     baseAmount: number;
     billedPercent: number;
     billedAmount: number;
+    // Fiilen ödenmiş (status PAID) pay — ödeme planı ilerlemesi bunu izler:
+    // bir fatura "bezahlt" işaretlenince kalan bakiye düşer, işaret geri
+    // alınınca/iptal edilince yükselir.
+    paidPercent: number;
+    paidAmount: number;
     remainingPercent: number;
     remainingAmount: number;
-    // Order-level payment schedule (percent array) and the derived next stage
-    // to bill. Both null when the order has no schedule / target is a project.
-    paymentStages: number[] | null;
+    // Order-level payment schedule (percent + due date per stage) and the
+    // derived next stage to bill. Both null when the order has no schedule /
+    // the target is a project.
+    paymentStages: PaymentStage[] | null;
     nextStage: NextStageInfo | null;
     invoices: Array<{
         id: string;
         invoiceNumber: string;
         billingType: string;
+        kind: string;
         billedPercent: number;
         amount: number;
         status: string;
@@ -90,7 +97,7 @@ export class GetBillingSummaryUseCase {
      */
     buildBatchFromInvoices(
         targets: Array<{ salesOrderId: string; baseAmount: number; paymentStages?: string | null }>,
-        invoices: Array<{ id: string; salesOrderId?: string | null; invoiceNumber: string; billingType: string; billedPercent: number; amount: number; status: string; createdAt: Date }>,
+        invoices: Array<{ id: string; salesOrderId?: string | null; invoiceNumber: string; billingType: string; kind?: string; billedPercent: number; amount: number; status: string; createdAt: Date }>,
     ): Map<string, BillingSummary> {
         const result = new Map<string, BillingSummary>();
 
@@ -112,12 +119,15 @@ export class GetBillingSummaryUseCase {
 
     private buildSummary(
         baseAmount: number,
-        invoices: Array<{ id: string; invoiceNumber: string; billingType: string; billedPercent: number; amount: number; status: string; createdAt: Date }>,
+        invoices: Array<{ id: string; invoiceNumber: string; billingType: string; kind?: string; billedPercent: number; amount: number; status: string; createdAt: Date }>,
         paymentStagesRaw?: string | null,
     ): BillingSummary {
         const active = invoices.filter((inv) => inv.status !== "CANCELLED");
         const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
+        const paid = active.filter((inv) => inv.status === "PAID");
+        const paidPercent = round2(paid.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
+        const paidAmount = round2(paid.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
         const remainingPercent = round2(Math.max(0, 100 - billedPercent));
         const remainingAmount = round2(Math.max(0, baseAmount - billedAmount));
         const paymentStages = parsePaymentStages(paymentStagesRaw);
@@ -126,6 +136,8 @@ export class GetBillingSummaryUseCase {
             baseAmount: round2(baseAmount),
             billedPercent,
             billedAmount,
+            paidPercent,
+            paidAmount,
             remainingPercent,
             remainingAmount,
             paymentStages,
@@ -134,6 +146,7 @@ export class GetBillingSummaryUseCase {
                 id: inv.id,
                 invoiceNumber: inv.invoiceNumber,
                 billingType: inv.billingType,
+                kind: inv.kind ?? "RECHNUNG",
                 billedPercent: inv.billedPercent,
                 amount: inv.amount,
                 status: inv.status,

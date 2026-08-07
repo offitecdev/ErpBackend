@@ -17,7 +17,10 @@ class Project {
     bookingToken;
     overtimeHourlyRate;
     overtimeTolerancePercent;
-    constructor(id, tenantId, customerId, projectName, status, plannedBudget, actualCost, createdAt, tenderId, managerId, startDate, endDate, bookingToken, overtimeHourlyRate, overtimeTolerancePercent) {
+    projectNumber;
+    constructor(id, tenantId, customerId, projectName, status, plannedBudget, actualCost, createdAt, tenderId, managerId, startDate, endDate, bookingToken, overtimeHourlyRate, overtimeTolerancePercent, 
+    /** Proje kodu — PR-2026-10001. `createProject` üretir, her dilde aynıdır. */
+    projectNumber) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -33,6 +36,7 @@ class Project {
         this.bookingToken = bookingToken;
         this.overtimeHourlyRate = overtimeHourlyRate;
         this.overtimeTolerancePercent = overtimeTolerancePercent;
+        this.projectNumber = projectNumber;
     }
 }
 exports.Project = Project;

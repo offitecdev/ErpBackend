@@ -4,6 +4,7 @@ import { IPositionRepository } from "../../../domain/repositories/IPositionRepos
 import { ITenderParserService } from "../../interfaces/ITenderParserService";
 import { nanoid } from "nanoid";
 import { ICustomerActivityRepository } from "../../../domain/repositories/ICustomerActivityRepository";
+import { nextDocumentNumber } from "../../../shared/documentNumber";
 export class ImportTenderUseCase {
     constructor(
         private tenderRepository: ITenderRepository,
@@ -24,11 +25,16 @@ export class ImportTenderUseCase {
 
         const tenderId = nanoid(10);
 
+        // Kod her zaman bizim serimizden gelir (AN-2026-10001). Dosyadaki numara
+        // dış bir referanstır; kaybolmasın diye `legacyNumber`a yazılır.
+        const tenderNumber = await nextDocumentNumber(tenantId, 'QUOTE');
+
         const tender = await this.tenderRepository.create({
             id: tenderId,
             tenantId,
             customerId,
-            tenderNumber: parsedData.tenderNumber,
+            tenderNumber,
+            legacyNumber: parsedData.tenderNumber || null,
             version: 1,
             format: parsedData.format,
             status: 'Draft',
@@ -62,7 +68,7 @@ export class ImportTenderUseCase {
             customerId: customerId,
             employeeId: employeeId,
             activityType: "TENDER_IMPORTED",
-            description: `${parsedData.tenderNumber} numaralı ${format} ihale dosyası sisteme içe aktarıldı. (Versiyon: 1)`,
+            description: `${tenderNumber} numaralı ${format} ihale dosyası sisteme içe aktarıldı. (Versiyon: 1)`,
             referenceId: tenderId,
             activityDate: new Date()
         });

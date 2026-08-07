@@ -7,18 +7,27 @@ class AddProjectExpenseUseCase {
     constructor(projectRepository) {
         this.projectRepository = projectRepository;
     }
+    /**
+     * Harici giderin TÜRÜ diye bir şey YOKTUR (kullanıcı isteği): eskiden sabit
+     * bir listeye ("Nakliye", "Taşeron"…) karşı doğrulanıyordu ve saha raporundan
+     * gelen serbest metin "Geçersiz harici gider türü." diye reddediliyordu.
+     * Artık ne yazılırsa o kaydedilir; tek koşul boş olmamasıdır.
+     *
+     * Tutar da ZORUNLU DEĞİLDİR: bedeli sonra girilecek bir kalem 0 ile kaydedilir.
+     */
     async execute(projectId, expenseType, amount, description, salesOrderId, appointmentId) {
-        const validTypes = ["Nakliye", "Ekipman Kiralama", "Dış hizmetler", "Taşeron", "Diğer"];
-        if (!validTypes.includes(expenseType)) {
-            throw new Error("Geçersiz harici gider türü.");
+        const label = String(expenseType || "").trim();
+        if (!label) {
+            throw new Error("Harici gider açıklaması zorunludur.");
         }
+        const value = Number(amount);
         const expense = await this.projectRepository.addExpense({
             id: (0, nanoid_1.nanoid)(10),
             projectId,
             salesOrderId: salesOrderId || null,
             appointmentId: appointmentId || null,
-            expenseType,
-            amount,
+            expenseType: label,
+            amount: Number.isFinite(value) && value > 0 ? value : 0,
             description,
         });
         return expense;

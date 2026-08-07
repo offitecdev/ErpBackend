@@ -38,6 +38,7 @@ const notification_routes_1 = __importDefault(require("./presentation/routes/not
 const meeting_routes_1 = __importDefault(require("./presentation/routes/meeting.routes"));
 const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
 const files_routes_1 = __importDefault(require("./presentation/routes/files.routes"));
+const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashboard.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const AuthMiddleware_1 = require("./presentation/middlewares/AuthMiddleware");
 const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
@@ -141,8 +142,10 @@ const findTenderForTenant = async (rawRef, tenantId) => {
     });
     if (byId && await canAccessTenant(byId.tenantId, tenantId))
         return byId;
+    // Yeni kod (AN-2026-10001) ya da yeniden numaralandırmadan önceki kod
+    // (A-2026-4474, TKF-…) — eski bağlantılar çalışmaya devam etsin.
     const byNumber = await prisma_client_1.default.tender.findMany({
-        where: { tenderNumber: tenderRef },
+        where: { OR: [{ tenderNumber: tenderRef }, { legacyNumber: tenderRef }] },
         take: 50,
         select: { id: true, tenantId: true },
     });
@@ -317,6 +320,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/meetings`, meeting_routes_1.default);
     app.use(`${prefix}/fx`, fx_routes_1.default);
     app.use(`${prefix}/files`, files_routes_1.default);
+    app.use(`${prefix}/dashboard`, dashboard_routes_1.default);
 }
 app.use(ErrorHandlerMiddleware_1.globalErrorHandler);
 app.listen(PORT, () => {

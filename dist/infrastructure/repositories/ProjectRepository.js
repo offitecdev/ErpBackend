@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const documentNumber_1 = require("../../shared/documentNumber");
 const materialLiteSelect = {
     id: true,
     serialId: true,
@@ -67,8 +68,16 @@ const appointmentSummarySelect = {
 class ProjectRepository {
     async createProject(data) {
         return await prisma_client_1.default.$transaction(async (tx) => {
+            // Proje kodunu (PR-2026-10001) BURADA üretiyoruz: her çağıranın
+            // hatırlaması gereken bir alan olmaktan çıkıp tek bir boğazdan
+            // geçiyor, böylece kodsuz proje oluşamıyor.
+            const projectNumber = data.projectNumber
+                || await (0, documentNumber_1.nextDocumentNumber)(data.tenantId, 'PROJECT', tx);
+            // Projenin ADI KODUDUR. Çağıran açıkça bir ad vermedikçe (kullanıcı
+            // sonradan yeniden adlandırabilir) ad koda eşitlenir; teklif kodu
+            // artık proje adına kopyalanmaz.
             const project = await tx.project.create({
-                data: data
+                data: { ...data, projectNumber, projectName: data.projectName || projectNumber }
             });
             if (data.tenderId) {
                 await tx.tender.update({
@@ -225,9 +234,12 @@ class ProjectRepository {
         ].includes(view);
         const withReportMaterials = view === "fieldReports" || view === "generalReport";
         const withReportAssets = view === "generalReport" || view === "delivery" || view === "signatures";
+        // "expenses" is the read model behind the single costs tab: one table that
+        // stacks external expenses, extra materials and extra work per order, plus
+        // the tender-included material list underneath it.
         const withExpenseDetails = view === "fieldReports" || view === "generalReport" || view === "expenses";
-        const withExtraMaterialDetails = view === "fieldReports" || view === "generalReport" || view === "materials";
-        const withTenderMaterials = view === "planning" || view === "fieldReports" || view === "generalReport" || view === "materials";
+        const withExtraMaterialDetails = view === "fieldReports" || view === "generalReport" || view === "materials" || view === "expenses";
+        const withTenderMaterials = view === "planning" || view === "fieldReports" || view === "generalReport" || view === "materials" || view === "expenses";
         const reportSelect = withReportDetails
             ? {
                 id: true,
@@ -320,6 +332,17 @@ class ProjectRepository {
             tenderNumber: true,
             status: true,
             projectId: true,
+            // Kommissionsnummer — the project screen lists the commission of every
+            // attached order, so it travels with each sales order's tender too
+            // (this select is shared by both the project tender and the orders').
+            commissionNumber: true,
+            // Verkäufer for the billing tab's invoice fields: the tender's
+            // salesperson, falling back to whoever created the tender.
+            salespersonName: true,
+            createdBy: { select: { firstName: true, lastName: true } },
+            // Projektadresse (Montageadresse) — the overview prints it as the
+            // very first line, above the customer/order row.
+            installationAddress: true,
             ...(withTenderMaterials ? {
                 usedMaterials: {
                     orderBy: { createdAt: "desc" },
@@ -335,6 +358,7 @@ class ProjectRepository {
                 customerId: true,
                 tenderId: true,
                 managerId: true,
+                projectNumber: true,
                 projectName: true,
                 status: true,
                 plannedBudget: true,
@@ -439,9 +463,11 @@ class ProjectRepository {
             where.customerId = filter.customerId;
         if (filter.search) {
             where.OR = [
+                { projectNumber: { contains: filter.search } },
                 { projectName: { contains: filter.search } },
                 { customer: { companyName: { contains: filter.search } } },
-                { tender: { tenderNumber: { contains: filter.search } } }
+                { tender: { tenderNumber: { contains: filter.search } } },
+                { tender: { legacyNumber: { contains: filter.search } } }
             ];
         }
         return await prisma_client_1.default.project.findMany({
@@ -464,7 +490,7 @@ class ProjectRepository {
                         createdAt: true,
                         orderDate: true,
                         parentSalesOrder: { select: { id: true, orderNumber: true } },
-                        tender: { select: { id: true, tenderNumber: true, status: true, projectId: true } },
+                        tender: { select: { id: true, tenderNumber: true, status: true, projectId: true, commissionNumber: true, salespersonName: true, createdBy: { select: { firstName: true, lastName: true } }, installationAddress: true } },
                     },
                 },
                 appointments: {

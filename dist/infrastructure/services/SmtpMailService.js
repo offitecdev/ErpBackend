@@ -1,16 +1,18 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SmtpMailService = void 0;
-const net_1 = __importDefault(require("net"));
-const tls_1 = __importDefault(require("tls"));
-/** Sunucu yanıt vermezse istek sonsuza kadar asılı kalmasın: her adımın
-    kendi zaman aşımı vardır ve hata olarak yüzeye çıkar. */
-const CONNECT_TIMEOUT_MS = 15_000;
-const COMMAND_TIMEOUT_MS = 30_000;
-const DATA_TIMEOUT_MS = 120_000;
+exports.SmtpMailService = exports.buildMimeMessage = void 0;
+const ImapMailService_1 = require("./ImapMailService");
+const mailSocket_1 = require("./mailSocket");
+/**
+ * Bir gönderimin TOPLAM süre bütçesi. Normal bir gönderim 1-3 saniyede biter;
+ * bu bütçe yalnızca patolojik durumlar (paket düşüren güvenlik duvarı, yanıt
+ * vermeyen sunucu) için bir tavandır. Ortamdan büyütülüp küçültülebilir.
+ */
+const SEND_BUDGET_MS = Number(process.env.MAIL_SEND_TIMEOUT_MS) > 0
+    ? Number(process.env.MAIL_SEND_TIMEOUT_MS)
+    : 30_000;
+/** Büyük eklerin yazımı için boyuta göre verilen ek pay (tavanı). */
+const SEND_BUDGET_MAX_EXTRA_MS = 90_000;
 const encodeHeader = (value) => {
     if (/^[\x00-\x7F]*$/.test(value))
         return value;
@@ -34,61 +36,9 @@ const authMechanisms = (ehlo) => {
     }
     return mechanisms;
 };
-/** SNI, IP literalleri için gönderilmez (RFC 6066). */
-const sniFor = (host) => (net_1.default.isIP(host) ? undefined : host);
-const openSocket = (host, port, secure) => new Promise((resolve, reject) => {
-    const socket = secure
-        ? tls_1.default.connect({ host, port, servername: sniFor(host) })
-        : net_1.default.connect({ host, port });
-    const readyEvent = secure ? "secureConnect" : "connect";
-    const cleanup = () => {
-        socket.setTimeout(0);
-        socket.off("error", onError);
-        socket.off("timeout", onTimeout);
-        socket.off(readyEvent, onReady);
-    };
-    const fail = (message) => {
-        cleanup();
-        socket.destroy();
-        reject(new Error(message));
-    };
-    function onError(error) {
-        fail(`SMTP sunucusuna baglanilamadi (${host}:${port}): ${error.message}`);
-    }
-    function onTimeout() {
-        fail(`SMTP sunucusuna baglanilamadi (${host}:${port}): baglanti zaman asimina ugradi.`);
-    }
-    function onReady() {
-        cleanup();
-        resolve(socket);
-    }
-    socket.setTimeout(CONNECT_TIMEOUT_MS);
-    socket.once("error", onError);
-    socket.once("timeout", onTimeout);
-    socket.once(readyEvent, onReady);
-});
-/** STARTTLS sonrası aynı bağlantıyı TLS'e yükseltir. */
-const upgradeToTls = (socket, host) => new Promise((resolve, reject) => {
-    const secure = tls_1.default.connect({ socket, servername: sniFor(host) });
-    const cleanup = () => {
-        secure.off("error", onError);
-        secure.off("secureConnect", onReady);
-    };
-    function onError(error) {
-        cleanup();
-        secure.destroy();
-        reject(new Error(`SMTP TLS el sikismasi basarisiz (${host}): ${error.message}`));
-    }
-    function onReady() {
-        cleanup();
-        resolve(secure);
-    }
-    secure.once("error", onError);
-    secure.once("secureConnect", onReady);
-});
 /** Tek bir SMTP yanıtı okur. Çok satırlı yanıtlarda (`250-...`) yalnızca
     son satır `NNN ` biçimindedir; okuma orada tamamlanır. */
-const readReply = (socket, timeoutMs = COMMAND_TIMEOUT_MS) => new Promise((resolve, reject) => {
+const readReply = (socket, timeoutMs = mailSocket_1.COMMAND_TIMEOUT_MS) => new Promise((resolve, reject) => {
     let buffer = "";
     const cleanup = () => {
         clearTimeout(timer);
@@ -102,6 +52,16 @@ const readReply = (socket, timeoutMs = COMMAND_TIMEOUT_MS) => new Promise((resol
     }, timeoutMs);
     function onData(chunk) {
         buffer += chunk.toString("utf8");
+        // TAMAMLANMAMIŞ SATIR BEKLENİR. TCP parçalanması yanıtı satır
+        // ortasından bölebilir: `250-AUTH PLAIN LOGIN\r\n250` gibi bir
+        // parça geldiğinde son "satır" yalnızca `250` olur ve aşağıdaki
+        // desene UYAR — okuma erken biter, yanıtın geri kalanı (` 8BITMIME`)
+        // sokette kalır ve BİR SONRAKİ komutun yanıtı sanılırdı. O noktadan
+        // sonra konuşma kayar: sunucu beklenen cevabı hiç vermez ve gönderim
+        // zaman aşımına kadar asılı kalır. Bu yüzden yalnızca satır sonuyla
+        // biten bir tampon değerlendirilir.
+        if (!/\r?\n$/.test(buffer))
+            return;
         const lines = buffer.replace(/\r?\n$/, "").split(/\r?\n/);
         const last = lines[lines.length - 1] || "";
         if (!/^\d{3}( |$)/.test(last))
@@ -121,8 +81,138 @@ const readReply = (socket, timeoutMs = COMMAND_TIMEOUT_MS) => new Promise((resol
     socket.once("error", onError);
     socket.once("close", onClose);
 });
+/**
+ * Gönderilecek RFC 5322 mesajını kurar. Soket işinden AYRIDIR: aynı bayt
+ * dizisi hem SMTP DATA'sına yazılır hem de IMAP ile Gönderilenler klasörüne
+ * kopyalanır — kopyanın birebir aynı mail olması için tek kaynak şarttır.
+ */
+const buildMimeMessage = (mail, ccList) => {
+    const text = mail.text || mail.html?.replace(/<[^>]+>/g, " ") || "";
+    const html = mail.html || `<pre>${text}</pre>`;
+    const stamp = Date.now();
+    const altBoundary = `offitec-alt-${stamp}`;
+    const relatedBoundary = `offitec-rel-${stamp}`;
+    const mixedBoundary = `offitec-mixed-${stamp}`;
+    const alternativePart = [
+        `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+        ``,
+        `--${altBoundary}`,
+        `Content-Type: text/plain; charset="UTF-8"`,
+        `Content-Transfer-Encoding: 8bit`,
+        ``,
+        text,
+        `--${altBoundary}`,
+        `Content-Type: text/html; charset="UTF-8"`,
+        `Content-Transfer-Encoding: 8bit`,
+        ``,
+        html,
+        `--${altBoundary}--`,
+    ].join("\r\n");
+    // Inline görseller varsa gövde multipart/related olur: HTML + Content-ID'li
+    // görsel parçaları bir arada; mail istemcisi `cid:` referansını bunlarla çözer.
+    const inlineImages = mail.inlineImages || [];
+    const bodyPart = inlineImages.length === 0
+        ? alternativePart
+        : [
+            `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
+            ``,
+            `--${relatedBoundary}`,
+            alternativePart,
+            ...inlineImages.map((image) => {
+                const wrapped = image.contentBase64.replace(/\s+/g, "").replace(/(.{76})/g, "$1\r\n");
+                return [
+                    `--${relatedBoundary}`,
+                    `Content-Type: ${image.contentType}`,
+                    `Content-Transfer-Encoding: base64`,
+                    `Content-ID: <${image.cid}>`,
+                    `Content-Disposition: inline`,
+                    ``,
+                    wrapped,
+                ].join("\r\n");
+            }),
+            `--${relatedBoundary}--`,
+        ].join("\r\n");
+    const attachmentParts = (mail.attachments || []).map((attachment) => {
+        const safeName = attachment.filename.replace(/"/g, "");
+        const encodedName = encodeHeader(safeName);
+        const wrappedContent = attachment.contentBase64.replace(/\s+/g, "").replace(/(.{76})/g, "$1\r\n");
+        return [
+            `--${mixedBoundary}`,
+            `Content-Type: ${attachment.contentType}; name="${encodedName}"`,
+            `Content-Transfer-Encoding: base64`,
+            `Content-Disposition: attachment; filename="${encodedName}"`,
+            ``,
+            wrappedContent,
+        ].join("\r\n");
+    });
+    return [
+        `From: ${address(mail.fromEmail, mail.fromName)}`,
+        `To: ${mail.to}`,
+        ccList.length ? `Cc: ${ccList.join(", ")}` : null,
+        `Subject: ${encodeHeader(mail.subject)}`,
+        `Date: ${new Date().toUTCString()}`,
+        `MIME-Version: 1.0`,
+        mail.replyTo ? `Reply-To: ${mail.replyTo}` : null,
+        `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+        ``,
+        `--${mixedBoundary}`,
+        bodyPart,
+        ...attachmentParts,
+        `--${mixedBoundary}--`,
+        ``,
+        // ⚠ YALNIZCA `null` ELENİR, BOŞ SATIRLAR DEĞİL. Burada bir zamanlar
+        // `.filter(Boolean)` vardı: amacı yazılmayan `Cc`/`Reply-To` satırlarını
+        // atmaktı ama BOŞ DİZGİ de "falsy" olduğu için başlık bloğunu gövdeden
+        // ayıran BOŞ SATIRI da siliyordu. Boş satır olmadan `--sinir` satırı
+        // başlığın devamı sanılır: mail istemcileri gövdeyi (mesaj metnini)
+        // GÖSTEREMEZ, yalnızca eki listeler — Gönderilenler klasöründeki kopya
+        // da "sadece PDF, açıklama yok" hâlinde görünürdü. Sondaki boş satır da
+        // gereklidir: kapanış sınırı satır sonuyla bitmelidir.
+    ].filter((line) => line !== null).join("\r\n");
+};
+exports.buildMimeMessage = buildMimeMessage;
+/**
+ * Gönderilenler kopyası için EMNİYET SUBABI. IMAP adımı gönderimin PARÇASI
+ * DEĞİLDİR (mail çoktan teslim edilmiştir); yavaş ya da yanıt vermeyen bir IMAP
+ * sunucusu yüzünden kullanıcı ekranda dönen bir "gönderiliyor" görmemelidir.
+ *
+ * `appendToSent` kendi bütçesini zaten uygular; buradaki yarış yalnızca o
+ * bütçenin de tutmadığı durumlar içindir — bu yüzden ondan biraz UZUNDUR,
+ * yoksa hâlâ çalışan bir kopya erkenden "başarısız" damgası yerdi.
+ */
+const sentCopyDeadlineMs = (body) => (0, ImapMailService_1.sentCopyBudgetMs)(body) + 5_000;
 class SmtpMailService {
-    async send(settings, mail) {
+    imap = new ImapMailService_1.ImapMailService();
+    /**
+     * Gönderilenler kopyasını yazar; ASLA throw etmez ve süresi sınırlıdır.
+     * Süre dolarsa kopya "failed" sayılır — gönderimin kendisi etkilenmez.
+     */
+    async saveSentCopy(settings, body) {
+        let deadline;
+        try {
+            return await Promise.race([
+                this.imap.appendToSent(settings, body),
+                new Promise((resolve) => {
+                    deadline = setTimeout(() => resolve({ status: "failed", error: "IMAP sunucusu zamaninda yanit vermedi." }), sentCopyDeadlineMs(body));
+                }),
+            ]);
+        }
+        catch (error) {
+            return { status: "failed", error: error?.message || "IMAP kopyasi yazilamadi." };
+        }
+        finally {
+            if (deadline)
+                clearTimeout(deadline);
+        }
+    }
+    /**
+     * @param options.waitForSentCopy Gönderilenler kopyasının SONUCU beklenir mi?
+     *   Yalnızca Mail Ayarları'ndaki test gönderimi bekler (kopyanın durumunu
+     *   ekranda bildirir). Normal gönderimlerde kopya arka planda alınır: mail
+     *   teslim edildikten sonra IMAP'ı beklemek, kullanıcıyı bitmeyen bir
+     *   yükleniyor ekranında tutmaktan başka bir şey yapmaz.
+     */
+    async send(settings, mail, options = {}) {
         const host = settings.smtpHost?.trim();
         const port = Number(settings.smtpPort || 0);
         const ccList = (mail.cc || []).map((value) => String(value || "").trim()).filter(Boolean);
@@ -135,17 +225,28 @@ class SmtpMailService {
         // Bazı sunucular `.local` gibi FQDN olmayan EHLO adlarını reddeder:
         // varsa gönderen adresinin alan adı kullanılır.
         const clientName = mail.fromEmail.split("@")[1]?.trim() || "offitec-erp.local";
-        let socket = await openSocket(host, port, implicitTls);
+        // Mesaj soketten ÖNCE kurulur: aynı bayt dizisi hem DATA'ya yazılır
+        // hem de teslim sonrası Gönderilenler klasörüne kopyalanır.
+        const body = (0, exports.buildMimeMessage)(mail, ccList);
+        const startedAt = Date.now();
+        // ── TOPLAM SÜRE BÜTÇESİ ──────────────────────────────────────────────
+        // Adım başına zaman aşımları TEK BAŞINA yetmez: her adım ayrı ayrı zaman
+        // aşımına uğrayabildiği için (bağlan → karşılama → EHLO → STARTTLS →
+        // EHLO → AUTH → MAIL → RCPT → DATA) toplam bekleme dakikalara çıkabilir
+        // ve gönder düğmesi bitmeyen bir "gönderiliyor" gösterirdi. Bütçe
+        // konuşmanın TAMAMINI kapsar; her adım yalnızca KALAN süreyi kullanır.
+        const deadline = new mailSocket_1.MailDeadline((0, mailSocket_1.budgetForMessage)(SEND_BUDGET_MS, Buffer.byteLength(body, "utf8"), SEND_BUDGET_MAX_EXTRA_MS), "SMTP");
+        let socket = await (0, mailSocket_1.openSocket)(host, port, implicitTls, "SMTP", deadline.slice(mailSocket_1.CONNECT_TIMEOUT_MS));
         try {
             const command = async (line, expected, label) => {
                 socket.write(`${line}\r\n`);
-                const reply = await readReply(socket);
+                const reply = await readReply(socket, deadline.slice(mailSocket_1.COMMAND_TIMEOUT_MS));
                 if (!expected.includes(reply.code)) {
                     throw new Error(`SMTP hatasi (${label}): ${reply.text}`);
                 }
                 return reply;
             };
-            const greeting = await readReply(socket);
+            const greeting = await readReply(socket, deadline.slice(mailSocket_1.COMMAND_TIMEOUT_MS));
             if (greeting.code !== 220) {
                 throw new Error(`SMTP sunucusu baglantiyi kabul etmedi: ${greeting.text}`);
             }
@@ -154,7 +255,7 @@ class SmtpMailService {
             // yapılır (587 dışındaki gönderim portları da şifrelenir).
             if (!implicitTls && /^\d{3}[ -]STARTTLS\b/im.test(ehlo.text)) {
                 await command("STARTTLS", [220], "STARTTLS");
-                socket = await upgradeToTls(socket, host);
+                socket = await (0, mailSocket_1.upgradeToTls)(socket, host, "SMTP", deadline.slice(mailSocket_1.TLS_HANDSHAKE_TIMEOUT_MS));
                 ehlo = await command(`EHLO ${clientName}`, [250], "EHLO (TLS)");
             }
             const smtpUser = settings.smtpUser?.trim();
@@ -174,98 +275,50 @@ class SmtpMailService {
                     throw new Error(`SMTP sunucusu desteklenen bir kimlik dogrulama yontemi sunmuyor (${[...mechanisms].join(", ")}).`);
                 }
             }
-            const text = mail.text || mail.html?.replace(/<[^>]+>/g, " ") || "";
-            const html = mail.html || `<pre>${text}</pre>`;
-            const stamp = Date.now();
-            const altBoundary = `offitec-alt-${stamp}`;
-            const relatedBoundary = `offitec-rel-${stamp}`;
-            const mixedBoundary = `offitec-mixed-${stamp}`;
-            const alternativePart = [
-                `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
-                ``,
-                `--${altBoundary}`,
-                `Content-Type: text/plain; charset="UTF-8"`,
-                `Content-Transfer-Encoding: 8bit`,
-                ``,
-                text,
-                `--${altBoundary}`,
-                `Content-Type: text/html; charset="UTF-8"`,
-                `Content-Transfer-Encoding: 8bit`,
-                ``,
-                html,
-                `--${altBoundary}--`,
-            ].join("\r\n");
-            // Inline görseller varsa gövde multipart/related olur: HTML + Content-ID'li
-            // görsel parçaları bir arada; mail istemcisi `cid:` referansını bunlarla çözer.
-            const inlineImages = mail.inlineImages || [];
-            const bodyPart = inlineImages.length === 0
-                ? alternativePart
-                : [
-                    `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
-                    ``,
-                    `--${relatedBoundary}`,
-                    alternativePart,
-                    ...inlineImages.map((image) => {
-                        const wrapped = image.contentBase64.replace(/\s+/g, "").replace(/(.{76})/g, "$1\r\n");
-                        return [
-                            `--${relatedBoundary}`,
-                            `Content-Type: ${image.contentType}`,
-                            `Content-Transfer-Encoding: base64`,
-                            `Content-ID: <${image.cid}>`,
-                            `Content-Disposition: inline`,
-                            ``,
-                            wrapped,
-                        ].join("\r\n");
-                    }),
-                    `--${relatedBoundary}--`,
-                ].join("\r\n");
-            const attachmentParts = (mail.attachments || []).map((attachment) => {
-                const safeName = attachment.filename.replace(/"/g, "");
-                const encodedName = encodeHeader(safeName);
-                const wrappedContent = attachment.contentBase64.replace(/\s+/g, "").replace(/(.{76})/g, "$1\r\n");
-                return [
-                    `--${mixedBoundary}`,
-                    `Content-Type: ${attachment.contentType}; name="${encodedName}"`,
-                    `Content-Transfer-Encoding: base64`,
-                    `Content-Disposition: attachment; filename="${encodedName}"`,
-                    ``,
-                    wrappedContent,
-                ].join("\r\n");
-            });
-            const body = [
-                `From: ${address(mail.fromEmail, mail.fromName)}`,
-                `To: ${mail.to}`,
-                ccList.length ? `Cc: ${ccList.join(", ")}` : null,
-                `Subject: ${encodeHeader(mail.subject)}`,
-                `Date: ${new Date().toUTCString()}`,
-                `MIME-Version: 1.0`,
-                mail.replyTo ? `Reply-To: ${mail.replyTo}` : null,
-                `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
-                ``,
-                `--${mixedBoundary}`,
-                bodyPart,
-                ...attachmentParts,
-                `--${mixedBoundary}--`,
-                ``,
-            ].filter(Boolean).join("\r\n");
             await command(`MAIL FROM:<${mail.fromEmail.trim()}>`, [250], "MAIL FROM");
             await command(`RCPT TO:<${mail.to.trim()}>`, [250, 251], "RCPT TO");
             for (const ccAddress of ccList) {
                 await command(`RCPT TO:<${ccAddress}>`, [250, 251], "RCPT TO (CC)");
             }
             await command("DATA", [354], "DATA");
-            socket.write(`${escapeDotLines(body)}\r\n.\r\n`);
-            const delivery = await readReply(socket, DATA_TIMEOUT_MS);
+            // Mesaj CRLF ile bitiyorsa sonuna bir CRLF daha eklemek teslim
+            // edilen maile boş bir satır (epilog) bırakır: sonlandırıcı
+            // CRLF "." CRLF dizisi zaten tamamdır.
+            const data = escapeDotLines(body);
+            socket.write(data.endsWith("\r\n") ? `${data}.\r\n` : `${data}\r\n.\r\n`);
+            const delivery = await readReply(socket, deadline.slice(mailSocket_1.DATA_TIMEOUT_MS));
             if (delivery.code !== 250) {
                 throw new Error(`SMTP gonderim hatasi: ${delivery.text}`);
             }
             // QUIT'in cevabı gelmese de mail kabul edilmiştir: kapanışta hata yutulur.
             await command("QUIT", [221], "QUIT").catch(() => undefined);
-            return { accepted: [mail.to, ...ccList], preview: false };
         }
         finally {
             socket.destroy();
         }
+        // Teslim tamamlandı; mail yola çıktı. Süre buraya kadar ÖLÇÜLÜR: bir
+        // gönderim "takıldı" diye bildirildiğinde, zamanın SMTP'de mi yoksa
+        // sonraki adımda mı geçtiği tek satırdan okunabilsin.
+        const deliveredMs = Date.now() - startedAt;
+        const report = (sentCopy) => {
+            const copyNote = sentCopy.status === "saved"
+                ? `kopya: ${sentCopy.folder}`
+                : sentCopy.status === "skipped"
+                    ? `kopya yok (${sentCopy.reason})`
+                    : `KOPYA HATASI: ${sentCopy.error}`;
+            console.log(`[MAIL] ${mail.to} -> teslim ${deliveredMs}ms, toplam ${Date.now() - startedAt}ms, ${copyNote}`);
+        };
+        // GÖNDERİLENLER KOPYASI gönderimin parçası değildir: mail teslim
+        // edilmiştir ve kopyanın alınamaması gönderimi başarısız SAYMAZ. Bu
+        // yüzden istek onu BEKLEMEZ — arka planda alınır, sonucu loglanır.
+        // Yalnızca ayarlar sayfasındaki test gönderimi sonucu bekler.
+        if (options.waitForSentCopy) {
+            const sentCopy = await this.saveSentCopy(settings, body);
+            report(sentCopy);
+            return { accepted: [mail.to, ...ccList], preview: false, sentCopy };
+        }
+        void this.saveSentCopy(settings, body).then(report);
+        return { accepted: [mail.to, ...ccList], preview: false };
     }
 }
 exports.SmtpMailService = SmtpMailService;

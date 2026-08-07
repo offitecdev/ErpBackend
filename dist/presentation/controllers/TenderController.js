@@ -14,6 +14,7 @@ const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const technicianSchedule_1 = require("./technicianSchedule");
 const tender_discounts_1 = require("./tender.discounts");
 const tenantTree_1 = require("../../shared/tenantTree");
+const documentNumber_1 = require("../../shared/documentNumber");
 const smtp = new SmtpMailService_1.SmtpMailService();
 const normalizeIdList = (value) => Array.isArray(value)
     ? [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))]
@@ -246,8 +247,9 @@ class TenderController {
         if (byIdLight && await this.canAccessTenant(byIdLight.tenantId, tenantId)) {
             return this.tenderRepository.findById(byIdLight.id, byIdLight.tenantId);
         }
+        // Yeni kod ya da yeniden numaralandırmadan önceki kod ile çözümlenir.
         const byNumber = await prisma_client_1.default.tender.findMany({
-            where: { tenderNumber: tenderRef },
+            where: { OR: [{ tenderNumber: tenderRef }, { legacyNumber: tenderRef }] },
             take: 50,
             select: { id: true, tenantId: true }
         });
@@ -358,11 +360,14 @@ class TenderController {
     }
     async createManual(req, res) {
         try {
-            const { customerId, tenderNumber, format, validUntil } = req.body;
+            const { customerId, format, validUntil } = req.body;
             const tenantId = req.user.tenantId;
             const employeeId = req.user.id;
-            if (!tenderNumber || !format) {
-                return res.status(400).json({ error: "Teklif numarası ve format zorunludur." });
+            // Teklif kodu artık YALNIZCA sunucuda üretilir (AN-2026-10001). Gövdede
+            // `tenderNumber` gelse bile yok sayılır — eskiden frontend rastgele
+            // bir numara (A-2026-4474) üretip gönderiyordu.
+            if (!format) {
+                return res.status(400).json({ error: "Format zorunludur." });
             }
             if (format !== 'SIA451' && format !== 'CRBX') {
                 return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
@@ -372,6 +377,7 @@ class TenderController {
                 if (!customer)
                     return res.status(404).json({ error: "Müşteri bulunamadı." });
             }
+            const tenderNumber = await (0, documentNumber_1.nextDocumentNumber)(tenantId, 'QUOTE');
             const tender = await this.tenderRepository.create({
                 id: (0, nanoid_1.nanoid)(10),
                 tenantId,
@@ -732,9 +738,9 @@ class TenderController {
                     metaData.paymentStages = null;
                 }
                 else {
-                    const stages = Array.isArray(rawMeta.paymentStages)
-                        ? rawMeta.paymentStages.map(Number)
-                        : (0, paymentSchedule_1.parsePaymentStages)(String(rawMeta.paymentStages));
+                    // Array or JSON string, bare percents or {percent, date} —
+                    // one normaliser handles every shape the clients send.
+                    const stages = (0, paymentSchedule_1.normalizePaymentStages)(rawMeta.paymentStages);
                     const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         throw new TenderValidationError(stageError);
@@ -1492,9 +1498,7 @@ class TenderController {
                     data.paymentStages = null;
                 }
                 else {
-                    const stages = Array.isArray(paymentStages)
-                        ? paymentStages.map(Number)
-                        : (0, paymentSchedule_1.parsePaymentStages)(String(paymentStages));
+                    const stages = (0, paymentSchedule_1.normalizePaymentStages)(paymentStages);
                     const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         return res.status(400).json({ error: stageError });

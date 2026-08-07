@@ -6,7 +6,7 @@ import { ImportTenderUseCase } from '../../application/use-cases/tender/ImportTe
 import { ImportSalesOrderCsvUseCase } from '../../application/use-cases/tender/ImportSalesOrderCsvUseCase';
 import { CalculatePositionCostUseCase } from '../../application/use-cases/tender/CalculatePositionCostUseCase';
 import { formatCustomerAddress } from '../../application/utils/customerAddress';
-import { parsePaymentStages, serializePaymentStages, validatePaymentStages } from '../../application/utils/paymentSchedule';
+import { normalizePaymentStages, serializePaymentStages, validatePaymentStages } from '../../application/utils/paymentSchedule';
 import { ITenderRepository } from '../../domain/repositories/ITenderRepository';
 import { IPositionRepository } from '../../domain/repositories/IPositionRepository';
 import { ICustomerActivityRepository } from '../../domain/repositories/ICustomerActivityRepository';
@@ -18,6 +18,7 @@ import { buildSignatureParts } from '../../infrastructure/services/mailSignature
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import { MAX_TOTAL_DISCOUNTS, normalizeDiscountList, resolveLineDiscount } from './tender.discounts';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
+import { nextDocumentNumber } from '../../shared/documentNumber';
 
 const smtp = new SmtpMailService();
 
@@ -258,8 +259,9 @@ export class TenderController {
             return this.tenderRepository.findById(byIdLight.id, byIdLight.tenantId);
         }
 
+        // Yeni kod ya da yeniden numaralandırmadan önceki kod ile çözümlenir.
         const byNumber = await (prisma as any).tender.findMany({
-            where: { tenderNumber: tenderRef },
+            where: { OR: [{ tenderNumber: tenderRef }, { legacyNumber: tenderRef }] },
             take: 50,
             select: { id: true, tenantId: true }
         });
@@ -359,12 +361,15 @@ export class TenderController {
 
     async createManual(req: Request, res: Response) {
         try {
-            const { customerId, tenderNumber, format, validUntil } = req.body;
+            const { customerId, format, validUntil } = req.body;
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
 
-            if (!tenderNumber || !format) {
-                return res.status(400).json({ error: "Teklif numarası ve format zorunludur." });
+            // Teklif kodu artık YALNIZCA sunucuda üretilir (AN-2026-10001). Gövdede
+            // `tenderNumber` gelse bile yok sayılır — eskiden frontend rastgele
+            // bir numara (A-2026-4474) üretip gönderiyordu.
+            if (!format) {
+                return res.status(400).json({ error: "Format zorunludur." });
             }
             if (format !== 'SIA451' && format !== 'CRBX') {
                 return res.status(400).json({ error: "Format SIA451 veya CRBX olmalıdır." });
@@ -373,6 +378,8 @@ export class TenderController {
                 const customer = await this.findCustomerForTenant(customerId, tenantId);
                 if (!customer) return res.status(404).json({ error: "Müşteri bulunamadı." });
             }
+
+            const tenderNumber = await nextDocumentNumber(tenantId, 'QUOTE');
 
             const tender = await this.tenderRepository.create({
                 id: nanoid(10),
@@ -755,9 +762,9 @@ export class TenderController {
                 if (rawMeta.paymentStages === null || rawMeta.paymentStages === '') {
                     metaData.paymentStages = null;
                 } else {
-                    const stages = Array.isArray(rawMeta.paymentStages)
-                        ? rawMeta.paymentStages.map(Number)
-                        : parsePaymentStages(String(rawMeta.paymentStages));
+                    // Array or JSON string, bare percents or {percent, date} —
+                    // one normaliser handles every shape the clients send.
+                    const stages = normalizePaymentStages(rawMeta.paymentStages);
                     const stageError = stages ? validatePaymentStages(stages) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         throw new TenderValidationError(stageError);
@@ -1552,9 +1559,7 @@ export class TenderController {
                 if (paymentStages === null || paymentStages === '') {
                     data.paymentStages = null;
                 } else {
-                    const stages = Array.isArray(paymentStages)
-                        ? paymentStages.map(Number)
-                        : parsePaymentStages(String(paymentStages));
+                    const stages = normalizePaymentStages(paymentStages);
                     const stageError = stages ? validatePaymentStages(stages) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         return res.status(400).json({ error: stageError });

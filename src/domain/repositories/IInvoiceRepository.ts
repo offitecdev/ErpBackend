@@ -17,7 +17,7 @@ export type InvoiceLineItemInput = Omit<InvoiceLineItem, "id" | "invoiceId">;
  */
 export type InvoiceSummaryRow = Pick<
     Invoice,
-    "id" | "salesOrderId" | "invoiceNumber" | "billingType" | "billedPercent" | "amount" | "status" | "createdAt"
+    "id" | "salesOrderId" | "invoiceNumber" | "billingType" | "kind" | "billedPercent" | "amount" | "status" | "createdAt"
 >;
 
 export interface IInvoiceRepository {
@@ -32,4 +32,6 @@ export interface IInvoiceRepository {
     sumBilledPercentForOrder(salesOrderId: string): Promise<number>;
     sumBilledPercentForProject(projectId: string): Promise<number>;
     updateStatus(id: string, tenantId: string, status: InvoiceStatus): Promise<Invoice>;
+    /** Kalıcı silme — yalnızca kullanım senaryosu iptal edilmiş faturalar için çağırır. */
+    delete(id: string, tenantId: string): Promise<void>;
 }

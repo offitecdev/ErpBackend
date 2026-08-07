@@ -80,7 +80,8 @@ class InvoiceRepository {
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT
                     i.id, i.tenantId, i.customerId, i.projectId, i.salesOrderId,
-                    i.invoiceNumber, i.billingType, i.billedPercent, i.baseAmount,
+                    i.invoiceNumber, i.billingType, i.kind, i.invoiceDate, i.dueDate,
+                    i.salespersonName, i.commissionNumber, i.billedPercent, i.baseAmount,
                     i.amount, i.status, i.notes, i.issuedByEmployeeId,
                     i.createdAt, i.updatedAt,
                     c.companyName AS customerCompanyName,
@@ -119,6 +120,11 @@ class InvoiceRepository {
             salesOrderId: row.salesOrderId ?? null,
             invoiceNumber: row.invoiceNumber,
             billingType: row.billingType,
+            kind: row.kind ?? 'RECHNUNG',
+            invoiceDate: row.invoiceDate ?? null,
+            dueDate: row.dueDate ?? null,
+            salespersonName: row.salespersonName ?? null,
+            commissionNumber: row.commissionNumber ?? null,
             billedPercent: Number(row.billedPercent ?? 0),
             baseAmount: Number(row.baseAmount ?? 0),
             amount: Number(row.amount ?? 0),
@@ -156,6 +162,7 @@ class InvoiceRepository {
                 salesOrderId: true,
                 invoiceNumber: true,
                 billingType: true,
+                kind: true,
                 billedPercent: true,
                 amount: true,
                 status: true,
@@ -185,6 +192,15 @@ class InvoiceRepository {
             throw new Error("Fatura bulunamadı.");
         await prisma_client_1.default.invoice.update({ where: { id }, data: { status } });
         return (await prisma_client_1.default.invoice.findUnique({ where: { id }, include: invoiceInclude }));
+    }
+    async delete(id, tenantId) {
+        const existing = await prisma_client_1.default.invoice.findFirst({ where: { id, tenantId } });
+        if (!existing)
+            throw new Error("Fatura bulunamadı.");
+        await prisma_client_1.default.$transaction(async (tx) => {
+            await tx.invoiceLineItem.deleteMany({ where: { invoiceId: id } });
+            await tx.invoice.delete({ where: { id } });
+        });
     }
 }
 exports.InvoiceRepository = InvoiceRepository;

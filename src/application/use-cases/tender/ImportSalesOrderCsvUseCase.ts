@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import prisma from "../../../infrastructure/database/prisma.client";
+import { nextDocumentNumber } from "../../../shared/documentNumber";
 
 type CsvRow = string[];
 
@@ -444,10 +445,18 @@ export class ImportSalesOrderCsvUseCase {
                 const salespersonName = firstValue(headers, group.rows, "salesperson");
                 const salespersonEmployee = resolveEmployeeForName(employees, salespersonName, input.employeeId);
 
-                const existingVersions = await (tx as any).tender.aggregate({
-                    where: { tenantId: input.tenantId, tenderNumber: group.orderReference },
-                    _max: { version: true },
+                // CSV'deki "Auftragsreferenz" MÜŞTERİNİN referansıdır, bizim
+                // belge kodumuz değil: `legacyNumber`a yazılır ve sürüm zinciri
+                // onun üzerinden kurulur. Kod ise AN- serimizden gelir — aynı
+                // referansın yeni sürümü, ilk sürümün AN- kodunu tekrar kullanır
+                // ki bir teklifin tüm sürümleri tek kodu paylaşsın.
+                const previousVersion = await (tx as any).tender.findFirst({
+                    where: { tenantId: input.tenantId, legacyNumber: group.orderReference },
+                    orderBy: { version: 'desc' },
+                    select: { version: true, tenderNumber: true },
                 });
+                const tenderNumber = previousVersion?.tenderNumber
+                    || await nextDocumentNumber(input.tenantId, 'QUOTE', tx);
                 const tenderId = nanoid(10);
                 const sourceStatus = firstValue(headers, group.rows, "status");
                 const tender = await (tx as any).tender.create({
@@ -455,8 +464,9 @@ export class ImportSalesOrderCsvUseCase {
                         id: tenderId,
                         tenantId: input.tenantId,
                         customerId: customer.id,
-                        tenderNumber: group.orderReference,
-                        version: Number(existingVersions._max.version || 0) + 1,
+                        tenderNumber,
+                        legacyNumber: group.orderReference,
+                        version: Number(previousVersion?.version || 0) + 1,
                         format: "CRBX",
                         status: normalizeTenderStatusFromSource(sourceStatus),
                         validUntil: parseDate(firstValue(headers, group.rows, "validUntil")),

@@ -63,7 +63,8 @@ class CreateProjectFromTenderUseCase {
             customerId: tender.customerId,
             tenderId: tender.id,
             managerId: managerId || employeeId,
-            projectName: `${tender.tenderNumber} - Kurulum Projesi`,
+            // Ad verilmiyor: `createProject` projeyi kendi koduna (PR-2026-10001)
+            // adlandırır. Eskiden "<teklif kodu> - Kurulum Projesi" yazılıyordu.
             status: "ACTIVE",
             plannedBudget,
             actualCost: 0,

@@ -6,11 +6,13 @@ class BillingController {
     getSummaryUseCase;
     listInvoicesUseCase;
     updateStatusUseCase;
-    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase) {
+    deleteInvoiceUseCase;
+    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase, deleteInvoiceUseCase) {
         this.createInvoiceUseCase = createInvoiceUseCase;
         this.getSummaryUseCase = getSummaryUseCase;
         this.listInvoicesUseCase = listInvoicesUseCase;
         this.updateStatusUseCase = updateStatusUseCase;
+        this.deleteInvoiceUseCase = deleteInvoiceUseCase;
     }
     async getSummary(req, res) {
         try {
@@ -46,8 +48,14 @@ class BillingController {
                 salesOrderId: req.body.salesOrderId,
                 projectId: req.body.projectId,
                 billingType: req.body.billingType === 'PARTIAL' ? 'PARTIAL' : 'FULL',
+                kind: req.body.kind ?? null,
                 percent: req.body.percent,
-                invoiceNumber: req.body.invoiceNumber,
+                invoiceDate: req.body.invoiceDate ?? null,
+                dueDate: req.body.dueDate ?? null,
+                salespersonName: req.body.salespersonName ?? null,
+                commissionNumber: req.body.commissionNumber ?? null,
+                // Fatura kodu sunucuda üretilir (RE-2026-10001); gövdeden gelen
+                // `invoiceNumber` artık kabul edilmiyor.
                 notes: req.body.notes,
             });
             res.status(201).json({ message: 'Fatura oluşturuldu.', invoice });
@@ -60,6 +68,15 @@ class BillingController {
         try {
             const invoice = await this.updateStatusUseCase.execute(req.params.id, req.user.tenantId, String(req.body.status || ''));
             res.status(200).json({ message: 'Fatura durumu güncellendi.', invoice });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    async delete(req, res) {
+        try {
+            await this.deleteInvoiceUseCase.execute(req.params.id, req.user.tenantId);
+            res.status(200).json({ message: 'Fatura kalıcı olarak silindi.' });
         }
         catch (error) {
             res.status(400).json({ error: error.message });

@@ -13,6 +13,7 @@ const InvoiceRepository_1 = require("../../infrastructure/repositories/InvoiceRe
 const salesOrder_pricing_1 = require("./salesOrder.pricing");
 const paymentSchedule_1 = require("../../application/utils/paymentSchedule");
 const tenantModules_1 = require("../../shared/tenantModules");
+const documentNumber_1 = require("../../shared/documentNumber");
 const billingSummaryUseCase = new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(new InvoiceRepository_1.InvoiceRepository());
 // Resolve billing summaries for a set of orders with one invoice query (no N+1).
 // `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
@@ -157,7 +158,10 @@ class SalesOrderController {
                 const search = String(req.query.search);
                 where.OR = [
                     { orderNumber: { contains: search } },
+                    // Yeniden numaralandırmadan önceki kod da aranabilir.
+                    { legacyNumber: { contains: search } },
                     { customer: { companyName: { contains: search } } },
+                    { project: { projectNumber: { contains: search } } },
                     { project: { projectName: { contains: search } } },
                 ];
             }
@@ -175,8 +179,15 @@ class SalesOrderController {
                         orderNumber: true,
                         totalAmount: true,
                         createdAt: true,
+                        // Teklif onaylanırken seçilen yol (proje siparişi / teslimat
+                        // siparişi) listede rozet olarak gösterilir.
+                        orderType: true,
                         // Kept: the project screens filter the same feed by project.
                         projectId: true,
+                        // Sipariş listesi bağlı projeyi gösterir; projesi OLMAYAN
+                        // sipariş (teklifin "fatura/teslimat" yolu) listede
+                        // "Teslimat siparişi" olarak işaretlenir.
+                        project: { select: { id: true, projectNumber: true, projectName: true } },
                         customer: { select: { id: true, companyName: true } },
                         addonSalesOrders: {
                             orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
@@ -237,6 +248,26 @@ class SalesOrderController {
                 where: { id, tenantId },
                 include: {
                     customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true, address: true } },
+                    // Adresler ve teslim tarihi SİPARİŞTE DEĞİL, teklifte durur — sipariş
+                    // görünümünün "Übersicht" sekmesi bunları buradan okur. Hangisinin
+                    // gösterileceğini sipariş türü belirler: proje siparişinde nihai adres
+                    // MONTAJ adresidir, teslimat siparişinde doğrudan TESLİMAT adresi ve
+                    // teslim tarihi (projede teslim tarihi YOKTUR, randevular taşır).
+                    tender: {
+                        select: {
+                            id: true,
+                            tenderNumber: true,
+                            commissionNumber: true,
+                            // Rechnung bölümündeki Verkäufer alanı buradan ön-dolar:
+                            // teklifin satıcısı, yoksa teklifi oluşturan kişi.
+                            salespersonName: true,
+                            createdBy: { select: { firstName: true, lastName: true } },
+                            billingAddress: true,
+                            installationAddress: true,
+                            deliveryAddress: true,
+                            internalDeliveryDate: true,
+                        },
+                    },
                     project: {
                         select: {
                             id: true, projectName: true, status: true, plannedBudget: true, actualCost: true,
@@ -252,8 +283,11 @@ class SalesOrderController {
                     reports: {
                         orderBy: { workDate: 'asc' },
                         select: {
-                            id: true, workDate: true, reportType: true, operationsDone: true, technicalNotes: true,
-                            workedMinutes: true, overtimeMinutes: true, overtimeCost: true, isSigned: true, signedAt: true,
+                            // reportDate: ek siparişlerin dilimi sunucuda reportDate ile
+                            // kesilir (createAddonOrderForParent); ek sipariş popup'ının
+                            // istemci tarafı dilimlemesi aynı alanı kullanır.
+                            id: true, workDate: true, reportDate: true, reportType: true, operationsDone: true, technicalNotes: true,
+                            workedMinutes: true, overtimeMinutes: true, overtimeCost: true, overtimeHourlyRate: true, isSigned: true, signedAt: true,
                             employee: { select: { id: true, firstName: true, lastName: true } },
                         },
                     },
@@ -304,7 +338,7 @@ class SalesOrderController {
             res.status(400).json({ error: error.message });
         }
     }
-    // Set or clear the order's payment schedule (percent stages summing to 100).
+    // Set or clear the order's payment schedule (dated percent stages summing to 100).
     async updatePaymentStages(req, res) {
         try {
             const tenantId = req.user.tenantId;
@@ -312,7 +346,7 @@ class SalesOrderController {
             const raw = req.body?.paymentStages;
             let serialized = null;
             if (raw !== null && raw !== undefined && raw !== '') {
-                const stages = Array.isArray(raw) ? raw.map(Number) : (0, paymentSchedule_1.parsePaymentStages)(String(raw));
+                const stages = (0, paymentSchedule_1.normalizePaymentStages)(raw);
                 const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages) : 'Geçersiz ödeme planı.';
                 if (stageError)
                     return res.status(400).json({ error: stageError });
@@ -336,9 +370,18 @@ class SalesOrderController {
             const employeeId = req.user.id;
             const tenderId = String(req.body.tenderId || '').trim();
             const mode = String(req.body.mode || '');
-            const projectName = String(req.body.projectName || '').trim();
+            // Proje adı artık teklifte GİRİLMEZ: sistem üretir (aşağıda koda eşitlenir).
+            // Gövdede `projectName` gelse bile yok sayılır.
             const existingProjectId = String(req.body.projectId || '').trim();
             const overtimeHourlyRate = Math.max(0, Number(req.body.overtimeHourlyRate || 0));
+            // Teslimat siparişinde (proje açılmayan yol) teslim tarihi ZORUNLUDUR:
+            // siparişin tek zaman taahhüdü budur, projeli siparişte ise takvimi
+            // randevular taşır. Tarih teklifin `internalDeliveryDate` alanına yazılır.
+            const rawDeliveryDate = String(req.body.deliveryDate || '').trim();
+            const deliveryDate = rawDeliveryDate ? new Date(rawDeliveryDate) : null;
+            if (rawDeliveryDate && Number.isNaN(deliveryDate.getTime())) {
+                return res.status(400).json({ error: 'Teslim tarihi gecersiz.' });
+            }
             if (!tenderId)
                 return res.status(400).json({ error: 'Teklif ID zorunludur.' });
             if (!allowedOrderModes.has(mode))
@@ -357,6 +400,8 @@ class SalesOrderController {
                     throw new Error('Teklif bulunamadi.');
                 if (!tender.customerId)
                     throw new Error('Siparis icin teklifin musterisi olmalidir.');
+                // Sipariş zaten açılmışsa hiçbir şey doğrulanmaz/yazılmaz —
+                // bu çağrı mevcut siparişi geri vermekten ibarettir.
                 if (tender.salesOrder) {
                     return {
                         salesOrder: tender.salesOrder,
@@ -365,6 +410,18 @@ class SalesOrderController {
                             : null,
                         reused: true,
                     };
+                }
+                // Teslimat siparişi: gövdeden gelen tarih yoksa teklifte kayıtlı
+                // olan kabul edilir; ikisi de yoksa sipariş açılmaz.
+                const effectiveDeliveryDate = deliveryDate ?? tender.internalDeliveryDate ?? null;
+                if (mode === 'INVOICE' && !effectiveDeliveryDate) {
+                    throw new Error('Teslimat siparisi icin teslim tarihi zorunludur.');
+                }
+                if (deliveryDate) {
+                    await tx.tender.update({
+                        where: { id: tenderId },
+                        data: { internalDeliveryDate: deliveryDate },
+                    });
                 }
                 const totalAmount = (0, salesOrder_pricing_1.orderTotal)(tender.positions || [], tender.directDiscount, tender.extraDiscount);
                 let project = null;
@@ -381,6 +438,11 @@ class SalesOrderController {
                         orderBy: { startTime: 'asc' },
                         include: { technicianAssignments: true },
                     });
+                    // Projenin ADI KODUDUR (PR-2026-10001) ve sayaç kaldığı yerden
+                    // devam eder. Eskiden teklif kodu (A-2026-5980) ada
+                    // kopyalanıyordu; proje listesinde ad sütunu teklif
+                    // sütununu tekrar ediyor, proje kendi kimliğini taşımıyordu.
+                    const projectNumber = await (0, documentNumber_1.nextDocumentNumber)(tenantId, 'PROJECT', tx);
                     project = await tx.project.create({
                         data: {
                             id: (0, nanoid_1.nanoid)(10),
@@ -388,7 +450,8 @@ class SalesOrderController {
                             customerId: tender.customerId,
                             tenderId,
                             managerId: employeeId,
-                            projectName: projectName || tender.tenderNumber,
+                            projectNumber,
+                            projectName: projectNumber,
                             status: 'ACTIVE',
                             plannedBudget: totalAmount,
                             actualCost: 0,
@@ -406,7 +469,44 @@ class SalesOrderController {
                     if (!project)
                         throw new Error('Proje bulunamadi.');
                 }
-                const orderNumber = project?.id ? `AUF-${tender.tenderNumber}` : `SO-${tender.tenderNumber}`;
+                // Sipariş kodu teklifin kodunu AYNEN izler (kullanıcı isteği):
+                // AN-2026-10007 → AU-2026-10007. Yıl ve sıra tekliften kopyalanır,
+                // yalnızca önek değişir — teklifle siparişin kod sonu hep eşittir.
+                // Aynı kodu paylaşan İKİNCİ teklif sürümü siparişe çevrilirse
+                // FARKLI bir numara VERİLMEZ: aynı kod "-2" ("-3", …) ekini alır
+                // (kullanıcı isteği: AU-2026-10046 → AU-2026-10046-2). Sayaç
+                // yalnızca çözümlenemeyen (çok eski/dış) teklif kodları için
+                // devreye girer.
+                const parsedTenderNumber = (0, documentNumber_1.parseDocumentNumber)(tender.tenderNumber, 'QUOTE');
+                let orderNumber = null;
+                if (parsedTenderNumber) {
+                    const candidate = (0, documentNumber_1.formatDocumentNumber)('ORDER', parsedTenderNumber.year, parsedTenderNumber.seq);
+                    const taken = await tx.salesOrder.findFirst({
+                        where: { tenantId, orderNumber: candidate },
+                        select: { id: true },
+                    });
+                    if (!taken) {
+                        orderNumber = candidate;
+                    }
+                    else {
+                        const siblings = await tx.salesOrder.findMany({
+                            where: { tenantId, orderNumber: { startsWith: `${candidate}-` } },
+                            select: { orderNumber: true },
+                        });
+                        let maxSuffix = 1;
+                        for (const sibling of siblings) {
+                            const suffix = Number(sibling.orderNumber.slice(candidate.length + 1));
+                            if (Number.isFinite(suffix) && suffix > maxSuffix)
+                                maxSuffix = suffix;
+                        }
+                        orderNumber = `${candidate}-${maxSuffix + 1}`;
+                    }
+                    // Sayaç türetilen sıranın altında kalmasın: sayaçtan üretilecek
+                    // bir sonraki yedek kod bu sırayı ikinci kez dağıtamaz.
+                    await (0, documentNumber_1.raiseDocumentCounter)(tenantId, 'ORDER', parsedTenderNumber.seq, tx);
+                }
+                if (!orderNumber)
+                    orderNumber = await (0, documentNumber_1.nextDocumentNumber)(tenantId, 'ORDER', tx);
                 const salesOrder = await tx.salesOrder.create({
                     data: {
                         id: (0, nanoid_1.nanoid)(10),

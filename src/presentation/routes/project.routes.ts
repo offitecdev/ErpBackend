@@ -105,4 +105,8 @@ router.delete('/:id/sales-orders/:salesOrderId', requirePermission('projects.man
 router.post('/:id/addon-order-requests', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.requestAddonOrder(req, res));
 router.patch('/addon-order-requests/:requestId', requirePermission('projects.createAddonOrder'), (req, res) => controller.resolveAddonRequest(req, res));
 
+// Projeyi tüm operasyonel kayıtlarıyla siler (faturalanmış proje silinemez).
+// Daha özgül DELETE yolları üstte kayıtlı olduğundan '/:id' onları GÖLGELEMEZ.
+router.delete('/:id', requirePermission('projects.manage'), (req, res) => controller.deleteProject(req, res));
+
 export default router;

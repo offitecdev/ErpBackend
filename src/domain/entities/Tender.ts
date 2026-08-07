@@ -52,6 +52,12 @@ export class Tender {
         public paymentStages?: string | null,
         /** Kundenreferenz — "Referenz" on the offer PDF (customer-supplied). */
         public customerReference?: string | null,
+        /**
+         * AN-2026-10001 serisinden ÖNCEKİ kod (A-2026-4474, TKF-…, ya da CSV/XML
+         * içe aktarımının dış referansı). Yalnızca arama ve içe aktarım
+         * eşleşmesi için tutulur; ekranda gösterilen kod `tenderNumber`dır.
+         */
+        public legacyNumber?: string | null,
     ){}
 }
 

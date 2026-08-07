@@ -20,6 +20,12 @@ model Tenant {
   isActive               Boolean               @default(true)
   createdAt              DateTime              @default(now())
   parentTenantId         String?
+  /// ŞİRKET NUMARASI — belge kodundaki bloğu belirler: blok = numara × 10000,
+  /// yani numarası 4 olan şirket AN-2026-40001'den sayar (0 = bloksuz, 00001).
+  /// Şirket kategorisinden BAĞIMSIZDIR: iki şirket aynı modül paketini
+  /// paylaşıp farklı numara taşıyabilir. /settings/company-categories altında
+  /// şirket başına düzenlenir; bkz. shared/documentNumber.ts.
+  companyNumber          Int                   @default(0)
   moduleProfileId        String?
   moduleProfile          ModuleProfile?        @relation(fields: [moduleProfileId], references: [id])
   checkInQrSecret        String?               @db.VarChar(512)

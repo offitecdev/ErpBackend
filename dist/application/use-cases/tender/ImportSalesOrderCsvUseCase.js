@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ImportSalesOrderCsvUseCase = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const documentNumber_1 = require("../../../shared/documentNumber");
 const CANONICAL_HEADERS = {
     orderReference: ["Auftragsreferenz"],
     createdAt: ["Erstellungsdatum"],
@@ -397,10 +398,18 @@ class ImportSalesOrderCsvUseCase {
                 }
                 const salespersonName = firstValue(headers, group.rows, "salesperson");
                 const salespersonEmployee = resolveEmployeeForName(employees, salespersonName, input.employeeId);
-                const existingVersions = await tx.tender.aggregate({
-                    where: { tenantId: input.tenantId, tenderNumber: group.orderReference },
-                    _max: { version: true },
+                // CSV'deki "Auftragsreferenz" MÜŞTERİNİN referansıdır, bizim
+                // belge kodumuz değil: `legacyNumber`a yazılır ve sürüm zinciri
+                // onun üzerinden kurulur. Kod ise AN- serimizden gelir — aynı
+                // referansın yeni sürümü, ilk sürümün AN- kodunu tekrar kullanır
+                // ki bir teklifin tüm sürümleri tek kodu paylaşsın.
+                const previousVersion = await tx.tender.findFirst({
+                    where: { tenantId: input.tenantId, legacyNumber: group.orderReference },
+                    orderBy: { version: 'desc' },
+                    select: { version: true, tenderNumber: true },
                 });
+                const tenderNumber = previousVersion?.tenderNumber
+                    || await (0, documentNumber_1.nextDocumentNumber)(input.tenantId, 'QUOTE', tx);
                 const tenderId = (0, nanoid_1.nanoid)(10);
                 const sourceStatus = firstValue(headers, group.rows, "status");
                 const tender = await tx.tender.create({
@@ -408,8 +417,9 @@ class ImportSalesOrderCsvUseCase {
                         id: tenderId,
                         tenantId: input.tenantId,
                         customerId: customer.id,
-                        tenderNumber: group.orderReference,
-                        version: Number(existingVersions._max.version || 0) + 1,
+                        tenderNumber,
+                        legacyNumber: group.orderReference,
+                        version: Number(previousVersion?.version || 0) + 1,
                         format: "CRBX",
                         status: normalizeTenderStatusFromSource(sourceStatus),
                         validUntil: parseDate(firstValue(headers, group.rows, "validUntil")),

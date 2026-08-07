@@ -80,7 +80,8 @@ export class InvoiceRepository implements IInvoiceRepository {
             prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
                 SELECT
                     i.id, i.tenantId, i.customerId, i.projectId, i.salesOrderId,
-                    i.invoiceNumber, i.billingType, i.billedPercent, i.baseAmount,
+                    i.invoiceNumber, i.billingType, i.kind, i.invoiceDate, i.dueDate,
+                    i.salespersonName, i.commissionNumber, i.billedPercent, i.baseAmount,
                     i.amount, i.status, i.notes, i.issuedByEmployeeId,
                     i.createdAt, i.updatedAt,
                     c.companyName AS customerCompanyName,
@@ -119,6 +120,11 @@ export class InvoiceRepository implements IInvoiceRepository {
             salesOrderId: row.salesOrderId ?? null,
             invoiceNumber: row.invoiceNumber,
             billingType: row.billingType,
+            kind: row.kind ?? 'RECHNUNG',
+            invoiceDate: row.invoiceDate ?? null,
+            dueDate: row.dueDate ?? null,
+            salespersonName: row.salespersonName ?? null,
+            commissionNumber: row.commissionNumber ?? null,
             billedPercent: Number(row.billedPercent ?? 0),
             baseAmount: Number(row.baseAmount ?? 0),
             amount: Number(row.amount ?? 0),
@@ -156,6 +162,7 @@ export class InvoiceRepository implements IInvoiceRepository {
                 salesOrderId: true,
                 invoiceNumber: true,
                 billingType: true,
+                kind: true,
                 billedPercent: true,
                 amount: true,
                 status: true,
@@ -189,5 +196,14 @@ export class InvoiceRepository implements IInvoiceRepository {
         if (!existing) throw new Error("Fatura bulunamadı.");
         await (prisma as any).invoice.update({ where: { id }, data: { status } });
         return (await (prisma as any).invoice.findUnique({ where: { id }, include: invoiceInclude })) as unknown as Invoice;
+    }
+
+    async delete(id: string, tenantId: string): Promise<void> {
+        const existing = await (prisma as any).invoice.findFirst({ where: { id, tenantId } });
+        if (!existing) throw new Error("Fatura bulunamadı.");
+        await prisma.$transaction(async (tx) => {
+            await (tx as any).invoiceLineItem.deleteMany({ where: { invoiceId: id } });
+            await (tx as any).invoice.delete({ where: { id } });
+        });
     }
 }

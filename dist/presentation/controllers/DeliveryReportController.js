@@ -8,6 +8,23 @@ const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const nanoid_1 = require("nanoid");
 const VALID_STATUS = new Set(["YES", "NO", "NA"]);
+// Rapor başına foto eki sınırı — imzayla aynı LongText/JSON yolundan gider;
+// sınırsız base64 yığını hem satırı hem PDF üretimini şişirir.
+const MAX_IMAGES = 12;
+/** Rapora iliştirilen foto ekleri: [{ imageData: dataURL, caption? }]. */
+function normalizeImages(raw) {
+    if (raw === null)
+        return null;
+    if (!Array.isArray(raw))
+        return null;
+    return raw
+        .map((img) => ({
+        imageData: String(img?.imageData || img || ""),
+        ...(img?.caption ? { caption: String(img.caption) } : {}),
+    }))
+        .filter((img) => img.imageData.startsWith("data:image/"))
+        .slice(0, MAX_IMAGES);
+}
 function normalizeResponses(raw) {
     if (!Array.isArray(raw))
         return [];
@@ -157,6 +174,7 @@ class DeliveryReportController {
             const checklistTemplateId = body.checklistTemplateId ? String(body.checklistTemplateId) : null;
             const checklistName = body.checklistName ? String(body.checklistName) : null;
             const notes = body.notes ? String(body.notes) : null;
+            const images = normalizeImages(body.images);
             // A delivery report belongs to the concrete appointment. The same
             // sales order may have several visits, so order-level deduplication
             // must only be the fallback for legacy records without appointmentId.
@@ -179,6 +197,7 @@ class DeliveryReportController {
                         checklistName,
                         responses,
                         notes,
+                        ...(images !== null ? { images } : {}),
                         // Only overwrite the signature when a fresh one is supplied.
                         ...(signature ? { customerSignature: signature, isSigned: true, signedAt: now } : {}),
                         sentAt: now,
@@ -198,6 +217,7 @@ class DeliveryReportController {
                     checklistName,
                     responses,
                     notes,
+                    ...(images !== null ? { images } : {}),
                     customerSignature: signature,
                     isSigned: Boolean(signature),
                     signedAt: signature ? now : null,
@@ -224,6 +244,8 @@ class DeliveryReportController {
                     responses: body.responses !== undefined ? normalizeResponses(body.responses) : existing.responses,
                     notes: body.notes !== undefined ? (body.notes ? String(body.notes) : null) : existing.notes,
                     checklistName: body.checklistName !== undefined ? (body.checklistName ? String(body.checklistName) : null) : existing.checklistName,
+                    // `images: []` leert die Anhänge; ohne Feld bleiben sie unverändert.
+                    ...(body.images !== undefined ? { images: normalizeImages(body.images) ?? [] } : {}),
                 },
             });
             res.status(200).json(report);

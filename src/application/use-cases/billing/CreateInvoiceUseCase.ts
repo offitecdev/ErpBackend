@@ -1,6 +1,7 @@
 import { IInvoiceRepository, InvoiceLineItemInput } from "../../../domain/repositories/IInvoiceRepository";
-import { InvoiceBillingType } from "../../../domain/entities/Invoice";
+import { InvoiceBillingType, InvoiceKind } from "../../../domain/entities/Invoice";
 import prisma from "../../../infrastructure/database/prisma.client";
+import { nextDocumentNumber } from "../../../shared/documentNumber";
 
 export interface CreateInvoiceInput {
     tenantId: string;
@@ -8,10 +9,24 @@ export interface CreateInvoiceInput {
     salesOrderId?: string | null;
     projectId?: string | null;
     billingType: InvoiceBillingType;
+    // RECHNUNG %100 tam fatura; AKONTO/ZWISCHEN yüzdelik; SCHLUSS kalan yüzde.
+    // Verilmezse billingType + o ana kadarki faturalardan türetilir.
+    kind?: InvoiceKind | null;
     percent?: number | null;
-    invoiceNumber?: string | null;
+    invoiceDate?: string | null;
+    dueDate?: string | null;
+    salespersonName?: string | null;
+    commissionNumber?: string | null;
     notes?: string | null;
 }
+
+const INVOICE_KINDS: InvoiceKind[] = ["RECHNUNG", "AKONTO", "ZWISCHEN", "SCHLUSS"];
+
+const parseIsoDate = (value: string | null | undefined): Date | null => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+};
 
 const DEFAULT_PARTIAL_PERCENT = 60;
 const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -32,16 +47,34 @@ export class CreateInvoiceUseCase {
         let baseAmount = 0;
         let customerId: string | null = null;
         let resolvedProjectId: string | null = projectId;
+        // Tekliften devralınan meta — istek göndermezse buradan doldurulur.
+        let tenderSalesperson: string | null = null;
+        let tenderCommission: string | null = null;
         const sources: Array<Omit<InvoiceLineItemInput, "quantity"> & { quantity: number }> = [];
 
         if (salesOrderId) {
             const order: any = await (prisma as any).salesOrder.findFirst({
                 where: { id: salesOrderId, tenantId },
+                include: {
+                    tender: {
+                        select: {
+                            salespersonName: true,
+                            commissionNumber: true,
+                            // Verkäufer boşsa teklifin SAHİBİ satıcıdır — teklif PDF'i de
+                            // Verkäufer satırında oluşturanı basar, fatura onu izler.
+                            createdBy: { select: { firstName: true, lastName: true } },
+                        },
+                    },
+                },
             });
             if (!order) throw new Error("Sipariş bulunamadı.");
             baseAmount = Number(order.totalAmount || 0);
             customerId = order.customerId || null;
             resolvedProjectId = order.projectId || null;
+            const tenderCreator = [order.tender?.createdBy?.firstName, order.tender?.createdBy?.lastName]
+                .filter(Boolean).join(" ").trim();
+            tenderSalesperson = order.tender?.salespersonName || tenderCreator || null;
+            tenderCommission = order.tender?.commissionNumber || null;
             sources.push({
                 description: `Sipariş ${order.orderNumber}`,
                 sourceType: "ORDER",
@@ -102,10 +135,29 @@ export class CreateInvoiceUseCase {
             throw new Error("Bu hedef zaten tamamen faturalandırılmış.");
         }
 
-        // Determine percent. FULL = the open remainder; PARTIAL = requested
-        // (default 60%), capped by what is still open.
+        // Fatura türü: istemci gönderirse doğrula, göndermezse billingType +
+        // mevcut faturalandırma durumundan türet (eski istemciler değişmeden
+        // çalışsın diye).
+        let kind: InvoiceKind;
+        if (input.kind) {
+            if (!INVOICE_KINDS.includes(input.kind)) {
+                throw new Error("Geçersiz fatura türü.");
+            }
+            kind = input.kind;
+        } else if (input.billingType === "FULL") {
+            kind = billedSoFar > 0.005 ? "SCHLUSS" : "RECHNUNG";
+        } else {
+            kind = billedSoFar > 0.005 ? "ZWISCHEN" : "AKONTO";
+        }
+
+        if (kind === "RECHNUNG" && billedSoFar > 0.005) {
+            throw new Error("Tam fatura yalnızca hiç fatura kesilmemişken oluşturulabilir. Kalan tutar için Schlussrechnung kullanın.");
+        }
+
+        // Determine percent. RECHNUNG/SCHLUSS = the open remainder;
+        // AKONTO/ZWISCHEN = requested (default 60%), capped by what is open.
         let percent: number;
-        if (input.billingType === "FULL") {
+        if (kind === "RECHNUNG" || kind === "SCHLUSS") {
             percent = remaining;
         } else {
             const requested = input.percent == null ? DEFAULT_PARTIAL_PERCENT : Number(input.percent);
@@ -138,7 +190,15 @@ export class CreateInvoiceUseCase {
             customerId,
             projectId: resolvedProjectId,
             salesOrderId,
-            billingType: input.billingType,
+            // billingType, kind'dan türetilir ki ikisi asla çelişmesin.
+            billingType: (kind === "RECHNUNG" || kind === "SCHLUSS" ? "FULL" : "PARTIAL") as InvoiceBillingType,
+            kind,
+            invoiceDate: parseIsoDate(input.invoiceDate) ?? new Date(),
+            // Fälligkeit gönderilmezse Rechnungsdatum'a eşitlenir — iki tarih
+            // çoğunlukla aynı gündür (kullanıcı isteği), belge boş satır basmaz.
+            dueDate: parseIsoDate(input.dueDate) ?? parseIsoDate(input.invoiceDate) ?? new Date(),
+            salespersonName: input.salespersonName?.trim() || tenderSalesperson,
+            commissionNumber: input.commissionNumber?.trim() || tenderCommission,
             billedPercent: percent,
             baseAmount: round2(baseAmount),
             amount,
@@ -147,12 +207,11 @@ export class CreateInvoiceUseCase {
             issuedByEmployeeId,
         };
 
-        let invoiceNumber = input.invoiceNumber?.trim() || "";
-        if (!invoiceNumber) {
-            const year = new Date().getFullYear();
-            const seq = (await this.invoiceRepository.countForTenant(tenantId)) + 1;
-            invoiceNumber = `INV-${year}-${String(seq).padStart(4, "0")}`;
-        }
+        // Fatura kodu RE- serisinden gelir ve her dilde aynıdır. Eskiden
+        // `countForTenant() + 1` kullanılıyordu; silinen/iptal edilen bir fatura
+        // sayımı düşürdüğü için aynı numara ikinci kez dağıtılabiliyordu —
+        // DocumentCounter yalnızca ileri gider.
+        const invoiceNumber = await nextDocumentNumber(tenantId, 'INVOICE');
 
         return this.invoiceRepository.createWithItems({ ...invoiceData, invoiceNumber }, lineItems);
     }

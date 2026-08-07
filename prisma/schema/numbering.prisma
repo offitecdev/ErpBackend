@@ -1,0 +1,37 @@
+/// BELGE NUMARASI SAYACI — her tenant ve her belge türü için ayrı, artan bir
+/// sayaç. `lastValue` en son dağıtılan MUTLAK sıradır (şirket bloğu dahil).
+/// Kod biçimi ÖNEK-YIL-NNNNN (bkz. shared/documentNumber.ts):
+///
+///   QUOTE   → AN-2026-10001  (Angebot / Quote / Teklif)
+///   PROJECT → PR-2026-10001  (Projekt / Project / Proje)
+///   ORDER   → AU-2026-10001  (Auftrag / Order / Sipariş)
+///   ADDON   → NT-2026-10001  (Nachtrag / Additional order / Ek sipariş)
+///   INVOICE → RE-2026-10001  (Rechnung / Invoice / Fatura)
+///
+/// ⚠ Sıra 1'den değil ŞİRKETİN BLOĞUNDAN başlar: `ModuleProfile.profileNumber
+/// × 10000` (kategori /settings/company-categories altında seçilir). Kategori 1
+/// → 10001, kategori 4 → 40001, kategorisiz şirket → 00001. Bu yüzden sayaç
+/// satırında blok ayrıca tutulmaz; blok her artışta Tenant→ModuleProfile'dan
+/// okunur ve `lastValue = max(lastValue + 1, blok + 1)` uygulanır.
+///
+/// ⚠ Koddaki YIL yalnızca etikettir; sayaç yıl başında SIFIRLANMAZ. Bu yüzden
+/// satır yıl kolonu taşımaz — 2027'nin ilk belgesi sıranın kaldığı yerden gider.
+///
+/// ⚠ Kod her dilde AYNIDIR — arayüz diline göre önek değiştirilmez. Eskiden
+/// frontend'deki `localizeTenderNumber` A-/O-/T- ve AUF-/ORD-/SIP- diye yeniden
+/// yazıyordu; bu kaldırıldı, gösterilen kod artık kayıtlı kodun kendisidir.
+///
+/// ⚠ Sayaç, satır kilidiyle seri hale getirilir (MySQL LAST_INSERT_ID upsert);
+/// bu yüzden `nextDocumentNumber` HER ZAMAN bir transaction içinde çalışmalıdır.
+/// Numara veren transaction geri alınırsa sayaç da geri alınır — boşluk oluşmaz.
+///
+/// ⚠ Satın alma siparişleri (PurchaseOrder) bu sayacın DIŞINDADIR; onlar
+/// BE-{yıl}-{sıra} biçimini korur (bkz. inventory.routes.ts).
+model DocumentCounter {
+  tenantId  String   @db.VarChar(191)
+  docType   String   @db.VarChar(32)
+  lastValue Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@id([tenantId, docType])
+}

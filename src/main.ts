@@ -34,6 +34,7 @@ import notificationRoutes from './presentation/routes/notification.routes';
 import meetingRoutes from './presentation/routes/meeting.routes';
 import fxRoutes from './presentation/routes/fx.routes';
 import filesRoutes from './presentation/routes/files.routes';
+import dashboardRoutes from './presentation/routes/dashboard.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { requireAuth } from './presentation/middlewares/AuthMiddleware';
 import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
@@ -148,8 +149,10 @@ const findTenderForTenant = async (rawRef: string, tenantId: string) => {
     });
     if (byId && await canAccessTenant(byId.tenantId, tenantId)) return byId;
 
+    // Yeni kod (AN-2026-10001) ya da yeniden numaralandırmadan önceki kod
+    // (A-2026-4474, TKF-…) — eski bağlantılar çalışmaya devam etsin.
     const byNumber = await (prisma as any).tender.findMany({
-        where: { tenderNumber: tenderRef },
+        where: { OR: [{ tenderNumber: tenderRef }, { legacyNumber: tenderRef }] },
         take: 50,
         select: { id: true, tenantId: true },
     });
@@ -359,6 +362,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/meetings`, meetingRoutes);
     app.use(`${prefix}/fx`, fxRoutes);
     app.use(`${prefix}/files`, filesRoutes);
+    app.use(`${prefix}/dashboard`, dashboardRoutes);
 }
 
 app.use(globalErrorHandler);

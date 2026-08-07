@@ -17,7 +17,9 @@ export class Project {
         public endDate?: Date | null,
         public bookingToken?: string | null,
         public overtimeHourlyRate?: number,
-        public overtimeTolerancePercent?: number
+        public overtimeTolerancePercent?: number,
+        /** Proje kodu — PR-2026-10001. `createProject` üretir, her dilde aynıdır. */
+        public projectNumber?: string
     ) {}
 }
 

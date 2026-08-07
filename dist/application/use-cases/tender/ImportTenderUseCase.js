@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ImportTenderUseCase = void 0;
 const nanoid_1 = require("nanoid");
+const documentNumber_1 = require("../../../shared/documentNumber");
 class ImportTenderUseCase {
     tenderRepository;
     positionRepository;
@@ -16,11 +17,15 @@ class ImportTenderUseCase {
     async execute(tenantId, customerId, employeeId, xmlContent, format) {
         const parsedData = await this.parserService.parseAndValidate(xmlContent, format);
         const tenderId = (0, nanoid_1.nanoid)(10);
+        // Kod her zaman bizim serimizden gelir (AN-2026-10001). Dosyadaki numara
+        // dış bir referanstır; kaybolmasın diye `legacyNumber`a yazılır.
+        const tenderNumber = await (0, documentNumber_1.nextDocumentNumber)(tenantId, 'QUOTE');
         const tender = await this.tenderRepository.create({
             id: tenderId,
             tenantId,
             customerId,
-            tenderNumber: parsedData.tenderNumber,
+            tenderNumber,
+            legacyNumber: parsedData.tenderNumber || null,
             version: 1,
             format: parsedData.format,
             status: 'Draft',
@@ -52,7 +57,7 @@ class ImportTenderUseCase {
             customerId: customerId,
             employeeId: employeeId,
             activityType: "TENDER_IMPORTED",
-            description: `${parsedData.tenderNumber} numaralı ${format} ihale dosyası sisteme içe aktarıldı. (Versiyon: 1)`,
+            description: `${tenderNumber} numaralı ${format} ihale dosyası sisteme içe aktarıldı. (Versiyon: 1)`,
             referenceId: tenderId,
             activityDate: new Date()
         });

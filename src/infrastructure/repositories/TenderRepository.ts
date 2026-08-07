@@ -122,8 +122,10 @@ export class TenderRepository implements ITenderRepository {
         if (filter.status) conditions.push(Prisma.sql`t.status = ${filter.status}`);
         // Genel arama teklif numarasında; Prisma `contains` gibi joker kaçışı yok
         // (davranış birebir korunuyor), değer yine parametre olarak bağlanıyor.
-        if (filter.search) conditions.push(Prisma.sql`t.tenderNumber LIKE ${`%${filter.search}%`}`);
-        if (filter.tenderNumber) conditions.push(Prisma.sql`t.tenderNumber LIKE ${`%${filter.tenderNumber}%`}`);
+        // Eski kodu (A-2026-4474) elinde olan kullanıcı da kaydı bulabilsin diye
+        // arama `legacyNumber`ı da tarar.
+        if (filter.search) conditions.push(Prisma.sql`(t.tenderNumber LIKE ${`%${filter.search}%`} OR t.legacyNumber LIKE ${`%${filter.search}%`})`);
+        if (filter.tenderNumber) conditions.push(Prisma.sql`(t.tenderNumber LIKE ${`%${filter.tenderNumber}%`} OR t.legacyNumber LIKE ${`%${filter.tenderNumber}%`})`);
         if (filter.customerName) conditions.push(Prisma.sql`c.companyName LIKE ${`%${filter.customerName}%`}`);
         if (filter.creatorName) {
             const pattern = `%${filter.creatorName}%`;
@@ -285,7 +287,8 @@ export class TenderRepository implements ITenderRepository {
             data.extraDiscountLabel,
             data.totalDiscounts,
             data.paymentStages,
-            data.customerReference
+            data.customerReference,
+            data.legacyNumber
         );
     }
 
@@ -311,10 +314,16 @@ export class TenderRepository implements ITenderRepository {
                     : TENDER_FULL_SELECT),
                 customer: { select: TENDER_DETAIL_CUSTOMER_SELECT },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                // Teklifin siparişi (1:1). Teklif ekranındaki ana düğme buna
+                // bakar: sipariş varsa "Zum Auftrag" olur ve siparişi DOĞRUDAN
+                // açar — sipariş otomatik üretildiği için ikinci bir "sipariş
+                // oluştur" denemesi anlamsızdır.
+                salesOrder: { select: { id: true, orderNumber: true, projectId: true } },
             },
         });
         if (!data) return null;
         const entity: any = this.mapToEntity(data);
+        entity.salesOrder = (data as any).salesOrder ?? null;
         entity.pdfContentDeferred = options?.includePdfContent === false;
         entity.customerName = (data as any).customer?.companyName ?? null;
         // The customer's primary address (street / postal + city / country) formatted
@@ -339,11 +348,22 @@ export class TenderRepository implements ITenderRepository {
         if (filter.search) {
             where.OR = [
                 { tenderNumber: { contains: filter.search } },
+                { legacyNumber: { contains: filter.search } },
             ];
         }
         // Kolon bazlı filtreler — üstteki genel arama ile AND'lenir (MySQL collation
         // varsayılan olarak büyük/küçük harf duyarsız, ayrıca `mode` gerekmez).
-        if (filter.tenderNumber) where.tenderNumber = { contains: filter.tenderNumber };
+        if (filter.tenderNumber) {
+            where.AND = [
+                ...(where.AND || []),
+                {
+                    OR: [
+                        { tenderNumber: { contains: filter.tenderNumber } },
+                        { legacyNumber: { contains: filter.tenderNumber } },
+                    ],
+                },
+            ];
+        }
         if (filter.customerName) {
             where.customer = { is: { companyName: { contains: filter.customerName } } };
         }

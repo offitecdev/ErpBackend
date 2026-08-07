@@ -133,7 +133,13 @@ model SalesOrder {
   projectId           String?
   parentSalesOrderId  String?
   revisionNumber      Int?
+  // Sipariş kodu — ana sipariş AU-2026-10001, ek sipariş (Nachtrag/Zusatzauftrag)
+  // NT-2026-10001. Sunucuda DocumentCounter'dan üretilir, her dilde aynıdır.
+  // Ek siparişin kodu artık üst siparişten TÜRETİLMEZ (eskiden "…-N1"), kendi
+  // NT- serisinden gelir; üst siparişe bağ `parentSalesOrderId` ile kurulur.
   orderNumber         String
+  // Yeni numaralandırmadan önceki kod (AUF-A-2026-4474, SO-…, …-N1).
+  legacyNumber        String?
   orderType           String
   status              String    @default("ORDERED")
   totalAmount         Float     @default(0)
@@ -167,6 +173,8 @@ model SalesOrder {
   @@index([projectId])
   @@index([parentSalesOrderId])
   @@index([createdByEmployeeId])
+  @@index([tenantId, orderNumber])
+  @@index([tenantId, legacyNumber])
 }
 
 model CustomerContact {

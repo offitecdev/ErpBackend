@@ -4,8 +4,23 @@ model Invoice {
   customerId         String?
   projectId          String?
   salesOrderId       String?
+  // Fatura kodu — RE-2026-10001. Sunucuda DocumentCounter'dan üretilir ve her dilde
+  // aynıdır (Rechnung/Invoice/Fatura ayrımı YOK).
   invoiceNumber      String
+  // Yeni numaralandırmadan önceki kod (INV-2026-0001).
+  legacyNumber       String?
   billingType        String   @default("FULL") // FULL | PARTIAL
+  // Fatura türü — RECHNUNG (tam fatura, tüm pozisyonlar) | AKONTO (avans) |
+  // ZWISCHEN (ara fatura) | SCHLUSS (kalan yüzdeyi kapatan son fatura).
+  // billingType geriye dönük uyum için kalır: RECHNUNG/SCHLUSS → FULL,
+  // AKONTO/ZWISCHEN → PARTIAL.
+  kind               String   @default("RECHNUNG")
+  // Rechnungsdatum / Fälligkeit — PDF üzerinde gösterilen iş tarihleri.
+  invoiceDate        DateTime?
+  dueDate            DateTime?
+  // Tekliften kopyalanan meta (fatura kesildiği andaki değer dondurulur).
+  salespersonName    String?
+  commissionNumber   String?
   billedPercent      Float    @default(100)
   baseAmount         Float    @default(0) // order/project total this invoice was computed from
   amount             Float    @default(0) // baseAmount * billedPercent / 100
@@ -27,6 +42,8 @@ model Invoice {
   @@index([projectId])
   @@index([salesOrderId])
   @@index([issuedByEmployeeId])
+  @@index([tenantId, invoiceNumber])
+  @@index([tenantId, legacyNumber])
 }
 
 model InvoiceLineItem {

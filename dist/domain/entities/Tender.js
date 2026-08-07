@@ -52,11 +52,18 @@ class Tender {
     totalDiscounts;
     paymentStages;
     customerReference;
+    legacyNumber;
     constructor(id, tenantId, customerId, tenderNumber, version, format, status, createdByEmployeeId, createdAt, projectId, validUntil, offerMailSentAt, offerAcceptedAt, offerMailRecipient, offerAcceptanceToken, sourceCreatedAt, orderDate, billingAddress, deliveryAddress, internalDeliveryDate, priceList, paymentTerms, commissionNumber, salespersonName, sourceStatus, sourceCompany, shippingTerms, shippingWeight, fiscalPosition, salesTeam, onlineSignature, onlinePayment, coverLetter, closingNote, closingImages, sourceTotal, sourceNetAmount, sourceTaxAmount, sourceRecurringTotal, sourceMargin, billingSameAsInstallation, installationAddress, directDiscount, currency, directDiscountLabel, extraDiscount, extraDiscountLabel, 
     /** JSON [{name, kind, value}] — belge düzeyi yığılmış iskontolar. */
     totalDiscounts, paymentStages, 
     /** Kundenreferenz — "Referenz" on the offer PDF (customer-supplied). */
-    customerReference) {
+    customerReference, 
+    /**
+     * AN-2026-10001 serisinden ÖNCEKİ kod (A-2026-4474, TKF-…, ya da CSV/XML
+     * içe aktarımının dış referansı). Yalnızca arama ve içe aktarım
+     * eşleşmesi için tutulur; ekranda gösterilen kod `tenderNumber`dır.
+     */
+    legacyNumber) {
         this.id = id;
         this.tenantId = tenantId;
         this.customerId = customerId;
@@ -107,6 +114,7 @@ class Tender {
         this.totalDiscounts = totalDiscounts;
         this.paymentStages = paymentStages;
         this.customerReference = customerReference;
+        this.legacyNumber = legacyNumber;
     }
 }
 exports.Tender = Tender;

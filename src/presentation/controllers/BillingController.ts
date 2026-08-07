@@ -3,6 +3,7 @@ import { CreateInvoiceUseCase } from '../../application/use-cases/billing/Create
 import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/GetBillingSummaryUseCase';
 import { ListInvoicesUseCase } from '../../application/use-cases/billing/ListInvoicesUseCase';
 import { UpdateInvoiceStatusUseCase } from '../../application/use-cases/billing/UpdateInvoiceStatusUseCase';
+import { DeleteInvoiceUseCase } from '../../application/use-cases/billing/DeleteInvoiceUseCase';
 import { InvoiceStatus } from '../../domain/entities/Invoice';
 
 export class BillingController {
@@ -10,7 +11,8 @@ export class BillingController {
         private createInvoiceUseCase: CreateInvoiceUseCase,
         private getSummaryUseCase: GetBillingSummaryUseCase,
         private listInvoicesUseCase: ListInvoicesUseCase,
-        private updateStatusUseCase: UpdateInvoiceStatusUseCase
+        private updateStatusUseCase: UpdateInvoiceStatusUseCase,
+        private deleteInvoiceUseCase: DeleteInvoiceUseCase
     ) {}
 
     async getSummary(req: Request, res: Response) {
@@ -47,8 +49,14 @@ export class BillingController {
                 salesOrderId: req.body.salesOrderId,
                 projectId: req.body.projectId,
                 billingType: req.body.billingType === 'PARTIAL' ? 'PARTIAL' : 'FULL',
+                kind: req.body.kind ?? null,
                 percent: req.body.percent,
-                invoiceNumber: req.body.invoiceNumber,
+                invoiceDate: req.body.invoiceDate ?? null,
+                dueDate: req.body.dueDate ?? null,
+                salespersonName: req.body.salespersonName ?? null,
+                commissionNumber: req.body.commissionNumber ?? null,
+                // Fatura kodu sunucuda üretilir (RE-2026-10001); gövdeden gelen
+                // `invoiceNumber` artık kabul edilmiyor.
                 notes: req.body.notes,
             });
             res.status(201).json({ message: 'Fatura oluşturuldu.', invoice });
@@ -65,6 +73,15 @@ export class BillingController {
                 String(req.body.status || '')
             );
             res.status(200).json({ message: 'Fatura durumu güncellendi.', invoice });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    async delete(req: Request, res: Response) {
+        try {
+            await this.deleteInvoiceUseCase.execute(req.params.id as string, req.user!.tenantId);
+            res.status(200).json({ message: 'Fatura kalıcı olarak silindi.' });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

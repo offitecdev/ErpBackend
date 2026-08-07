@@ -197,14 +197,14 @@ router.get('/articles/summary/paged', AuthMiddleware_1.requireAuth, (0, RbacMidd
 router.get('/articles/:id/stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getArticleStockInfo(req, res));
 /**
  * Bir ürünün AÇIK sipariş adedi: henüz stoğa alınmamış satın alma
- * siparişlerindeki (PENDING | TO_BE_STOCKED | UPDATED) satır miktarlarının
+ * siparişlerindeki (PENDING | ORDERED | TO_BE_STOCKED) satır miktarlarının
  * toplamı. Sipariş satırları JSON snapshot olduğu için SQL ile toplanamaz;
  * bu yüzden yalnızca açık siparişlerin `items` kolonu çekilip taranır.
  * Siparişi olmayan ürün 0 döner.
  */
 const openOrderQuantityFor = async (tenantId, articleId, articleCode) => {
     const orders = await prisma_client_1.default.purchaseOrder.findMany({
-        where: { tenantId, status: { in: ['PENDING', 'TO_BE_STOCKED', 'UPDATED'] } },
+        where: { tenantId, status: { in: ['PENDING', 'ORDERED', 'TO_BE_STOCKED'] } },
         select: { items: true },
     });
     let total = 0;
@@ -1476,6 +1476,8 @@ router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
  *                     supplierId: { type: string, nullable: true }
  *                     supplierName: { type: string, nullable: true, description: "Elle girilen tedarikçi adı (yoksa oluşturulur)" }
  *                     unit: { type: string, nullable: true }
+ *                     description: { type: string, nullable: true, description: "Ürün açıklaması (biçimli metin) — kartın Açıklama alanına yazılır" }
+ *                     imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... — ürün görseli (en fazla 2 MB)" }
  *                     itemType: { type: string, enum: [PRODUCT, MATERIAL], description: "Satır bazında; verilmezse gövdedeki itemType, o da yoksa PRODUCT" }
  *               itemType:
  *                 type: string
@@ -1559,6 +1561,16 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
                 const quantity = Math.max(0, Number(item.quantity) || 0);
                 const purchasePrice = Math.max(0, Number(item.purchasePrice) || 0);
                 const salePrice = Math.max(0, Number(item.salePrice) || 0);
+                // Açıklama ve görsel ürün KARTINA yazılır (hareket notu değil) —
+                // detay ekranındaki PATCH ile aynı doğrulamalardan geçer.
+                const description = item.description ? (0, richText_1.normalizeRichText)(String(item.description)) : null;
+                let imageUrl = null;
+                if (item.imageUrl) {
+                    const parsedImage = (0, articleImage_1.parseArticleImage)(item.imageUrl);
+                    if (!parsedImage)
+                        throw new Error('Görsel geçersiz. En fazla 2 MB PNG, JPG, GIF veya WebP yükleyin.');
+                    imageUrl = parsedImage.imageUrl;
+                }
                 if (item.supplierId && invalidSupplierIds.has(String(item.supplierId)))
                     throw new Error('Tedarikçi bulunamadı.');
                 // Tedarikçiler yukarıda toplu çözüldü; burada yalnızca okunur.
@@ -1577,6 +1589,8 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
                             ...(purchasePrice > 0 ? { baseCost: purchasePrice } : {}),
                             ...(salePrice > 0 ? { salePrice } : {}),
                             ...(supplier ? { defaultSupplierId: supplier.id } : {}),
+                            ...(description ? { description } : {}),
+                            ...(imageUrl ? { imageUrl } : {}),
                             deletedAt: null,
                             isActive: true,
                             status: 'ACTIVE',
@@ -1598,6 +1612,8 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
                     baseCost: purchasePrice,
                     salePrice,
                     defaultSupplierId: supplier?.id || null,
+                    ...(description ? { description } : {}),
+                    ...(imageUrl ? { imageUrl } : {}),
                     itemType: item.itemType === 'MATERIAL' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType,
                     status: 'ACTIVE',
                     isActive: true,
@@ -1624,9 +1640,9 @@ router.post('/articles/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
                     destinationLocationId: quantity > 0 ? defaultLocation.id : null,
                     employeeId,
                     supplierId: supplier?.id || null,
-                    description: item.description
-                        ? String(item.description).trim()
-                        : (quantity > 0 ? 'Toplu ürün girişi' : 'Ürün tanımı'),
+                    // `item.description` artık ürün KARTININ açıklamasıdır (biçimli
+                    // metin) — hareket notuna sızdırılmaz.
+                    description: quantity > 0 ? 'Toplu ürün girişi' : 'Ürün tanımı',
                 });
                 if (supplier) {
                     // Yeni ürünün başka partisi olmadığı için "önceki tercihleri
@@ -2290,28 +2306,36 @@ router.delete('/supply/requests/:id', AuthMiddleware_1.requireAuth, (0, RbacMidd
 // Tek sipariş = tek tedarikçi; ürün satırları JSON snapshot olarak `items`
 // kolonunda saklanır (SupplyRequest emsali — listeleme join'siz).
 //
-// YAŞAM DÖNGÜSÜ (2026-08-01 genişletildi, 2026-08-02 ORDER_DRAFT eklendi):
-//   DRAFT → PRICE_REQUEST → AWAITING_CONFIRMATION ┐
-//   ORDER_DRAFT ──────────────────────────────────┴→ PENDING → TO_BE_STOCKED → COMPLETED
+// YAŞAM DÖNGÜSÜ (2026-08-01 genişletildi, 2026-08-02 ORDER_DRAFT eklendi,
+// 2026-08-03 ORDERED eklendi / UPDATED + AWAITING_CONFIRMATION kaldırıldı):
+//   DRAFT → PRICE_REQUEST ┐
+//   ORDER_DRAFT ──────────┴→ PENDING → ORDERED → TO_BE_STOCKED → COMPLETED
 //   - ORDER_DRAFT: SİPARİŞ TASLAĞI — fiyatlı, kaydedilmiş ama ONAYLANMAMIŞ
 //     sipariş. "Kaydet" bunu yazar; sipariş ancak "Onayla" ile resmîleşir
 //     (kullanıcı isteği 2026-08-02) ve o andan sonra düzenlenemez.
-//   - DRAFT: fiyat talebi taslağı (fiyatsız), henüz resmî değil.
-//   - PRICE_REQUEST: fiyatsız satırlar (seri no + ad + miktar) tedarikçiye sorulur.
-//     Fiyat talebi maili GERÇEKTEN gönderilince otomatik AWAITING_CONFIRMATION olur.
-//   - PENDING: resmî satın alma siparişi (fiyat talebi onaylanınca ya da doğrudan).
-//   - UPDATED: mail gönderildikten sonra içerik değişirse (revision+1); sipariş ADI
-//     değişikliği durumu asla etkilemez (kullanıcı kararı, 2026-07-29).
+//   - DRAFT: TALEP TASLAĞI — fiyatsız, kaydedilmiş ama HENÜZ GÖNDERİLMEMİŞ
+//     fiyat talebi.
+//   - PRICE_REQUEST: GÖNDERİLMİŞ fiyat talebi — fiyatsız satırlar (seri no + ad
+//     + miktar) tedarikçiye soruldu. Talep maili GERÇEKTEN gönderilince taslak
+//     kendiliğinden buraya ilerler. "Onay bekleniyor" AYRI BİR DURUM DEĞİLDİR
+//     (kullanıcı isteği 2026-08-03: sipariş taslağıyla aynı şeyi anlatıyordu).
+//   - PENDING: SİPARİŞ ONAYLANDI — kayıt resmîleşti ve kilitlendi, ama tedarikçiye
+//     MAİL HENÜZ GİTMEDİ (kullanıcı isteği 2026-08-03). Mal kabul bu aşamada da
+//     açılabilir, arayüz önce "mail gönderilmedi" uyarısı sorar.
+//   - ORDERED: SİPARİŞ VERİLDİ — sipariş maili tedarikçiye GERÇEKTEN gönderildi
+//     (mail gönderimi PENDING → ORDERED yapar; preview gönderim saymaz).
 //   - TO_BE_STOCKED: mal kabul — satırlar receive endpoint'iyle tek tek/toplu stoğa
-//     gönderilir; sipariş maili göndermek durumu DEĞİŞTİRMEZ.
+//     gönderilir; sipariş maili göndermek bu durumu DEĞİŞTİRMEZ.
 //   - COMPLETED: stoğa aktarıldı (receive `complete` ya da mark-stocked).
-const PO_STATUSES = new Set(['DRAFT', 'ORDER_DRAFT', 'PRICE_REQUEST', 'AWAITING_CONFIRMATION', 'PENDING', 'TO_BE_STOCKED', 'COMPLETED', 'UPDATED']);
+// UPDATED durumu KALDIRILDI (kullanıcı isteği 2026-08-03): mail sonrası içerik
+// değişikliği artık yalnızca `revision`ı artırır, durumu geri almaz.
+const PO_STATUSES = new Set(['DRAFT', 'ORDER_DRAFT', 'PRICE_REQUEST', 'PENDING', 'ORDERED', 'TO_BE_STOCKED', 'COMPLETED']);
 // Yeni sipariş bu durumlardan biriyle açılabilir: fiyat talebi taslağı,
 // SİPARİŞ TASLAĞI (kaydet) ya da doğrudan resmî sipariş (onayla).
 const PO_INITIAL_STATUSES = new Set(['DRAFT', 'ORDER_DRAFT', 'PRICE_REQUEST', 'PENDING']);
 // FİYAT TALEBİ AŞAMALARI — satırlar fiyatsızdır, belge "Preisanfrage"dir.
 // Frontend eşi: `utils/orderStatus.ts` → `isPriceRequestStage`.
-const PO_PRICE_REQUEST_STATUSES = new Set(['DRAFT', 'PRICE_REQUEST', 'AWAITING_CONFIRMATION']);
+const PO_PRICE_REQUEST_STATUSES = new Set(['DRAFT', 'PRICE_REQUEST']);
 // Satır hesap kipleri: AUTO hesaplar, DIRECT gönderileni saklar (eski directCopy),
 // SUPPLIER tedarikçi hesabından gelen SABİT net birim fiyatla çarpar (indirim kilitli).
 const PO_CALC_MODES = new Set(['AUTO', 'DIRECT', 'SUPPLIER']);
@@ -2545,32 +2569,41 @@ const parsePurchaseOrderRow = (row) => {
     return { ...row, items, additionalFees, itemCount: items.length };
 };
 /**
- * SİPARİŞ KODU: **AU-{yıl}-{sıra3}** — AU-2026-001, AU-2026-002 … (kullanıcı
- * isteği 2026-08-02; önceki biçim BE-{yıl}-{sıra4} idi). Tenant başına max-scan
- * (MaintenanceRepository emsali). Yalnızca ÖNERİDİR: kullanıcı sipariş kodunu
- * elle değiştirebilir (create ve patch gövdesinde `referenceNumber`),
- * benzersizliği DB indeksi korur.
+ * SİPARİŞ KODU: **BE-{yıl}-{sıra3}** — BE-2026-001, BE-2026-002 … (kullanıcı
+ * isteği 2026-08-03: belge "Bestellung"dur, kod da BE- önekini taşır; arada
+ * denenen AU- öneki geri alındı). Tenant başına max-scan (MaintenanceRepository
+ * emsali). Yalnızca ÖNERİDİR: kullanıcı sipariş kodunu elle değiştirebilir
+ * (create ve patch gövdesinde `referenceNumber`), benzersizliği DB indeksi korur.
  *
- * ⚠ ESKİ "BE-" KAYITLARA DOKUNULMAZ: tarama önekle sınırlıdır, dolayısıyla AU
- * dizisi 001'den başlar ve mevcut BE-… numaraları olduğu gibi kalır.
+ * ⚠ TARAMA HER İKİ ÖNEKİ DE OKUR (BE- ve eski AU-), YAZMA yalnızca BE- yapar:
+ * böylece AU-2026-004'ten sonraki sipariş BE-2026-005 olur — kullanıcının daha
+ * önce gördüğü bir sıra numarası ikinci kez dağıtılmaz. Eski dört haneli
+ * BE-2026-0001 kayıtları da sayısal olarak taranır (0001 → sıra 1).
  * ⚠ `PO_REFERENCE_PREFIX`, `PO_REFERENCE_SEQ_PAD` ve `PO_REFERENCE_SCAN_RE`
  * BİRLİKTE değişmelidir — regex öneki bulamazsa sıra her seferinde 1'e döner
  * ve P2002 çakışmasıyla kaydetme başarısız olur.
  */
-const PO_REFERENCE_PREFIX = 'AU-';
+const PO_REFERENCE_PREFIX = 'BE-';
 const PO_REFERENCE_SEQ_PAD = 3;
-const PO_REFERENCE_SCAN_RE = /^AU-\d{4}-(\d+)$/;
+const PO_REFERENCE_SCAN_RE = /^(?:BE|AU)-\d{4}-(\d+)$/;
 const nextPurchaseOrderReference = async (tenantId) => {
-    const prefix = `${PO_REFERENCE_PREFIX}${new Date().getFullYear()}-`;
+    const year = new Date().getFullYear();
+    const prefix = `${PO_REFERENCE_PREFIX}${year}-`;
     const rows = await prisma_client_1.default.purchaseOrder.findMany({
-        where: { tenantId, referenceNumber: { startsWith: prefix } },
+        where: {
+            tenantId,
+            OR: [
+                { referenceNumber: { startsWith: prefix } },
+                { referenceNumber: { startsWith: `AU-${year}-` } },
+            ],
+        },
         select: { referenceNumber: true },
     });
     const max = rows.reduce((value, row) => {
         const m = PO_REFERENCE_SCAN_RE.exec(row.referenceNumber || '');
         return m ? Math.max(value, Number(m[1]) || 0) : value;
     }, 0);
-    // 999'dan sonra doğal olarak dört haneye taşar (AU-2026-1000).
+    // 999'dan sonra doğal olarak dört haneye taşar (BE-2026-1000).
     return `${prefix}${String(max + 1).padStart(PO_REFERENCE_SEQ_PAD, '0')}`;
 };
 /** Elle girilen sipariş kodu: boş olamaz, 60 karakteri aşamaz. */
@@ -2899,7 +2932,7 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
                 throw new Error('Yeni sipariş yalnızca DRAFT, PRICE_REQUEST veya PENDING durumuyla açılabilir.');
             }
             prepared.push({
-                // Boş bırakılırsa sunucu AU-{yıl}-{sıra} üretir.
+                // Boş bırakılırsa sunucu BE-{yıl}-{sıra} üretir.
                 referenceNumber: raw?.referenceNumber ? normalizeReferenceNumber(raw.referenceNumber) : null,
                 quoteNumber: raw?.quoteNumber ? String(raw.quoteNumber).trim() || null : null,
                 orderedByName: raw?.orderedByName ? String(raw.orderedByName).trim() || null : null,
@@ -2980,7 +3013,7 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
  * /inventory/purchase-orders/{id}:
  *   patch:
  *     tags: [Inventory]
- *     summary: Siparişi düzenle (ad değişikliği durumu etkilemez; mail sonrası içerik değişikliği UPDATED yapar)
+ *     summary: Siparişi düzenle (ad değişikliği durumu etkilemez; mail sonrası içerik değişikliği revizyonu artırır)
  *     security:
  *       - bearerAuth: []
  */
@@ -2993,7 +3026,7 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         const b = req.body || {};
         const data = {};
         let contentChanged = false;
-        // Üstbilgi alanları (kod, teklif no, Auftrag, proje) durumu ETKİLEMEZ —
+        // Üstbilgi alanları (kod, teklif no, Bestellung, proje) durumu ETKİLEMEZ —
         // tedarikçiye giden ürün listesi değişmediği sürece "güncellendi" yok.
         if (b.referenceNumber !== undefined) {
             data.referenceNumber = normalizeReferenceNumber(b.referenceNumber);
@@ -3092,15 +3125,15 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         }
         if (!Object.keys(data).length)
             return res.status(400).json({ error: 'Güncellenecek alan yok.' });
-        // "Güncellendi" yalnızca mail atılmış (tedarikçinin elindeki PDF eskimiş)
-        // ve HENÜZ MAL KABULE GEÇMEMİŞ siparişlerde anlamlıdır; ad değişikliği
-        // bu bloğa hiç girmez. Fiyat talebi aşamasındaki değişiklik durumu
-        // DEĞİŞTİRMEZ (talep bağlayıcı değil), TO_BE_STOCKED'daki değişiklik de
-        // DEĞİŞTİRMEZ: mal kabul ekranında satır eklemek/silmek siparişi akışın
-        // başına döndürmemelidir (kullanıcı akışı 2026-08-02).
-        const stageTakesUpdatedFlag = existing.status === 'PENDING' || existing.status === 'UPDATED';
-        if (contentChanged && existing.emailSentAt && stageTakesUpdatedFlag) {
-            data.status = 'UPDATED';
+        // REVİZYON: mail atılmış (tedarikçinin elindeki PDF eskimiş) ve HENÜZ
+        // MAL KABULE GEÇMEMİŞ siparişlerde içerik değişikliği `revision`ı
+        // artırır — sonraki mail "güncellendi" etiketi taşır. Ad değişikliği
+        // bu bloğa hiç girmez. DURUM ARTIK DEĞİŞMEZ: "Aktualisiert" (UPDATED)
+        // durumu kaldırıldı (kullanıcı isteği 2026-08-03), sipariş verilmiş
+        // olarak (ORDERED) kalır. Fiyat talebi aşamasındaki ve TO_BE_STOCKED'daki
+        // değişiklikler revizyon da üretmez (kullanıcı akışı 2026-08-02).
+        const stageTakesRevision = existing.status === 'PENDING' || existing.status === 'ORDERED';
+        if (contentChanged && existing.emailSentAt && stageTakesRevision) {
             data.revision = (existing.revision || 0) + 1;
         }
         try {
@@ -3136,8 +3169,8 @@ router.patch('/purchase-orders/:id/status', AuthMiddleware_1.requireAuth, (0, Rb
         const status = String(req.body?.status || '').toUpperCase();
         // COMPLETED yalnızca mal kabul (receive) / mark-stocked ile yazılır; buradan
         // ne COMPLETED'a geçilebilir ne de COMPLETED'dan çıkılabilir. Diğer durumlar
-        // arasında geçiş serbesttir (onay = PRICE_REQUEST/AWAITING_CONFIRMATION →
-        // PENDING; geri alma dahil — kullanıcı akışı yönetir).
+        // arasında geçiş serbesttir (onay = ORDER_DRAFT → PENDING; geri alma
+        // dahil — kullanıcı akışı yönetir).
         if (!PO_STATUSES.has(status) || status === 'COMPLETED') {
             return res.status(400).json({ error: 'Geçersiz durum.' });
         }
@@ -3148,7 +3181,7 @@ router.patch('/purchase-orders/:id/status', AuthMiddleware_1.requireAuth, (0, Rb
         // 2026-08-02): talep fiyatsızdır ve onaylanan sipariş kilitlendiği için
         // fiyatı bir daha girilemezdi. Yol: talep → ORDER_DRAFT (siparişe
         // dönüştür, fiyat + KDV girilir) → PENDING (siparişi oluştur).
-        if (status === 'PENDING' && PO_PRICE_REQUEST_STATUSES.has(existing.status)) {
+        if ((status === 'PENDING' || status === 'ORDERED') && PO_PRICE_REQUEST_STATUSES.has(existing.status)) {
             return res.status(400).json({
                 error: 'Fiyat talebi doğrudan siparişe çevrilemez: önce sipariş taslağına dönüştürün ve fiyatları girin.',
             });
@@ -3345,7 +3378,7 @@ router.post('/purchase-orders/:id/receive', AuthMiddleware_1.requireAuth, (0, Rb
                 // AÇIKLAMA = YALNIZCA TEDARİKÇİ ADI (kullanıcı isteği
                 // 2026-08-02): stok hareketleri listesinde "malı kimden
                 // aldık" okunur olsun. Sipariş bağlantısı `referenceId` ile
-                // zaten duruyor, bu yüzden "Wareneingang {Auftrag}" metni
+                // zaten duruyor, bu yüzden "Wareneingang {Bestellung}" metni
                 // kaldırıldı; tedarikçi adı yoksa alan boş bırakılır.
                 description: existing.supplierName ? String(existing.supplierName).trim() || null : null,
                 transactionDate: now,
@@ -3466,11 +3499,11 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
         // çıkar. DRAFT da bu aşamadadır (kaydedilmiş fiyat talebi taslağı);
         // ORDER_DRAFT ise FİYATLI bir sipariş taslağıdır → normal sipariş maili.
         const isPriceRequestMail = existing.status === 'DRAFT'
-            || existing.status === 'PRICE_REQUEST'
-            || existing.status === 'AWAITING_CONFIRMATION';
-        // Almanca belge adı "Auftrag"dır (kullanıcı isteği 2026-08-02) —
-        // PDF başlığıyla ve arayüzdeki sözlükle aynı kelime.
-        const defaultSubject = `${isPriceRequestMail ? 'Preisanfrage' : 'Auftrag'} ${existing.referenceNumber}`;
+            || existing.status === 'PRICE_REQUEST';
+        // Almanca belge adı "Bestellung"dur (kullanıcı isteği 2026-08-03;
+        // önceki "Auftrag" geri alındı) — PDF başlığıyla ve arayüzdeki
+        // sözlükle aynı kelime.
+        const defaultSubject = `${isPriceRequestMail ? 'Preisanfrage' : 'Bestellung'} ${existing.referenceNumber}`;
         const subject = poStripHeader(String(req.body?.subject || defaultSubject));
         if (!subject)
             return res.status(400).json({ error: 'Konu boş olamaz.' });
@@ -3548,9 +3581,18 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
             inlineImages: signature.inlineImages,
         });
         // preview = SMTP yapılandırılmamış, gerçek gönderim yok → emailSentAt
-        // damgalanmaz; UPDATED/revizyon mantığı gerçek gönderime bağlıdır.
-        // Fiyat talebi (taslak dahil) GERÇEKTEN gönderilince sipariş
-        // kendiliğinden "onay bekliyor" durumuna ilerler (kullanıcı akışı).
+        // damgalanmaz; revizyon mantığı gerçek gönderime bağlıdır.
+        // TALEP TASLAĞI (DRAFT) gerçekten gönderilince FİYAT TALEBİ
+        // (PRICE_REQUEST) olur — "onay bekleniyor" durumu kaldırıldığı için
+        // (kullanıcı isteği 2026-08-03) gönderilmiş talep artık budur.
+        // ONAYLANMIŞ SİPARİŞ (PENDING) ise mail gidince "SİPARİŞ VERİLDİ"
+        // (ORDERED) olur — sipariş ancak tedarikçiye mail gittiğinde
+        // verilmiş sayılır.
+        const statusAfterSend = existing.status === 'DRAFT'
+            ? 'PRICE_REQUEST'
+            : existing.status === 'PENDING'
+                ? 'ORDERED'
+                : null;
         let order = existing;
         if (!result.preview) {
             order = await prisma_client_1.default.purchaseOrder.update({
@@ -3558,9 +3600,7 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
                 data: {
                     emailSentAt: new Date(),
                     emailRecipient: to,
-                    ...(existing.status === 'DRAFT' || existing.status === 'PRICE_REQUEST'
-                        ? { status: 'AWAITING_CONFIRMATION' }
-                        : {}),
+                    ...(statusAfterSend ? { status: statusAfterSend } : {}),
                 },
             });
         }
