@@ -3,7 +3,6 @@ import prisma from "../database/prisma.client";
 import { AddProjectReportUseCase } from "../../application/use-cases/project/AddProjectReportUseCase";
 import { ProjectReportRepository } from "../repositories/ProjectReportRepository";
 import { ProjectRepository } from "../repositories/ProjectRepository";
-import { MaterialRepository } from "../repositories/MaterialRepository";
 
 let started = false;
 
@@ -22,8 +21,7 @@ const endOfDay = (date: Date) => {
 const projectReportRepository = new ProjectReportRepository();
 const addProjectReportUseCase = new AddProjectReportUseCase(
     projectReportRepository as any,
-    new ProjectRepository() as any,
-    new MaterialRepository() as any
+    new ProjectRepository() as any
 );
 
 const taskTechnicianIds = (task: any) => [

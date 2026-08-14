@@ -12,7 +12,9 @@ const requirePermission = (requiredPermission) => {
                 res.status(401).json({ error: 'Kimlik doğrulanmamış kullanıcı.' });
                 return;
             }
+            const rbacStartedAt = Date.now();
             const userPermissions = await getPermissionsUseCase.execute(req.user.id);
+            req.rbacDurMs = Date.now() - rbacStartedAt;
             // SECURE BY DEFAULT: a user with no permissions is denied on any
             // permission-gated route. Previously an empty set granted full
             // access ("first setup mode"), which made role-less users superusers.

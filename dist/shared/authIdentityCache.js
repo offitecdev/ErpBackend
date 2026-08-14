@@ -38,7 +38,7 @@ const getAuthIdentity = async (employeeId) => {
         return cached.identity;
     const pending = inFlight.get(employeeId);
     if (pending)
-        return pending;
+        return cached ? cached.identity : pending;
     const request = prisma_client_1.default.employee
         .findUnique({
         where: { id: employeeId },
@@ -53,12 +53,16 @@ const getAuthIdentity = async (employeeId) => {
         .then((employee) => {
         // Bulunamayan hesap ÖNBELLEKLENMEZ: silinmiş/olmayan bir id için
         // 401 dönmek zaten hızlı yol, ve yeni açılan hesabın ilk isteği
-        // negatif bir kayda takılmamalı.
+        // negatif bir kayda takılmamalı. Eski kaydı da düşür ki bayat
+        // kimlik süresiz servis edilmesin.
         if (employee) {
             cache.set(employeeId, {
                 expiresAt: Date.now() + AUTH_IDENTITY_TTL_MS,
                 identity: employee,
             });
+        }
+        else {
+            cache.delete(employeeId);
         }
         return employee ?? null;
     })
@@ -66,7 +70,12 @@ const getAuthIdentity = async (employeeId) => {
         inFlight.delete(employeeId);
     });
     inFlight.set(employeeId, request);
-    return request;
+    // Süresi dolmuş kayıt bekletmez: bayat kimlik hemen döner, tazeleme arkada
+    // biter (stale-while-revalidate). Uygulama içi ban/pasifleştirme yine
+    // `invalidateAuthIdentity` ile kaydı SİLDİĞİ için bir sonraki istek bloklu
+    // taze okumaya düşer — anında etki bozulmaz; TTL yalnızca süreç dışı
+    // değişikliklerde ~tazeleme süresi kadar esner.
+    return cached ? cached.identity : request;
 };
 exports.getAuthIdentity = getAuthIdentity;
 //# sourceMappingURL=authIdentityCache.js.map

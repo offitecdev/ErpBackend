@@ -1,6 +1,47 @@
 import prisma from "../database/prisma.client";
 import { nanoid } from "nanoid";
 
+// Saha raporu kaydetme yanıtı: editör/PDF'nin kullandığı alanlar. İmza blobu,
+// tam Article/Material kayıtları ve diğer proje ilişkileri bilinçli olarak yoktur.
+const reportSaveSelect = {
+    id: true,
+    projectId: true,
+    salesOrderId: true,
+    appointmentId: true,
+    employeeId: true,
+    reportDate: true,
+    reportType: true,
+    workDate: true,
+    startedAt: true,
+    endedAt: true,
+    workedMinutes: true,
+    plannedMinutesForDay: true,
+    overtimeMinutes: true,
+    overtimeHourlyRate: true,
+    overtimeCost: true,
+    operationsDone: true,
+    technicalNotes: true,
+    isSigned: true,
+    signedAt: true,
+    hoursApprovedAt: true,
+    hoursApprovedById: true,
+    autoApproved: true,
+    employee: { select: { id: true, firstName: true, lastName: true } },
+    usedMaterials: {
+        select: {
+            id: true,
+            articleId: true,
+            quantity: true,
+            costAtTime: true,
+            article: { select: { id: true, name: true } },
+        },
+    },
+    images: {
+        orderBy: { createdAt: "asc" as const },
+        select: { id: true, imageData: true, caption: true, createdAt: true },
+    },
+} as const;
+
 export class ProjectReportRepository {
     async createReport(reportData: any) {
         return await prisma.projectReport.create({
@@ -38,10 +79,48 @@ export class ProjectReportRepository {
             where: { id },
             include: {
                 usedMaterials: {
-                    include: { material: true }
+                    include: { article: true }
                 },
                 images: { orderBy: { createdAt: "asc" } }
             }
+        });
+    }
+
+    async findSaveResultById(id: string) {
+        return await (prisma as any).projectReport.findUnique({
+            where: { id },
+            select: reportSaveSelect,
+        });
+    }
+
+    async updateReportLean(reportId: string, reportData: any) {
+        return await (prisma as any).projectReport.update({
+            where: { id: reportId },
+            data: reportData,
+            select: {
+                id: true,
+                projectId: true,
+                salesOrderId: true,
+                appointmentId: true,
+                employeeId: true,
+                reportDate: true,
+                reportType: true,
+                workDate: true,
+                startedAt: true,
+                endedAt: true,
+                workedMinutes: true,
+                plannedMinutesForDay: true,
+                overtimeMinutes: true,
+                overtimeHourlyRate: true,
+                overtimeCost: true,
+                operationsDone: true,
+                technicalNotes: true,
+                isSigned: true,
+                signedAt: true,
+                hoursApprovedAt: true,
+                hoursApprovedById: true,
+                autoApproved: true,
+            },
         });
     }
 
@@ -100,7 +179,7 @@ export class ProjectReportRepository {
             data: reportData,
             include: {
                 employee: { select: { id: true, firstName: true, lastName: true, email: true } },
-                usedMaterials: { include: { article: true, material: true } },
+                usedMaterials: { include: { article: true } },
                 images: { orderBy: { createdAt: "asc" } }
             }
         });
@@ -122,7 +201,7 @@ export class ProjectReportRepository {
             where: { projectId: projectId },
             include: {
                 usedMaterials: {
-                    include: { material: true }
+                    include: { article: true }
                 },
                 images: { orderBy: { createdAt: "asc" } }
             }

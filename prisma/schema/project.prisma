@@ -109,6 +109,7 @@ model ProjectReport {
   employee      Employee             @relation(fields: [employeeId], references: [id])
   usedMaterials ReportMaterial[]
   images        ProjectReportImage[]
+  logs          ProjectReportLog[]
 
   @@index([projectId])
   @@index([salesOrderId])
@@ -116,6 +117,25 @@ model ProjectReport {
   @@index([employeeId])
   @@index([employeeId, reportDate])
   @@index([employeeId, salesOrderId, reportDate])
+  // Aynı sipariş/gün saha raporu kontrolü.
+  @@index([projectId, salesOrderId, workDate])
+}
+
+// Speicherprotokoll des Montage-Rapports: jede Speicherung/Fertigstellung/
+// Signatur schreibt eine Zeile (wer, wann, was). Die Projektleiter-Ansicht
+// zeigt sie über den Protokoll-Knopf im Rapport-Editor.
+model ProjectReportLog {
+  id         String   @id
+  reportId   String
+  employeeId String?
+  action     String // SAVED | COMPLETED | SIGNED
+  createdAt  DateTime @default(now())
+
+  report   ProjectReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  employee Employee?     @relation(fields: [employeeId], references: [id])
+
+  @@index([reportId, createdAt])
+  @@index([employeeId])
 }
 
 model ProjectReportImage {
@@ -138,10 +158,8 @@ model ReportMaterial {
   quantity   Float
   costAtTime Float
 
-  report     ProjectReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  article    Article?      @relation(fields: [articleId], references: [id])
-  material   Material?     @relation(fields: [materialId], references: [id])
-  materialId String?
+  report  ProjectReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  article Article?      @relation(fields: [articleId], references: [id])
 
   @@index([reportId])
   @@index([articleId])
@@ -198,6 +216,8 @@ model Appointment {
   @@index([startTime, endTime])
   @@index([tenantId, status, startTime])
   @@index([tenantId, assignedTechId, status, startTime])
+  // Saha raporunun günlük planlanan süresini hesaplayan sorgu.
+  @@index([projectId, salesOrderId, status, startTime, endTime])
 }
 
 model ProjectAppointmentAssignment {
@@ -253,12 +273,14 @@ model OfferScheduleSlotAssignment {
   @@index([technicianId])
 }
 
+/// Zusatzmaterial rows. Since the material/product merge (2026-08-14) they
+/// reference Article; the API keeps accepting `materialId` on the wire.
 model ProjectExtraMaterial {
   id            String   @id
   projectId     String
   salesOrderId  String?
   appointmentId String?
-  materialId    String
+  articleId     String
   quantity      Float
   unitPrice     Float
   description   String?  @db.Text
@@ -267,19 +289,19 @@ model ProjectExtraMaterial {
   project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   salesOrder  SalesOrder?  @relation(fields: [salesOrderId], references: [id])
   appointment Appointment? @relation("ProjectAppointmentExtraMaterials", fields: [appointmentId], references: [id], onDelete: SetNull)
-  material    Material     @relation(fields: [materialId], references: [id])
+  article     Article      @relation(fields: [articleId], references: [id])
 
   @@index([projectId])
   @@index([salesOrderId])
   @@index([appointmentId])
-  @@index([materialId])
+  @@index([articleId])
 }
 
 model ProjectVariation {
   id            String  @id
   projectId     String
   requestedById String
-  materialId    String
+  articleId     String
   quantity      Float
   description   String? @db.Text
   status        String  @default("PENDING")
@@ -289,8 +311,8 @@ model ProjectVariation {
   resolvedById String?
   resolvedAt   DateTime?
 
-  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  material Material @relation(fields: [materialId], references: [id])
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id])
 
   @@index([projectId])
 }
@@ -325,32 +347,6 @@ model ProjectAddonRequest {
   @@index([tenantId])
   @@index([projectId])
   @@index([status])
-}
-
-model Material {
-  id                 String   @id
-  tenantId           String
-  serialId           String   @unique
-  name               String
-  stockQuantity      Float    @default(0)
-  unitCost           Float    @default(0)
-  minStockLevel      Float    @default(0)
-  criticalStockLevel Float    @default(0)
-  imageUrl           String?  @db.Text
-  isActive           Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-
-  reportUsages        ReportMaterial[]
-  variations          ProjectVariation[]
-  extraMaterialUsages ProjectExtraMaterial[]
-  tenderUsages        TenderMaterialUsage[]
-  positionMappings    PositionMaterialMapping[]
-
-  @@index([tenantId])
-  @@index([tenantId, createdAt])
 }
 
 /// Checklist templates configured by an administrator under Settings.

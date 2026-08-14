@@ -191,7 +191,10 @@ class SalesOrderController {
                         customer: { select: { id: true, companyName: true } },
                         addonSalesOrders: {
                             orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                            select: { id: true, orderNumber: true, totalAmount: true },
+                            // Liste ek siparişleri kendi satırları olarak da gösterir;
+                            // satırdaki tarih ek işin ait olduğu gün (orderDate),
+                            // yoksa oluşturulma tarihidir.
+                            select: { id: true, orderNumber: true, totalAmount: true, createdAt: true, orderDate: true },
                         },
                     },
                 }),

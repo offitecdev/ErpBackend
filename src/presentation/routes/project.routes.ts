@@ -13,23 +13,20 @@ import { ProjectRepository } from '../../infrastructure/repositories/ProjectRepo
 import { ProjectReportRepository } from '../../infrastructure/repositories/ProjectReportRepository';
 import { TenderRepository } from '../../infrastructure/repositories/TenderRepository';
 import { TenantRepository } from '../../infrastructure/repositories/TenantRepository';
-import { MaterialRepository } from '../../infrastructure/repositories/MaterialRepository';
 import { isModuleEnabledForTenant } from '../../shared/tenantModules';
 import { Request, Response, NextFunction } from 'express';
 
 const router = Router();
 const projectRepo = new ProjectRepository();
 const reportRepo = new ProjectReportRepository();
-const materialRepo = new MaterialRepository();
 const controller = new ProjectController(
     new CreateProjectFromTenderUseCase(projectRepo, new TenderRepository(), new TenantRepository()),
-    new AddProjectReportUseCase(reportRepo, projectRepo, materialRepo),
-    new RequestExtraMaterialUseCase(projectRepo, materialRepo),
+    new AddProjectReportUseCase(reportRepo, projectRepo),
+    new RequestExtraMaterialUseCase(projectRepo),
     new ApproveVariationUseCase(projectRepo),
     new AddProjectExpenseUseCase(projectRepo),
     projectRepo,
-    reportRepo,
-    materialRepo
+    reportRepo
 );
 
 // The company category ("Numara" profile) is the authority: it decides which
@@ -64,10 +61,9 @@ router.get('/technician/reports', requireAnyPermission(['projects.report', 'main
 router.get('/technician/report-orders/:salesOrderId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
 router.get('/technician/reports/:reportId/resources', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
 router.get('/technician/reports/:reportId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
+// Malzeme/ürün birleşmesi (2026-08-14): saha ekranlarının "malzeme" kataloğu
+// artık ürün (Article) listesidir; yanıt eski ProjectMaterial biçimini korur.
 router.get('/materials', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
-router.post('/materials', requirePermission('inventory.articles.create'), (req, res) => controller.createMaterial(req, res));
-router.patch('/materials/:materialId', requirePermission('inventory.articles.update'), (req, res) => controller.updateMaterial(req, res));
-router.delete('/materials/:materialId', requirePermission('inventory.articles.delete'), (req, res) => controller.deleteMaterial(req, res));
 
 router.post('/from-tender', requirePermission('projects.create'), (req, res) => controller.createFromTender(req, res));
 
@@ -80,6 +76,12 @@ router.patch('/:id/activate', requirePermission('projects.approve'), (req, res) 
 router.post('/:id/send-booking-mail', requirePermission('projects.mail'), (req, res) => controller.sendBookingMail(req, res));
 
 router.post('/:id/reports', requirePermission('projects.report'), (req, res) => controller.addReport(req, res));
+// Kompletter Rapport-Speicherstand eines Termins in EINEM Aufruf (Körper +
+// Spesen + Zusatz-/verwendetes Material als Ersatz) — Projektleiter-Popup und
+// Montage-Bildschirm speichern beide hierüber; der letzte Speicherstand gilt.
+router.put('/appointments/:appointmentId/field-report', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.saveFieldReport(req, res));
+// Speicherprotokoll (wer/wann) — Protokoll-Knopf der Projektleiter-Ansicht.
+router.get('/reports/:reportId/logs', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getReportLogs(req, res));
 router.patch('/reports/:reportId', requirePermission('projects.report'), (req, res) => controller.updateReport(req, res));
 router.patch('/reports/:reportId/sign', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.signReport(req, res));
 router.post('/reports/:reportId/materials', requirePermission('projects.report'), (req, res) => controller.addReportMaterials(req, res));

@@ -134,20 +134,9 @@ export class InventoryController {
         try {
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { codeOrBarcode, movementType, quantity, unitCost, supplierId, itemKind, materialId, sourceLocationId, destLocationId, referenceId, description } = req.body;
-
-            // Malzeme (Material) hareketleri ayrı tabloda; tek satış fiyatı + basit stok güncellemesi.
-            if (itemKind === 'MATERIAL' || materialId) {
-                const movement = await this.scanMaterialMovement({
-                    tenantId,
-                    materialId,
-                    codeOrBarcode,
-                    movementType,
-                    quantity: Number(quantity),
-                    salePrice: unitCost === null || unitCost === undefined || unitCost === '' ? null : Number(unitCost),
-                });
-                return res.status(201).json({ message: "Malzeme hareketi başarıyla kaydedildi.", data: movement });
-            }
+            // Malzeme/ürün birleşmesi (2026-08-14): ayrı Material tablosu ve
+            // itemKind/materialId dalı kalktı — her tarama Article hareketidir.
+            const { codeOrBarcode, movementType, quantity, unitCost, supplierId, sourceLocationId, destLocationId, referenceId, description } = req.body;
 
             const movement = await this.processMovementUseCase.execute({
                 tenantId,
@@ -168,52 +157,6 @@ export class InventoryController {
             // Eksi bakiye veya barkod bulunamadı hataları burada 400 döner
             res.status(400).json({ error: error.message });
         }
-    }
-
-    private async scanMaterialMovement(input: {
-        tenantId: string;
-        materialId?: string;
-        codeOrBarcode?: string;
-        movementType: string;
-        quantity: number;
-        salePrice: number | null;
-    }) {
-        if (input.quantity <= 0) throw new Error("Miktar 0'dan büyük olmalıdır.");
-
-        const material = input.materialId
-            ? await prisma.material.findFirst({ where: { id: input.materialId, tenantId: input.tenantId } })
-            : await prisma.material.findFirst({ where: { tenantId: input.tenantId, serialId: String(input.codeOrBarcode || '') } });
-
-        if (!material) throw new Error(`Malzeme bulunamadı: ${input.materialId || input.codeOrBarcode}`);
-
-        const isInbound = input.movementType === 'IN' || input.movementType === 'RETURN';
-        const delta = isInbound ? input.quantity : -input.quantity;
-        const nextStock = Number(material.stockQuantity || 0) + delta;
-        if (nextStock < 0) {
-            throw new Error(`[BLOCKED] Malzeme stoğu yetersiz. Mevcut: ${material.stockQuantity}, İstenen: ${input.quantity}`);
-        }
-
-        const updated = await prisma.material.update({
-            where: { id: material.id },
-            data: {
-                stockQuantity: nextStock,
-                // Malzemelerde yalnızca satış fiyatı girilir (unitCost alanında tutulur).
-                ...(input.salePrice != null && input.salePrice > 0 ? { unitCost: input.salePrice } : {}),
-            },
-        });
-
-        return {
-            id: nanoid(12),
-            materialId: updated.id,
-            itemKind: 'MATERIAL',
-            name: updated.name,
-            serialId: updated.serialId,
-            movementType: input.movementType,
-            quantity: input.quantity,
-            stockQuantity: updated.stockQuantity,
-            salePrice: updated.unitCost,
-            transactionDate: new Date(),
-        };
     }
 
     async getMovements(req: Request, res: Response) {

@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { Prisma } from "@prisma/client";
 import prisma from "../database/prisma.client";
 
 const DB_TEXT_SAFE_BYTES = 60000;
@@ -60,28 +61,19 @@ export class TenderActivityLogRepository {
     }
 
     async findByTender(tenderId: string): Promise<any[]> {
-        const data = await (prisma as any).tenderActivityLog.findMany({
-            where: { tenderId },
-            orderBy: { createdAt: "desc" },
-            take: 300,
-        });
-        const employeeIds: string[] = Array.from(
-            new Set<string>(data.map((d: any) => String(d.employeeId)))
-        );
-        const employees = employeeIds.length > 0
-            ? await prisma.employee.findMany({
-                where: { id: { in: employeeIds } },
-                select: { id: true, firstName: true, lastName: true, email: true }
-            })
-            : [];
-        const empMap = new Map(employees.map((e) => [e.id, e]));
-        return data.map((d: any) => {
-            const emp = empMap.get(d.employeeId);
-            return {
-                ...d,
-                employeeName: emp ? `${emp.firstName} ${emp.lastName}` : null,
-                employeeEmail: emp?.email ?? null,
-            };
-        });
+        return prisma.$queryRaw<any[]>(Prisma.sql`
+            SELECT
+                activity.*,
+                CASE
+                    WHEN employee.id IS NULL THEN NULL
+                    ELSE CONCAT(employee.firstName, ' ', employee.lastName)
+                END AS employeeName,
+                employee.email AS employeeEmail
+            FROM TenderActivityLog AS activity
+            LEFT JOIN Employee AS employee ON employee.id = activity.employeeId
+            WHERE activity.tenderId = ${tenderId}
+            ORDER BY activity.createdAt DESC
+            LIMIT 300
+        `);
     }
 }

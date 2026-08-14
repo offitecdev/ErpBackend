@@ -629,31 +629,8 @@ async function main() {
     }
     console.log('İzin türleri hazır:', leaveTypeNames.length);
 
-    const projectMaterials = [
-      { id: 'mat-panel-60x60', serialId: 'MAT-CH-001', name: 'Tavan Paneli 60x60', stockQuantity: 120, unitCost: 18.5 },
-      { id: 'mat-led-driver', serialId: 'MAT-CH-002', name: 'LED Sürücü 24V', stockQuantity: 80, unitCost: 32 },
-      { id: 'mat-cable-3x15', serialId: 'MAT-CH-003', name: 'Kablo 3x1.5', stockQuantity: 500, unitCost: 1.8 },
-      { id: 'mat-mount-set', serialId: 'MAT-CH-004', name: 'Montaj Bağlantı Seti', stockQuantity: 200, unitCost: 7.25 },
-    ];
-
-    for (const material of projectMaterials) {
-      await prisma.material.upsert({
-        where: { serialId: material.serialId },
-        update: {
-          tenantId: swissTenant.id,
-          name: material.name,
-          stockQuantity: material.stockQuantity,
-          unitCost: material.unitCost,
-          isActive: true,
-        },
-        create: {
-          ...material,
-          tenantId: swissTenant.id,
-          isActive: true,
-        },
-      });
-    }
-    console.log('Proje malzemeleri hazır:', projectMaterials.length);
+    // Malzeme/ürün birleşmesi (2026-08-14): ayrı Material tohum verisi kalktı —
+    // aşağıdaki inventoryArticles kayıtları aynı kalemleri Article olarak taşır.
 
     const warehouse = await prisma.location.upsert({
       where: { id: 'loc-ch-main' },

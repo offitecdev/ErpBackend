@@ -3,7 +3,6 @@ import { InventoryController } from '../controllers/InventoryController';
 import { InventoryRepository } from '../../infrastructure/repositories/InventoryRepository';
 import { ProcessStockMovementUseCase } from '../../application/use-cases/inventory/ProcessStockMovementUseCase';
 import { ManagePurchaseProposalsUseCase } from '../../application/use-cases/inventory/ManagePurchaseProposalsUseCase';
-import { MaterialRepository } from '../../infrastructure/repositories/MaterialRepository';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
@@ -34,7 +33,6 @@ const repository = new InventoryRepository();
 const processMovementUseCase = new ProcessStockMovementUseCase(repository);
 const proposalsUseCase = new ManagePurchaseProposalsUseCase(repository);
 const controller = new InventoryController(repository, processMovementUseCase, proposalsUseCase);
-const materialRepo = new MaterialRepository();
 
 const supplierInclude = {
     articleSuppliers: {
@@ -197,7 +195,7 @@ router.get(
  *         schema: { type: string }
  *       - in: query
  *         name: itemType
- *         schema: { type: string, enum: [PRODUCT, MATERIAL] }
+ *         schema: { type: string, enum: [PRODUCT, SERVICE] }
  *       - in: query
  *         name: code
  *         schema: { type: string }
@@ -279,79 +277,58 @@ const openOrderQuantityFor = async (tenantId: string, articleId: string, article
  * karşılığı.
  */
 const articleSupplierCostRows = async (tenantId: string, articleId: string) => {
-    const [links, movements] = await Promise.all([
-        (prisma as any).articleSupplier.findMany({
-            where: { tenantId, articleId },
-            select: {
-                supplierId: true,
-                quantity: true,
-                purchasePrice: true,
-                currency: true,
-                lastPurchaseDate: true,
-                supplier: { select: { id: true, companyName: true } },
-            },
-        }),
-        (prisma as any).stockMovement.findMany({
-            where: { tenantId, articleId, supplierId: { not: null }, movementType: 'IN', quantity: { gt: 0 } },
-            select: {
-                supplierId: true,
-                quantity: true,
-                unitCost: true,
-                transactionDate: true,
-                supplier: { select: { id: true, companyName: true } },
-            },
-        }),
-    ]);
-
-    const bySupplier = new Map<string, {
+    type SupplierCostRow = {
         supplierId: string;
         companyName: string;
         quantity: number;
         totalCost: number;
         averageUnitCost: number;
-        purchaseCount: number;
         lastPurchaseDate: Date | null;
-        currency: string;
-    }>();
-
-    const add = (
-        supplier: { id: string; companyName: string } | null,
-        quantity: unknown,
-        unitCost: unknown,
-        date: Date | null,
-        currency: string | null,
-    ) => {
-        if (!supplier) return;
-        const qty = Math.max(0, Number(quantity) || 0);
-        const cost = Math.max(0, Number(unitCost) || 0);
-        const row = bySupplier.get(supplier.id) ?? {
-            supplierId: supplier.id,
-            companyName: supplier.companyName,
-            quantity: 0,
-            totalCost: 0,
-            averageUnitCost: 0,
-            purchaseCount: 0,
-            lastPurchaseDate: null as Date | null,
-            currency: currency || 'CHF',
-        };
-        row.quantity += qty;
-        row.totalCost += qty * cost;
-        row.purchaseCount += 1;
-        if (date && (!row.lastPurchaseDate || date > row.lastPurchaseDate)) row.lastPurchaseDate = date;
-        bySupplier.set(supplier.id, row);
     };
 
-    for (const link of links) {
-        add(link.supplier, link.quantity, link.purchasePrice, link.lastPurchaseDate ?? null, link.currency);
-    }
-    for (const movement of movements) {
-        add(movement.supplier, movement.quantity, movement.unitCost, movement.transactionDate ?? null, null);
-    }
+    // İki kaynağın bütün alım satırlarını Node'a taşımak yerine MySQL'de UNION
+    // edip tedarikçi bazında topluyoruz. Yanıt büyüklüğü kayıt sayısına değil,
+    // yalnızca ilgili ürünün tedarikçi sayısına bağlı kalır.
+    const rawRows: any[] = await (prisma as any).$queryRawUnsafe(
+        `SELECT s.\`id\` AS supplierId,
+                s.\`companyName\` AS companyName,
+                SUM(p.quantity) AS quantity,
+                SUM(p.totalCost) AS totalCost,
+                MAX(p.lastPurchaseDate) AS lastPurchaseDate
+         FROM (
+             SELECT \`supplierId\`,
+                    GREATEST(\`quantity\`, 0) AS quantity,
+                    GREATEST(\`quantity\`, 0) * GREATEST(\`purchasePrice\`, 0) AS totalCost,
+                    \`lastPurchaseDate\` AS lastPurchaseDate
+             FROM \`ArticleSupplier\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+             UNION ALL
+             SELECT \`supplierId\`,
+                    \`quantity\` AS quantity,
+                    \`quantity\` * GREATEST(COALESCE(\`unitCost\`, 0), 0) AS totalCost,
+                    \`transactionDate\` AS lastPurchaseDate
+             FROM \`StockMovement\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+               AND \`supplierId\` IS NOT NULL AND \`movementType\` = 'IN' AND \`quantity\` > 0
+         ) p
+         INNER JOIN \`Supplier\` s ON s.\`id\` = p.supplierId
+         WHERE s.\`tenantId\` = ?
+         GROUP BY s.\`id\`, s.\`companyName\``,
+        tenantId, articleId, tenantId, articleId, tenantId,
+    );
 
-    const rows = Array.from(bySupplier.values()).map((row) => ({
-        ...row,
-        averageUnitCost: row.quantity > 0 ? row.totalCost / row.quantity : 0,
-    }));
+    const rows: SupplierCostRow[] = rawRows.map((row) => {
+        const quantity = Math.max(0, Number(row.quantity) || 0);
+        const totalCost = Math.max(0, Number(row.totalCost) || 0);
+        return {
+            supplierId: String(row.supplierId),
+            companyName: String(row.companyName || ''),
+            quantity,
+            totalCost,
+            averageUnitCost: quantity > 0 ? totalCost / quantity : 0,
+            lastPurchaseDate: row.lastPurchaseDate ? new Date(row.lastPurchaseDate) : null,
+        };
+    });
     rows.sort((a, b) => b.quantity - a.quantity || a.companyName.localeCompare(b.companyName));
 
     const quantity = rows.reduce((sum, row) => sum + row.quantity, 0);
@@ -555,6 +532,7 @@ router.get(
  *               name: { type: string }
  *               unit: { type: string }
  *               salePrice: { type: number }
+ *               itemType: { type: string, enum: [PRODUCT, SERVICE] }
  *               description: { type: string, nullable: true }
  *               imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... | null = sil" }
  */
@@ -611,6 +589,15 @@ router.patch(
                 data.salePrice = salePrice;
             }
 
+            // Ürün/hizmet sınıflandırması — detay ekranındaki tek anahtar.
+            if (body.itemType !== undefined) {
+                const itemType = String(body.itemType).toUpperCase();
+                if (itemType !== 'PRODUCT' && itemType !== 'SERVICE') {
+                    return res.status(400).json({ error: 'Tür yalnızca ürün veya hizmet olabilir.' });
+                }
+                data.itemType = itemType;
+            }
+
             // Açıklama biçimli metindir — dar beyaz listeden geçer.
             if (body.description !== undefined) data.description = normalizeRichText(body.description);
 
@@ -662,10 +649,13 @@ router.get(
         try {
             const tenantId = req.user!.tenantId;
             const id = String(req.params.id);
-            const exists = await (prisma as any).article.count({ where: { id, tenantId, deletedAt: null } });
+            // Varlık kontrolü ile maliyet toplamını aynı DB turunda paralel başlat.
+            const [exists, cost] = await Promise.all([
+                (prisma as any).article.count({ where: { id, tenantId, deletedAt: null } }),
+                articleSupplierCostRows(tenantId, id),
+            ]);
             if (!exists) return res.status(404).json({ error: 'Ürün bulunamadı.' });
 
-            const cost = await articleSupplierCostRows(tenantId, id);
             return res.status(200).json({
                 suppliers: cost.rows,
                 totalQuantity: cost.quantity,
@@ -1165,98 +1155,8 @@ router.delete(
     }
 );
 
-router.get(
-    '/materials',
-    requireAuth,
-    requirePermission('inventory.view'),
-    async (req, res) => {
-        try {
-            const materials = await materialRepo.list(req.user!.tenantId);
-            res.status(200).json(materials);
-        } catch (error: any) {
-            res.status(400).json({ error: error.message });
-        }
-    }
-);
-
-router.post(
-    '/materials',
-    requireAuth,
-    requirePermission('inventory.articles.create'),
-    async (req, res) => {
-        try {
-            const name = String(req.body.name || '').trim();
-            const serialId = String(req.body.serialId || '').trim();
-            const unitCost = Number(req.body.unitCost || 0);
-            const stockQuantity = Number(req.body.stockQuantity || 0);
-            const minStockLevel = Number(req.body.minStockLevel || 0);
-            const criticalStockLevel = Number(req.body.criticalStockLevel || 0);
-            const imageUrl = req.body.imageUrl ? String(req.body.imageUrl) : null;
-
-            if (!name) return res.status(400).json({ error: 'Malzeme adi zorunludur.' });
-            if (!serialId) return res.status(400).json({ error: 'Seri kodu zorunludur.' });
-            if (unitCost < 0 || stockQuantity < 0) return res.status(400).json({ error: 'Fiyat ve stok negatif olamaz.' });
-            if (minStockLevel < 0 || criticalStockLevel < 0) return res.status(400).json({ error: 'Minimum ve kritik seviye negatif olamaz.' });
-
-            const material = await materialRepo.createMaterial(req.user!.tenantId, name, serialId, unitCost, stockQuantity, imageUrl, minStockLevel, criticalStockLevel);
-            res.status(201).json(material);
-        } catch (error: any) {
-            res.status(400).json({ error: error.message });
-        }
-    }
-);
-
-router.patch(
-    '/materials/:materialId',
-    requireAuth,
-    requirePermission('inventory.articles.update'),
-    async (req, res) => {
-        try {
-            const material = await materialRepo.findById(req.params.materialId as string);
-            if (!material || (material as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: 'Malzeme bulunamadi.' });
-            }
-
-            const patch: any = {};
-            if (req.body.name !== undefined) patch.name = String(req.body.name).trim();
-            if (req.body.serialId !== undefined) patch.serialId = String(req.body.serialId).trim();
-            if (req.body.unitCost !== undefined) patch.unitCost = Number(req.body.unitCost);
-            if (req.body.stockQuantity !== undefined) patch.stockQuantity = Number(req.body.stockQuantity);
-            if (req.body.minStockLevel !== undefined) patch.minStockLevel = Number(req.body.minStockLevel);
-            if (req.body.criticalStockLevel !== undefined) patch.criticalStockLevel = Number(req.body.criticalStockLevel);
-            if (req.body.imageUrl !== undefined) patch.imageUrl = req.body.imageUrl ? String(req.body.imageUrl) : null;
-            if (req.body.isActive !== undefined) patch.isActive = Boolean(req.body.isActive);
-
-            if (patch.name === '') return res.status(400).json({ error: 'Malzeme adi zorunludur.' });
-            if (patch.serialId === '') return res.status(400).json({ error: 'Seri kodu zorunludur.' });
-            if (patch.unitCost < 0 || patch.stockQuantity < 0) return res.status(400).json({ error: 'Fiyat ve stok negatif olamaz.' });
-
-            const updated = await materialRepo.updateMaterial(material.id, patch);
-            res.status(200).json(updated);
-        } catch (error: any) {
-            res.status(400).json({ error: error.message });
-        }
-    }
-);
-
-router.delete(
-    '/materials/:materialId',
-    requireAuth,
-    requirePermission('inventory.articles.delete'),
-    async (req, res) => {
-        try {
-            const material = await materialRepo.findById(req.params.materialId as string);
-            if (!material || (material as any).tenantId !== req.user!.tenantId) {
-                return res.status(404).json({ error: 'Malzeme bulunamadi.' });
-            }
-
-            await materialRepo.softDeleteMaterial(material.id);
-            res.status(204).send();
-        } catch (error: any) {
-            res.status(400).json({ error: error.message });
-        }
-    }
-);
+// Malzeme/ürün birleşmesi (2026-08-14): /inventory/materials CRUD uçları
+// kaldırıldı — ayrı Material tablosu yok, her şey Article.
 
 /**
  * @swagger
@@ -1281,36 +1181,23 @@ router.get(
             const q = String(req.query.q || '').trim();
             if (!q) return res.status(200).json([]);
 
-            const [articles, materials] = await Promise.all([
-                (prisma as any).article.findMany({
-                    where: {
-                        tenantId,
-                        deletedAt: null,
-                        OR: [
-                            { name: { contains: q } },
-                            { articleCode: { contains: q } },
-                            { systemBarcode: { contains: q } },
-                            { supplierBarcode: { contains: q } },
-                        ],
-                    },
-                    take: 12,
-                    orderBy: { name: 'asc' },
-                }),
-                prisma.material.findMany({
-                    where: {
-                        tenantId,
-                        isActive: true,
-                        OR: [
-                            { name: { contains: q } },
-                            { serialId: { contains: q } },
-                        ],
-                    },
-                    take: 12,
-                    orderBy: { name: 'asc' },
-                }),
-            ]);
+            // Tek kaynak: Article (malzeme/ürün birleşmesi 2026-08-14).
+            const articles = await (prisma as any).article.findMany({
+                where: {
+                    tenantId,
+                    deletedAt: null,
+                    OR: [
+                        { name: { contains: q } },
+                        { articleCode: { contains: q } },
+                        { systemBarcode: { contains: q } },
+                        { supplierBarcode: { contains: q } },
+                    ],
+                },
+                take: 12,
+                orderBy: { name: 'asc' },
+            });
 
-            const productItems = articles.map((a: any) => ({
+            res.status(200).json(articles.map((a: any) => ({
                 kind: 'PRODUCT' as const,
                 id: a.id,
                 code: a.articleCode,
@@ -1324,23 +1211,7 @@ router.get(
                 minStockLevel: a.minStockLevel ?? 0,
                 criticalStockLevel: a.criticalStockLevel ?? 0,
                 maxStockLevel: a.maxStockLevel ?? null,
-            }));
-
-            const materialItems = materials.map((m: any) => ({
-                kind: 'MATERIAL' as const,
-                id: m.id,
-                code: m.serialId,
-                name: m.name,
-                barcode: null,
-                unit: 'adet',
-                salePrice: m.unitCost ?? 0,
-                imageUrl: m.imageUrl || null,
-                stockQuantity: m.stockQuantity ?? 0,
-                minStockLevel: m.minStockLevel ?? 0,
-                criticalStockLevel: m.criticalStockLevel ?? 0,
-            }));
-
-            res.status(200).json([...productItems, ...materialItems]);
+            })));
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -1620,10 +1491,20 @@ router.get(
                 (prisma as any).stockMovement.count({ where }),
                 (prisma as any).stockMovement.findMany({
                     where,
-                    include: {
-                        article: { select: { id: true, articleCode: true, name: true, unit: true } },
-                        supplier: { select: { id: true, companyName: true } },
-                        employee: { select: { firstName: true, lastName: true } },
+                    // Ürün detay sekmesi articleId'yi zaten bilir; o görünümde
+                    // Article ve Employee ilişkilerini yüklemiyoruz. Genel liste
+                    // için de yalnızca tabloda gösterilen alanlar seçilir.
+                    select: {
+                        id: true,
+                        transactionDate: true,
+                        movementType: true,
+                        quantity: true,
+                        unitCost: true,
+                        description: true,
+                        ...(!articleId ? {
+                            article: { select: { articleCode: true, name: true } },
+                        } : {}),
+                        supplier: { select: { companyName: true } },
                     },
                     orderBy: [{ transactionDate: 'desc' }, { id: 'desc' }],
                     skip: (page - 1) * pageSize,
@@ -1642,10 +1523,8 @@ router.get(
                     unitCost: row.unitCost,
                     totalCost: Number(row.quantity || 0) * Number(row.unitCost || 0),
                     description: row.description,
-                    referenceId: row.referenceId,
-                    article: row.article,
+                    ...(!articleId ? { article: row.article } : {}),
                     supplier: row.supplier,
-                    employee: row.employee,
                 })),
                 total,
                 page,
@@ -1687,10 +1566,10 @@ router.get(
  *                     unit: { type: string, nullable: true }
  *                     description: { type: string, nullable: true, description: "Ürün açıklaması (biçimli metin) — kartın Açıklama alanına yazılır" }
  *                     imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... — ürün görseli (en fazla 2 MB)" }
- *                     itemType: { type: string, enum: [PRODUCT, MATERIAL], description: "Satır bazında; verilmezse gövdedeki itemType, o da yoksa PRODUCT" }
+ *                     itemType: { type: string, enum: [PRODUCT, SERVICE], description: "Satır bazında; verilmezse gövdedeki itemType, o da yoksa PRODUCT" }
  *               itemType:
  *                 type: string
- *                 enum: [PRODUCT, MATERIAL]
+ *                 enum: [PRODUCT, SERVICE]
  *                 description: "Tüm satırlar için varsayılan tür (ürün / malzeme ekranı)"
  *               overwrite:
  *                 type: boolean
@@ -1707,8 +1586,9 @@ router.post(
             const items: any[] = Array.isArray(req.body.items) ? req.body.items : [];
             if (!items.length) return res.status(400).json({ error: 'Eklenecek satır yok.' });
             if (items.length > 500) return res.status(400).json({ error: 'Tek seferde en fazla 500 satır eklenebilir.' });
-            // Ürün ve malzeme aynı tabloyu (Article) paylaşır; ekran türü gövdeden gelir.
-            const defaultItemType = req.body.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT';
+            // itemType = ürün/hizmet sınıflandırması (PRODUCT | SERVICE);
+            // varsayılan üründür, detay ekranından hizmete çevrilebilir.
+            const defaultItemType = req.body.itemType === 'SERVICE' ? 'SERVICE' : 'PRODUCT';
             // ÜZERİNE YAZMA (kullanıcı isteği 2026-08-02, sipariş Excel aktarımı):
             // kodu zaten kayıtlı satır hata VERMEZ, mevcut ürün dosyadaki değerlerle
             // güncellenir (ad/birim/fiyatlar; çöpteyse geri alınır). Stok DOKUNULMAZ —
@@ -1743,15 +1623,11 @@ router.post(
                 repository.ensureDefaultLocation(tenantId),
                 warmSupplierCache(tenantId, items, supplierCache),
             ]);
-            // Kod havuzu ürün ve malzeme için ORTAK: aynı kod ikisinde birden
-            // olamaz, bu yüzden hata hangi türde durduğunu söyler.
             const existingCodes = new Map<string, { id: string; deleted: boolean; itemType: string }>(
                 existing.map((row: any) => [row.articleCode, { id: row.id, deleted: Boolean(row.deletedAt), itemType: row.itemType || 'PRODUCT' }]),
             );
-            const clashMessage = (info: { deleted: boolean; itemType: string }) => {
-                const kind = info.itemType === 'MATERIAL' ? 'malzemede' : 'üründe';
-                return info.deleted ? `Bu kod çöpteki bir ${kind} kayıtlı.` : `Bu kod zaten bir ${kind} kayıtlı.`;
-            };
+            const clashMessage = (info: { deleted: boolean; itemType: string }) =>
+                info.deleted ? 'Bu kod çöpteki bir üründe kayıtlı.' : 'Bu kod zaten bir üründe kayıtlı.';
 
             // Satır başına INSERT + transaction yerine: her şey bellekte hazırlanır,
             // sonra tek transaction içinde toplu INSERT'lerle yazılır. Yeni ürünler
@@ -1828,7 +1704,7 @@ router.post(
                         defaultSupplierId: supplier?.id || null,
                         ...(description ? { description } : {}),
                         ...(imageUrl ? { imageUrl } : {}),
-                        itemType: item.itemType === 'MATERIAL' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType,
+                        itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType,
                         status: 'ACTIVE',
                         isActive: true,
                         ...(quantity > 0 ? { lastPurchaseDate: new Date() } : {}),
@@ -1880,7 +1756,7 @@ router.post(
                         });
                     }
 
-                    existingCodes.set(articleCode, { id: articleId, deleted: false, itemType: item.itemType === 'MATERIAL' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType });
+                    existingCodes.set(articleCode, { id: articleId, deleted: false, itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType });
                     created.push({ id: articleId, articleCode, name });
                 } catch (error: any) {
                     errors.push({ index, articleCode, error: error.message });
@@ -2183,8 +2059,8 @@ router.patch(
 // bekleyen/alınan talepler. Tüm uçlar YALNIZCA ilgili kaydı çeker (aşırı veri yok).
 // ===========================================================================
 
-// Ortak: bir kalemi (ürün/malzeme) tek satırlık düşük stok objesine indirger.
-const mapLowStock = (kind: 'PRODUCT' | 'MATERIAL', id: string, code: string, name: string, unit: string, qty: number, min: number, critical: number) => {
+// Ortak: bir ürünü tek satırlık düşük stok objesine indirger.
+const mapLowStock = (kind: 'PRODUCT', id: string, code: string, name: string, unit: string, qty: number, min: number, critical: number) => {
     const isCritical = critical > 0 && qty <= critical;
     const isBelowMin = min > 0 && qty <= min;
     return { kind, id, code, name, unit, totalQuantity: qty, minStockLevel: min, criticalStockLevel: critical, isCritical, isBelowMin };
@@ -2207,50 +2083,28 @@ router.get(
         try {
             const tenantId = req.user!.tenantId;
             // Yalnızca bir eşik tanımlı olan kalemleri çek — tüm katalog değil.
-            const [articles, materials] = await Promise.all([
-                (prisma as any).article.findMany({
-                    where: {
-                        tenantId,
-                        deletedAt: null,
-                        isActive: true,
-                        OR: [{ minStockLevel: { gt: 0 } }, { criticalStockLevel: { gt: 0 } }],
-                    },
-                    select: {
-                        id: true,
-                        articleCode: true,
-                        name: true,
-                        unit: true,
-                        minStockLevel: true,
-                        criticalStockLevel: true,
-                        stockBalances: { select: { currentQuantity: true } },
-                    },
-                }),
-                prisma.material.findMany({
-                    where: {
-                        tenantId,
-                        isActive: true,
-                        OR: [{ minStockLevel: { gt: 0 } }, { criticalStockLevel: { gt: 0 } }],
-                    },
-                    select: {
-                        id: true,
-                        serialId: true,
-                        name: true,
-                        stockQuantity: true,
-                        minStockLevel: true,
-                        criticalStockLevel: true,
-                    },
-                }),
-            ]);
+            const articles = await (prisma as any).article.findMany({
+                where: {
+                    tenantId,
+                    deletedAt: null,
+                    isActive: true,
+                    OR: [{ minStockLevel: { gt: 0 } }, { criticalStockLevel: { gt: 0 } }],
+                },
+                select: {
+                    id: true,
+                    articleCode: true,
+                    name: true,
+                    unit: true,
+                    minStockLevel: true,
+                    criticalStockLevel: true,
+                    stockBalances: { select: { currentQuantity: true } },
+                },
+            });
 
-            const rows = [
-                ...articles.map((a: any) => {
-                    const qty = (a.stockBalances || []).reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0);
-                    return mapLowStock('PRODUCT', a.id, a.articleCode, a.name, a.unit, qty, a.minStockLevel || 0, a.criticalStockLevel || 0);
-                }),
-                ...materials.map((m: any) =>
-                    mapLowStock('MATERIAL', m.id, m.serialId, m.name, 'adet', m.stockQuantity || 0, m.minStockLevel || 0, m.criticalStockLevel || 0),
-                ),
-            ];
+            const rows: Array<ReturnType<typeof mapLowStock>> = articles.map((a: any) => {
+                const qty = (a.stockBalances || []).reduce((s: number, b: any) => s + (b.currentQuantity || 0), 0);
+                return mapLowStock('PRODUCT', a.id, a.articleCode, a.name, a.unit, qty, a.minStockLevel || 0, a.criticalStockLevel || 0);
+            });
 
             // Kritik: kritik eşiğin altında. Minimum: min eşiğin altında AMA henüz kritik değil.
             const critical = rows.filter((r) => r.isCritical);
@@ -2278,10 +2132,11 @@ router.get(
     async (req, res) => {
         try {
             const tenantId = req.user!.tenantId;
-            const kind = String(req.params.kind || '').toUpperCase();
+            // `:kind` yalnızca yol uyumluluğu için duruyor — malzeme/ürün
+            // birleşmesinden (2026-08-14) beri her kalem Article'dır.
             const id = String(req.params.id);
 
-            if (kind === 'PRODUCT') {
+            {
                 const article = await (prisma as any).article.findFirst({
                     where: { id, tenantId, deletedAt: null },
                     select: { id: true, articleCode: true, name: true, unit: true },
@@ -2380,36 +2235,6 @@ router.get(
                     suppliers,
                 });
             }
-
-            // MALZEME: alım geçmişi modeli yok — e-posta atılabilsin diye e-postası olan
-            // aktif tedarikçileri döneriz (son alım bilgisi olmadan).
-            const material = await prisma.material.findFirst({
-                where: { id, tenantId },
-                select: { id: true, serialId: true, name: true },
-            });
-            if (!material) return res.status(404).json({ error: 'Malzeme bulunamadı.' });
-
-            const suppliers = await (prisma as any).supplier.findMany({
-                where: { tenantId, isActive: true, NOT: { email: null } },
-                select: { id: true, companyName: true, email: true, phone: true },
-                orderBy: { companyName: 'asc' },
-                take: 50,
-            });
-
-            return res.status(200).json({
-                item: { kind: 'MATERIAL', id: material.id, code: material.serialId, name: material.name, unit: 'adet' },
-                suppliers: suppliers.map((s: any) => ({
-                    supplierId: s.id,
-                    companyName: s.companyName,
-                    email: s.email,
-                    phone: s.phone,
-                    lastPurchaseDate: null,
-                    lastPurchasePrice: null,
-                    lastPurchaseQuantity: null,
-                    currency: null,
-                    purchaseCount: 0,
-                })),
-            });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -2466,7 +2291,6 @@ router.post(
         try {
             const tenantId = req.user!.tenantId;
             const b = req.body || {};
-            const itemType = b.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT';
             const itemName = String(b.itemName || '').trim();
             const requestedQuantity = Number(b.requestedQuantity || 0);
             const supplierEmail = b.supplierEmail ? String(b.supplierEmail).trim() : null;
@@ -2499,9 +2323,8 @@ router.post(
                 data: {
                     id: nanoid(12),
                     tenantId,
-                    itemType,
+                    itemType: 'PRODUCT',
                     articleId: b.articleId ? String(b.articleId) : null,
-                    materialId: b.materialId ? String(b.materialId) : null,
                     itemName,
                     itemCode: b.itemCode ? String(b.itemCode) : null,
                     unit: b.unit ? String(b.unit) : null,
@@ -2735,7 +2558,7 @@ const normalizePurchaseOrderItems = (raw: unknown) => {
             ? new Date(r.receivedAt).toISOString()
             : null;
         return {
-            itemType: r?.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
+            itemType: 'PRODUCT',
             articleId: r?.articleId ? String(r.articleId) : null,
             code: r?.code ? String(r.code).trim() : null,
             serialNumber: r?.serialNumber ? String(r.serialNumber).trim() : null,
@@ -3669,7 +3492,7 @@ router.post(
                         baseCost: entry.unitCost ?? (Number(item.netPrice) > 0 ? Number(item.netPrice) : 0),
                         salePrice: 0,
                         defaultSupplierId: supplierId,
-                        itemType: item.itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
+                        itemType: 'PRODUCT',
                         status: 'ACTIVE',
                         isActive: true,
                         lastPurchaseDate: now,

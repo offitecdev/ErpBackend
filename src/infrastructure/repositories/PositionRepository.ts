@@ -114,26 +114,8 @@ export class PositionRepository implements IPositionRepository {
                     article: { select: this.articleSelect(includeImages) },
                 },
             },
-            materialMappings: {
-                select: {
-                    id: true,
-                    positionId: true,
-                    materialId: true,
-                    quantityMultiplier: true,
-                    discount: true,
-                    material: {
-                        select: {
-                            id: true,
-                            tenantId: true,
-                            serialId: true,
-                            name: true,
-                            stockQuantity: true,
-                            unitCost: true,
-                            isActive: true,
-                        },
-                    },
-                },
-            },
+            // materialMappings kalktı: PositionMaterialMapping tablosu
+            // malzeme/ürün birleşmesiyle (2026-08-14) kaldırıldı.
         };
     }
 

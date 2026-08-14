@@ -63,6 +63,7 @@ const TENDER_FULL_SELECT = {
     sourceTaxAmount: true,
     sourceRecurringTotal: true,
     sourceMargin: true,
+    ccEmails: true,
     offerMailSentAt: true,
     offerAcceptedAt: true,
     offerMailRecipient: true,
@@ -253,39 +254,58 @@ class TenderRepository {
         return this.mapToEntity(data);
     }
     async findById(id, tenantId, options) {
+        const selectedFields = options?.includePdfContent === false
+            ? TENDER_WITHOUT_PDF_CONTENT_SELECT
+            : TENDER_FULL_SELECT;
+        const { customer: _customerRelation, createdBy: _createdByRelation, ...tenderFields } = selectedFields;
         // Scoped by both id and tenantId (findFirst, since the composite is not a
         // unique key). Cross-tenant ids simply resolve to null.
         const data = await prisma_client_1.default.tender.findFirst({
             where: { id, tenantId },
-            select: {
-                ...(options?.includePdfContent === false
-                    ? TENDER_WITHOUT_PDF_CONTENT_SELECT
-                    : TENDER_FULL_SELECT),
-                customer: { select: TENDER_DETAIL_CUSTOMER_SELECT },
-                createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                // Teklifin siparişi (1:1). Teklif ekranındaki ana düğme buna
-                // bakar: sipariş varsa "Zum Auftrag" olur ve siparişi DOĞRUDAN
-                // açar — sipariş otomatik üretildiği için ikinci bir "sipariş
-                // oluştur" denemesi anlamsızdır.
-                salesOrder: { select: { id: true, orderNumber: true, projectId: true } },
-            },
+            select: tenderFields,
         });
         if (!data)
             return null;
-        const entity = this.mapToEntity(data);
-        entity.salesOrder = data.salesOrder ?? null;
+        // MariaDB cannot use Prisma's relationLoadStrategy=join. Fetch the three
+        // small relations in parallel so detail loading costs two remote DB
+        // rounds instead of one round per relation.
+        const [customer, createdBy, salesOrder] = await Promise.all([
+            data.customerId
+                ? prisma_client_1.default.customer.findUnique({
+                    where: { id: data.customerId },
+                    select: TENDER_DETAIL_CUSTOMER_SELECT,
+                })
+                : Promise.resolve(null),
+            data.createdByEmployeeId
+                ? prisma_client_1.default.employee.findUnique({
+                    where: { id: data.createdByEmployeeId },
+                    select: { id: true, firstName: true, lastName: true, email: true },
+                })
+                : Promise.resolve(null),
+            prisma_client_1.default.salesOrder.findFirst({
+                where: { tenderId: id },
+                select: { id: true, orderNumber: true, projectId: true },
+            }),
+        ]);
+        const hydrated = { ...data, customer, createdBy, salesOrder };
+        const entity = this.mapToEntity(hydrated);
+        entity.salesOrder = salesOrder ?? null;
         entity.pdfContentDeferred = options?.includePdfContent === false;
-        entity.customerName = data.customer?.companyName ?? null;
+        // CC-Empfänger der Offerte (JSON-Spalte). Der Entity-Konstruktor kennt
+        // das Feld nicht — es wird, wie die Kundenfelder unten, nach dem Mappen
+        // angehängt und ist für die Oberfläche IMMER ein Array.
+        entity.ccEmails = Array.isArray(data.ccEmails) ? data.ccEmails : [];
+        entity.customerName = customer?.companyName ?? null;
         // The customer's primary address (street / postal + city / country) formatted
         // as a single multi-line string — the default for the tender's address slot.
-        entity.customerAddress = (0, customerAddress_1.formatCustomerAddress)(data.customer);
-        entity.customerEmail = data.customer?.mainEmail ?? null;
-        entity.customerPhone = data.customer?.mainPhone ?? null;
-        entity.customerTaxNumber = data.customer?.taxNumber ?? null;
-        entity.createdByName = data.createdBy
-            ? `${data.createdBy.firstName} ${data.createdBy.lastName}`
+        entity.customerAddress = (0, customerAddress_1.formatCustomerAddress)(customer);
+        entity.customerEmail = customer?.mainEmail ?? null;
+        entity.customerPhone = customer?.mainPhone ?? null;
+        entity.customerTaxNumber = customer?.taxNumber ?? null;
+        entity.createdByName = createdBy
+            ? `${createdBy.firstName} ${createdBy.lastName}`
             : null;
-        entity.createdByEmail = data.createdBy?.email ?? null;
+        entity.createdByEmail = createdBy?.email ?? null;
         return entity;
     }
     async findAll(filter) {

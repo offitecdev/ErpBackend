@@ -2,6 +2,7 @@
 
 import { Request, Response } from 'express';
 import { nanoid } from 'nanoid';
+import { Prisma } from '@prisma/client';
 import { ImportTenderUseCase } from '../../application/use-cases/tender/ImportTenderUseCase';
 import { ImportSalesOrderCsvUseCase } from '../../application/use-cases/tender/ImportSalesOrderCsvUseCase';
 import { CalculatePositionCostUseCase } from '../../application/use-cases/tender/CalculatePositionCostUseCase';
@@ -19,8 +20,28 @@ import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOpti
 import { MAX_TOTAL_DISCOUNTS, normalizeDiscountList, resolveLineDiscount } from './tender.discounts';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { nextDocumentNumber } from '../../shared/documentNumber';
+import { tenderDocumentStorageService } from '../../infrastructure/services/TenderDocumentStorageService';
 
 const smtp = new SmtpMailService();
+
+// Prisma şeması Position'ın bağımlı tablolarını (CalculationItem, article/
+// material mapping) onDelete: Cascade ilan ediyor; bu bayrak canlı FK'ların
+// gerçekten cascade edip etmediğini İLK FK hatasında bir kez öğrenir. Cascade
+// dünyasında satır silme tek ifadedir; değilse alt tablolar önce elle silinir.
+let positionChildRowsNeedManualCleanup = false;
+
+const isForeignKeyConstraintError = (error: unknown): boolean => {
+    const seen = new Set<unknown>();
+    let current: any = error;
+    while (current && typeof current === 'object' && !seen.has(current)) {
+        seen.add(current);
+        const code = current.errno ?? current.code ?? current.meta?.code;
+        if (code === 1451 || code === '1451' || code === 'ER_ROW_IS_REFERENCED_2') return true;
+        if (/foreign key constraint/i.test(String(current.message || ''))) return true;
+        current = current.cause ?? current.meta?.cause ?? null;
+    }
+    return false;
+};
 
 const normalizeIdList = (value: unknown) =>
     Array.isArray(value)
@@ -68,10 +89,10 @@ const normalizeClosingImages = (raw: unknown): string | null => {
     }
     if (list.length === 0) return null;
 
-    const MAX_PER_IMAGE = 8_400_000;   // ~6 MB binary, base64-encoded
-    const MAX_TOTAL = 40_000_000;
+    const MAX_PER_IMAGE = 7_000_000;   // ~5 MB binary, base64-encoded
+    const MAX_TOTAL = 35_000_000;
     if (list.some((image) => image.length > MAX_PER_IMAGE)) {
-        throw new TenderValidationError("Görsel çok büyük (maks. 6 MB).");
+        throw new TenderValidationError("Görsel çok büyük (maks. 5 MB).");
     }
     if (list.reduce((sum, image) => sum + image.length, 0) > MAX_TOTAL) {
         throw new TenderValidationError("Görsellerin toplam boyutu çok büyük.");
@@ -140,6 +161,39 @@ const clampPositionLogText = (value: unknown): string | null => {
 // Mail hardening helpers (used by sendOfferMail).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const isValidEmail = (value: string) => EMAIL_RE.test(value);
+
+// En fazla kaç CC adresi saklanır (satın alma siparişi mailindeki sınırın aynısı).
+const MAX_TENDER_CC = 10;
+
+/**
+ * Teklifin CC listesi — takvimdeki `sanitizeCcEmails`in sertleştirilmiş hâli:
+ * başlık enjeksiyonuna karşı CR/LF kırpılır, biçim doğrulanır, tekrarlar
+ * (büyük/küçük harf duyarsız) atılır ve liste 10 adresle sınırlanır.
+ */
+const sanitizeTenderCcEmails = (raw: unknown): string[] => {
+    const values = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of values) {
+        const email = stripHeaderValue(String(value ?? ""));
+        if (!email || !isValidEmail(email)) continue;
+        const key = email.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(email);
+        if (out.length >= MAX_TENDER_CC) break;
+    }
+    return out;
+};
+
+/**
+ * Kayıtlı CC listesini gönderime hazırlar: ALICININ KENDİSİ elenir (aynı adrese
+ * iki kopya gitmesin) ve liste yine 10 adresle sınırlıdır.
+ */
+const tenderCcForSend = (raw: unknown, to: string): string[] => {
+    const recipient = String(to || "").trim().toLowerCase();
+    return sanitizeTenderCcEmails(raw).filter((email) => email.toLowerCase() !== recipient);
+};
 // Strip CR/LF so a value placed into an SMTP header cannot inject extra headers.
 const stripHeaderValue = (value: string) => value.replace(/[\r\n]+/g, ' ').trim();
 const escapeHtml = (value: string) =>
@@ -295,15 +349,21 @@ export class TenderController {
     ) {
         const raw = String(tenderId || '').trim();
         if (!raw) return null;
+
+        // Detail requests explicitly defer PDF-only LONGTEXT fields. Apply that
+        // to drafts as well as orders; the PDF tab already loads them lazily.
+        const includePdfContent = !options?.omitPdfContent && !options?.deferOrderPdfContent;
+        const direct = await this.tenderRepository.findById(raw, user.tenantId, { includePdfContent });
+        if (direct) return direct;
+
+        // Parent/child tenant access is the uncommon compatibility path. Only
+        // it needs a separate owner lookup and tenant-tree check.
         const light = await (prisma as any).tender.findUnique({
             where: { id: raw },
-            select: { tenantId: true, projectId: true, sourceStatus: true }
+            select: { tenantId: true }
         });
         if (!light) return null;
         if (!await this.canAccessTenant(light.tenantId, user.tenantId)) return null;
-        const isOrder = Boolean(light.projectId) || isSourceSalesOrder(light.sourceStatus);
-        const includePdfContent = !options?.omitPdfContent
-            && !(options?.deferOrderPdfContent && isOrder);
         return this.tenderRepository.findById(raw, light.tenantId, { includePdfContent });
     }
 
@@ -708,6 +768,8 @@ export class TenderController {
             if (rawMeta.commissionNumber !== undefined) metaData.commissionNumber = rawMeta.commissionNumber ? String(rawMeta.commissionNumber) : null;
             if (rawMeta.customerReference !== undefined) metaData.customerReference = rawMeta.customerReference ? String(rawMeta.customerReference) : null;
             if (rawMeta.priceList !== undefined) metaData.priceList = rawMeta.priceList ? String(rawMeta.priceList) : null;
+            // CC-Empfänger der Offerte (Speichern-Knopf läuft über DIESEN Endpunkt).
+            if (rawMeta.ccEmails !== undefined) metaData.ccEmails = sanitizeTenderCcEmails(rawMeta.ccEmails);
             if (rawMeta.currency !== undefined) {
                 if (rawMeta.currency === null || rawMeta.currency === '') {
                     metaData.currency = null;
@@ -803,6 +865,330 @@ export class TenderController {
                 ? (rawMeta.customerId ? String(rawMeta.customerId) : null)
                 : undefined;
 
+            const summaryInput = req.body?.summary && typeof req.body.summary === 'object'
+                ? req.body.summary as Record<string, unknown>
+                : null;
+            const summaryTenderLogs: any[] = [];
+            if (summaryInput) {
+                const previousGrandTotal = Number(summaryInput.previousGrandTotal);
+                const nextGrandTotal = Number(summaryInput.nextGrandTotal);
+                if (
+                    Number.isFinite(previousGrandTotal)
+                    && Number.isFinite(nextGrandTotal)
+                    && previousGrandTotal >= 0
+                    && nextGrandTotal >= 0
+                    && Math.round(previousGrandTotal * 100) !== Math.round(nextGrandTotal * 100)
+                ) {
+                    summaryTenderLogs.push({
+                        tenantId,
+                        tenderId,
+                        positionId: null,
+                        employeeId,
+                        actionType: 'TENDER_TOTAL_UPDATED',
+                        fieldName: 'grandTotal',
+                        oldValue: previousGrandTotal.toFixed(2),
+                        newValue: nextGrandTotal.toFixed(2),
+                        description: `Genel toplam değiştirildi: ${previousGrandTotal.toFixed(2)} -> ${nextGrandTotal.toFixed(2)}`,
+                    });
+                }
+                const previousTotalDiscounts = String(summaryInput.previousTotalDiscounts ?? '').slice(0, 4000);
+                const nextTotalDiscounts = String(summaryInput.nextTotalDiscounts ?? '').slice(0, 4000);
+                if (previousTotalDiscounts !== nextTotalDiscounts) {
+                    summaryTenderLogs.push({
+                        tenantId,
+                        tenderId,
+                        positionId: null,
+                        employeeId,
+                        actionType: 'TENDER_DISCOUNT_UPDATED',
+                        fieldName: 'totalDiscounts',
+                        oldValue: previousTotalDiscounts || null,
+                        newValue: nextTotalDiscounts || null,
+                        description: 'Genel toplama uygulanan indirimler değiştirildi.',
+                    });
+                }
+            }
+
+            // Common fast-save path. Flat manual rows already have their final
+            // order/number in the browser and simple edits already contain the
+            // complete patch. Persist creates, updates and deletes as concurrent,
+            // tenant/status-guarded statements instead of paying for validation
+            // SELECTs + BEGIN + several writes + COMMIT. This also covers the
+            // usual "2 rows added, 3 rows edited, 1 row deleted" Save request.
+            const fastMutableFields = [
+                'shortDescription', 'longDescription', 'quantity', 'unit',
+                'unitPrice', 'discount', 'discounts', 'taxRate', 'npkCode',
+                'sourceArticleId', 'displayOrder',
+            ];
+            const fastMutableFieldSet = new Set(fastMutableFields);
+            const canFastCreateEntries = entries.every(({ position, safeRowType, requestedParentPositionId }) =>
+                (safeRowType === 'PRODUCT' || safeRowType === 'CUSTOM')
+                && !requestedParentPositionId
+                && (!position.sourceArticleId || position.discount !== undefined)
+                && position.displayOrder !== undefined
+                && Boolean(String(position.positionNumber || '').trim())
+                && (position.discounts === undefined || position.discounts === null)
+                && (position.imageUrl === undefined || position.imageUrl === null || position.imageUrl === ''),
+            );
+            const canUseFastSave = Object.keys(metaData).length === 0
+                && entries.length + updates.length + deleteIds.length > 0
+                && canFastCreateEntries
+                && updates.every(({ input }) =>
+                    Object.keys(input).every((field) => fastMutableFieldSet.has(field))
+                    && (input.discounts === undefined || input.discounts === null),
+                );
+            if (canUseFastSave) {
+                const fastCreated = entries.map(({ clientId, position, safeRowType }) => {
+                    const isPricedRow = safeRowType === 'PRODUCT' || safeRowType === 'CUSTOM';
+                    const row = {
+                        id: nanoid(10),
+                        tenantId,
+                        tenderId,
+                        parentPositionId: null,
+                        rowType: safeRowType,
+                        sourceArticleId: safeRowType === 'PRODUCT' && position.sourceArticleId
+                            ? String(position.sourceArticleId)
+                            : null,
+                        displayOrder: Number(position.displayOrder),
+                        npkCode: position.npkCode ? String(position.npkCode) : null,
+                        positionNumber: String(position.positionNumber).trim(),
+                        shortDescription: String(position.shortDescription || (safeRowType === 'PRODUCT' ? 'Ürün' : 'Yeni satır')).trim(),
+                        longDescription: position.longDescription || null,
+                        quantity: isPricedRow ? Number(position.quantity ?? (safeRowType === 'PRODUCT' ? 1 : 0)) : 0,
+                        unit: isPricedRow ? (position.unit || null) : null,
+                        hierarchyLevel: 0,
+                        imageUrl: null,
+                        unitPrice: isPricedRow
+                            ? (position.unitPrice === undefined || position.unitPrice === null ? null : Number(position.unitPrice))
+                            : null,
+                        discount: isPricedRow ? Number(position.discount ?? 0) : 0,
+                        discounts: null,
+                        taxRate: isPricedRow ? Number(position.taxRate ?? 0) : 0,
+                    };
+                    return { clientId, row };
+                });
+
+                let insertPromise: Promise<number> | null = null;
+                if (fastCreated.length > 0) {
+                    const insertParameters: any[] = [];
+                    const insertSelects = fastCreated.map(({ row }) => {
+                        insertParameters.push(
+                            row.id, row.tenantId, row.tenderId, row.parentPositionId,
+                            row.rowType, row.sourceArticleId, row.displayOrder, row.npkCode,
+                            row.positionNumber, row.shortDescription, row.longDescription,
+                            row.quantity, row.unit, row.hierarchyLevel, row.imageUrl,
+                            row.unitPrice, row.discount, row.discounts, row.taxRate,
+                            tenantId, tenderId,
+                        );
+                        return `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                                FROM \`Tender\` AS t
+                                WHERE t.\`tenantId\` = ? AND t.\`id\` = ? AND t.\`status\` = 'Draft'`;
+                    });
+                    insertPromise = prisma.$executeRawUnsafe(
+                        `INSERT INTO \`Position\`
+                            (\`id\`, \`tenantId\`, \`tenderId\`, \`parentPositionId\`, \`rowType\`,
+                             \`sourceArticleId\`, \`displayOrder\`, \`npkCode\`, \`positionNumber\`,
+                             \`shortDescription\`, \`longDescription\`, \`quantity\`, \`unit\`,
+                             \`hierarchyLevel\`, \`imageUrl\`, \`unitPrice\`, \`discount\`, \`discounts\`, \`taxRate\`)
+                         ${insertSelects.join('\nUNION ALL\n')}`,
+                        ...insertParameters,
+                    );
+                }
+
+                const parameters: any[] = [];
+                const assignments = fastMutableFields.flatMap((field) => {
+                    const matching = updates.filter(({ input }) =>
+                        Object.prototype.hasOwnProperty.call(input, field),
+                    );
+                    if (matching.length === 0) return [];
+                    const cases = matching.map(({ positionId, input }) => {
+                        parameters.push(positionId, input[field]);
+                        return 'WHEN ? THEN ?';
+                    }).join(' ');
+                    return [`p.\`${field}\` = CASE p.\`id\` ${cases} ELSE p.\`${field}\` END`];
+                });
+                const updateIds = updates.map(({ positionId }) => positionId);
+                let updatePromise: Promise<number> | null = null;
+                if (updateIds.length > 0) {
+                    parameters.push(tenantId, tenderId, ...updateIds);
+                    updatePromise = prisma.$executeRawUnsafe(
+                        `UPDATE \`Position\` AS p
+                         INNER JOIN \`Tender\` AS t
+                            ON t.\`id\` = p.\`tenderId\`
+                           AND t.\`tenantId\` = p.\`tenantId\`
+                         SET ${assignments.join(', ')}
+                         WHERE p.\`tenantId\` = ?
+                           AND p.\`tenderId\` = ?
+                           AND t.\`status\` = 'Draft'
+                           AND p.\`id\` IN (${updateIds.map(() => '?').join(', ')})`,
+                        ...parameters,
+                    );
+                }
+
+                // Deletes ride the same guard: the doomed set is the requested ids
+                // plus up to three nesting levels below them (a section's rows and
+                // anything under those), matched entirely in SQL so no validation
+                // read is needed. FK'lar cascade olduğu sürece tek ifadedir; ilk
+                // FK hatasında bağımlı tabloların elle temizlenmesi gerektiği
+                // öğrenilir ve o andan itibaren alt tablolar önce silinir.
+                // Line 708 already rejected update+delete of the same id, so this
+                // chain can run concurrently with the insert/update statements.
+                let deletePromise: Promise<number> | null = null;
+                if (deleteIds.length > 0) {
+                    const deletePlaceholders = deleteIds.map(() => '?').join(', ');
+                    const doomedJoins = `
+                         INNER JOIN \`Tender\` AS t
+                            ON t.\`id\` = p.\`tenderId\`
+                           AND t.\`tenantId\` = p.\`tenantId\`
+                         LEFT JOIN \`Position\` AS par ON par.\`id\` = p.\`parentPositionId\`
+                         LEFT JOIN \`Position\` AS par2 ON par2.\`id\` = par.\`parentPositionId\``;
+                    const doomedWhere = `p.\`tenantId\` = ?
+                           AND p.\`tenderId\` = ?
+                           AND t.\`status\` = 'Draft'
+                           AND (p.\`id\` IN (${deletePlaceholders})
+                                OR p.\`parentPositionId\` IN (${deletePlaceholders})
+                                OR par.\`parentPositionId\` IN (${deletePlaceholders})
+                                OR par2.\`parentPositionId\` IN (${deletePlaceholders}))`;
+                    const doomedParameters = [tenantId, tenderId, ...deleteIds, ...deleteIds, ...deleteIds, ...deleteIds];
+                    const clearDependentRows = () => prisma.$executeRawUnsafe(
+                        `DELETE ci, pam
+                         FROM \`Position\` AS p${doomedJoins}
+                         LEFT JOIN \`CalculationItem\` AS ci ON ci.\`positionId\` = p.\`id\`
+                         LEFT JOIN \`PositionArticleMapping\` AS pam ON pam.\`positionId\` = p.\`id\`
+                         WHERE ${doomedWhere}`,
+                        ...doomedParameters,
+                    );
+                    const deletePositionRows = () => prisma.$executeRawUnsafe(
+                        `DELETE p
+                         FROM \`Position\` AS p${doomedJoins}
+                         WHERE ${doomedWhere}`,
+                        ...doomedParameters,
+                    );
+                    deletePromise = (async () => {
+                        if (positionChildRowsNeedManualCleanup) {
+                            await clearDependentRows();
+                            return deletePositionRows();
+                        }
+                        try {
+                            return await deletePositionRows();
+                        } catch (deleteError) {
+                            if (!isForeignKeyConstraintError(deleteError)) throw deleteError;
+                            positionChildRowsNeedManualCleanup = true;
+                            console.warn('[addPositionsBatch.fast] Position child FKs do not cascade; falling back to manual cleanup.');
+                            await clearDependentRows();
+                            return deletePositionRows();
+                        }
+                    })();
+                }
+
+                const stageDurations: Array<[string, number]> = [];
+                const timed = (name: string, promise: Promise<number> | null): Promise<number> => {
+                    if (!promise) return Promise.resolve(0);
+                    const stageStartedAt = Date.now();
+                    return promise.finally(() => { stageDurations.push([name, Date.now() - stageStartedAt]); });
+                };
+                const [insertAffected, updateAffected, deleteAffected] = await Promise.all([
+                    timed('ins', insertPromise),
+                    timed('upd', updatePromise),
+                    timed('del', deletePromise),
+                ]);
+                if (fastCreated.length > 0 && insertAffected !== fastCreated.length) {
+                    throw new TenderValidationError('Satır eklenecek taslak teklif bulunamadı.');
+                }
+                if (fastCreated.length === 0 && updates.length > 0 && updateAffected === 0) {
+                    throw new TenderValidationError('Güncellenecek taslak teklif satırı bulunamadı.');
+                }
+                if (deleteIds.length > 0 && deleteAffected < deleteIds.length) {
+                    throw new TenderValidationError('Silinecek satırlardan bazıları bulunamadı; sayfayı yenileyip tekrar deneyin.');
+                }
+
+                const pricingTouched = fastCreated.length > 0 || updates.some(({ input }) =>
+                    input.quantity !== undefined
+                    || input.unitPrice !== undefined
+                    || input.discount !== undefined,
+                );
+                if (pricingTouched) {
+                    const pricingPositionIds = [
+                        ...fastCreated.map(({ row }) => row.id),
+                        ...updateIds,
+                    ];
+                    void prisma.$executeRawUnsafe(
+                        `INSERT INTO \`CalculationItem\`
+                            (\`id\`, \`positionId\`, \`materialCost\`, \`laborCost\`, \`overheadCost\`, \`riskAmount\`, \`additionalCost\`, \`profitMargin\`, \`totalCalculatedPrice\`)
+                         SELECT CONCAT('calc-', LEFT(REPLACE(UUID(), '-', ''), 25)), p.\`id\`, 0, 0, 0, 0, 0, 0,
+                                GREATEST(0, p.\`quantity\` * p.\`unitPrice\` * (1 - COALESCE(p.\`discount\`, 0) / 100))
+                         FROM \`Position\` AS p
+                         WHERE p.\`tenantId\` = ?
+                           AND p.\`tenderId\` = ?
+                           AND p.\`unitPrice\` IS NOT NULL
+                           AND p.\`id\` IN (${pricingPositionIds.map(() => '?').join(', ')})
+                         ON DUPLICATE KEY UPDATE \`totalCalculatedPrice\` = VALUES(\`totalCalculatedPrice\`)`,
+                        tenantId,
+                        tenderId,
+                        ...pricingPositionIds,
+                    ).catch((calculationError: unknown) => console.error('[addPositionsBatch.fast] calculation sync failed:', calculationError));
+                }
+
+                // The fast path never read the doomed rows, so the audit entry
+                // cannot name them — a generic entry per id is the trade for
+                // skipping the validation SELECT.
+                const fastActivityLogs = [
+                    ...summaryTenderLogs,
+                    ...deleteIds.map((positionId) => ({
+                        tenantId,
+                        tenderId,
+                        positionId,
+                        employeeId,
+                        actionType: 'POSITION_DELETED',
+                        fieldName: null,
+                        oldValue: null,
+                        newValue: null,
+                        description: 'Satır silindi.',
+                    })),
+                ];
+                if (fastActivityLogs.length > 0) {
+                    void (prisma as any).tenderActivityLog.createMany({
+                        data: fastActivityLogs.map((log) => ({
+                            id: nanoid(12),
+                            mappingId: null,
+                            articleId: null,
+                            ...log,
+                        })),
+                    }).catch((logError: unknown) => console.error('[addPositionsBatch.fast] activity log failed:', logError));
+                }
+
+                res.setHeader('Server-Timing', [
+                    `auth;dur=${Number((req as any).authDurMs ?? 0)}`,
+                    `rbac;dur=${Number((req as any).rbacDurMs ?? 0)}`,
+                    ...stageDurations.map(([name, dur]) => `${name};dur=${dur}`),
+                    `fast-save;dur=${Date.now() - requestStartedAt}`,
+                ].join(', '));
+                if ((req as any).singlePositionResponse && fastCreated.length > 0) {
+                    const created = fastCreated[0]!;
+                    return res.status(201).json({
+                        message: "Satır eklendi.",
+                        positionId: created.row.id,
+                        position: created.row,
+                    });
+                }
+                if ((req as any).singleUpdateResponse && updates.length > 0) {
+                    return res.status(200).json({ id: updates[0]!.positionId, ...updates[0]!.input });
+                }
+                if ((req as any).singleDeleteResponse) {
+                    return res.status(200).json({ message: "Satır silindi." });
+                }
+                return res.status(fastCreated.length > 0 ? 201 : 200).json({
+                    message: `${fastCreated.length} satır eklendi, ${updates.length} satır güncellendi, ${deleteIds.length} satır silindi.`,
+                    positions: fastCreated.map(({ clientId, row }) => ({
+                        clientId,
+                        positionId: row.id,
+                        position: row,
+                    })),
+                    updatedPositions: updates.map(({ positionId, input }) => ({ id: positionId, ...input })),
+                    deletedPositionIds: deleteIds,
+                    updatedTender: null,
+                });
+            }
+
             const sourceArticleIds = [...new Set<string>(
                 entries
                     .filter((entry) => entry.safeRowType === 'PRODUCT' && entry.position.sourceArticleId)
@@ -823,7 +1209,16 @@ export class TenderController {
             const [tender, sourceArticles, parents, affectedPositions, hierarchyRows, metaCustomer] = await Promise.all([
                 (prisma as any).tender.findFirst({
                     where: { id: tenderId, tenantId },
-                    select: { id: true, tenantId: true, status: true, customerId: true, tenderNumber: true },
+                    select: {
+                        id: true,
+                        tenantId: true,
+                        status: true,
+                        customerId: true,
+                        tenderNumber: true,
+                        directDiscount: true,
+                        extraDiscount: true,
+                        totalDiscounts: true,
+                    },
                 }),
                 sourceArticleIds.length > 0
                     ? (prisma as any).article.findMany({
@@ -1103,8 +1498,30 @@ export class TenderController {
                 }
 
                 const nextPosition = { ...before, ...patch };
+                const pricingChanged = targetCanPrice && (
+                    input.quantity !== undefined
+                    || input.unitPrice !== undefined
+                    || input.discount !== undefined
+                    || input.discounts !== undefined
+                );
+                const beforeQuantity = Number(before.quantity ?? 0);
+                const beforePrice = before.unitPrice == null ? null : Number(before.unitPrice);
+                const beforeDiscount = Number(before.discount ?? 0);
+                const previousTotal = beforeQuantity > 0 && beforePrice !== null
+                    ? beforeQuantity * beforePrice * (1 - beforeDiscount / 100)
+                    : 0;
+                const qty = Number(nextPosition.quantity ?? 0);
+                const price = nextPosition.unitPrice == null ? null : Number(nextPosition.unitPrice);
+                const discount = Number(nextPosition.discount ?? 0);
+                const calculatedTotal = pricingChanged
+                    ? (qty > 0 && price !== null ? qty * price * (1 - discount / 100) : 0)
+                    : null;
+
+                // Miktar ve birim fiyat yerine kullanıcıya yansıyan sonucu bir
+                // kez toplam tutar olarak kaydet; indirim değişikliklerini koru.
                 const logs = Object.keys(patch)
                     .filter((field) => field !== 'imageUrl')
+                    .filter((field) => !['quantity', 'unitPrice', 'taxRate'].includes(field))
                     .filter((field) => String(before[field] ?? '') !== String(nextPosition[field] ?? ''))
                     .map((field) => ({
                         tenantId,
@@ -1117,6 +1534,19 @@ export class TenderController {
                         newValue: clampPositionLogText(nextPosition[field]),
                         description: clampPositionLogText(`${updateLabels[field] ?? field} değiştirildi: ${before[field] ?? 'boş'} -> ${nextPosition[field] ?? 'boş'}`),
                     }));
+                if (calculatedTotal !== null && Math.round(previousTotal * 100) !== Math.round(calculatedTotal * 100)) {
+                    logs.push({
+                        tenantId,
+                        tenderId,
+                        positionId,
+                        employeeId,
+                        actionType: 'POSITION_PRICE_UPDATED',
+                        fieldName: 'lineTotal',
+                        oldValue: previousTotal.toFixed(2),
+                        newValue: calculatedTotal.toFixed(2),
+                        description: `Toplam tutar değiştirildi: ${previousTotal.toFixed(2)} -> ${calculatedTotal.toFixed(2)}`,
+                    });
+                }
                 if (patch.imageUrl !== undefined) {
                     logs.push({
                         tenantId,
@@ -1130,18 +1560,6 @@ export class TenderController {
                         description: patch.imageUrl ? 'Görsel güncellendi.' : 'Görsel kaldırıldı.',
                     });
                 }
-
-                const pricingChanged = targetCanPrice && (
-                    input.quantity !== undefined
-                    || input.unitPrice !== undefined
-                    || input.discount !== undefined
-                );
-                const qty = Number(nextPosition.quantity ?? 0);
-                const price = nextPosition.unitPrice == null ? null : Number(nextPosition.unitPrice);
-                const discount = Number(nextPosition.discount ?? 0);
-                const calculatedTotal = pricingChanged
-                    ? (qty > 0 && price !== null ? qty * price * (1 - discount / 100) : 0)
-                    : null;
 
                 return { positionId, patch, nextPosition, logs, calculatedTotal };
             });
@@ -1183,7 +1601,7 @@ export class TenderController {
                 item.requestedDisplayOrder === undefined || !item.requestedPositionNumber,
             );
             const customerChanged = requestedCustomerId !== undefined && requestedCustomerId !== tender.customerId;
-            const metaTenderLogs = customerChanged
+            const metaTenderLogs: any[] = customerChanged
                 ? [{
                     tenantId,
                     tenderId,
@@ -1196,6 +1614,34 @@ export class TenderController {
                     description: 'Teklif müşterisi güncellendi.',
                 }]
                 : [];
+            const discountMetaFields = summaryInput
+                ? []
+                : (Object.prototype.hasOwnProperty.call(metaData, 'totalDiscounts')
+                    ? ['totalDiscounts']
+                    : ['directDiscount', 'extraDiscount']);
+            const discountMetaLabels: Record<string, string> = {
+                directDiscount: 'Toplam indirimi',
+                extraDiscount: 'Ek toplam indirimi',
+                totalDiscounts: 'Toplamda uygulanan indirimler',
+            };
+            discountMetaFields.forEach((fieldName) => {
+                if (!Object.prototype.hasOwnProperty.call(metaData, fieldName)) return;
+                const oldValue = tender[fieldName] == null ? null : String(tender[fieldName]);
+                const newValue = metaData[fieldName] == null ? null : String(metaData[fieldName]);
+                if ((oldValue ?? '') === (newValue ?? '')) return;
+                metaTenderLogs.push({
+                    tenantId,
+                    tenderId,
+                    positionId: null,
+                    employeeId,
+                    actionType: 'TENDER_DISCOUNT_UPDATED',
+                    fieldName,
+                    oldValue,
+                    newValue,
+                    description: `${discountMetaLabels[fieldName]} değiştirildi.`,
+                });
+            });
+            metaTenderLogs.push(...summaryTenderLogs);
             const validationFinishedAt = Date.now();
 
             const applyWrites = async (tx: any) => {
@@ -1270,7 +1716,7 @@ export class TenderController {
                     // update instead of one Prisma round-trip per position.
                     const mutableFields = [
                         'shortDescription', 'longDescription', 'quantity', 'unit',
-                        'unitPrice', 'discount', 'taxRate', 'imageUrl', 'npkCode',
+                        'unitPrice', 'discount', 'discounts', 'taxRate', 'imageUrl', 'npkCode',
                         'rowType', 'sourceArticleId', 'displayOrder',
                     ];
                     const parameters: any[] = [];
@@ -1309,9 +1755,17 @@ export class TenderController {
 
                 const allDeleteIdList = [...allDeleteIds];
                 if (allDeleteIdList.length > 0) {
-                    await tx.positionArticleMapping.deleteMany({ where: { positionId: { in: allDeleteIdList } } });
-                    await tx.positionMaterialMapping.deleteMany({ where: { positionId: { in: allDeleteIdList } } });
-                    await tx.calculationItem.deleteMany({ where: { positionId: { in: allDeleteIdList } } });
+                    // One statement clears every dependent table (correct whether
+                    // or not their FKs cascade) instead of three round-trips.
+                    const deletePlaceholders = allDeleteIdList.map(() => '?').join(', ');
+                    await tx.$executeRawUnsafe(
+                        `DELETE ci, pam
+                         FROM \`Position\` AS p
+                         LEFT JOIN \`CalculationItem\` AS ci ON ci.\`positionId\` = p.\`id\`
+                         LEFT JOIN \`PositionArticleMapping\` AS pam ON pam.\`positionId\` = p.\`id\`
+                         WHERE p.\`tenantId\` = ? AND p.\`tenderId\` = ? AND p.\`id\` IN (${deletePlaceholders})`,
+                        tenantId, tenderId, ...allDeleteIdList,
+                    );
                     const deleted = await tx.position.deleteMany({ where: { id: { in: allDeleteIdList }, tenderId, tenantId } });
                     if (deleted.count !== allDeleteIdList.length) {
                         throw new TenderValidationError("Bazı satırlar başka bir işlemde silindi; sayfayı yenileyip tekrar deneyin.");
@@ -1331,7 +1785,7 @@ export class TenderController {
                     : 0)
                 + (prepared.length > 0 ? 1 : 0)
                 + (preparedUpdates.length > 0 ? (hasCalculationUpdate ? 2 : 1) : 0)
-                + (allDeleteIds.size > 0 ? 4 : 0);
+                + (allDeleteIds.size > 0 ? 2 : 0);
             if (needsDerivedOrdering || writeStatementCount > 1) {
                 await (prisma as any).$transaction(applyWrites, { isolationLevel: 'ReadCommitted', maxWait: 5000, timeout: 15000 });
             } else {
@@ -1357,12 +1811,6 @@ export class TenderController {
                     newValue: item.data.shortDescription,
                     description: `${item.data.rowType === 'PRODUCT' ? 'Ürün' : 'Satır'} eklendi: ${item.data.shortDescription}`,
                 })),
-                ...preparedUpdates.flatMap((entry) => entry.logs).map((log) => ({
-                    id: nanoid(12),
-                    mappingId: null,
-                    articleId: null,
-                    ...log,
-                })),
                 ...deleteLogs.map((log) => ({
                     id: nanoid(12),
                     mappingId: null,
@@ -1382,7 +1830,7 @@ export class TenderController {
             }
             res.setHeader(
                 'Server-Timing',
-                `validation;dur=${validationFinishedAt - requestStartedAt}, db-write;dur=${writeFinishedAt - validationFinishedAt}, total;dur=${writeFinishedAt - requestStartedAt}`,
+                `auth;dur=${Number((req as any).authDurMs ?? 0)}, rbac;dur=${Number((req as any).rbacDurMs ?? 0)}, validation;dur=${validationFinishedAt - requestStartedAt}, db-write;dur=${writeFinishedAt - validationFinishedAt}, total;dur=${writeFinishedAt - requestStartedAt}`,
             );
 
             const createdPositions = prepared.map((item) => ({
@@ -1408,7 +1856,6 @@ export class TenderController {
                     taxRate: item.data.taxRate,
                     calculation: null,
                     articleMappings: [],
-                    materialMappings: [],
                 },
             }));
             const updatedPositions = preparedUpdates.map((entry) => {
@@ -1468,13 +1915,19 @@ export class TenderController {
             const tenderId = req.params.id as string;
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, customerReference, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, totalDiscounts, paymentStages, coverLetter, closingNote, closingImages } = req.body;
+            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, customerReference, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, totalDiscounts, paymentStages, coverLetter, closingNote, closingImages, ccEmails } = req.body;
 
             const tender = await this.getAccessibleTender(tenderId, (req as any).user!);
             if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
-            if (tender.status !== "Draft") {
+            // CC listesi belgenin İÇERİĞİ değil, postalama bilgisidir: teklif
+            // gönderildikten (ve siparişe döndükten) sonra da düzenlenebilmeli,
+            // çünkü mailler o listeye gider. Yalnızca CC içeren yamalar bu
+            // yüzden taslak kilidinden muaftır.
+            const ccOnlyPatch = ccEmails !== undefined
+                && Object.keys(req.body).filter((key) => (req.body as any)[key] !== undefined).length === 1;
+            if (tender.status !== "Draft" && !ccOnlyPatch) {
                 return res.status(403).json({ error: "Sadece taslak teklif bilgileri düzenlenebilir." });
             }
 
@@ -1496,6 +1949,11 @@ export class TenderController {
             }
             if (priceList !== undefined) {
                 data.priceList = priceList ? String(priceList) : null;
+            }
+            // Teklifin CC listesi — müşteriye giden her mail (teklif maili ve
+            // sipariş bildirimi) bu adresleri kopyalar. Boş liste = CC yok.
+            if (ccEmails !== undefined) {
+                data.ccEmails = sanitizeTenderCcEmails(ccEmails);
             }
             if (currency !== undefined) {
                 if (currency === null || currency === "") {
@@ -2421,8 +2879,8 @@ export class TenderController {
             // Attachments: only well-formed inline PDF/PNG/JPG payloads, count- and
             // size-limited, with sanitized filenames. No file paths/URLs are accepted.
             const rawAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : [];
-            if (rawAttachments.length > 5) {
-                return res.status(400).json({ error: "En fazla 5 ek dosya gönderilebilir." });
+            if (rawAttachments.length > 1) {
+                return res.status(400).json({ error: "Teklif e-postasına yalnızca ilgili PDF eklenebilir." });
             }
             const allowedAttachmentTypes = new Set(["application/pdf", "image/png", "image/jpeg"]);
             let totalAttachmentBytes = 0;
@@ -2444,8 +2902,8 @@ export class TenderController {
                 totalAttachmentBytes += Math.floor(contentBase64.replace(/\s+/g, "").length * 3 / 4);
                 attachments.push({ filename, contentType, contentBase64 });
             }
-            if (totalAttachmentBytes > 15 * 1024 * 1024) {
-                return res.status(400).json({ error: "Eklerin toplam boyutu 15 MB sınırını aşıyor." });
+            if (totalAttachmentBytes > 5 * 1024 * 1024) {
+                return res.status(400).json({ error: "Ek dosya 5 MB sınırını aşıyor." });
             }
 
             const scheduleText = slots.map((slot: any) => {
@@ -2475,10 +2933,17 @@ export class TenderController {
                 ? `${messageText}\n\nPlanlanan tarih ve saatler:\n${scheduleText}`
                 : messageText;
 
+            // CC istekten DEĞİL, teklifin kayıtlı listesinden gelir: alıcı
+            // tarafındaki açık relay koruması CC için de geçerli olsun diye
+            // adresler yalnızca teklif üzerinde (yetkili bir düzenlemeyle)
+            // tanımlanabilir.
+            const cc = tenderCcForSend((tender as any).ccEmails, to);
+
             const result = await smtp.send(settings || {}, {
                 fromEmail,
                 fromName,
                 to,
+                cc,
                 subject,
                 text: `${plainText}${signature.text}`,
                 html,
@@ -2521,6 +2986,234 @@ export class TenderController {
                 return res.status(502).json({ error: "E-posta gönderilemedi: SMTP sunucusuna bağlanılamadı veya kullanıcı adı/parola hatalı. Lütfen mail ayarlarını kontrol edin." });
             }
             res.status(500).json({ error: "Teklif maili gönderilirken bir hata oluştu." });
+        }
+    }
+
+    /**
+     * Vorschläge für das CC-Feld der Offerte: der Kunde selbst und seine
+     * Kontaktpersonen. Bewusst am TENDER und nicht am Kunden aufgehängt — die
+     * Offerte kennt ihren Kunden bereits, die Mandantenprüfung ist dieselbe wie
+     * beim Lesen der Offerte, und ein Verkäufer braucht dafür keine
+     * CRM-Schreibrechte. Mitarbeitende kommen aus dem Personalverzeichnis.
+     */
+    async listMailRecipients(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tender: any = await this.getAccessibleTender(tenderId, (req as any).user!, { omitPdfContent: true });
+            if (!tender) return res.status(404).json({ error: "Teklif bulunamadı." });
+
+            const contacts = tender.customerId
+                ? await (prisma as any).customerContact.findMany({
+                    where: { customerId: tender.customerId },
+                    select: { id: true, firstName: true, lastName: true, title: true, email: true },
+                })
+                : [];
+
+            res.status(200).json({
+                customer: tender.customerEmail
+                    ? { name: tender.customerName || tender.customerEmail, email: tender.customerEmail }
+                    : null,
+                contacts: contacts
+                    .filter((contact: any) => contact.email && isValidEmail(String(contact.email).trim()))
+                    .map((contact: any) => ({
+                        id: contact.id,
+                        name: `${contact.firstName ?? ''} ${contact.lastName ?? ''}`.trim() || String(contact.email),
+                        title: contact.title ?? null,
+                        email: String(contact.email).trim(),
+                    })),
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * ── AUFTRAGSBESTÄTIGUNG ──────────────────────────────────────────────────
+     * Der Kunde wird informiert, sobald aus seiner Offerte ein Auftrag wird.
+     * Ausgelöst wird das direkt nach `POST /sales-orders/from-tender` (der
+     * Haken "Kunde benachrichtigen" im Auftragsdialog), darum liest der Endpunkt
+     * die Auftragsnummer selbst aus der Datenbank statt sie zu glauben.
+     *
+     * Empfänger: der Kunde der Offerte (To, nur aus dessen eigenen Adressen —
+     * dieselbe Allow-Liste wie die Offertmail, damit der Endpunkt kein offenes
+     * Relay ist) mit der CC-Liste der Offerte in Kopie. Der Text ist deutsch:
+     * er geht an den Kunden, nicht an den Bediener der Oberfläche.
+     */
+    async sendOrderMail(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tender: any = await this.getAccessibleTender(tenderId, (req as any).user!, { omitPdfContent: true });
+            if (!tender) {
+                return res.status(404).json({ error: "Teklif bulunamadı." });
+            }
+            if (!tender.customerId) {
+                return res.status(400).json({ error: "Müşterisi olmayan teklif için mail gönderilemez." });
+            }
+
+            const [settings, salesOrder, contacts] = await Promise.all([
+                prisma.mailSetting.findUnique({ where: { tenantId: tender.tenantId } }),
+                (prisma as any).salesOrder.findFirst({
+                    where: { tenderId },
+                    select: { orderNumber: true, totalAmount: true, orderDate: true, createdAt: true },
+                }),
+                (prisma as any).customerContact.findMany({
+                    where: { customerId: tender.customerId },
+                    select: { email: true },
+                }),
+            ]);
+            if (!salesOrder) {
+                return res.status(400).json({ error: "Bu teklife bağlı bir sipariş bulunamadı." });
+            }
+
+            // Alıcı: teklif mailindeki kuralın aynısı — yalnızca müşterinin
+            // kendi adresleri.
+            const allowedRecipients = new Map<string, string>();
+            const registerEmail = (value: unknown) => {
+                const trimmed = String(value || "").trim();
+                if (trimmed && isValidEmail(trimmed)) allowedRecipients.set(trimmed.toLowerCase(), trimmed);
+            };
+            registerEmail(tender.customerEmail);
+            contacts.forEach((contact: any) => registerEmail(contact.email));
+            if (allowedRecipients.size === 0) {
+                return res.status(400).json({ error: "Bu müşteri için tanımlı geçerli bir e-posta adresi yok." });
+            }
+
+            const defaultTo = allowedRecipients.get(String(tender.customerEmail || "").trim().toLowerCase())
+                || Array.from(allowedRecipients.values())[0]!;
+            let to = defaultTo;
+            if (req.body.to !== undefined && String(req.body.to).trim() !== "") {
+                const requestedTo = stripHeaderValue(String(req.body.to));
+                const canonical = allowedRecipients.get(requestedTo.toLowerCase());
+                if (!canonical) {
+                    return res.status(403).json({ error: "Alıcı yalnızca teklifin müşterisine ait bir e-posta adresi olabilir." });
+                }
+                to = canonical;
+            }
+            const cc = tenderCcForSend(tender.ccEmails, to);
+
+            const fromEmail = stripHeaderValue(String(settings?.fromEmail || (req as any).user!.email || ""));
+            if (!fromEmail || !isValidEmail(fromEmail)) {
+                return res.status(400).json({ error: "Gönderici e-posta adresi yapılandırılmamış." });
+            }
+            const fromName = stripHeaderValue(String(settings?.fromName || "Offitec ERP")).slice(0, 100) || "Offitec ERP";
+
+            const subject = stripHeaderValue(String(req.body.subject || `Auftragsbestätigung ${salesOrder.orderNumber}`));
+            if (!subject) return res.status(400).json({ error: "Konu boş olamaz." });
+            if (subject.length > 200) return res.status(400).json({ error: "Konu 200 karakteri aşamaz." });
+
+            const message = String(
+                req.body.message
+                || "Guten Tag\n\nVielen Dank für Ihren Auftrag — wir haben ihn erfasst und bestätigen Ihnen die Ausführung.\n"
+                + "Die zugehörige Offerte finden Sie als PDF im Anhang.\n\n"
+                + "Für Fragen stehen wir Ihnen gerne zur Verfügung.\n\nFreundliche Grüsse",
+            ).trim();
+            if (message.length > 5000) {
+                return res.status(400).json({ error: "Mesaj çok uzun." });
+            }
+
+            // Ek: yalnızca tek bir PDF/PNG/JPG (teklif PDF'i), 5 MB sınırı —
+            // teklif mailindeki denetimin aynısı.
+            const rawAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : [];
+            if (rawAttachments.length > 1) {
+                return res.status(400).json({ error: "Sipariş e-postasına yalnızca ilgili PDF eklenebilir." });
+            }
+            const allowedAttachmentTypes = new Set(["application/pdf", "image/png", "image/jpeg"]);
+            let totalAttachmentBytes = 0;
+            const attachments: Array<{ filename: string; contentType: string; contentBase64: string }> = [];
+            for (const item of rawAttachments) {
+                if (!item || typeof item !== "object") {
+                    return res.status(400).json({ error: "Geçersiz ek dosya." });
+                }
+                const contentType = String((item as any).contentType || "").trim().toLowerCase();
+                const contentBase64 = typeof (item as any).contentBase64 === "string" ? (item as any).contentBase64 : "";
+                const rawName = String((item as any).filename || "").trim();
+                if (!rawName || !contentBase64) {
+                    return res.status(400).json({ error: "Ek dosya adı ve içeriği zorunludur." });
+                }
+                if (!allowedAttachmentTypes.has(contentType)) {
+                    return res.status(400).json({ error: "Sadece PDF, PNG veya JPG ek gönderilebilir." });
+                }
+                const filename = rawName.replace(/[\\/\r\n"]+/g, "_").slice(0, 120);
+                totalAttachmentBytes += Math.floor(contentBase64.replace(/\s+/g, "").length * 3 / 4);
+                attachments.push({ filename, contentType, contentBase64 });
+            }
+            if (totalAttachmentBytes > 5 * 1024 * 1024) {
+                return res.status(400).json({ error: "Ek dosya 5 MB sınırını aşıyor." });
+            }
+
+            // Belgenin kimliğini taşıyan satırlar — mailin gövdesinde küçük bir
+            // liste olarak; hepsi kaçışlanır (mesajın kendisi düz metindir).
+            const detailRows: Array<[string, string]> = [
+                ["Auftrag", String(salesOrder.orderNumber || "")],
+                ["Offerte", String(tender.tenderNumber || "")],
+            ];
+            if (tender.commissionNumber) detailRows.push(["Kommission", String(tender.commissionNumber)]);
+            if (tender.customerReference) detailRows.push(["Referenz", String(tender.customerReference)]);
+            const orderDate = salesOrder.orderDate || salesOrder.createdAt;
+            if (orderDate) detailRows.push(["Datum", new Date(orderDate).toLocaleDateString("de-CH")]);
+
+            const signature = buildSignatureParts(settings);
+            const detailsHtml = `
+                <table style="border-collapse:collapse;margin:12px 0">
+                    ${detailRows.map(([label, value]) => `
+                        <tr>
+                            <td style="padding:2px 16px 2px 0;color:#64748b">${escapeHtml(label)}</td>
+                            <td style="padding:2px 0;font-weight:600">${escapeHtml(value)}</td>
+                        </tr>`).join("")}
+                </table>`;
+            const html = `
+                <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
+                    <p>${escapeHtml(message).replace(/\n/g, "<br />")}</p>
+                    ${detailsHtml}
+                    ${signature.html}
+                </div>
+            `;
+            const detailsText = detailRows.map(([label, value]) => `${label}: ${value}`).join("\n");
+
+            const result = await smtp.send(settings || {}, {
+                fromEmail,
+                fromName,
+                to,
+                cc,
+                subject,
+                text: `${message}\n\n${detailsText}${signature.text}`,
+                html,
+                replyTo: settings?.replyTo || null,
+                attachments,
+                inlineImages: signature.inlineImages,
+            });
+
+            // SMTP yapılandırılmamışsa gerçek gönderim yoktur (preview); müşteri
+            // geçmişine yalnızca gerçekten giden mail yazılır.
+            if (!result.preview) {
+                await this.customerActivityRepo.create({
+                    customerId: tender.customerId,
+                    employeeId: (req as any).user!.id,
+                    activityType: "ORDER_MAIL_SENT",
+                    description: `${salesOrder.orderNumber} sipariş bildirimi ${to} adresine gönderildi.`,
+                    referenceId: tender.id,
+                    activityDate: new Date(),
+                });
+            }
+
+            res.status(200).json({
+                message: result.preview
+                    ? "SMTP ayarı olmadığı için sipariş maili önizleme olarak hazırlandı."
+                    : "Sipariş maili gönderildi.",
+                to,
+                cc,
+                orderNumber: salesOrder.orderNumber,
+                ...result,
+            });
+        } catch (error: any) {
+            if (error?.status === 400) {
+                return res.status(400).json({ error: error.message });
+            }
+            console.error('[sendOrderMail] error:', error);
+            if (typeof error?.message === "string" && error.message.startsWith("SMTP")) {
+                return res.status(502).json({ error: "E-posta gönderilemedi: SMTP sunucusuna bağlanılamadı veya kullanıcı adı/parola hatalı. Lütfen mail ayarlarını kontrol edin." });
+            }
+            res.status(500).json({ error: "Sipariş maili gönderilirken bir hata oluştu." });
         }
     }
 
@@ -2857,6 +3550,48 @@ export class TenderController {
         }
     }
 
+    /** Returns exactly what the visible log tab needs, in one round trip. */
+    async getChatter(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const tenantId = (req as any).user!.tenantId;
+            const normalizedRef = this.normalizeTenderRef(tenderRef);
+            const directTender = normalizedRef
+                ? await (prisma as any).tender.findFirst({
+                    where: { id: normalizedRef, tenantId },
+                    select: { id: true, tenantId: true },
+                })
+                : null;
+            const tender = directTender ?? await this.findTenderForTenant(tenderRef, tenantId);
+            if (!tender) return res.status(404).json({ error: "Teklif bulunamadı." });
+
+            const [logs, documents] = await Promise.all([
+                this.tenderLogRepo.findByTender(tender.id),
+                prisma.document.findMany({
+                    where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: "TENDER" },
+                    orderBy: { fileName: "asc" },
+                    select: {
+                        id: true,
+                        tenantId: true,
+                        relatedEntityId: true,
+                        entityType: true,
+                        fileName: true,
+                        fileType: true,
+                        category: true,
+                        uploadedByEmployeeId: true,
+                    },
+                }),
+            ]);
+
+            res.status(200).json({
+                logs,
+                documents,
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     async addNote(req: Request, res: Response) {
         try {
             const tenderRef = req.params.id as string;
@@ -2866,6 +3601,48 @@ export class TenderController {
 
             if (!noteText) return res.status(400).json({ error: "Not içeriği boş olamaz." });
 
+            // Validate tenant ownership and create the note in one database
+            // round-trip. The old path loaded the entire tender graph before
+            // inserting this tiny record.
+            const normalizedRef = this.normalizeTenderRef(tenderRef);
+            if (normalizedRef) {
+                const id = nanoid(12);
+                const createdAt = new Date();
+                const inserted = await prisma.$executeRaw(Prisma.sql`
+                    INSERT INTO TenderActivityLog
+                        (id, tenantId, tenderId, positionId, mappingId, articleId,
+                         employeeId, actionType, fieldName, oldValue, newValue,
+                         description, createdAt)
+                    SELECT
+                        ${id}, tender.tenantId, tender.id, NULL, NULL, NULL,
+                        ${employeeId}, 'TENDER_NOTE', 'note', NULL, ${noteText},
+                        ${noteText}, ${createdAt}
+                    FROM Tender AS tender
+                    WHERE tender.id = ${normalizedRef}
+                      AND tender.tenantId = ${tenantId}
+                    LIMIT 1
+                `);
+
+                if (inserted === 1) {
+                    return res.status(201).json({
+                        id,
+                        tenantId,
+                        tenderId: normalizedRef,
+                        positionId: null,
+                        mappingId: null,
+                        articleId: null,
+                        employeeId,
+                        actionType: "TENDER_NOTE",
+                        fieldName: "note",
+                        oldValue: null,
+                        newValue: noteText,
+                        description: noteText,
+                        createdAt,
+                    });
+                }
+            }
+
+            // Keep legacy tender numbers and tenant-tree access compatible.
             const tender = await this.findTenderForTenant(tenderRef, tenantId);
             if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
@@ -2899,7 +3676,17 @@ export class TenderController {
 
             const documents = await prisma.document.findMany({
                 where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: "TENDER" },
-                orderBy: { fileName: "asc" }
+                orderBy: { fileName: "asc" },
+                select: {
+                    id: true,
+                    tenantId: true,
+                    relatedEntityId: true,
+                    entityType: true,
+                    fileName: true,
+                    fileType: true,
+                    category: true,
+                    uploadedByEmployeeId: true,
+                },
             });
             res.status(200).json(documents);
         } catch (error: any) {
@@ -2907,18 +3694,70 @@ export class TenderController {
         }
     }
 
+    async getDocumentContent(req: Request, res: Response) {
+        try {
+            const tenderRef = req.params.id as string;
+            const documentId = req.params.documentId as string;
+            const tenantId = (req as any).user!.tenantId;
+            const normalizedRef = this.normalizeTenderRef(tenderRef);
+            let document: any = null;
+            if (normalizedRef) {
+                const documents = await prisma.$queryRaw<any[]>(Prisma.sql`
+                    SELECT document.*
+                    FROM Document AS document
+                    INNER JOIN Tender AS tender
+                        ON tender.id = document.relatedEntityId
+                       AND tender.tenantId = document.tenantId
+                    WHERE tender.id = ${normalizedRef}
+                      AND tender.tenantId = ${tenantId}
+                      AND document.id = ${documentId}
+                      AND document.entityType = 'TENDER'
+                    LIMIT 1
+                `);
+                document = documents[0] ?? null;
+            }
+            if (!document) {
+                // Legacy tender numbers and parent/child tenant access remain
+                // compatible; the normal canonical-id path above is one query.
+                const tender = await this.findTenderForTenant(tenderRef, tenantId);
+                if (!tender) return res.status(404).json({ error: "Teklif bulunamadı." });
+                document = await prisma.document.findFirst({
+                    where: {
+                        id: documentId,
+                        tenantId: tender.tenantId,
+                        relatedEntityId: tender.id,
+                        entityType: "TENDER",
+                    },
+                });
+            }
+            if (!document) return res.status(404).json({ error: "Dosya bulunamadı." });
+            if (tenderDocumentStorageService.isManagedReference(document.fileUrl)) {
+                const file = await tenderDocumentStorageService.read(document.fileUrl);
+                return res.status(200).json({
+                    ...document,
+                    fileUrl: `data:${document.fileType};base64,${file.toString('base64')}`,
+                });
+            }
+            res.status(200).json(document);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     async addDocument(req: Request, res: Response) {
+        let storedFileReference: string | null = null;
         try {
             const tenderRef = req.params.id as string;
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const fileName = String(req.body.fileName || "").trim();
-            const fileUrl = String(req.body.fileUrl || "").trim();
-            const fileType = String(req.body.fileType || "").trim().toLowerCase();
+            const uploadedFile = req.file;
+            const fileName = String(uploadedFile?.originalname || req.body.fileName || "").trim();
+            const fileType = String(uploadedFile?.mimetype || req.body.fileType || "").trim().toLowerCase();
+            let fileUrl = String(req.body.fileUrl || "").trim();
             const category = String(req.body.category || "tender").trim() || "tender";
 
-            if (!fileName || !fileUrl || !fileType) {
-                return res.status(400).json({ error: "Dosya adı, URL ve tür zorunludur." });
+            if (!fileName || (!uploadedFile && !fileUrl) || !fileType) {
+                return res.status(400).json({ error: "Dosya adı, dosya ve tür zorunludur." });
             }
             const allowed = fileType === "application/pdf"
                 || fileType === "image/png"
@@ -2930,8 +3769,75 @@ export class TenderController {
                 return res.status(400).json({ error: "Sadece PDF, PNG veya JPG dosyası eklenebilir." });
             }
 
+            const dataPayload = fileUrl.includes(',') ? fileUrl.slice(fileUrl.indexOf(',') + 1) : fileUrl;
+            const approximateBytes = uploadedFile
+                ? uploadedFile.buffer.length
+                : Math.floor(dataPayload.replace(/\s+/g, '').length * 3 / 4);
+            if (approximateBytes > 5 * 1024 * 1024) {
+                return res.status(400).json({ error: "Dosya boyutu 5 MB sınırını aşamaz." });
+            }
+
+            if (uploadedFile) {
+                storedFileReference = await tenderDocumentStorageService.store(
+                    tenantId,
+                    uploadedFile.buffer,
+                    fileType,
+                );
+                fileUrl = storedFileReference;
+            }
+
+            const normalizedRef = this.normalizeTenderRef(tenderRef);
+            if (normalizedRef) {
+                const documentId = nanoid(8);
+                const inserted = await prisma.$executeRaw(Prisma.sql`
+                    INSERT INTO Document
+                        (id, tenantId, relatedEntityId, entityType, fileName,
+                         fileUrl, fileType, category, uploadedByEmployeeId)
+                    SELECT
+                        ${documentId}, tender.tenantId, tender.id, 'TENDER',
+                        ${fileName}, ${fileUrl}, ${fileType}, ${category}, ${employeeId}
+                    FROM Tender AS tender
+                    WHERE tender.id = ${normalizedRef}
+                      AND tender.tenantId = ${tenantId}
+                    LIMIT 1
+                `);
+
+                if (inserted === 1) {
+                    // The attachment is durable now. Audit logging does not need
+                    // to hold the upload response open for another remote DB trip.
+                    void this.tenderLogRepo.create({
+                        tenantId,
+                        tenderId: normalizedRef,
+                        employeeId,
+                        actionType: "TENDER_ATTACHMENT",
+                        fieldName: "attachment",
+                        oldValue: null,
+                        newValue: fileName,
+                        description: `Ek dosya eklendi: ${fileName}`,
+                    }).catch((error) => console.error('[TenderController.addDocument] audit log failed:', error));
+
+                    // Do not echo the base64 file back to the browser. Preview
+                    // content is fetched only when the user opens the document.
+                    return res.status(201).json({
+                        id: documentId,
+                        tenantId,
+                        relatedEntityId: normalizedRef,
+                        entityType: "TENDER",
+                        fileName,
+                        fileUrl: "",
+                        fileType,
+                        category,
+                        uploadedByEmployeeId: employeeId,
+                    });
+                }
+            }
+
             const tender = await this.findTenderForTenant(tenderRef, tenantId);
             if (!tender) {
+                if (storedFileReference) {
+                    await tenderDocumentStorageService.remove(storedFileReference);
+                    storedFileReference = null;
+                }
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
 
@@ -2949,7 +3855,7 @@ export class TenderController {
                 }
             });
 
-            await this.tenderLogRepo.create({
+            void this.tenderLogRepo.create({
                 tenantId: tender.tenantId,
                 tenderId: tender.id,
                 employeeId,
@@ -2958,10 +3864,15 @@ export class TenderController {
                 oldValue: null,
                 newValue: fileName,
                 description: `Ek dosya eklendi: ${fileName}`
-            });
+            }).catch((error) => console.error('[TenderController.addDocument] audit log failed:', error));
 
             res.status(201).json(document);
         } catch (error: any) {
+            if (storedFileReference) {
+                await tenderDocumentStorageService.remove(storedFileReference).catch((cleanupError) => {
+                    console.error('[TenderController.addDocument] file cleanup failed:', cleanupError);
+                });
+            }
             res.status(400).json({ error: error.message });
         }
     }

@@ -1,5 +1,6 @@
 
 import { Router } from 'express';
+import multer from 'multer';
 import { TenderController } from '../controllers/TenderController';
 import { ImportTenderUseCase } from '../../application/use-cases/tender/ImportTenderUseCase';
 import { ImportSalesOrderCsvUseCase } from '../../application/use-cases/tender/ImportSalesOrderCsvUseCase';
@@ -20,6 +21,10 @@ import { InventoryRepository } from '../../infrastructure/repositories/Inventory
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
 
 const router = Router();
+const tenderDocumentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+});
 
 const tenderRepository = new TenderRepository();
 const positionRepository = new PositionRepository();
@@ -354,6 +359,22 @@ router.post(
     (req, res) => tenderController.sendOfferMail(req, res)
 );
 
+// Vorschläge für das CC-Feld im Mailbereich der Offerte (Kunde + Kontaktpersonen).
+router.get(
+    '/:id/mail-recipients',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.listMailRecipients(req, res)
+);
+
+// Auftragsbestätigung: läuft automatisch beim Erstellen des Auftrags aus der Offerte.
+router.post(
+    '/:id/send-order-mail',
+    requireAuth,
+    requirePermission('mail.send'),
+    (req, res) => tenderController.sendOrderMail(req, res)
+);
+
 router.patch(
     '/:id/mark-offer-accepted',
     requireAuth,
@@ -577,6 +598,13 @@ router.get(
     (req, res) => tenderController.getChatterSummary(req, res)
 );
 
+router.get(
+    '/:id/chatter',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getChatter(req, res)
+);
+
 router.post(
     '/:id/notes',
     requireAuth,
@@ -591,10 +619,18 @@ router.get(
     (req, res) => tenderController.getDocuments(req, res)
 );
 
+router.get(
+    '/:id/documents/:documentId/content',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.getDocumentContent(req, res)
+);
+
 router.post(
     '/:id/documents',
     requireAuth,
     requirePermission('tenders.manage'),
+    tenderDocumentUpload.single('file'),
     (req, res) => tenderController.addDocument(req, res)
 );
 

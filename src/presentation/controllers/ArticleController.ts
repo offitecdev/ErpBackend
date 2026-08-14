@@ -88,7 +88,7 @@ export class ArticleController {
                 supplierBarcode: supplierBarcode ?? null,
                 imageUrl: imageUrl ?? null,
                 category: category ?? null,
-                itemType: itemType === 'MATERIAL' ? 'MATERIAL' : 'PRODUCT',
+                itemType: itemType === 'SERVICE' ? 'SERVICE' : 'PRODUCT',
                 status: status ?? 'ACTIVE',
                 isActive: isActive ?? true,
                 minStockLevel: Number(minStockLevel ?? 0),

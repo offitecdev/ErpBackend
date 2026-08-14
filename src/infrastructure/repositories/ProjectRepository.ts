@@ -1,6 +1,7 @@
 import prisma from "../database/prisma.client";
 import { Project, ProjectExpense } from "../../domain/entities/Project";
 import { nextDocumentNumber } from "../../shared/documentNumber";
+import { adjustArticleStock } from "../../shared/articleStock";
 
 export type ProjectDetailView =
     | "overview"
@@ -16,21 +17,22 @@ export type ProjectDetailView =
     | "billing"
     | "addons";
 
-const materialLiteSelect = {
+// Malzeme/ürün birleşmesi (2026-08-14): "malzeme" satırları Article'a bağlıdır;
+// istemci `article`/`articleId` okur.
+const articleLiteSelect = {
     id: true,
-    serialId: true,
+    articleCode: true,
     name: true,
-    stockQuantity: true,
-    unitCost: true,
+    salePrice: true,
 };
 
 const tenderMaterialUsageSelect = {
     id: true,
-    materialId: true,
+    articleId: true,
     quantity: true,
     unitCost: true,
     description: true,
-    material: { select: materialLiteSelect },
+    article: { select: articleLiteSelect },
 };
 
 const reportSummarySelect = {
@@ -62,7 +64,7 @@ const extraMaterialSummarySelect = {
     projectId: true,
     salesOrderId: true,
     appointmentId: true,
-    materialId: true,
+    articleId: true,
     quantity: true,
     unitPrice: true,
     addedAt: true,
@@ -129,30 +131,13 @@ export class ProjectRepository {
                         projectId: true,
                         usedMaterials: {
                             orderBy: { createdAt: 'desc' },
-                            include: { material: true },
+                            include: { article: { select: articleLiteSelect } },
                         },
                         positions: {
                             select: {
                                 id: true,
                                 positionNumber: true,
                                 shortDescription: true,
-                                materialMappings: {
-                                    select: {
-                                        id: true,
-                                        materialId: true,
-                                        quantityMultiplier: true,
-                                        discount: true,
-                                        material: {
-                                            select: {
-                                                id: true,
-                                                serialId: true,
-                                                name: true,
-                                                stockQuantity: true,
-                                                unitCost: true,
-                                            }
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
@@ -171,30 +156,13 @@ export class ProjectRepository {
                                 projectId: true,
                                 usedMaterials: {
                                     orderBy: { createdAt: 'desc' },
-                                    include: { material: true },
+                                    include: { article: { select: articleLiteSelect } },
                                 },
                                 positions: {
                                     select: {
                                         id: true,
                                         positionNumber: true,
                                         shortDescription: true,
-                                        materialMappings: {
-                                            select: {
-                                                id: true,
-                                                materialId: true,
-                                                quantityMultiplier: true,
-                                                discount: true,
-                                                material: {
-                                                    select: {
-                                                        id: true,
-                                                        serialId: true,
-                                                        name: true,
-                                                        stockQuantity: true,
-                                                        unitCost: true,
-                                                    }
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -218,17 +186,17 @@ export class ProjectRepository {
                     orderBy: { reportDate: 'desc' },
                     include: {
                         employee: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        usedMaterials: { include: { article: true, material: true } },
+                        usedMaterials: { include: { article: true } },
                         images: { orderBy: { createdAt: 'asc' } }
                     }
                 },
                 projectVariations: {
                     orderBy: { createdAt: 'desc' },
-                    include: { material: true }
+                    include: { article: true }
                 },
                 extraMaterials: {
                     orderBy: { addedAt: 'desc' },
-                    include: { material: true }
+                    include: { article: true }
                 }
             }
         }) as unknown as Project;
@@ -294,11 +262,9 @@ export class ProjectRepository {
                             id: true,
                             reportId: true,
                             articleId: true,
-                            materialId: true,
                             quantity: true,
                             costAtTime: true,
                             article: { select: { id: true, articleCode: true, name: true, baseCost: true, unit: true } },
-                            material: { select: materialLiteSelect },
                         },
                     },
                 } : {}),
@@ -326,7 +292,7 @@ export class ProjectRepository {
             ? {
                 ...extraMaterialSummarySelect,
                 description: true,
-                material: { select: materialLiteSelect },
+                article: { select: articleLiteSelect },
             }
             : extraMaterialSummarySelect;
         const appointmentSelect: any = withAppointmentPeople
@@ -533,12 +499,6 @@ export class ProjectRepository {
         }) as unknown as Project[];
     }
 
-    async listMaterials(tenantId: string): Promise<any[]> {
-        return await prisma.material.findMany({
-            where: { tenantId, isActive: true },
-            orderBy: { name: 'asc' }
-        });
-    }
 
     // PDF 2.2.1: Canlı Maliyet (Actual Cost) Güncellemesi (Atomik Increment)
     async updateActualCost(id: string, additionalCost: number): Promise<void> {
@@ -558,16 +518,25 @@ export class ProjectRepository {
         });
     }
 
-    async createExtraMaterial(data: any): Promise<any> {
+    // Malzeme/ürün birleşmesi (2026-08-14): stok düşümü StockMovement/StockBalance
+    // üzerinden yazılır (Article), skaler alan artırma/azaltma kalktı.
+    async createExtraMaterial(data: any, employeeId: string, tenantId: string): Promise<any> {
         return await prisma.$transaction(async (tx) => {
-            await tx.material.update({
-                where: { id: data.materialId },
-                data: { stockQuantity: { decrement: Number(data.quantity || 0) } },
+            await adjustArticleStock(tx as any, {
+                tenantId,
+                articleId: data.articleId,
+                employeeId,
+                quantity: Number(data.quantity || 0),
+                direction: 'OUT',
+                referenceId: data.projectId,
+                description: 'Zusatzmaterial',
             });
-            return await (tx as any).projectExtraMaterial.create({
+            const created = await (tx as any).projectExtraMaterial.create({
                 data,
-                include: { material: true }
+                include: { article: true }
             });
+            // Eski istemci sözleşmesi: `material`/`materialId` adları korunur.
+            return { ...created, materialId: created.articleId, material: created.article };
         });
     }
 

@@ -1,6 +1,10 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const multer_1 = __importDefault(require("multer"));
 const TenderController_1 = require("../controllers/TenderController");
 const ImportTenderUseCase_1 = require("../../application/use-cases/tender/ImportTenderUseCase");
 const ImportSalesOrderCsvUseCase_1 = require("../../application/use-cases/tender/ImportSalesOrderCsvUseCase");
@@ -20,6 +24,10 @@ const CustomerActivityRepository_1 = require("../../infrastructure/repositories/
 const InventoryRepository_1 = require("../../infrastructure/repositories/InventoryRepository");
 const TenderActivityLogRepository_1 = require("../../infrastructure/repositories/TenderActivityLogRepository");
 const router = (0, express_1.Router)();
+const tenderDocumentUpload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+});
 const tenderRepository = new TenderRepository_1.TenderRepository();
 const positionRepository = new PositionRepository_1.PositionRepository();
 const parserService = new DummyTenderParserService_1.DummyTenderParserService();
@@ -174,6 +182,10 @@ router.post('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddlew
 router.patch('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateScheduleSlot(req, res));
 router.delete('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.deleteScheduleSlot(req, res));
 router.post('/:id/send-offer-mail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('mail.send'), (req, res) => tenderController.sendOfferMail(req, res));
+// Vorschläge für das CC-Feld im Mailbereich der Offerte (Kunde + Kontaktpersonen).
+router.get('/:id/mail-recipients', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listMailRecipients(req, res));
+// Auftragsbestätigung: läuft automatisch beim Erstellen des Auftrags aus der Offerte.
+router.post('/:id/send-order-mail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('mail.send'), (req, res) => tenderController.sendOrderMail(req, res));
 router.patch('/:id/mark-offer-accepted', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.markOfferAccepted(req, res));
 /**
  * @swagger
@@ -297,8 +309,10 @@ router.get('/:id/export', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
 router.get('/:id/activities', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getActivities(req, res));
 router.get('/:id/logs', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getLogs(req, res));
 router.get('/:id/chatter-summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getChatterSummary(req, res));
+router.get('/:id/chatter', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getChatter(req, res));
 router.post('/:id/notes', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addNote(req, res));
 router.get('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDocuments(req, res));
-router.post('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addDocument(req, res));
+router.get('/:id/documents/:documentId/content', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDocumentContent(req, res));
+router.post('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), tenderDocumentUpload.single('file'), (req, res) => tenderController.addDocument(req, res));
 exports.default = router;
 //# sourceMappingURL=tender.routes.js.map

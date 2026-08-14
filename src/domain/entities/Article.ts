@@ -22,7 +22,7 @@ export class Article {
         public lastPurchaseDate?: Date | null,
         public salePrice: number = 0,
         public defaultSupplierId?: string | null,
-        /** PRODUCT | MATERIAL — envanter kalemi tipi */
+        /** PRODUCT | SERVICE — ürün/hizmet sınıflandırması (detay ekranından değiştirilir) */
         public itemType: string = 'PRODUCT'
     ) {}
 }

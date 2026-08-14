@@ -237,62 +237,51 @@ const openOrderQuantityFor = async (tenantId, articleId, articleCode) => {
  * karşılığı.
  */
 const articleSupplierCostRows = async (tenantId, articleId) => {
-    const [links, movements] = await Promise.all([
-        prisma_client_1.default.articleSupplier.findMany({
-            where: { tenantId, articleId },
-            select: {
-                supplierId: true,
-                quantity: true,
-                purchasePrice: true,
-                currency: true,
-                lastPurchaseDate: true,
-                supplier: { select: { id: true, companyName: true } },
-            },
-        }),
-        prisma_client_1.default.stockMovement.findMany({
-            where: { tenantId, articleId, supplierId: { not: null }, movementType: 'IN', quantity: { gt: 0 } },
-            select: {
-                supplierId: true,
-                quantity: true,
-                unitCost: true,
-                transactionDate: true,
-                supplier: { select: { id: true, companyName: true } },
-            },
-        }),
-    ]);
-    const bySupplier = new Map();
-    const add = (supplier, quantity, unitCost, date, currency) => {
-        if (!supplier)
-            return;
-        const qty = Math.max(0, Number(quantity) || 0);
-        const cost = Math.max(0, Number(unitCost) || 0);
-        const row = bySupplier.get(supplier.id) ?? {
-            supplierId: supplier.id,
-            companyName: supplier.companyName,
-            quantity: 0,
-            totalCost: 0,
-            averageUnitCost: 0,
-            purchaseCount: 0,
-            lastPurchaseDate: null,
-            currency: currency || 'CHF',
+    // İki kaynağın bütün alım satırlarını Node'a taşımak yerine MySQL'de UNION
+    // edip tedarikçi bazında topluyoruz. Yanıt büyüklüğü kayıt sayısına değil,
+    // yalnızca ilgili ürünün tedarikçi sayısına bağlı kalır.
+    const rawRows = await prisma_client_1.default.$queryRawUnsafe(`SELECT s.\`id\` AS supplierId,
+                s.\`companyName\` AS companyName,
+                SUM(p.quantity) AS quantity,
+                SUM(p.totalCost) AS totalCost,
+                COUNT(*) AS purchaseCount,
+                MAX(p.lastPurchaseDate) AS lastPurchaseDate,
+                COALESCE(MAX(p.currency), 'CHF') AS currency
+         FROM (
+             SELECT \`supplierId\`,
+                    GREATEST(\`quantity\`, 0) AS quantity,
+                    GREATEST(\`quantity\`, 0) * GREATEST(\`purchasePrice\`, 0) AS totalCost,
+                    \`lastPurchaseDate\` AS lastPurchaseDate,
+                    \`currency\` AS currency
+             FROM \`ArticleSupplier\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+             UNION ALL
+             SELECT \`supplierId\`,
+                    \`quantity\` AS quantity,
+                    \`quantity\` * GREATEST(COALESCE(\`unitCost\`, 0), 0) AS totalCost,
+                    \`transactionDate\` AS lastPurchaseDate,
+                    NULL AS currency
+             FROM \`StockMovement\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+               AND \`supplierId\` IS NOT NULL AND \`movementType\` = 'IN' AND \`quantity\` > 0
+         ) p
+         INNER JOIN \`Supplier\` s ON s.\`id\` = p.supplierId
+         WHERE s.\`tenantId\` = ?
+         GROUP BY s.\`id\`, s.\`companyName\``, tenantId, articleId, tenantId, articleId, tenantId);
+    const rows = rawRows.map((row) => {
+        const quantity = Math.max(0, Number(row.quantity) || 0);
+        const totalCost = Math.max(0, Number(row.totalCost) || 0);
+        return {
+            supplierId: String(row.supplierId),
+            companyName: String(row.companyName || ''),
+            quantity,
+            totalCost,
+            averageUnitCost: quantity > 0 ? totalCost / quantity : 0,
+            purchaseCount: Math.max(0, Number(row.purchaseCount) || 0),
+            lastPurchaseDate: row.lastPurchaseDate ? new Date(row.lastPurchaseDate) : null,
+            currency: String(row.currency || 'CHF'),
         };
-        row.quantity += qty;
-        row.totalCost += qty * cost;
-        row.purchaseCount += 1;
-        if (date && (!row.lastPurchaseDate || date > row.lastPurchaseDate))
-            row.lastPurchaseDate = date;
-        bySupplier.set(supplier.id, row);
-    };
-    for (const link of links) {
-        add(link.supplier, link.quantity, link.purchasePrice, link.lastPurchaseDate ?? null, link.currency);
-    }
-    for (const movement of movements) {
-        add(movement.supplier, movement.quantity, movement.unitCost, movement.transactionDate ?? null, null);
-    }
-    const rows = Array.from(bySupplier.values()).map((row) => ({
-        ...row,
-        averageUnitCost: row.quantity > 0 ? row.totalCost / row.quantity : 0,
-    }));
+    });
     rows.sort((a, b) => b.quantity - a.quantity || a.companyName.localeCompare(b.companyName));
     const quantity = rows.reduce((sum, row) => sum + row.quantity, 0);
     const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
@@ -569,10 +558,13 @@ router.get('/articles/:id/suppliers-summary', AuthMiddleware_1.requireAuth, (0, 
     try {
         const tenantId = req.user.tenantId;
         const id = String(req.params.id);
-        const exists = await prisma_client_1.default.article.count({ where: { id, tenantId, deletedAt: null } });
+        // Varlık kontrolü ile maliyet toplamını aynı DB turunda paralel başlat.
+        const [exists, cost] = await Promise.all([
+            prisma_client_1.default.article.count({ where: { id, tenantId, deletedAt: null } }),
+            articleSupplierCostRows(tenantId, id),
+        ]);
         if (!exists)
             return res.status(404).json({ error: 'Ürün bulunamadı.' });
-        const cost = await articleSupplierCostRows(tenantId, id);
         return res.status(200).json({
             suppliers: cost.rows,
             totalQuantity: cost.quantity,
@@ -1413,10 +1405,21 @@ router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
             prisma_client_1.default.stockMovement.count({ where }),
             prisma_client_1.default.stockMovement.findMany({
                 where,
-                include: {
-                    article: { select: { id: true, articleCode: true, name: true, unit: true } },
+                // Ürün detay sekmesi articleId'yi zaten bilir; o görünümde
+                // Article ve Employee ilişkilerini yüklemiyoruz. Genel liste
+                // için de yalnızca tabloda gösterilen alanlar seçilir.
+                select: {
+                    id: true,
+                    transactionDate: true,
+                    movementType: true,
+                    quantity: true,
+                    unitCost: true,
+                    description: true,
+                    referenceId: true,
+                    ...(!articleId ? {
+                        article: { select: { id: true, articleCode: true, name: true, unit: true } },
+                    } : {}),
                     supplier: { select: { id: true, companyName: true } },
-                    employee: { select: { firstName: true, lastName: true } },
                 },
                 orderBy: [{ transactionDate: 'desc' }, { id: 'desc' }],
                 skip: (page - 1) * pageSize,
@@ -1435,9 +1438,8 @@ router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
                 totalCost: Number(row.quantity || 0) * Number(row.unitCost || 0),
                 description: row.description,
                 referenceId: row.referenceId,
-                article: row.article,
+                ...(!articleId ? { article: row.article } : {}),
                 supplier: row.supplier,
-                employee: row.employee,
             })),
             total,
             page,

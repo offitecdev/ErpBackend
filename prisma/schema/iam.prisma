@@ -46,7 +46,6 @@ model Tenant {
   projects               Project[]
   appointments           Appointment[]
   offerScheduleSlots     OfferScheduleSlot[]
-  materials              Material[]
   mailSetting            MailSetting?
   shipments              Shipment[]
   maintenanceContracts   MaintenanceContract[]
@@ -116,6 +115,7 @@ model Employee {
   offerScheduleSlots            OfferScheduleSlot[]            @relation("OfferScheduleSlotTechnician")
   offerScheduleSlotAssignments  OfferScheduleSlotAssignment[]  @relation("OfferScheduleSlotAssignmentTech")
   projectReports                ProjectReport[]
+  projectReportLogs             ProjectReportLog[]
   assignedMaintenanceTasks      MaintenanceTask[]              @relation("MaintenanceTech")
   alternativeMaintenanceTasks   MaintenanceTask[]              @relation("MaintenanceAltTech")
   maintenanceTaskAssignments    MaintenanceTaskAssignment[]    @relation("MaintenanceTaskAssignmentTech")

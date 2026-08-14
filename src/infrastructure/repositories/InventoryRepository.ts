@@ -305,6 +305,94 @@ export class InventoryRepository implements IInventoryRepository {
         }
         if (columnFilters.length) where.AND = columnFilters;
 
+        if (!options.lean) {
+            // Ürün/malzeme listesi yalnızca bu yedi alanı gösterir. Article'ın
+            // kategori, barkod, maliyet, durum ve tarih kolonlarını yanıta
+            // taşımadan; stok toplamını da ayrı relation sorgusu yerine aynı SQL'de
+            // topluyoruz. Böylece 15 satır için Article + StockBalance ardışık DB
+            // turları oluşmaz.
+            const clauses = ['a.`tenantId` = ?', 'a.`deletedAt` IS NULL'];
+            const values: any[] = [tenantId];
+            if (options.itemType) {
+                clauses.push('a.`itemType` = ?');
+                values.push(options.itemType);
+            }
+            if (options.status) {
+                clauses.push('a.`status` = ?');
+                values.push(options.status);
+            }
+            if (search) {
+                const term = `%${search}%`;
+                clauses.push('(a.`articleCode` LIKE ? OR a.`name` LIKE ? OR a.`systemBarcode` LIKE ? OR a.`supplierBarcode` LIKE ? OR a.`category` LIKE ?)');
+                values.push(term, term, term, term, term);
+            }
+            if (code) {
+                clauses.push('a.`articleCode` LIKE ?');
+                values.push(`%${code}%`);
+            }
+            if (name) {
+                clauses.push('a.`name` LIKE ?');
+                values.push(`%${name}%`);
+            }
+            if (barcode) {
+                const term = `%${barcode}%`;
+                clauses.push('(a.`systemBarcode` LIKE ? OR a.`supplierBarcode` LIKE ?)');
+                values.push(term, term);
+            }
+
+            const sortableSql: Record<string, string> = {
+                createdAt: 'a.`createdAt`',
+                articleCode: 'a.`articleCode`',
+                name: 'a.`name`',
+                barcode: 'a.`systemBarcode`',
+                salePrice: 'a.`salePrice`',
+                minStockLevel: 'a.`minStockLevel`',
+                criticalStockLevel: 'a.`criticalStockLevel`',
+                status: 'a.`status`',
+                totalQuantity: 'totalQuantity',
+            };
+            const orderColumn = sortableSql[options.sortBy || 'createdAt'] || sortableSql.createdAt;
+            const orderDirection = options.sortDirection === 'asc' ? 'ASC' : 'DESC';
+            const whereSql = clauses.join(' AND ');
+            const offset = (page - 1) * pageSize;
+
+            const [countRows, articleRows] = await Promise.all([
+                (prisma as any).$queryRawUnsafe(
+                    `SELECT COUNT(*) AS total FROM \`Article\` a WHERE ${whereSql}`,
+                    ...values,
+                ),
+                (prisma as any).$queryRawUnsafe(
+                    `SELECT a.\`id\`, a.\`articleCode\`, a.\`name\`, a.\`unit\`,
+                            a.\`salePrice\`, a.\`criticalStockLevel\`,
+                            COALESCE(SUM(sb.\`currentQuantity\`), 0) AS totalQuantity
+                     FROM \`Article\` a
+                     LEFT JOIN \`StockBalance\` sb ON sb.\`articleId\` = a.\`id\`
+                     WHERE ${whereSql}
+                     GROUP BY a.\`id\`, a.\`articleCode\`, a.\`name\`, a.\`unit\`,
+                              a.\`salePrice\`, a.\`criticalStockLevel\`, a.\`createdAt\`,
+                              a.\`systemBarcode\`, a.\`minStockLevel\`, a.\`status\`
+                     ORDER BY ${orderColumn} ${orderDirection}, a.\`id\` ASC
+                     LIMIT ? OFFSET ?`,
+                    ...values, pageSize, offset,
+                ),
+            ]);
+
+            return {
+                items: (articleRows as any[]).map((article: any) => ({
+                    id: String(article.id),
+                    articleCode: String(article.articleCode || ''),
+                    name: String(article.name || ''),
+                    unit: String(article.unit || ''),
+                    salePrice: Number(article.salePrice) || 0,
+                    criticalStockLevel: Number(article.criticalStockLevel) || 0,
+                    totalQuantity: Number(article.totalQuantity) || 0,
+                })),
+                total: Math.max(0, Number((countRows as any[])?.[0]?.total) || 0),
+                page,
+                pageSize,
+            };
+        }
+
         // Yalın mod (teklif ürün seçici): bir teklif satırını dolduran alanlar
         // dışında hiçbir şey seçilmez ve `stockBalances` JOIN'i yapılmaz — o JOIN
         // satır başına stok bakiyelerini okur, seçicide gösterilmeyen bir sayı için.

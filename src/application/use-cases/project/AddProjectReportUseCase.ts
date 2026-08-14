@@ -1,6 +1,5 @@
 import { IProjectReportRepository } from "../../../domain/repositories/IProjectReportRepository";
 import { IProjectRepository } from "../../../domain/repositories/IProjectRepository";
-import { IMaterialRepository } from "../../../domain/repositories/IMaterialRepository";
 import prisma from "../../../infrastructure/database/prisma.client";
 import { nanoid } from "nanoid";
 
@@ -17,6 +16,22 @@ export interface ReportInput {
     // Optional field-report photos as base64 data URLs. Replaces the existing set
     // when provided; left untouched when undefined.
     images?: string[];
+    /** Aynı endpoint randevu/proje bağlamını zaten okuduysa ikinci proje sorgusunu atlar. */
+    projectContext?: {
+        status: string;
+        overtimeTolerancePercent?: number | null;
+        overtimeHourlyRate?: number | null;
+        salesOrders: Array<{ id: string; createdAt: Date | string }>;
+    };
+    /** Üst akış kaynakları da yazıp son bir özet okuyacaksa ara hydration'ı atlar. */
+    deferResultHydration?: boolean;
+    existingReportContext?: {
+        id: string;
+        projectId: string;
+        salesOrderId?: string | null;
+        appointmentId?: string | null;
+    };
+    duplicateCheckCompleted?: boolean;
 }
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -57,13 +72,23 @@ const isPrimarySalesOrder = (project: any, salesOrderId?: string | null) => {
 export class AddProjectReportUseCase {
     constructor(
         private reportRepository: IProjectReportRepository,
-        private projectRepository: IProjectRepository,
-        // Kept in the constructor to avoid route wiring churn; project reports no longer consume stock.
-        private materialRepository: IMaterialRepository
+        private projectRepository: IProjectRepository
     ) {}
 
     private async buildReportPayload(input: ReportInput) {
-        const project: any = await this.projectRepository.findById(input.projectId);
+        // Bu hesap için teklif/rapor/gider/malzeme ağaçları gerekmez.
+        const project: any = input.projectContext || await (prisma as any).project.findUnique({
+            where: { id: input.projectId },
+            select: {
+                status: true,
+                overtimeTolerancePercent: true,
+                overtimeHourlyRate: true,
+                salesOrders: {
+                    orderBy: { createdAt: 'asc' },
+                    select: { id: true, createdAt: true },
+                },
+            },
+        });
         if (!project) throw new Error("Proje bulunamadı.");
         if (project.status === "ON_HOLD") throw new Error("Proje şu an beklemede. Rapor girilemez.");
         const includeUnscoped = isPrimarySalesOrder(project, input.salesOrderId);
@@ -94,7 +119,8 @@ export class AddProjectReportUseCase {
                 status: { in: ["BOOKED", "COMPLETED"] },
                 startTime: { gte: dayStart },
                 endTime: { lte: dayEnd }
-            }
+            },
+            select: { id: true, startTime: true, endTime: true },
         });
 
         // The report's own appointment always counts towards the planned minutes, even
@@ -103,6 +129,7 @@ export class AddProjectReportUseCase {
         if (input.appointmentId && !appointments.some((appointment: any) => appointment.id === input.appointmentId)) {
             const own: any = await (prisma as any).appointment.findFirst({
                 where: { id: input.appointmentId, projectId: input.projectId },
+                select: { id: true, startTime: true, endTime: true },
             });
             if (own) appointments.push(own);
         }
@@ -122,35 +149,39 @@ export class AddProjectReportUseCase {
         const overtimeCost = overtimeMinutes > 0 ? (overtimeMinutes / 60) * overtimeHourlyRate : 0;
 
         return {
-            projectId: input.projectId,
-            salesOrderId: input.salesOrderId || null,
-            appointmentId: input.appointmentId || null,
-            employeeId: input.employeeId,
-            reportDate: new Date(),
-            workDate,
-            startedAt,
-            endedAt,
-            reportType: "Project",
-            workedMinutes,
-            plannedMinutesForDay,
-            overtimeMinutes,
-            overtimeHourlyRate,
-            overtimeCost,
-            operationsDone: input.operationsDone.trim(),
-            technicalNotes: input.technicalNotes?.trim() || null
+            payload: {
+                projectId: input.projectId,
+                salesOrderId: input.salesOrderId || null,
+                appointmentId: input.appointmentId || null,
+                employeeId: input.employeeId,
+                reportDate: new Date(),
+                workDate,
+                startedAt,
+                endedAt,
+                reportType: "Project",
+                workedMinutes,
+                plannedMinutesForDay,
+                overtimeMinutes,
+                overtimeHourlyRate,
+                overtimeCost,
+                operationsDone: input.operationsDone.trim(),
+                technicalNotes: input.technicalNotes?.trim() || null,
+            },
+            includeUnscoped,
         };
     }
 
     async execute(input: ReportInput) {
-        const payload = await this.buildReportPayload(input);
-        const project: any = await this.projectRepository.findById(input.projectId);
+        const { payload, includeUnscoped } = await this.buildReportPayload(input);
         // A report stamped with an appointmentId is scoped to that appointment only, so
         // uniqueness is per-appointment — a sibling appointment on the same order/day may
         // still carry its own report. Reports without an appointmentId keep the legacy
         // one-per-order-day rule.
-        const existing = input.appointmentId
-            ? await (this.reportRepository as any).findByAppointmentId(input.appointmentId)
-            : await (this.reportRepository as any).findByProjectAndWorkDate(input.projectId, payload.workDate, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
+        const existing = input.duplicateCheckCompleted
+            ? null
+            : input.appointmentId
+                ? await (this.reportRepository as any).findByAppointmentId(input.appointmentId)
+                : await (this.reportRepository as any).findByProjectAndWorkDate(input.projectId, payload.workDate, input.salesOrderId || null, includeUnscoped);
         if (existing) throw new Error("Bu proje için aynı güne ait saha raporu zaten var. Lütfen mevcut raporu düzenleyin.");
 
         const report = await this.reportRepository.createReport({
@@ -161,7 +192,9 @@ export class AddProjectReportUseCase {
         if (input.images !== undefined) {
             await this.reportRepository.replaceImages((report as any).id, input.images || [], input.employeeId);
         }
-        const withImages = await (this.reportRepository as any).findById((report as any).id);
+        const withImages = input.deferResultHydration
+            ? report
+            : await (this.reportRepository as any).findSaveResultById((report as any).id);
 
         return {
             ...(withImages || report),
@@ -172,20 +205,21 @@ export class AddProjectReportUseCase {
     }
 
     async update(reportId: string, input: ReportInput) {
-        const existingReport = await (this.reportRepository as any).findById(reportId);
+        const existingReport = input.existingReportContext || await (prisma as any).projectReport.findUnique({
+            where: { id: reportId },
+            select: { id: true, projectId: true, salesOrderId: true, appointmentId: true },
+        });
         if (!existingReport) throw new Error("Saha raporu bulunamadı.");
         if (existingReport.projectId !== input.projectId) throw new Error("Saha raporu bu projeye ait değil.");
         input.salesOrderId = input.salesOrderId ?? existingReport.salesOrderId ?? null;
         input.appointmentId = input.appointmentId ?? existingReport.appointmentId ?? null;
-        const payload = await this.buildReportPayload(input);
-        const project: any = await this.projectRepository.findById(input.projectId);
-        const sameDayReport = await (this.reportRepository as any).findByProjectAndWorkDateExcept(input.projectId, payload.workDate, reportId, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
-        // if (sameDayReport) throw new Error("Bu proje için aynı güne ait başka bir saha raporu var. Bir günde yalnızca bir rapor olabilir.");
-
-        let report = await (this.reportRepository as any).updateReport(reportId, payload);
+        const { payload } = await this.buildReportPayload(input);
+        let report = await (this.reportRepository as any).updateReportLean(reportId, payload);
         if (input.images !== undefined) {
             await this.reportRepository.replaceImages(reportId, input.images || [], input.employeeId);
-            report = await (this.reportRepository as any).findById(reportId) || report;
+            if (!input.deferResultHydration) {
+                report = await (this.reportRepository as any).findSaveResultById(reportId) || report;
+            }
         }
         return {
             ...report,

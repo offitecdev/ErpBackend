@@ -3,6 +3,8 @@ import { CreateTenantUseCase } from "../../application/use-cases/tenant/CreateTe
 import { UpdateTenantUseCase } from "../../application/use-cases/tenant/UpdateTenantUseCase";
 import prisma from "../../infrastructure/database/prisma.client";
 import { parseAllowedTenantIds } from "../utils/tenantAccess";
+import { Prisma } from "@prisma/client";
+import { getAuthIdentity } from "../../shared/authIdentityCache";
 
 export class TenantController {
     constructor(
@@ -13,27 +15,76 @@ export class TenantController {
     async list(req: Request, res: Response) {
         try {
             const homeTenantId = req.user!.homeTenantId ?? req.user!.tenantId;
-            const caller = await prisma.employee.findUnique({
-                where: { id: req.user!.id },
-                select: { allowedTenantIds: true },
-            });
-            const assignedTenantIds = parseAllowedTenantIds(caller?.allowedTenantIds);
-            const tenants = await prisma.tenant.findMany({
-                where: { isActive: true },
-                select: {
-                    id: true,
-                    tenantName: true,
-                    isActive: true,
-                    parentTenantId: true,
-                    isProjectModuleEnabled: true,
-                    createdAt: true,
-                    moduleProfileId: true,
-                    // Belge kodundaki blok (numara × 10000) — kategoriden bağımsız.
-                    companyNumber: true,
-                    // The company category drives menu/module filtering client-side.
-                    moduleProfile: { select: { id: true, profileNumber: true, name: true, moduleKeys: true } },
-                },
-                orderBy: [{ parentTenantId: 'asc' }, { tenantName: 'asc' }],
+            // requireAuth has already loaded this identity in the current
+            // request, so this is a memory hit rather than a second SQL query.
+            const identity = await getAuthIdentity(req.user!.id);
+            const assignedTenantIds = parseAllowedTenantIds(identity?.allowedTenantIds);
+
+            type TenantRow = {
+                id: string;
+                tenantName: string;
+                isActive: boolean | number;
+                parentTenantId: string | null;
+                isProjectModuleEnabled: boolean | number;
+                createdAt: Date;
+                moduleProfileId: string | null;
+                companyNumber: number;
+                profileId: string | null;
+                profileNumber: number | null;
+                profileName: string | null;
+                profileModuleKeys: unknown;
+            };
+
+            // Prisma's relation include issued separate Tenant and
+            // ModuleProfile queries. The switcher needs a small projection, so
+            // fetch it with one join across the remote database connection.
+            const rows = await prisma.$queryRaw<TenantRow[]>(Prisma.sql`
+                SELECT
+                    tenant.id,
+                    tenant.tenantName,
+                    tenant.isActive,
+                    tenant.parentTenantId,
+                    tenant.isProjectModuleEnabled,
+                    tenant.createdAt,
+                    tenant.moduleProfileId,
+                    tenant.companyNumber,
+                    profile.id AS profileId,
+                    profile.profileNumber,
+                    profile.name AS profileName,
+                    profile.moduleKeys AS profileModuleKeys
+                FROM Tenant AS tenant
+                LEFT JOIN ModuleProfile AS profile ON profile.id = tenant.moduleProfileId
+                WHERE tenant.isActive = 1
+                ORDER BY tenant.parentTenantId ASC, tenant.tenantName ASC
+            `);
+            const tenants = rows.map((row) => {
+                let moduleKeys: string[] = [];
+                if (Array.isArray(row.profileModuleKeys)) {
+                    moduleKeys = row.profileModuleKeys.map(String);
+                } else if (typeof row.profileModuleKeys === 'string') {
+                    try {
+                        const parsed = JSON.parse(row.profileModuleKeys);
+                        if (Array.isArray(parsed)) moduleKeys = parsed.map(String);
+                    } catch {
+                        moduleKeys = [];
+                    }
+                }
+                return {
+                    id: row.id,
+                    tenantName: row.tenantName,
+                    isActive: Boolean(row.isActive),
+                    parentTenantId: row.parentTenantId,
+                    isProjectModuleEnabled: Boolean(row.isProjectModuleEnabled),
+                    createdAt: row.createdAt,
+                    moduleProfileId: row.moduleProfileId,
+                    companyNumber: row.companyNumber,
+                    moduleProfile: row.profileId ? {
+                        id: row.profileId,
+                        profileNumber: Number(row.profileNumber || 0),
+                        name: row.profileName || '',
+                        moduleKeys,
+                    } : null,
+                };
             });
 
             const byId = new Map(tenants.map((tenant) => [tenant.id, tenant]));
@@ -92,5 +143,4 @@ export class TenantController {
         }   
     }
 }
-
 

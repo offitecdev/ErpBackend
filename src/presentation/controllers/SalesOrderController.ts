@@ -203,7 +203,10 @@ export class SalesOrderController {
                         customer: { select: { id: true, companyName: true } },
                         addonSalesOrders: {
                             orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                            select: { id: true, orderNumber: true, totalAmount: true },
+                            // Liste ek siparişleri kendi satırları olarak da gösterir;
+                            // satırdaki tarih ek işin ait olduğu gün (orderDate),
+                            // yoksa oluşturulma tarihidir.
+                            select: { id: true, orderNumber: true, totalAmount: true, createdAt: true, orderDate: true },
                         },
                     },
                 }),
@@ -311,7 +314,7 @@ export class SalesOrderController {
                     extraMaterials: {
                         select: {
                             id: true, quantity: true, unitPrice: true, description: true, addedAt: true,
-                            material: { select: { id: true, name: true, serialId: true } },
+                            article: { select: { id: true, name: true, articleCode: true } },
                         },
                     },
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },

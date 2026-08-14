@@ -13,7 +13,9 @@ export const requirePermission = (requiredPermission: string) => {
                 return;
             }
 
+            const rbacStartedAt = Date.now();
             const userPermissions = await getPermissionsUseCase.execute(req.user.id);
+            (req as any).rbacDurMs = Date.now() - rbacStartedAt;
 
             // SECURE BY DEFAULT: a user with no permissions is denied on any
             // permission-gated route. Previously an empty set granted full

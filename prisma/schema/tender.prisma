@@ -84,6 +84,11 @@ model Tender {
   sourceRecurringTotal Float?
   sourceMargin         Float?
   status               TenderStatus          @default(Draft)
+  // Kopya (CC) alıcıları — takvimdeki Appointment/MeetingActivity ile AYNI
+  // biçim: JSON dizi (["planer@firma.ch"]). Teklifin bütün müşteri mailleri
+  // (teklif maili ve otomatik sipariş bildirimi) bu listeyi CC'ler; alıcı (To)
+  // her zaman müşterinin kendi adresidir.
+  ccEmails             Json?
   offerMailSentAt      DateTime?
   offerAcceptedAt      DateTime?
   offerMailRecipient   String?
@@ -137,9 +142,8 @@ model Position {
   parentPosition   Position?  @relation("PositionHierarchy", fields: [parentPositionId], references: [id])
   subPositions     Position[] @relation("PositionHierarchy")
 
-  calculation      CalculationItem?
-  articleMappings  PositionArticleMapping[]
-  materialMappings PositionMaterialMapping[]
+  calculation     CalculationItem?
+  articleMappings PositionArticleMapping[]
 
   @@index([tenderId])
   @@index([parentPositionId])
@@ -174,6 +178,9 @@ model Article {
   unit               String
   imageUrl           String?   @db.LongText
   category           String?
+  /// Product/service classification: PRODUCT | SERVICE (the legacy MATERIAL
+  /// value was folded into PRODUCT when the separate materials category was
+  /// removed, 2026-08-14). Toggled from the product detail screen.
   itemType           String    @default("PRODUCT")
   status             String    @default("ACTIVE")
   lastPurchaseDate   DateTime?
@@ -195,10 +202,15 @@ model Article {
   reportMaterials      ReportMaterial[]
   maintenanceMaterials MaintenanceMaterial[]
   serviceMaterials     ServiceMaterial[]
+  tenderUsages         TenderMaterialUsage[]
+  extraMaterialUsages  ProjectExtraMaterial[]
+  variations           ProjectVariation[]
 
   @@unique([tenantId, articleCode])
   @@index([tenantId])
   @@index([tenantId, deletedAt, createdAt])
+  // Ürün/malzeme listesi varsayılan olarak tenant + tip içinde en yeni kaydı açar.
+  @@index([tenantId, itemType, deletedAt, createdAt, id])
 }
 
 model PositionArticleMapping {
@@ -215,33 +227,23 @@ model PositionArticleMapping {
   @@index([articleId])
 }
 
-model PositionMaterialMapping {
-  id                 String @id
-  positionId         String
-  materialId         String
-  quantityMultiplier Float  @default(1)
-  discount           Float? @default(0)
-
-  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
-  material Material @relation(fields: [materialId], references: [id])
-
-  @@unique([positionId, materialId])
-}
-
+/// Tender-level extra product usage ("Materialien" tab of the quote settings).
+/// Since the material/product merge (2026-08-14) the rows reference Article —
+/// the API keeps accepting `materialId` on the wire for compatibility.
 model TenderMaterialUsage {
   id          String   @id
   tenderId    String
-  materialId  String
+  articleId   String
   quantity    Float
   unitCost    Float    @default(0)
   description String?  @db.Text
   createdAt   DateTime @default(now())
 
-  tender   Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  material Material @relation(fields: [materialId], references: [id])
+  tender  Tender  @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id])
 
   @@index([tenderId])
-  @@index([materialId])
+  @@index([articleId])
 }
 
 // Tenant-wide reusable offer-mail drafts (subject + message templates).

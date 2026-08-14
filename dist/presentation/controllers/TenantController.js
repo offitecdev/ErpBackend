@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenantController = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const tenantAccess_1 = require("../utils/tenantAccess");
+const client_1 = require("@prisma/client");
+const authIdentityCache_1 = require("../../shared/authIdentityCache");
 class TenantController {
     createTenantUseCase;
     updateTenantUseCase;
@@ -16,27 +18,63 @@ class TenantController {
     async list(req, res) {
         try {
             const homeTenantId = req.user.homeTenantId ?? req.user.tenantId;
-            const caller = await prisma_client_1.default.employee.findUnique({
-                where: { id: req.user.id },
-                select: { allowedTenantIds: true },
-            });
-            const assignedTenantIds = (0, tenantAccess_1.parseAllowedTenantIds)(caller?.allowedTenantIds);
-            const tenants = await prisma_client_1.default.tenant.findMany({
-                where: { isActive: true },
-                select: {
-                    id: true,
-                    tenantName: true,
-                    isActive: true,
-                    parentTenantId: true,
-                    isProjectModuleEnabled: true,
-                    createdAt: true,
-                    moduleProfileId: true,
-                    // Belge kodundaki blok (numara × 10000) — kategoriden bağımsız.
-                    companyNumber: true,
-                    // The company category drives menu/module filtering client-side.
-                    moduleProfile: { select: { id: true, profileNumber: true, name: true, moduleKeys: true } },
-                },
-                orderBy: [{ parentTenantId: 'asc' }, { tenantName: 'asc' }],
+            // requireAuth has already loaded this identity in the current
+            // request, so this is a memory hit rather than a second SQL query.
+            const identity = await (0, authIdentityCache_1.getAuthIdentity)(req.user.id);
+            const assignedTenantIds = (0, tenantAccess_1.parseAllowedTenantIds)(identity?.allowedTenantIds);
+            // Prisma's relation include issued separate Tenant and
+            // ModuleProfile queries. The switcher needs a small projection, so
+            // fetch it with one join across the remote database connection.
+            const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                SELECT
+                    tenant.id,
+                    tenant.tenantName,
+                    tenant.isActive,
+                    tenant.parentTenantId,
+                    tenant.isProjectModuleEnabled,
+                    tenant.createdAt,
+                    tenant.moduleProfileId,
+                    tenant.companyNumber,
+                    profile.id AS profileId,
+                    profile.profileNumber,
+                    profile.name AS profileName,
+                    profile.moduleKeys AS profileModuleKeys
+                FROM Tenant AS tenant
+                LEFT JOIN ModuleProfile AS profile ON profile.id = tenant.moduleProfileId
+                WHERE tenant.isActive = 1
+                ORDER BY tenant.parentTenantId ASC, tenant.tenantName ASC
+            `);
+            const tenants = rows.map((row) => {
+                let moduleKeys = [];
+                if (Array.isArray(row.profileModuleKeys)) {
+                    moduleKeys = row.profileModuleKeys.map(String);
+                }
+                else if (typeof row.profileModuleKeys === 'string') {
+                    try {
+                        const parsed = JSON.parse(row.profileModuleKeys);
+                        if (Array.isArray(parsed))
+                            moduleKeys = parsed.map(String);
+                    }
+                    catch {
+                        moduleKeys = [];
+                    }
+                }
+                return {
+                    id: row.id,
+                    tenantName: row.tenantName,
+                    isActive: Boolean(row.isActive),
+                    parentTenantId: row.parentTenantId,
+                    isProjectModuleEnabled: Boolean(row.isProjectModuleEnabled),
+                    createdAt: row.createdAt,
+                    moduleProfileId: row.moduleProfileId,
+                    companyNumber: row.companyNumber,
+                    moduleProfile: row.profileId ? {
+                        id: row.profileId,
+                        profileNumber: Number(row.profileNumber || 0),
+                        name: row.profileName || '',
+                        moduleKeys,
+                    } : null,
+                };
             });
             const byId = new Map(tenants.map((tenant) => [tenant.id, tenant]));
             const rootOf = (tenantId) => {

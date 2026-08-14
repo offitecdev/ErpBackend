@@ -7,6 +7,7 @@ exports.AuthController = void 0;
 const authCookies_1 = require("../utils/authCookies");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const client_1 = require("@prisma/client");
 class AuthController {
     loginUseCase;
     getUserPermissionsUseCase;
@@ -185,37 +186,75 @@ class AuthController {
             if (!employeId) {
                 return res.status(401).json({ error: 'Yetkisiz erişim.' });
             }
-            const employee = await this.getMeUseCase.execute(employeId);
-            // Per-entity role packages: roles are shared across the company
-            // tree, but each entity configures the role's module package for
-            // itself (RoleModuleConfig). The map is keyed by tenant id; a
-            // tenant with no entry = no restriction from the role there. A
-            // tenant is restricted only when EVERY role of the user has a
-            // config row for it (a role without a row grants everything).
-            const roleLinks = await prisma_client_1.default.employeeRole.findMany({
-                where: { employeeId: employeId },
-                select: { roleId: true },
-            });
-            const roleIds = roleLinks.map((link) => link.roleId);
-            const roleModuleKeysByTenant = {};
-            if (roleIds.length) {
-                const configs = await prisma_client_1.default.roleModuleConfig.findMany({
-                    where: { roleId: { in: roleIds } },
-                });
-                const rowsByTenant = new Map();
-                for (const config of configs) {
-                    const rows = rowsByTenant.get(config.tenantId) || [];
-                    rows.push(config);
-                    rowsByTenant.set(config.tenantId, rows);
-                }
-                for (const [tenantId, rows] of rowsByTenant) {
-                    const coveredRoles = new Set(rows.map((row) => row.roleId));
-                    if (coveredRoles.size < roleIds.length)
-                        continue;
-                    roleModuleKeysByTenant[tenantId] = [...new Set(rows.flatMap((row) => (Array.isArray(row.moduleKeys) ? row.moduleKeys : [])))];
+            // One remote database round-trip replaces Employee + EmployeeRole
+            // + Role + RoleModuleConfig reads that previously ran sequentially.
+            const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                SELECT
+                    employee.id,
+                    employee.tenantId,
+                    employee.firstName,
+                    employee.lastName,
+                    employee.email,
+                    employee.roleName,
+                    role.id AS roleId,
+                    role.roleName AS assignedRoleName,
+                    config.tenantId AS configTenantId,
+                    config.moduleKeys
+                FROM Employee AS employee
+                LEFT JOIN EmployeeRole AS employeeRole ON employeeRole.employeeId = employee.id
+                LEFT JOIN Role AS role ON role.id = employeeRole.roleId
+                LEFT JOIN RoleModuleConfig AS config ON config.roleId = role.id
+                WHERE employee.id = ${employeId}
+            `);
+            const employee = rows[0];
+            if (!employee)
+                return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+            const roleById = new Map();
+            for (const row of rows) {
+                if (row.roleId && row.assignedRoleName) {
+                    roleById.set(row.roleId, { id: row.roleId, roleName: row.assignedRoleName });
                 }
             }
-            return res.status(200).json({ ...employee, roleModuleKeysByTenant });
+            const roleIds = [...roleById.keys()];
+            const roleModuleKeysByTenant = {};
+            if (roleIds.length) {
+                const rowsByTenant = new Map();
+                for (const row of rows) {
+                    if (!row.configTenantId)
+                        continue;
+                    const tenantRows = rowsByTenant.get(row.configTenantId) || [];
+                    tenantRows.push(row);
+                    rowsByTenant.set(row.configTenantId, tenantRows);
+                }
+                for (const [tenantId, tenantRows] of rowsByTenant) {
+                    const coveredRoles = new Set(tenantRows.map((row) => row.roleId).filter(Boolean));
+                    if (coveredRoles.size < roleIds.length)
+                        continue;
+                    roleModuleKeysByTenant[tenantId] = [...new Set(tenantRows.flatMap((row) => {
+                            if (Array.isArray(row.moduleKeys))
+                                return row.moduleKeys.map(String);
+                            if (typeof row.moduleKeys !== 'string')
+                                return [];
+                            try {
+                                const parsed = JSON.parse(row.moduleKeys);
+                                return Array.isArray(parsed) ? parsed.map(String) : [];
+                            }
+                            catch {
+                                return [];
+                            }
+                        }))];
+                }
+            }
+            return res.status(200).json({
+                id: employee.id,
+                tenantId: employee.tenantId,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                roleName: roleById.values().next().value?.roleName ?? employee.roleName,
+                employeeRoles: [...roleById.values()].map((role) => ({ role })),
+                roleModuleKeysByTenant,
+            });
         }
         catch (error) {
             res.status(500).json({ error: error.message });

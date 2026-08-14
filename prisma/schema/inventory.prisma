@@ -82,6 +82,10 @@ model StockMovement {
   @@index([articleId])
   @@index([employeeId])
   @@index([supplierId])
+  // Ürün hareket sekmesi: tenant + ürün filtresi ve en yeni kayıt sıralaması.
+  @@index([tenantId, articleId, transactionDate, id])
+  // Ürün tedarikçi maliyeti: yalnızca tedarikçili IN hareketlerini tarar.
+  @@index([tenantId, articleId, movementType, supplierId])
 }
 
 model PurchaseProposal {
@@ -137,17 +141,16 @@ model Supplier {
   @@index([tenantId])
 }
 
-/// Tedarik talebi (Supply Request). Bir ürün/malzeme minimum ya da kritik stok
+/// Tedarik talebi (Supply Request). Bir ürün minimum ya da kritik stok
 /// seviyesine düştüğünde kullanıcının bir tedarikçiye açtığı talep. Ürün/tedarikçi
 /// bilgileri anlık görüntü (snapshot) olarak saklanır; ilişki join'i gerekmeden
-/// listelenebilir (aşırı veri çekmemek için). articleId/materialId/supplierId
-/// yalnızca "stoğa ekle" ekranını doldurmak ve talebi teslim almak için tutulur.
+/// listelenebilir (aşırı veri çekmemek için). articleId/supplierId yalnızca
+/// "stoğa ekle" ekranını doldurmak ve talebi teslim almak için tutulur.
 model SupplyRequest {
   id                String    @id
   tenantId          String
-  itemType          String    @default("PRODUCT") // PRODUCT | MATERIAL
+  itemType          String    @default("PRODUCT") // PRODUCT | SERVICE
   articleId         String?
-  materialId        String?
   itemName          String
   itemCode          String?
   unit              String?
@@ -292,4 +295,6 @@ model ArticleSupplier {
   @@index([articleId])
   @@index([supplierId])
   @@index([locationId])
+  // Tedarikçi özeti her zaman tenant içindeki tek ürüne daralır.
+  @@index([tenantId, articleId])
 }

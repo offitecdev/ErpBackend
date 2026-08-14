@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenderActivityLogRepository = void 0;
 const nanoid_1 = require("nanoid");
+const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const DB_TEXT_SAFE_BYTES = 60000;
 const clampText = (value) => {
@@ -48,27 +49,20 @@ class TenderActivityLogRepository {
         });
     }
     async findByTender(tenderId) {
-        const data = await prisma_client_1.default.tenderActivityLog.findMany({
-            where: { tenderId },
-            orderBy: { createdAt: "desc" },
-            take: 300,
-        });
-        const employeeIds = Array.from(new Set(data.map((d) => String(d.employeeId))));
-        const employees = employeeIds.length > 0
-            ? await prisma_client_1.default.employee.findMany({
-                where: { id: { in: employeeIds } },
-                select: { id: true, firstName: true, lastName: true, email: true }
-            })
-            : [];
-        const empMap = new Map(employees.map((e) => [e.id, e]));
-        return data.map((d) => {
-            const emp = empMap.get(d.employeeId);
-            return {
-                ...d,
-                employeeName: emp ? `${emp.firstName} ${emp.lastName}` : null,
-                employeeEmail: emp?.email ?? null,
-            };
-        });
+        return prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+            SELECT
+                activity.*,
+                CASE
+                    WHEN employee.id IS NULL THEN NULL
+                    ELSE CONCAT(employee.firstName, ' ', employee.lastName)
+                END AS employeeName,
+                employee.email AS employeeEmail
+            FROM TenderActivityLog AS activity
+            LEFT JOIN Employee AS employee ON employee.id = activity.employeeId
+            WHERE activity.tenderId = ${tenderId}
+            ORDER BY activity.createdAt DESC
+            LIMIT 300
+        `);
     }
 }
 exports.TenderActivityLogRepository = TenderActivityLogRepository;

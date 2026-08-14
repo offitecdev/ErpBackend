@@ -42,6 +42,12 @@ const adapter = new adapter_mariadb_1.PrismaMariaDb({
     connectionLimit: 10,
     minimumIdle: 4,
     keepAliveDelay: 30_000,
+}, {
+    // Metin protokolü (driver `query`): binary protokolün her ifade için ayrı
+    // PREPARE + EXECUTE ağ turu var ve SQL metnimiz istekten isteğe değiştiği
+    // için prepare önbelleği tutmuyor — uzak veritabanında her sorgu iki tur
+    // yerine tek tur ödesin. Değerler yine sürücü tarafından escape edilir.
+    useTextProtocol: true,
 });
 const COMPOSITE_PK_MODELS = new Set(['EmployeeRole', 'RolePermission']);
 const prisma = new client_1.PrismaClient({

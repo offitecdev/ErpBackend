@@ -3,3 +3,6 @@ node_modules
 .env
 
 /generated/prisma
+
+# Runtime attachment data (use OFFITEC_TENDER_UPLOAD_DIR in production)
+/storage/

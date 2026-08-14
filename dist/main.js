@@ -40,12 +40,8 @@ const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
 const files_routes_1 = __importDefault(require("./presentation/routes/files.routes"));
 const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashboard.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
-const AuthMiddleware_1 = require("./presentation/middlewares/AuthMiddleware");
 const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
-const RbacMiddleware_1 = require("./presentation/middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("./infrastructure/database/prisma.client"));
-const tenantTree_1 = require("./shared/tenantTree");
-const nanoid_1 = require("nanoid");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3000;
 const apiPrefixes = ['/api/v1', '/backend/api/v1'];
@@ -111,189 +107,7 @@ app.get(['/swagger.json', '/backend/swagger.json'], (_req, res) => {
 app.get(['/health', '/backend/health'], (_req, res) => {
     res.status(200).json({ status: 'OK' });
 });
-const normalizeTenderRef = (value) => {
-    const raw = String(value || '').trim();
-    try {
-        return decodeURIComponent(raw).trim();
-    }
-    catch {
-        return raw;
-    }
-};
-// Şirket ağacı önbellekten yürünür — seviye başına bir `findUnique` turu yerine
-// sıfır sorgu (bkz. shared/tenantTree).
-const tenantRootId = tenantTree_1.findTenantRootIdCached;
-const canAccessTenant = async (targetTenantId, requestTenantId) => {
-    if (targetTenantId === requestTenantId)
-        return true;
-    const [targetRootId, requestRootId] = await Promise.all([
-        tenantRootId(targetTenantId),
-        tenantRootId(requestTenantId),
-    ]);
-    return Boolean(targetRootId && requestRootId && targetRootId === requestRootId);
-};
-const findTenderForTenant = async (rawRef, tenantId) => {
-    const tenderRef = normalizeTenderRef(rawRef);
-    if (!tenderRef)
-        return null;
-    const byId = await prisma_client_1.default.tender.findUnique({
-        where: { id: tenderRef },
-        select: { id: true, tenantId: true },
-    });
-    if (byId && await canAccessTenant(byId.tenantId, tenantId))
-        return byId;
-    // Yeni kod (AN-2026-10001) ya da yeniden numaralandırmadan önceki kod
-    // (A-2026-4474, TKF-…) — eski bağlantılar çalışmaya devam etsin.
-    const byNumber = await prisma_client_1.default.tender.findMany({
-        where: { OR: [{ tenderNumber: tenderRef }, { legacyNumber: tenderRef }] },
-        take: 50,
-        select: { id: true, tenantId: true },
-    });
-    for (const candidate of byNumber) {
-        if (await canAccessTenant(candidate.tenantId, tenantId))
-            return candidate;
-    }
-    return null;
-};
-const registerTenderChatterRoutes = (prefix) => {
-    app.get(`${prefix}/tenders/:id/chatter-summary`, AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), async (req, res) => {
-        try {
-            const tenantId = req.user.tenantId;
-            const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
-            if (!tender) {
-                res.status(404).json({ error: 'Teklif bulunamadı.' });
-                return;
-            }
-            const [noteCount, documentCount, logCount] = await prisma_client_1.default.$transaction([
-                prisma_client_1.default.tenderActivityLog.count({
-                    where: { tenderId: tender.id, actionType: 'TENDER_NOTE' },
-                }),
-                prisma_client_1.default.document.count({
-                    where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: 'TENDER' },
-                }),
-                prisma_client_1.default.tenderActivityLog.count({
-                    where: { tenderId: tender.id },
-                }),
-            ]);
-            res.status(200).json({ noteCount, documentCount, logCount });
-        }
-        catch (error) {
-            res.status(400).json({ error: error.message });
-        }
-    });
-    app.post(`${prefix}/tenders/:id/notes`, AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), async (req, res) => {
-        try {
-            const tenantId = req.user.tenantId;
-            const employeeId = req.user.id;
-            const noteText = String(req.body.noteText || '').trim();
-            if (!noteText) {
-                res.status(400).json({ error: 'Not içeriği boş olamaz.' });
-                return;
-            }
-            const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
-            if (!tender) {
-                res.status(404).json({ error: 'Teklif bulunamadı.' });
-                return;
-            }
-            const log = await prisma_client_1.default.tenderActivityLog.create({
-                data: {
-                    id: (0, nanoid_1.nanoid)(8),
-                    tenantId: tender.tenantId,
-                    tenderId: tender.id,
-                    employeeId,
-                    actionType: 'TENDER_NOTE',
-                    fieldName: 'note',
-                    oldValue: null,
-                    newValue: noteText,
-                    description: noteText,
-                },
-            });
-            res.status(201).json(log);
-        }
-        catch (error) {
-            res.status(400).json({ error: error.message });
-        }
-    });
-    app.get(`${prefix}/tenders/:id/documents`, AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), async (req, res) => {
-        try {
-            const tenantId = req.user.tenantId;
-            const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
-            if (!tender) {
-                res.status(404).json({ error: 'Teklif bulunamadı.' });
-                return;
-            }
-            const documents = await prisma_client_1.default.document.findMany({
-                where: { tenantId: tender.tenantId, relatedEntityId: tender.id, entityType: 'TENDER' },
-                orderBy: { fileName: 'asc' },
-            });
-            res.status(200).json(documents);
-        }
-        catch (error) {
-            res.status(400).json({ error: error.message });
-        }
-    });
-    app.post(`${prefix}/tenders/:id/documents`, AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), async (req, res) => {
-        try {
-            const tenantId = req.user.tenantId;
-            const employeeId = req.user.id;
-            const fileName = String(req.body.fileName || '').trim();
-            const fileUrl = String(req.body.fileUrl || '').trim();
-            const fileType = String(req.body.fileType || '').trim().toLowerCase();
-            const category = String(req.body.category || 'tender').trim() || 'tender';
-            if (!fileName || !fileUrl || !fileType) {
-                res.status(400).json({ error: 'Dosya adı, URL ve tür zorunludur.' });
-                return;
-            }
-            const allowed = fileType === 'application/pdf'
-                || fileType === 'image/png'
-                || fileType === 'image/jpeg'
-                || /\.pdf$/i.test(fileName)
-                || /\.png$/i.test(fileName)
-                || /\.jpe?g$/i.test(fileName);
-            if (!allowed) {
-                res.status(400).json({ error: 'Sadece PDF, PNG veya JPG dosyası eklenebilir.' });
-                return;
-            }
-            const tender = await findTenderForTenant(String(req.params.id || ''), tenantId);
-            if (!tender) {
-                res.status(404).json({ error: 'Teklif bulunamadı.' });
-                return;
-            }
-            const document = await prisma_client_1.default.document.create({
-                data: {
-                    id: (0, nanoid_1.nanoid)(8),
-                    tenantId: tender.tenantId,
-                    relatedEntityId: tender.id,
-                    entityType: 'TENDER',
-                    fileName,
-                    fileUrl,
-                    fileType,
-                    category,
-                    uploadedByEmployeeId: employeeId,
-                },
-            });
-            await prisma_client_1.default.tenderActivityLog.create({
-                data: {
-                    id: (0, nanoid_1.nanoid)(8),
-                    tenantId: tender.tenantId,
-                    tenderId: tender.id,
-                    employeeId,
-                    actionType: 'TENDER_ATTACHMENT',
-                    fieldName: 'attachment',
-                    oldValue: null,
-                    newValue: fileName,
-                    description: `Ek dosya eklendi: ${fileName}`,
-                },
-            });
-            res.status(201).json(document);
-        }
-        catch (error) {
-            res.status(400).json({ error: error.message });
-        }
-    });
-};
 for (const prefix of apiPrefixes) {
-    registerTenderChatterRoutes(prefix);
     app.use(`${prefix}/auth`, auth_routes_1.default);
     app.use(`${prefix}/employees`, employee_routes_1.default);
     app.use(`${prefix}/leaves`, leave_routes_1.default);
@@ -329,8 +143,10 @@ app.listen(PORT, () => {
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     (0, MaintenanceReminderService_1.startMaintenanceReminderService)();
     // Open the remote-DB connection pool now instead of on the first request,
-    // which otherwise pays the connection handshakes itself.
-    prisma_client_1.default.$queryRaw `SELECT 1`
+    // which otherwise pays the connection handshakes itself. Several parallel
+    // probes force several pool connections open: batch saves fire their
+    // guarded statements concurrently and each needs its own connection.
+    Promise.all(Array.from({ length: 4 }, () => prisma_client_1.default.$queryRaw `SELECT 1`))
         .then(() => console.log('Database pool warmed up.'))
         .catch((error) => console.error('Database warm-up failed:', error));
 });

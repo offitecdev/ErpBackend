@@ -63,6 +63,12 @@ router.patch('/:id', (0, RbacMiddleware_1.requirePermission)('projects.manage'),
 router.patch('/:id/activate', (0, RbacMiddleware_1.requirePermission)('projects.approve'), (req, res) => controller.activate(req, res));
 router.post('/:id/send-booking-mail', (0, RbacMiddleware_1.requirePermission)('projects.mail'), (req, res) => controller.sendBookingMail(req, res));
 router.post('/:id/reports', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.addReport(req, res));
+// Kompletter Rapport-Speicherstand eines Termins in EINEM Aufruf (Körper +
+// Spesen + Zusatz-/verwendetes Material als Ersatz) — Projektleiter-Popup und
+// Montage-Bildschirm speichern beide hierüber; der letzte Speicherstand gilt.
+router.put('/appointments/:appointmentId/field-report', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.saveFieldReport(req, res));
+// Speicherprotokoll (wer/wann) — Protokoll-Knopf der Projektleiter-Ansicht.
+router.get('/reports/:reportId/logs', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getReportLogs(req, res));
 router.patch('/reports/:reportId', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.updateReport(req, res));
 router.patch('/reports/:reportId/sign', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.signReport(req, res));
 router.post('/reports/:reportId/materials', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.addReportMaterials(req, res));

@@ -620,6 +620,21 @@ class ProjectController {
                             employee: {
                                 select: { id: true, firstName: true, lastName: true, email: true },
                             },
+                            // Der vereinheitlichte Rapport-Editor listet auch das
+                            // verwendete Material und speichert die Liste als
+                            // vollständigen Ersatz — ohne diese Zeilen würde eine
+                            // Montage-Speicherung sie löschen.
+                            usedMaterials: {
+                                select: {
+                                    id: true,
+                                    materialId: true,
+                                    articleId: true,
+                                    quantity: true,
+                                    costAtTime: true,
+                                    material: { select: { id: true, name: true } },
+                                    article: { select: { id: true, name: true } },
+                                },
+                            },
                             images: {
                                 orderBy: { createdAt: "asc" },
                                 select: { id: true, imageData: true, caption: true, createdAt: true },
@@ -1757,6 +1772,314 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
+    // ── Rapport-Speicherprotokoll ─────────────────────────────────────────
+    // Jede Speicherung/Fertigstellung/Signatur schreibt best-effort eine
+    // Protokollzeile (wer, wann, was). Ein Fehler hier — z. B. eine noch nicht
+    // eingespielte Migration — darf die Speicherung selbst niemals abbrechen.
+    async writeReportLog(reportId, employeeId, action) {
+        try {
+            await prisma_client_1.default.projectReportLog.create({
+                data: { id: (0, nanoid_1.nanoid)(10), reportId, employeeId, action },
+            });
+        }
+        catch (logError) {
+            console.error('[writeReportLog] failed:', logError?.message || logError);
+        }
+    }
+    // Wer hat den Rapport wann gespeichert — der Protokoll-Knopf der
+    // Projektleiter-Ansicht liest diese Liste (neueste zuerst).
+    async getReportLogs(req, res) {
+        try {
+            const reportId = req.params.reportId;
+            const report = await prisma_client_1.default.projectReport.findFirst({
+                where: { id: reportId, project: { tenantId: req.user.tenantId } },
+                select: { id: true },
+            });
+            if (!report)
+                return res.status(404).json({ error: "Saha raporu bulunamadı." });
+            let logs = [];
+            try {
+                logs = await prisma_client_1.default.projectReportLog.findMany({
+                    where: { reportId },
+                    orderBy: { createdAt: 'desc' },
+                    include: { employee: { select: { id: true, firstName: true, lastName: true } } },
+                });
+            }
+            catch (logError) {
+                // Migration fehlt noch — leere Liste statt Fehler, die Ansicht bleibt nutzbar.
+                console.error('[getReportLogs] failed:', logError?.message || logError);
+            }
+            res.status(200).json({ logs });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /**
+     * Ersetzt die Ressourcen eines Termins VOLLSTÄNDIG durch den übergebenen
+     * Stand ("der letzte Speicherstand gilt", Benutzerwunsch 2026-08-13). Jede
+     * übergebene Liste ist der GESAMTE gewünschte Bestand des Termins: Zeilen
+     * mit id bleiben (Menge/Betrag wird angepasst, Bestandsdifferenz gebucht),
+     * Zeilen ohne id werden angelegt (Bestand abgebucht), fehlende Zeilen
+     * gelöscht (Zusatzmaterial wird dabei RESTOCKT — dieselbe Buchung wie beim
+     * einzelnen Löschen). `undefined` lässt die jeweilige Liste unangetastet.
+     */
+    async replaceAppointmentResources(args) {
+        const { tenantId, projectId, salesOrderId, appointmentId, reportId } = args;
+        const wantExpenses = args.expenses
+            ?.map((row) => ({
+            id: row.id ? String(row.id) : null,
+            expenseType: String(row.expenseType || '').trim(),
+            // Betrag ist NICHT Pflicht: eine Zeile mit Text zählt auch mit 0.
+            amount: Number.isFinite(Number(row.amount)) && Number(row.amount) > 0 ? Number(row.amount) : 0,
+        }))
+            .filter((row) => row.expenseType);
+        const wantExtras = args.extraMaterials
+            ?.map((row) => ({
+            id: row.id ? String(row.id) : null,
+            materialId: String(row.materialId || '').trim(),
+            quantity: Number(row.quantity || 0),
+            description: row.description ? String(row.description).trim() : null,
+        }))
+            .filter((row) => row.materialId && row.quantity > 0);
+        const wantUsed = args.usedMaterials
+            ?.map((row) => ({
+            id: row.id ? String(row.id) : null,
+            materialId: String(row.materialId || '').trim(),
+            quantity: Number(row.quantity || 0),
+        }))
+            .filter((row) => row.materialId && row.quantity > 0);
+        // Ein Rundlauf für alle beteiligten Materialien (Tenant-Check + Kosten).
+        const materialIds = [...new Set([
+                ...(wantExtras || []).map((row) => row.materialId),
+                ...(wantUsed || []).map((row) => row.materialId),
+            ])];
+        const materialsById = new Map();
+        if (materialIds.length) {
+            const materials = await prisma_client_1.default.material.findMany({
+                where: { id: { in: materialIds }, tenantId },
+            });
+            for (const material of materials)
+                materialsById.set(material.id, material);
+        }
+        const stockError = (material) => new Error(`[Stok uyarısı] ${material.name} için kayıtlı miktar yetersiz.`);
+        await prisma_client_1.default.$transaction(async (tx) => {
+            if (wantExpenses) {
+                const existing = await tx.projectExpense.findMany({ where: { projectId, appointmentId } });
+                const keptIds = new Set(wantExpenses.filter((row) => row.id).map((row) => row.id));
+                const removed = existing.filter((row) => !keptIds.has(row.id));
+                if (removed.length) {
+                    await tx.projectExpense.deleteMany({ where: { id: { in: removed.map((row) => row.id) } } });
+                }
+                for (const row of wantExpenses) {
+                    const current = row.id ? existing.find((item) => item.id === row.id) : null;
+                    if (current) {
+                        if (current.expenseType !== row.expenseType || Number(current.amount) !== row.amount) {
+                            await tx.projectExpense.update({
+                                where: { id: current.id },
+                                data: { expenseType: row.expenseType, amount: row.amount },
+                            });
+                        }
+                    }
+                    else {
+                        await tx.projectExpense.create({
+                            data: {
+                                id: (0, nanoid_1.nanoid)(10),
+                                projectId,
+                                salesOrderId,
+                                appointmentId,
+                                expenseType: row.expenseType,
+                                amount: row.amount,
+                                description: '',
+                            },
+                        });
+                    }
+                }
+            }
+            if (wantExtras) {
+                const existing = await tx.projectExtraMaterial.findMany({ where: { projectId, appointmentId } });
+                const keptIds = new Set(wantExtras.filter((row) => row.id).map((row) => row.id));
+                for (const current of existing) {
+                    if (keptIds.has(current.id))
+                        continue;
+                    await tx.material.update({
+                        where: { id: current.materialId },
+                        data: { stockQuantity: { increment: Number(current.quantity || 0) } },
+                    });
+                    await tx.projectExtraMaterial.delete({ where: { id: current.id } });
+                }
+                for (const row of wantExtras) {
+                    const material = materialsById.get(row.materialId);
+                    // Unbekanntes / fremdes Material wird still übersprungen — wie bisher.
+                    if (!material)
+                        continue;
+                    const current = row.id ? existing.find((item) => item.id === row.id) : null;
+                    if (!current) {
+                        if (Number(material.stockQuantity || 0) < row.quantity)
+                            throw stockError(material);
+                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: row.quantity } } });
+                        await tx.projectExtraMaterial.create({
+                            data: {
+                                id: (0, nanoid_1.nanoid)(10),
+                                projectId,
+                                salesOrderId,
+                                appointmentId,
+                                materialId: material.id,
+                                quantity: row.quantity,
+                                unitPrice: Number(material.unitCost || 0),
+                                description: row.description,
+                            },
+                        });
+                    }
+                    else if (current.materialId !== row.materialId) {
+                        await tx.material.update({ where: { id: current.materialId }, data: { stockQuantity: { increment: Number(current.quantity || 0) } } });
+                        if (Number(material.stockQuantity || 0) < row.quantity)
+                            throw stockError(material);
+                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: row.quantity } } });
+                        await tx.projectExtraMaterial.update({
+                            where: { id: current.id },
+                            data: { materialId: material.id, quantity: row.quantity, unitPrice: Number(material.unitCost || 0), description: row.description },
+                        });
+                    }
+                    else {
+                        const diff = row.quantity - Number(current.quantity || 0);
+                        if (diff > 0) {
+                            if (Number(material.stockQuantity || 0) < diff)
+                                throw stockError(material);
+                            await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: diff } } });
+                        }
+                        else if (diff < 0) {
+                            await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { increment: Math.abs(diff) } } });
+                        }
+                        if (diff !== 0 || (current.description || null) !== row.description) {
+                            await tx.projectExtraMaterial.update({
+                                where: { id: current.id },
+                                data: { quantity: row.quantity, description: row.description },
+                            });
+                        }
+                    }
+                }
+            }
+            if (wantUsed) {
+                const existing = await tx.reportMaterial.findMany({ where: { reportId } });
+                const keptIds = new Set(wantUsed.filter((row) => row.id).map((row) => row.id));
+                const removed = existing.filter((row) => !keptIds.has(row.id));
+                if (removed.length) {
+                    await tx.reportMaterial.deleteMany({ where: { id: { in: removed.map((row) => row.id) } } });
+                }
+                for (const row of wantUsed) {
+                    const current = row.id ? existing.find((item) => item.id === row.id) : null;
+                    if (current) {
+                        // costAtTime der bestehenden Zeile bleibt — nur die Menge folgt.
+                        if (Number(current.quantity) !== row.quantity) {
+                            await tx.reportMaterial.update({ where: { id: current.id }, data: { quantity: row.quantity } });
+                        }
+                    }
+                    else {
+                        const material = materialsById.get(row.materialId);
+                        if (!material)
+                            continue;
+                        await tx.reportMaterial.create({
+                            data: {
+                                id: (0, nanoid_1.nanoid)(10),
+                                reportId,
+                                materialId: material.id,
+                                quantity: row.quantity,
+                                costAtTime: Number(material.unitCost || 0),
+                            },
+                        });
+                    }
+                }
+            }
+        });
+    }
+    /**
+     * Speichert den GANZEN Montage-Rapport eines Termins in EINEM Aufruf
+     * (Benutzerwunsch 2026-08-13): Rapportkörper (upsert per Termin) plus
+     * Spesen / Zusatzmaterial / verwendetes Material als vollständiger Ersatz
+     * des bisherigen Standes — der letzte Speicherstand gilt, es gibt keine
+     * zusammengeführten Rapporte. Jede Speicherung landet im Protokoll.
+     * Projektleiter-Popup und Montage-Bildschirm rufen denselben Endpunkt.
+     */
+    async saveFieldReport(req, res) {
+        try {
+            const appointmentId = String(req.params.appointmentId || '');
+            const appointment = await prisma_client_1.default.appointment.findFirst({
+                where: { id: appointmentId, tenantId: req.user.tenantId, projectId: { not: null } },
+                include: { project: { include: { salesOrders: { orderBy: { createdAt: 'asc' } } } } },
+            });
+            if (!appointment?.project)
+                return res.status(404).json({ error: "Montaj randevusu bulunamadı." });
+            const operationItems = Array.isArray(req.body.operationsDoneItems)
+                ? req.body.operationsDoneItems.map(String).map((item) => item.trim()).filter(Boolean)
+                : [];
+            const operationsDone = operationItems.length
+                ? operationItems.map((item) => `- ${item}`).join('\n')
+                : String(req.body.operationsDone || '').trim();
+            if (!operationsDone)
+                return res.status(400).json({ error: "Yapilan isler zorunludur." });
+            const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user.tenantId, req.body.salesOrderId ?? appointment.salesOrderId);
+            // Der Termin besitzt seinen Rapport; Alt-Rapporte ohne appointmentId
+            // desselben Tages werden weiterverwendet statt doppelt angelegt —
+            // exakt die Logik von completeInstallation.
+            const workDate = startOfDay(new Date(appointment.startTime));
+            const isPrimaryOrder = (appointment.project.salesOrders?.[0]?.id || null) === (salesOrderId || null);
+            const ownReport = await this.reportRepository.findByAppointmentId(appointment.id);
+            const legacyDayReport = ownReport
+                ? null
+                : await this.reportRepository.findByProjectAndWorkDate(appointment.projectId, workDate, salesOrderId ?? undefined, isPrimaryOrder);
+            const existingReport = ownReport || (legacyDayReport && !legacyDayReport.appointmentId ? legacyDayReport : null);
+            const reportInput = {
+                projectId: appointment.projectId,
+                salesOrderId,
+                appointmentId: appointment.id,
+                employeeId: req.user.id,
+                workDate: workDate.toISOString(),
+                startedAt: req.body.startedAt || appointment.startTime,
+                endedAt: req.body.endedAt || appointment.endTime,
+                operationsDone,
+                technicalNotes: req.body.technicalNotes,
+                images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
+            };
+            const reportResult = existingReport
+                ? await this.addReportUseCase.update(existingReport.id, reportInput)
+                : await this.addReportUseCase.execute(reportInput);
+            await this.replaceAppointmentResources({
+                tenantId: req.user.tenantId,
+                projectId: appointment.projectId,
+                salesOrderId,
+                appointmentId: appointment.id,
+                reportId: reportResult.id,
+                expenses: Array.isArray(req.body.expenses) ? req.body.expenses : undefined,
+                extraMaterials: Array.isArray(req.body.extraMaterials) ? req.body.extraMaterials : undefined,
+                usedMaterials: Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : undefined,
+            });
+            await this.writeReportLog(reportResult.id, req.user.id, 'SAVED');
+            // Frischer Stand in einer Antwort — der Client muss nicht nachladen.
+            const [report, expenses, extraMaterials] = await Promise.all([
+                this.reportRepository.findById(reportResult.id),
+                prisma_client_1.default.projectExpense.findMany({
+                    where: { projectId: appointment.projectId, appointmentId: appointment.id },
+                    orderBy: { expenseDate: 'asc' },
+                }),
+                prisma_client_1.default.projectExtraMaterial.findMany({
+                    where: { projectId: appointment.projectId, appointmentId: appointment.id },
+                    orderBy: { addedAt: 'asc' },
+                    include: { material: { select: { id: true, name: true, unitCost: true, stockQuantity: true } } },
+                }),
+            ]);
+            res.status(200).json({
+                message: "Saha raporu kaydedildi.",
+                report,
+                expenses,
+                extraMaterials,
+                overtimeWarning: reportResult.overtimeWarning || null,
+            });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async addReport(req, res) {
         try {
             const salesOrderId = await this.resolveProjectSalesOrderId(req.params.id, req.user.tenantId, req.body.salesOrderId);
@@ -1786,6 +2109,7 @@ class ProjectController {
                 images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined
             };
             const report = await this.addReportUseCase.execute(input);
+            await this.writeReportLog(report.id, req.user.id, 'SAVED');
             res.status(201).json({ message: "Saha raporu kaydedildi.", report });
         }
         catch (error) {
@@ -1813,6 +2137,7 @@ class ProjectController {
                 images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined
             };
             const updated = await this.addReportUseCase.update(req.params.reportId, input);
+            await this.writeReportLog(req.params.reportId, req.user.id, 'SAVED');
             res.status(200).json({ message: "Saha raporu güncellendi.", report: updated });
         }
         catch (error) {
@@ -1867,6 +2192,7 @@ class ProjectController {
             if (!report)
                 return res.status(404).json({ error: "Saha raporu bulunamadı." });
             await this.reportRepository.signReport(reportId, signatureBase64);
+            await this.writeReportLog(reportId, req.user.id, 'SIGNED');
             res.status(200).json({ message: "Rapor müşteri tarafından imzalandı." });
         }
         catch (error) {
@@ -2012,41 +2338,61 @@ class ProjectController {
                     ? (await this.reportRepository.findById(existingReport.id) || existingReport)
                     : await this.addReportUseCase.update(existingReport.id, reportPayload))
                 : await this.addReportUseCase.execute(reportPayload);
-            const cleanUsedMaterials = Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : [];
-            const usedMaterialRows = [];
-            for (const material of cleanUsedMaterials) {
-                const quantity = Number(material.quantity || 0);
-                if (!material.materialId || quantity <= 0)
-                    continue;
-                const materialRecord = await this.materialRepository.findById(String(material.materialId));
-                if (!materialRecord || materialRecord.tenantId !== req.user.tenantId)
-                    continue;
-                usedMaterialRows.push({
-                    id: (0, nanoid_1.nanoid)(10),
+            // Der neue Client schickt den VOLLSTÄNDIGEN Ressourcen-Stand mit
+            // `resourceMode: 'replace'` — dann ERSETZT der Abschluss den alten
+            // Stand (der letzte Speicherstand gilt; nichts wird mehr angehängt
+            // und damit doppelt "zusammengeführt"). Alt-Clients ohne die Flagge
+            // behalten das bisherige Anhängeverhalten.
+            if (req.body.resourceMode === 'replace') {
+                await this.replaceAppointmentResources({
+                    tenantId: req.user.tenantId,
+                    projectId: appointment.projectId,
+                    salesOrderId,
+                    appointmentId: appointment.id,
                     reportId: reportResult.id,
-                    materialId: materialRecord.id,
-                    quantity,
-                    costAtTime: Number(materialRecord.unitCost || 0),
+                    expenses: Array.isArray(req.body.expenses) ? req.body.expenses : undefined,
+                    extraMaterials: Array.isArray(req.body.materials) ? req.body.materials : undefined,
+                    usedMaterials: Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : undefined,
                 });
             }
-            if (usedMaterialRows.length) {
-                await prisma_client_1.default.reportMaterial.createMany({ data: usedMaterialRows });
+            else {
+                const cleanUsedMaterials = Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : [];
+                const usedMaterialRows = [];
+                for (const material of cleanUsedMaterials) {
+                    const quantity = Number(material.quantity || 0);
+                    if (!material.materialId || quantity <= 0)
+                        continue;
+                    const materialRecord = await this.materialRepository.findById(String(material.materialId));
+                    if (!materialRecord || materialRecord.tenantId !== req.user.tenantId)
+                        continue;
+                    usedMaterialRows.push({
+                        id: (0, nanoid_1.nanoid)(10),
+                        reportId: reportResult.id,
+                        materialId: materialRecord.id,
+                        quantity,
+                        costAtTime: Number(materialRecord.unitCost || 0),
+                    });
+                }
+                if (usedMaterialRows.length) {
+                    await prisma_client_1.default.reportMaterial.createMany({ data: usedMaterialRows });
+                }
+                const cleanExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+                for (const expense of cleanExpenses) {
+                    // Tutar ZORUNLU DEĞİL: metni olan gider 0 bedelle de kaydedilir.
+                    const amount = Number(expense.amount || 0);
+                    if (!String(expense.expenseType || "").trim())
+                        continue;
+                    await this.addExpenseUseCase.execute(appointment.projectId, String(expense.expenseType).trim(), Number.isFinite(amount) && amount > 0 ? amount : 0, expense.description ? String(expense.description).trim() : "", salesOrderId, appointment.id);
+                }
+                const cleanMaterials = Array.isArray(req.body.materials) ? req.body.materials : [];
+                for (const material of cleanMaterials) {
+                    const quantity = Number(material.quantity || 0);
+                    if (!material.materialId || quantity <= 0)
+                        continue;
+                    await this.requestVariationUseCase.execute(appointment.projectId, req.user.id, String(material.materialId), quantity, material.description ? String(material.description).trim() : "", salesOrderId, appointment.id);
+                }
             }
-            const cleanExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
-            for (const expense of cleanExpenses) {
-                // Tutar ZORUNLU DEĞİL: metni olan gider 0 bedelle de kaydedilir.
-                const amount = Number(expense.amount || 0);
-                if (!String(expense.expenseType || "").trim())
-                    continue;
-                await this.addExpenseUseCase.execute(appointment.projectId, String(expense.expenseType).trim(), Number.isFinite(amount) && amount > 0 ? amount : 0, expense.description ? String(expense.description).trim() : "", salesOrderId, appointment.id);
-            }
-            const cleanMaterials = Array.isArray(req.body.materials) ? req.body.materials : [];
-            for (const material of cleanMaterials) {
-                const quantity = Number(material.quantity || 0);
-                if (!material.materialId || quantity <= 0)
-                    continue;
-                await this.requestVariationUseCase.execute(appointment.projectId, req.user.id, String(material.materialId), quantity, material.description ? String(material.description).trim() : "", salesOrderId, appointment.id);
-            }
+            await this.writeReportLog(reportResult.id, req.user.id, 'COMPLETED');
             let report = reportResult;
             const signatureBase64 = typeof req.body.signatureBase64 === "string" ? req.body.signatureBase64 : "";
             if (signatureBase64) {

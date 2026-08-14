@@ -55,6 +55,7 @@ const resolveTenantId = async (homeTenantId, allowedTenantIds, requestedTenantId
     return target;
 };
 const requireAuth = async (req, res, next) => {
+    const authStartedAt = Date.now();
     // Tokens are accepted exclusively from the HttpOnly cookie — never from
     // the JSON body. (Authorization: Bearer is still honored for API tooling
     // such as Swagger UI; browsers never store tokens anywhere JS can read.)
@@ -119,6 +120,9 @@ const requireAuth = async (req, res, next) => {
             homeTenantId,
             email: decoded.email
         };
+        // Yanıtların Server-Timing başlığında görünsün: uç noktadaki yavaşlık
+        // handler'da mı, kimlik katmanında mı — tarayıcıdan ayırt edilebilir.
+        req.authDurMs = Date.now() - authStartedAt;
         next();
     }
     catch (error) {
