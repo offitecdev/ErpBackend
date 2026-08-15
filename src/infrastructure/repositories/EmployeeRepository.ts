@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { IEmployeeRepository, IEmployeeFilter } from '../../domain/repositories/IEmployeeRepository';
 import { Employee } from '../../domain/entities/Employee';
 import { invalidateAuthIdentity } from '../../shared/authIdentityCache';
+import { invalidateStaffDirectory } from '../../shared/staffDirectoryCache';
 
 export class EmployeeRepository implements IEmployeeRepository {
     
@@ -118,6 +119,9 @@ export class EmployeeRepository implements IEmployeeRepository {
             data: createData
         });
 
+        // Die Personal-Kurzliste der Auswahlfelder ist kurz zwischengespeichert;
+        // ohne diesen Aufruf fehlte die neue Person dort bis zum Ablauf der Frist.
+        invalidateStaffDirectory();
         return this.mapToEntity(data);
     }
 
@@ -135,6 +139,10 @@ export class EmployeeRepository implements IEmployeeRepository {
         // buradan geçer. Önbelleği hemen düşür ki oturum kontrolü bir sonraki
         // istekte güncel durumu görsün.
         invalidateAuthIdentity(id);
+        // Name, Rolle, aktiv/gesperrt — all das steht in der Kurzliste der
+        // Auswahlfelder. Jeder Schreibweg läuft hier durch, deshalb genügt
+        // dieser eine Ort statt eines Aufrufs je Endpunkt.
+        invalidateStaffDirectory();
         return this.mapToEntity(data);
     }
 }

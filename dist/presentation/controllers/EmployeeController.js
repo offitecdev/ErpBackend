@@ -4,10 +4,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EmployeeController = void 0;
+const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const password_1 = require("../../application/validation/password");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const serviceTenantScope_1 = require("./serviceTenantScope");
+const staffDirectoryCache_1 = require("../../shared/staffDirectoryCache");
 const tenantAccess_1 = require("../utils/tenantAccess");
 class EmployeeController {
     createEmployeeUseCase;
@@ -99,29 +101,57 @@ class EmployeeController {
         }
     }
     /** Trimmed name/role/e-mail rows for pickers & filters: skips the heavy
-        columns, so it answers in a fraction of the full listing's time. */
+        columns, so it answers in a fraction of the full listing's time.
+
+        ONE statement on purpose. The nested `employeeRoles → role` select this
+        used to carry made Prisma issue three SEQUENTIAL queries (employees,
+        then EmployeeRole, then Role); against the remote database that is three
+        round trips and the pickers measured ~750 ms. The role now arrives via a
+        correlated subquery — same "first role wins" semantics as the former
+        `take: 1`, one trip.
+
+        On top of that the result is briefly cached: the list is identical for
+        everyone in a company tree and barely ever changes, but a picker fetched
+        it on EVERY open. `EmployeeRepository` drops the cache on every write, so
+        the TTL is only a ceiling for changes made outside this process. */
     async lightStaffRows(treeTenantIds, isActive, hideDeleted = false) {
-        const rows = await prisma_client_1.default.employee.findMany({
-            where: {
-                tenantId: { in: treeTenantIds },
-                ...(isActive !== undefined ? { isActive } : {}),
-                ...(hideDeleted ? { deletedAt: null } : {}),
-            },
-            select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-                roleName: true,
-                title: true,
-                // Some employees only carry their role via the RBAC join.
-                employeeRoles: { select: { role: { select: { roleName: true } } }, take: 1 },
-            },
-            orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
-        });
-        return rows.map(({ employeeRoles, ...rest }) => ({
-            ...rest,
-            roleName: employeeRoles?.[0]?.role?.roleName ?? rest.roleName,
+        if (treeTenantIds.length === 0)
+            return [];
+        // Der Schlüssel trägt ALLE Eingaben der Abfrage; die Mandanten werden
+        // sortiert, damit dieselbe Menge in anderer Reihenfolge denselben
+        // Eintrag trifft.
+        const cacheKey = JSON.stringify([[...treeTenantIds].sort(), isActive ?? null, hideDeleted]);
+        return (0, staffDirectoryCache_1.getCachedStaffDirectory)(cacheKey, () => this.loadLightStaffRows(treeTenantIds, isActive, hideDeleted));
+    }
+    async loadLightStaffRows(treeTenantIds, isActive, hideDeleted = false) {
+        const conditions = [
+            client_1.Prisma.sql `e.tenantId IN (${client_1.Prisma.join(treeTenantIds)})`,
+        ];
+        if (isActive !== undefined)
+            conditions.push(client_1.Prisma.sql `e.isActive = ${isActive}`);
+        if (hideDeleted)
+            conditions.push(client_1.Prisma.sql `e.deletedAt IS NULL`);
+        const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+            SELECT e.id, e.firstName, e.lastName, e.email, e.title,
+                   COALESCE(
+                       (SELECT r.roleName
+                          FROM EmployeeRole er
+                          JOIN Role r ON r.id = er.roleId
+                         WHERE er.employeeId = e.id
+                         LIMIT 1),
+                       e.roleName
+                   ) AS roleName
+            FROM Employee e
+            WHERE ${client_1.Prisma.join(conditions, ' AND ')}
+            ORDER BY e.firstName ASC, e.lastName ASC
+        `);
+        return rows.map((row) => ({
+            id: row.id,
+            firstName: row.firstName,
+            lastName: row.lastName,
+            email: row.email,
+            title: row.title ?? null,
+            roleName: row.roleName ?? null,
         }));
     }
     /* GET /employees/directory — the company phone-book: who can be invited to a

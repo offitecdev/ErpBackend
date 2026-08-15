@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectController = void 0;
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const projectEventNotifications_1 = require("../../infrastructure/services/projectEventNotifications");
+const articleStock_1 = require("../../shared/articleStock");
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const serviceTenantScope_1 = require("./serviceTenantScope");
 const technicianSchedule_1 = require("./technicianSchedule");
@@ -33,8 +35,7 @@ class ProjectController {
     addExpenseUseCase;
     projectRepository;
     reportRepository;
-    materialRepository;
-    constructor(createProjectUseCase, addReportUseCase, requestVariationUseCase, approveVariationUseCase, addExpenseUseCase, projectRepository, reportRepository, materialRepository) {
+    constructor(createProjectUseCase, addReportUseCase, requestVariationUseCase, approveVariationUseCase, addExpenseUseCase, projectRepository, reportRepository) {
         this.createProjectUseCase = createProjectUseCase;
         this.addReportUseCase = addReportUseCase;
         this.requestVariationUseCase = requestVariationUseCase;
@@ -42,7 +43,6 @@ class ProjectController {
         this.addExpenseUseCase = addExpenseUseCase;
         this.projectRepository = projectRepository;
         this.reportRepository = reportRepository;
-        this.materialRepository = materialRepository;
     }
     async resolveProjectSalesOrderId(projectId, tenantId, rawSalesOrderId) {
         const salesOrderId = String(rawSalesOrderId || '').trim();
@@ -392,19 +392,20 @@ class ProjectController {
                 tenderNumber: true,
                 status: true,
                 projectId: true,
+                // Malzeme/ürün birleşmesi (2026-08-14): satırlar Article'a bağlı;
+                // istemci `article`/`articleId` okur (eski `material` alanı kalktı).
+                // Pozisyon malzeme eşlemeleri (PositionMaterialMapping) tabloyla
+                // birlikte kaldırıldı — malzeme listesi yalnızca usedMaterials'tır.
                 usedMaterials: {
                     orderBy: { createdAt: "desc" },
-                    // Same lite material shape as the position mappings below —
-                    // both feed one material list. `material: true` would also
-                    // pull the imageUrl TEXT column, which nothing here renders.
                     select: {
                         id: true,
-                        materialId: true,
+                        articleId: true,
                         quantity: true,
                         unitCost: true,
                         description: true,
-                        material: {
-                            select: { id: true, serialId: true, name: true, stockQuantity: true, unitCost: true },
+                        article: {
+                            select: { id: true, articleCode: true, name: true, salePrice: true },
                         },
                     },
                 },
@@ -413,23 +414,6 @@ class ProjectController {
                         id: true,
                         positionNumber: true,
                         shortDescription: true,
-                        materialMappings: {
-                            select: {
-                                id: true,
-                                materialId: true,
-                                quantityMultiplier: true,
-                                discount: true,
-                                material: {
-                                    select: {
-                                        id: true,
-                                        serialId: true,
-                                        name: true,
-                                        stockQuantity: true,
-                                        unitCost: true,
-                                    },
-                                },
-                            },
-                        },
                     },
                 },
             },
@@ -465,7 +449,7 @@ class ProjectController {
                     expenses: { orderBy: { expenseDate: "desc" } },
                     extraMaterials: {
                         orderBy: { addedAt: "desc" },
-                        include: { material: { select: { id: true, serialId: true, name: true, stockQuantity: true, unitCost: true } } },
+                        include: { article: { select: { id: true, articleCode: true, name: true, salePrice: true } } },
                     },
                 },
             },
@@ -627,11 +611,9 @@ class ProjectController {
                             usedMaterials: {
                                 select: {
                                     id: true,
-                                    materialId: true,
                                     articleId: true,
                                     quantity: true,
                                     costAtTime: true,
-                                    material: { select: { id: true, name: true } },
                                     article: { select: { id: true, name: true } },
                                 },
                             },
@@ -686,20 +668,19 @@ class ProjectController {
                 orderBy: { addedAt: "desc" },
                 select: {
                     id: true,
-                    materialId: true,
+                    articleId: true,
                     quantity: true,
                     unitPrice: true,
                     description: true,
                     addedAt: true,
                     appointmentId: true,
                     salesOrderId: true,
-                    material: {
+                    article: {
                         select: {
                             id: true,
-                            serialId: true,
+                            articleCode: true,
                             name: true,
-                            stockQuantity: true,
-                            unitCost: true,
+                            salePrice: true,
                         },
                     },
                 },
@@ -1047,7 +1028,6 @@ class ProjectController {
                             quantity: true,
                             costAtTime: true,
                             article: { select: { articleCode: true, name: true, unit: true } },
-                            material: { select: { name: true } },
                         },
                     },
                 },
@@ -1065,7 +1045,7 @@ class ProjectController {
                         quantity: true,
                         unitPrice: true,
                         description: true,
-                        material: { select: { name: true } },
+                        article: { select: { name: true } },
                     },
                 }),
                 prisma_client_1.default.projectExpense.findMany({
@@ -1631,75 +1611,48 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
+    /**
+     * Saha ekranlarının "malzeme" kataloğu — malzeme/ürün birleşmesinden
+     * (2026-08-14) beri ÜRÜN listesidir. Yanıt eski ProjectMaterial biçimini
+     * korur (serialId=articleCode, unitCost=salePrice, stockQuantity=bakiye
+     * toplamı), böylece montaj/rapor/teklif seçicileri değişmeden çalışır.
+     */
     async listMaterials(req, res) {
         try {
-            const materials = await this.materialRepository.list(req.user.tenantId, { compact: req.query.view === "picker" });
-            res.status(200).json(materials);
-        }
-        catch (error) {
-            res.status(400).json({ error: error.message });
-        }
-    }
-    async createMaterial(req, res) {
-        try {
-            const name = String(req.body.name || '').trim();
-            const serialId = String(req.body.serialId || '').trim();
-            const unitCost = Number(req.body.unitCost || 0);
-            const stockQuantity = Number(req.body.stockQuantity || 0);
-            const imageUrl = req.body.imageUrl ? String(req.body.imageUrl) : null;
-            if (!name)
-                return res.status(400).json({ error: "Malzeme adi zorunludur." });
-            if (!serialId)
-                return res.status(400).json({ error: "Seri kodu zorunludur." });
-            if (unitCost < 0 || stockQuantity < 0)
-                return res.status(400).json({ error: "Fiyat ve stok negatif olamaz." });
-            const material = await this.materialRepository.createMaterial(req.user.tenantId, name, serialId, unitCost, stockQuantity, imageUrl);
-            res.status(201).json(material);
-        }
-        catch (error) {
-            res.status(400).json({ error: error.message });
-        }
-    }
-    async updateMaterial(req, res) {
-        try {
-            const material = await this.materialRepository.findById(req.params.materialId);
-            if (!material || material.tenantId !== req.user.tenantId) {
-                return res.status(404).json({ error: "Malzeme bulunamadı." });
-            }
-            const patch = {};
-            if (req.body.name !== undefined)
-                patch.name = String(req.body.name).trim();
-            if (req.body.serialId !== undefined)
-                patch.serialId = String(req.body.serialId).trim();
-            if (req.body.unitCost !== undefined)
-                patch.unitCost = Number(req.body.unitCost);
-            if (req.body.stockQuantity !== undefined)
-                patch.stockQuantity = Number(req.body.stockQuantity);
-            if (req.body.imageUrl !== undefined)
-                patch.imageUrl = req.body.imageUrl ? String(req.body.imageUrl) : null;
-            if (req.body.isActive !== undefined)
-                patch.isActive = Boolean(req.body.isActive);
-            if (patch.name === '')
-                return res.status(400).json({ error: "Malzeme adi zorunludur." });
-            if (patch.serialId === '')
-                return res.status(400).json({ error: "Seri kodu zorunludur." });
-            if (patch.unitCost < 0 || patch.stockQuantity < 0)
-                return res.status(400).json({ error: "Fiyat ve stok negatif olamaz." });
-            const updated = await this.materialRepository.updateMaterial(material.id, patch);
-            res.status(200).json(updated);
-        }
-        catch (error) {
-            res.status(400).json({ error: error.message });
-        }
-    }
-    async deleteMaterial(req, res) {
-        try {
-            const material = await this.materialRepository.findById(req.params.materialId);
-            if (!material || material.tenantId !== req.user.tenantId) {
-                return res.status(404).json({ error: "Malzeme bulunamadı." });
-            }
-            await this.materialRepository.softDeleteMaterial(material.id);
-            res.status(204).send();
+            const tenantId = req.user.tenantId;
+            const compact = req.query.view === "picker";
+            const [articles, balances] = await Promise.all([
+                prisma_client_1.default.article.findMany({
+                    where: { tenantId, deletedAt: null, isActive: true },
+                    select: {
+                        id: true,
+                        articleCode: true,
+                        name: true,
+                        unit: true,
+                        salePrice: true,
+                        ...(compact ? {} : { minStockLevel: true, criticalStockLevel: true }),
+                    },
+                    orderBy: { name: 'asc' },
+                }),
+                prisma_client_1.default.stockBalance.groupBy({
+                    by: ['articleId'],
+                    where: { tenantId },
+                    _sum: { currentQuantity: true },
+                }),
+            ]);
+            const stockByArticle = new Map(balances.map((row) => [row.articleId, Number(row._sum?.currentQuantity || 0)]));
+            res.status(200).json(articles.map((article) => ({
+                id: article.id,
+                serialId: article.articleCode,
+                name: article.name,
+                unit: article.unit,
+                unitCost: article.salePrice,
+                stockQuantity: stockByArticle.get(article.id) || 0,
+                ...(compact ? {} : {
+                    minStockLevel: article.minStockLevel,
+                    criticalStockLevel: article.criticalStockLevel,
+                }),
+            })));
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -1825,7 +1778,11 @@ class ProjectController {
      * einzelnen Löschen). `undefined` lässt die jeweilige Liste unangetastet.
      */
     async replaceAppointmentResources(args) {
-        const { tenantId, projectId, salesOrderId, appointmentId, reportId } = args;
+        const { tenantId, projectId, salesOrderId, appointmentId, reportId, employeeId } = args;
+        // İstemci artık yalnızca değişen kaynak gruplarını yollar. Hiçbiri
+        // değişmediyse transaction/okuma açmadan doğrudan rapor kaydına dön.
+        if (args.expenses === undefined && args.extraMaterials === undefined && args.usedMaterials === undefined)
+            return;
         const wantExpenses = args.expenses
             ?.map((row) => ({
             id: row.id ? String(row.id) : null,
@@ -1849,23 +1806,49 @@ class ProjectController {
             quantity: Number(row.quantity || 0),
         }))
             .filter((row) => row.materialId && row.quantity > 0);
-        // Ein Rundlauf für alle beteiligten Materialien (Tenant-Check + Kosten).
-        const materialIds = [...new Set([
+        // Ein Rundlauf für alle beteiligten Artikel (Tenant-Check + Preise +
+        // verfügbarer Bestand über alle Lagerorte).
+        const articleIds = [...new Set([
                 ...(wantExtras || []).map((row) => row.materialId),
                 ...(wantUsed || []).map((row) => row.materialId),
             ])];
-        const materialsById = new Map();
-        if (materialIds.length) {
-            const materials = await prisma_client_1.default.material.findMany({
-                where: { id: { in: materialIds }, tenantId },
-            });
-            for (const material of materials)
-                materialsById.set(material.id, material);
+        const articlesById = new Map();
+        const stockLeft = new Map();
+        if (articleIds.length) {
+            const [articles, balances] = await Promise.all([
+                prisma_client_1.default.article.findMany({
+                    where: { id: { in: articleIds }, tenantId },
+                    select: { id: true, name: true, salePrice: true },
+                }),
+                prisma_client_1.default.stockBalance.groupBy({
+                    by: ['articleId'],
+                    where: { articleId: { in: articleIds } },
+                    _sum: { currentQuantity: true },
+                }),
+            ]);
+            for (const article of articles)
+                articlesById.set(article.id, article);
+            for (const row of balances)
+                stockLeft.set(row.articleId, Number(row._sum?.currentQuantity || 0));
         }
-        const stockError = (material) => new Error(`[Stok uyarısı] ${material.name} için kayıtlı miktar yetersiz.`);
+        const stockError = (article) => new Error(`[Stok uyarısı] ${article.name} için kayıtlı miktar yetersiz.`);
+        // Verfügbarkeit wird lokal mitgeführt: mehrere Zeilen desselben Artikels
+        // dürfen zusammen nicht mehr verbrauchen, als tatsächlich am Lager ist.
+        const takeStock = (article, quantity) => {
+            const available = stockLeft.get(article.id) ?? 0;
+            if (available < quantity)
+                throw stockError(article);
+            stockLeft.set(article.id, available - quantity);
+        };
+        const giveStock = (articleId, quantity) => {
+            stockLeft.set(articleId, (stockLeft.get(articleId) ?? 0) + quantity);
+        };
         await prisma_client_1.default.$transaction(async (tx) => {
             if (wantExpenses) {
-                const existing = await tx.projectExpense.findMany({ where: { projectId, appointmentId } });
+                const existing = await tx.projectExpense.findMany({
+                    where: { projectId, appointmentId },
+                    select: { id: true, expenseType: true, amount: true },
+                });
                 const keptIds = new Set(wantExpenses.filter((row) => row.id).map((row) => row.id));
                 const removed = existing.filter((row) => !keptIds.has(row.id));
                 if (removed.length) {
@@ -1897,59 +1880,70 @@ class ProjectController {
                 }
             }
             if (wantExtras) {
-                const existing = await tx.projectExtraMaterial.findMany({ where: { projectId, appointmentId } });
+                // Bestandsbuchungen laufen über StockMovement/StockBalance —
+                // dieselbe Buchhaltung wie das Lager-Modul, nicht mehr das alte
+                // Skalarfeld der Material-Tabelle.
+                const restock = (articleId, quantity) => {
+                    giveStock(articleId, quantity);
+                    return (0, articleStock_1.adjustArticleStock)(tx, {
+                        tenantId, articleId, employeeId, quantity,
+                        direction: 'IN', referenceId: projectId, description: 'Zusatzmaterial iadesi',
+                    });
+                };
+                const consume = (article, quantity) => {
+                    takeStock(article, quantity);
+                    return (0, articleStock_1.adjustArticleStock)(tx, {
+                        tenantId, articleId: article.id, employeeId, quantity,
+                        direction: 'OUT', referenceId: projectId, description: 'Zusatzmaterial',
+                    });
+                };
+                const existing = await tx.projectExtraMaterial.findMany({
+                    where: { projectId, appointmentId },
+                    select: { id: true, articleId: true, quantity: true, description: true },
+                });
                 const keptIds = new Set(wantExtras.filter((row) => row.id).map((row) => row.id));
                 for (const current of existing) {
                     if (keptIds.has(current.id))
                         continue;
-                    await tx.material.update({
-                        where: { id: current.materialId },
-                        data: { stockQuantity: { increment: Number(current.quantity || 0) } },
-                    });
+                    await restock(current.articleId, Number(current.quantity || 0));
                     await tx.projectExtraMaterial.delete({ where: { id: current.id } });
                 }
                 for (const row of wantExtras) {
-                    const material = materialsById.get(row.materialId);
-                    // Unbekanntes / fremdes Material wird still übersprungen — wie bisher.
-                    if (!material)
+                    const article = articlesById.get(row.materialId);
+                    // Unbekannter / fremder Artikel wird still übersprungen — wie bisher.
+                    if (!article)
                         continue;
                     const current = row.id ? existing.find((item) => item.id === row.id) : null;
                     if (!current) {
-                        if (Number(material.stockQuantity || 0) < row.quantity)
-                            throw stockError(material);
-                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: row.quantity } } });
+                        await consume(article, row.quantity);
                         await tx.projectExtraMaterial.create({
                             data: {
                                 id: (0, nanoid_1.nanoid)(10),
                                 projectId,
                                 salesOrderId,
                                 appointmentId,
-                                materialId: material.id,
+                                articleId: article.id,
                                 quantity: row.quantity,
-                                unitPrice: Number(material.unitCost || 0),
+                                unitPrice: Number(article.salePrice || 0),
                                 description: row.description,
                             },
                         });
                     }
-                    else if (current.materialId !== row.materialId) {
-                        await tx.material.update({ where: { id: current.materialId }, data: { stockQuantity: { increment: Number(current.quantity || 0) } } });
-                        if (Number(material.stockQuantity || 0) < row.quantity)
-                            throw stockError(material);
-                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: row.quantity } } });
+                    else if (current.articleId !== row.materialId) {
+                        await restock(current.articleId, Number(current.quantity || 0));
+                        await consume(article, row.quantity);
                         await tx.projectExtraMaterial.update({
                             where: { id: current.id },
-                            data: { materialId: material.id, quantity: row.quantity, unitPrice: Number(material.unitCost || 0), description: row.description },
+                            data: { articleId: article.id, quantity: row.quantity, unitPrice: Number(article.salePrice || 0), description: row.description },
                         });
                     }
                     else {
                         const diff = row.quantity - Number(current.quantity || 0);
                         if (diff > 0) {
-                            if (Number(material.stockQuantity || 0) < diff)
-                                throw stockError(material);
-                            await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: diff } } });
+                            await consume(article, diff);
                         }
                         else if (diff < 0) {
-                            await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { increment: Math.abs(diff) } } });
+                            await restock(article.id, Math.abs(diff));
                         }
                         if (diff !== 0 || (current.description || null) !== row.description) {
                             await tx.projectExtraMaterial.update({
@@ -1961,7 +1955,10 @@ class ProjectController {
                 }
             }
             if (wantUsed) {
-                const existing = await tx.reportMaterial.findMany({ where: { reportId } });
+                const existing = await tx.reportMaterial.findMany({
+                    where: { reportId },
+                    select: { id: true, articleId: true, quantity: true },
+                });
                 const keptIds = new Set(wantUsed.filter((row) => row.id).map((row) => row.id));
                 const removed = existing.filter((row) => !keptIds.has(row.id));
                 if (removed.length) {
@@ -1976,16 +1973,16 @@ class ProjectController {
                         }
                     }
                     else {
-                        const material = materialsById.get(row.materialId);
-                        if (!material)
+                        const article = articlesById.get(row.materialId);
+                        if (!article)
                             continue;
                         await tx.reportMaterial.create({
                             data: {
                                 id: (0, nanoid_1.nanoid)(10),
                                 reportId,
-                                materialId: material.id,
+                                articleId: article.id,
                                 quantity: row.quantity,
-                                costAtTime: Number(material.unitCost || 0),
+                                costAtTime: Number(article.salePrice || 0),
                             },
                         });
                     }
@@ -2006,7 +2003,25 @@ class ProjectController {
             const appointmentId = String(req.params.appointmentId || '');
             const appointment = await prisma_client_1.default.appointment.findFirst({
                 where: { id: appointmentId, tenantId: req.user.tenantId, projectId: { not: null } },
-                include: { project: { include: { salesOrders: { orderBy: { createdAt: 'asc' } } } } },
+                select: {
+                    id: true,
+                    projectId: true,
+                    salesOrderId: true,
+                    startTime: true,
+                    endTime: true,
+                    project: {
+                        select: {
+                            id: true,
+                            status: true,
+                            overtimeTolerancePercent: true,
+                            overtimeHourlyRate: true,
+                            salesOrders: {
+                                orderBy: { createdAt: 'asc' },
+                                select: { id: true, createdAt: true },
+                            },
+                        },
+                    },
+                },
             });
             if (!appointment?.project)
                 return res.status(404).json({ error: "Montaj randevusu bulunamadı." });
@@ -2018,7 +2033,11 @@ class ProjectController {
                 : String(req.body.operationsDone || '').trim();
             if (!operationsDone)
                 return res.status(400).json({ error: "Yapilan isler zorunludur." });
-            const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user.tenantId, req.body.salesOrderId ?? appointment.salesOrderId);
+            const requestedSalesOrderId = String(req.body.salesOrderId ?? appointment.salesOrderId ?? '').trim();
+            if (requestedSalesOrderId && !appointment.project.salesOrders.some((order) => order.id === requestedSalesOrderId)) {
+                return res.status(400).json({ error: "Sipariş bu projeye ait değil." });
+            }
+            const salesOrderId = requestedSalesOrderId || null;
             // Der Termin besitzt seinen Rapport; Alt-Rapporte ohne appointmentId
             // desselben Tages werden weiterverwendet statt doppelt angelegt —
             // exakt die Logik von completeInstallation.
@@ -2040,6 +2059,10 @@ class ProjectController {
                 operationsDone,
                 technicalNotes: req.body.technicalNotes,
                 images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
+                projectContext: appointment.project,
+                deferResultHydration: true,
+                existingReportContext: existingReport || undefined,
+                duplicateCheckCompleted: true,
             };
             const reportResult = existingReport
                 ? await this.addReportUseCase.update(existingReport.id, reportInput)
@@ -2050,29 +2073,57 @@ class ProjectController {
                 salesOrderId,
                 appointmentId: appointment.id,
                 reportId: reportResult.id,
+                employeeId: req.user.id,
                 expenses: Array.isArray(req.body.expenses) ? req.body.expenses : undefined,
                 extraMaterials: Array.isArray(req.body.extraMaterials) ? req.body.extraMaterials : undefined,
                 usedMaterials: Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : undefined,
             });
-            await this.writeReportLog(reportResult.id, req.user.id, 'SAVED');
+            // Denetim kaydı best-effort'tür; kullanıcı yanıtını ayrı bir INSERT
+            // turu için bekletmez.
+            void this.writeReportLog(reportResult.id, req.user.id, 'SAVED');
+            // Das Büro erfährt vom eingegangenen Rapport (Glocke + Einblendung);
+            // die speichernde Person selbst bekommt nichts.
+            void (0, projectEventNotifications_1.notifyProjectEvent)({
+                tenantId: req.user.tenantId,
+                projectId: appointment.projectId,
+                event: 'FIELD_REPORT_RECEIVED',
+                report: 'FIELD',
+                reportId: reportResult.id,
+                actorEmployeeId: req.user.id,
+            });
             // Frischer Stand in einer Antwort — der Client muss nicht nachladen.
-            const [report, expenses, extraMaterials] = await Promise.all([
-                this.reportRepository.findById(reportResult.id),
+            const [report, expenses, rawExtraMaterials] = await Promise.all([
+                this.reportRepository.findSaveResultById(reportResult.id),
                 prisma_client_1.default.projectExpense.findMany({
                     where: { projectId: appointment.projectId, appointmentId: appointment.id },
                     orderBy: { expenseDate: 'asc' },
+                    select: { id: true, expenseType: true, amount: true },
                 }),
                 prisma_client_1.default.projectExtraMaterial.findMany({
                     where: { projectId: appointment.projectId, appointmentId: appointment.id },
                     orderBy: { addedAt: 'asc' },
-                    include: { material: { select: { id: true, name: true, unitCost: true, stockQuantity: true } } },
+                    select: {
+                        id: true,
+                        articleId: true,
+                        quantity: true,
+                        unitPrice: true,
+                        description: true,
+                        article: { select: { id: true, name: true } },
+                    },
                 }),
             ]);
             res.status(200).json({
                 message: "Saha raporu kaydedildi.",
                 report,
                 expenses,
-                extraMaterials,
+                extraMaterials: rawExtraMaterials.map((row) => ({
+                    id: row.id,
+                    materialId: row.articleId,
+                    quantity: row.quantity,
+                    unitPrice: row.unitPrice,
+                    description: row.description,
+                    material: row.article,
+                })),
                 overtimeWarning: reportResult.overtimeWarning || null,
             });
         }
@@ -2156,20 +2207,24 @@ class ProjectController {
             if (!report)
                 return res.status(404).json({ error: "Saha raporu bulunamadı." });
             const items = Array.isArray(req.body.materials) ? req.body.materials : [];
+            // `materialId` on the wire carries an Article id since the merge.
             const rows = [];
             for (const item of items) {
                 const quantity = Number(item.quantity || 0);
                 if (!item.materialId || quantity <= 0)
                     continue;
-                const material = await this.materialRepository.findById(String(item.materialId));
-                if (!material || material.tenantId !== req.user.tenantId)
+                const article = await prisma_client_1.default.article.findFirst({
+                    where: { id: String(item.materialId), tenantId: req.user.tenantId },
+                    select: { id: true, salePrice: true },
+                });
+                if (!article)
                     continue;
                 rows.push({
                     id: (0, nanoid_1.nanoid)(10),
                     reportId: report.id,
-                    materialId: material.id,
+                    articleId: article.id,
                     quantity,
-                    costAtTime: Number(material.unitCost || 0),
+                    costAtTime: Number(article.salePrice || 0),
                 });
             }
             if (rows.length) {
@@ -2187,12 +2242,20 @@ class ProjectController {
             const { signatureBase64 } = req.body;
             const report = await prisma_client_1.default.projectReport.findFirst({
                 where: { id: reportId, project: { tenantId: req.user.tenantId } },
-                select: { id: true },
+                select: { id: true, projectId: true },
             });
             if (!report)
                 return res.status(404).json({ error: "Saha raporu bulunamadı." });
             await this.reportRepository.signReport(reportId, signatureBase64);
             await this.writeReportLog(reportId, req.user.id, 'SIGNED');
+            void (0, projectEventNotifications_1.notifyProjectEvent)({
+                tenantId: req.user.tenantId,
+                projectId: report.projectId,
+                event: 'SIGNATURE_RECEIVED',
+                report: 'FIELD',
+                reportId,
+                actorEmployeeId: req.user.id,
+            });
             res.status(200).json({ message: "Rapor müşteri tarafından imzalandı." });
         }
         catch (error) {
@@ -2292,7 +2355,10 @@ class ProjectController {
                     || (isManagerCompletion ? "Saha çalışması yönetici tarafından tamamlandı." : "");
             if (!operationsDone)
                 return res.status(400).json({ error: "Yapilan isler zorunludur." });
-            const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user.tenantId, appointment.salesOrderId);
+            const salesOrderId = appointment.salesOrderId ? String(appointment.salesOrderId) : null;
+            if (salesOrderId && !appointment.project.salesOrders.some((order) => order.id === salesOrderId)) {
+                return res.status(400).json({ error: "Sipariş bu projeye ait değil." });
+            }
             // Field work belongs to its day: the report may end at the latest by midnight of the appointment day.
             const dayEnd = endOfDay(new Date(appointment.startTime));
             let endedAt = req.body.endedAt ? new Date(req.body.endedAt) : new Date();
@@ -2327,6 +2393,8 @@ class ProjectController {
                 operationsDone,
                 technicalNotes: req.body.technicalNotes,
                 images: Array.isArray(req.body.images) ? req.body.images.map(String) : undefined,
+                projectContext: appointment.project,
+                duplicateCheckCompleted: true,
             };
             // When a report already exists (e.g. a manager-drafted one), a technician
             // finishing the montaj applies their own field-report content to it — the
@@ -2335,7 +2403,7 @@ class ProjectController {
             // "Finish" never overwrites the report body with a default note.
             const reportResult = existingReport
                 ? (isManagerCompletion
-                    ? (await this.reportRepository.findById(existingReport.id) || existingReport)
+                    ? (await this.reportRepository.findSaveResultById(existingReport.id) || existingReport)
                     : await this.addReportUseCase.update(existingReport.id, reportPayload))
                 : await this.addReportUseCase.execute(reportPayload);
             // Der neue Client schickt den VOLLSTÄNDIGEN Ressourcen-Stand mit
@@ -2350,6 +2418,7 @@ class ProjectController {
                     salesOrderId,
                     appointmentId: appointment.id,
                     reportId: reportResult.id,
+                    employeeId: req.user.id,
                     expenses: Array.isArray(req.body.expenses) ? req.body.expenses : undefined,
                     extraMaterials: Array.isArray(req.body.materials) ? req.body.materials : undefined,
                     usedMaterials: Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : undefined,
@@ -2362,15 +2431,18 @@ class ProjectController {
                     const quantity = Number(material.quantity || 0);
                     if (!material.materialId || quantity <= 0)
                         continue;
-                    const materialRecord = await this.materialRepository.findById(String(material.materialId));
-                    if (!materialRecord || materialRecord.tenantId !== req.user.tenantId)
+                    const articleRecord = await prisma_client_1.default.article.findFirst({
+                        where: { id: String(material.materialId), tenantId: req.user.tenantId },
+                        select: { id: true, salePrice: true },
+                    });
+                    if (!articleRecord)
                         continue;
                     usedMaterialRows.push({
                         id: (0, nanoid_1.nanoid)(10),
                         reportId: reportResult.id,
-                        materialId: materialRecord.id,
+                        articleId: articleRecord.id,
                         quantity,
-                        costAtTime: Number(materialRecord.unitCost || 0),
+                        costAtTime: Number(articleRecord.salePrice || 0),
                     });
                 }
                 if (usedMaterialRows.length) {
@@ -2550,74 +2622,85 @@ class ProjectController {
         try {
             const existing = await prisma_client_1.default.projectExtraMaterial.findUnique({
                 where: { id: req.params.extraMaterialId },
-                include: { project: true, material: true },
+                include: { project: true, article: true },
             });
             if (!existing?.project || existing.project.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Ek malzeme bulunamadı." });
             }
-            const materialId = req.body.materialId !== undefined
+            // Draht-Feld heißt weiterhin `materialId`, trägt aber eine Artikel-Id.
+            const articleId = req.body.materialId !== undefined
                 ? String(req.body.materialId || "").trim()
-                : existing.materialId;
-            if (!materialId)
+                : existing.articleId;
+            if (!articleId)
                 return res.status(400).json({ error: "Malzeme seçimi zorunludur." });
             const quantity = req.body.quantity !== undefined ? Number(req.body.quantity || 0) : Number(existing.quantity || 0);
             if (quantity <= 0)
                 return res.status(400).json({ error: "Miktar sıfırdan büyük olmalıdır." });
-            const material = await this.materialRepository.findById(materialId);
-            if (!material || material.tenantId !== req.user.tenantId) {
+            const article = await prisma_client_1.default.article.findFirst({
+                where: { id: articleId, tenantId: req.user.tenantId },
+                select: { id: true, name: true, salePrice: true },
+            });
+            if (!article) {
                 return res.status(404).json({ error: "Malzeme bulunamadı." });
             }
-            const availableQuantity = Number(material.stockQuantity || 0) + (material.id === existing.materialId ? Number(existing.quantity || 0) : 0);
+            const stock = await (0, articleStock_1.articleStockTotal)(prisma_client_1.default, article.id);
+            const availableQuantity = stock + (article.id === existing.articleId ? Number(existing.quantity || 0) : 0);
             if (availableQuantity < quantity) {
-                return res.status(400).json({ error: `[Stok uyarısı] ${material.name} için kayıtlı miktar yetersiz.` });
+                return res.status(400).json({ error: `[Stok uyarısı] ${article.name} için kayıtlı miktar yetersiz.` });
             }
             const salesOrderId = req.body.salesOrderId !== undefined
                 ? await this.resolveProjectSalesOrderId(existing.projectId, req.user.tenantId, req.body.salesOrderId)
                 : existing.salesOrderId;
             const unitPrice = req.body.unitPrice !== undefined
                 ? Number(req.body.unitPrice || 0)
-                : material.id === existing.materialId
+                : article.id === existing.articleId
                     ? Number(existing.unitPrice || 0)
-                    : Number(material.unitCost || 0);
+                    : Number(article.salePrice || 0);
             if (unitPrice < 0)
                 return res.status(400).json({ error: "Birim fiyat negatif olamaz." });
             const description = req.body.description !== undefined
                 ? String(req.body.description || "").trim() || null
                 : existing.description;
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
             const updated = await prisma_client_1.default.$transaction(async (tx) => {
                 const previousQuantity = Number(existing.quantity || 0);
-                if (existing.materialId !== material.id) {
-                    await tx.material.update({
-                        where: { id: existing.materialId },
-                        data: { stockQuantity: { increment: previousQuantity } },
-                    });
-                    await tx.material.update({
-                        where: { id: material.id },
-                        data: { stockQuantity: { decrement: quantity } },
-                    });
+                const restock = (restockArticleId, restockQuantity) => (0, articleStock_1.adjustArticleStock)(tx, {
+                    tenantId, articleId: restockArticleId, employeeId, quantity: restockQuantity,
+                    direction: 'IN', referenceId: existing.projectId, description: 'Zusatzmaterial iadesi',
+                });
+                const consume = (consumeQuantity) => (0, articleStock_1.adjustArticleStock)(tx, {
+                    tenantId, articleId: article.id, employeeId, quantity: consumeQuantity,
+                    direction: 'OUT', referenceId: existing.projectId, description: 'Zusatzmaterial',
+                });
+                if (existing.articleId !== article.id) {
+                    await restock(existing.articleId, previousQuantity);
+                    await consume(quantity);
                 }
                 else {
                     const diff = quantity - previousQuantity;
-                    if (diff > 0) {
-                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { decrement: diff } } });
-                    }
-                    else if (diff < 0) {
-                        await tx.material.update({ where: { id: material.id }, data: { stockQuantity: { increment: Math.abs(diff) } } });
-                    }
+                    if (diff > 0)
+                        await consume(diff);
+                    else if (diff < 0)
+                        await restock(article.id, Math.abs(diff));
                 }
                 return await tx.projectExtraMaterial.update({
                     where: { id: existing.id },
                     data: {
-                        materialId: material.id,
+                        articleId: article.id,
                         salesOrderId,
                         quantity,
                         unitPrice,
                         description,
                     },
-                    include: { material: true },
+                    include: { article: true },
                 });
             });
-            res.status(200).json({ message: "Ek malzeme güncellendi.", extraMaterial: updated });
+            // Eski istemci sözleşmesi: yanıt `material`/`materialId` adlarını korur.
+            res.status(200).json({
+                message: "Ek malzeme güncellendi.",
+                extraMaterial: { ...updated, materialId: updated.articleId, material: updated.article },
+            });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -2633,9 +2716,14 @@ class ProjectController {
                 return res.status(404).json({ error: "Ek malzeme bulunamadı." });
             }
             await prisma_client_1.default.$transaction(async (tx) => {
-                await tx.material.update({
-                    where: { id: existing.materialId },
-                    data: { stockQuantity: { increment: Number(existing.quantity || 0) } },
+                await (0, articleStock_1.adjustArticleStock)(tx, {
+                    tenantId: req.user.tenantId,
+                    articleId: existing.articleId,
+                    employeeId: req.user.id,
+                    quantity: Number(existing.quantity || 0),
+                    direction: 'IN',
+                    referenceId: existing.projectId,
+                    description: 'Zusatzmaterial iadesi',
                 });
                 await tx.projectExtraMaterial.delete({ where: { id: existing.id } });
             });
@@ -2694,12 +2782,17 @@ class ProjectController {
                 // Stok iadesi silmeden ÖNCE — sipariş silmedeki kuralın aynısı.
                 const extraMaterials = await tx.projectExtraMaterial.findMany({
                     where: { projectId },
-                    select: { id: true, materialId: true, quantity: true },
+                    select: { id: true, articleId: true, quantity: true },
                 });
                 for (const row of extraMaterials) {
-                    await tx.material.update({
-                        where: { id: row.materialId },
-                        data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                    await (0, articleStock_1.adjustArticleStock)(tx, {
+                        tenantId: req.user.tenantId,
+                        articleId: row.articleId,
+                        employeeId: req.user.id,
+                        quantity: Number(row.quantity || 0),
+                        direction: 'IN',
+                        referenceId: projectId,
+                        description: 'Zusatzmaterial iadesi',
                     });
                 }
                 if (extraMaterials.length) {
@@ -2770,12 +2863,17 @@ class ProjectController {
                     };
                     const extraMaterials = await tx.projectExtraMaterial.findMany({
                         where: { projectId, OR: [{ salesOrderId: order.id }, legacyWindow] },
-                        select: { id: true, materialId: true, quantity: true },
+                        select: { id: true, articleId: true, quantity: true },
                     });
                     for (const row of extraMaterials) {
-                        await tx.material.update({
-                            where: { id: row.materialId },
-                            data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                        await (0, articleStock_1.adjustArticleStock)(tx, {
+                            tenantId: req.user.tenantId,
+                            articleId: row.articleId,
+                            employeeId: req.user.id,
+                            quantity: Number(row.quantity || 0),
+                            direction: 'IN',
+                            referenceId: projectId,
+                            description: 'Zusatzmaterial iadesi',
                         });
                     }
                     if (extraMaterials.length) {
@@ -2803,12 +2901,17 @@ class ProjectController {
                     // Restock every extra material before removing it.
                     const extraMaterials = await tx.projectExtraMaterial.findMany({
                         where: { projectId, salesOrderId: { in: familyIds } },
-                        select: { id: true, materialId: true, quantity: true },
+                        select: { id: true, articleId: true, quantity: true },
                     });
                     for (const row of extraMaterials) {
-                        await tx.material.update({
-                            where: { id: row.materialId },
-                            data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                        await (0, articleStock_1.adjustArticleStock)(tx, {
+                            tenantId: req.user.tenantId,
+                            articleId: row.articleId,
+                            employeeId: req.user.id,
+                            quantity: Number(row.quantity || 0),
+                            direction: 'IN',
+                            referenceId: projectId,
+                            description: 'Zusatzmaterial iadesi',
                         });
                     }
                     if (extraMaterials.length) {
@@ -3232,12 +3335,17 @@ class ProjectController {
                             { ...fallbackScope, addedAt: { gte: dayStart, lte: dayEnd } },
                         ],
                     },
-                    select: { id: true, materialId: true, quantity: true },
+                    select: { id: true, articleId: true, quantity: true },
                 });
                 for (const row of extraMaterials) {
-                    await tx.material.update({
-                        where: { id: row.materialId },
-                        data: { stockQuantity: { increment: Number(row.quantity || 0) } },
+                    await (0, articleStock_1.adjustArticleStock)(tx, {
+                        tenantId: req.user.tenantId,
+                        articleId: row.articleId,
+                        employeeId: req.user.id,
+                        quantity: Number(row.quantity || 0),
+                        direction: 'IN',
+                        referenceId: appointment.projectId,
+                        description: 'Zusatzmaterial iadesi',
                     });
                 }
                 if (extraMaterials.length) {

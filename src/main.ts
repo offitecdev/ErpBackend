@@ -32,10 +32,16 @@ import salesOrderRoutes from './presentation/routes/sales-order.routes';
 import billingRoutes from './presentation/routes/billing.routes';
 import notificationRoutes from './presentation/routes/notification.routes';
 import meetingRoutes from './presentation/routes/meeting.routes';
+import crmRoutes from './presentation/routes/crm.routes';
+import formsRoutes from './presentation/routes/forms.routes';
+import settingsGateRoutes from './presentation/routes/settingsGate.routes';
+import reminderSettingsRoutes from './presentation/routes/reminderSettings.routes';
+import authorizationRoutes from './presentation/routes/authorization.routes';
 import fxRoutes from './presentation/routes/fx.routes';
 import filesRoutes from './presentation/routes/files.routes';
 import dashboardRoutes from './presentation/routes/dashboard.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
+import { startReminderEngine } from './infrastructure/services/ReminderEngine';
 import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
 import prisma from './infrastructure/database/prisma.client';
 
@@ -87,7 +93,10 @@ app.use(cors({
 }));
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cookieParser());
-app.use(morgan('combined'));
+// 'combined' plus the response time: the API has a 100-200 ms budget per
+// endpoint against the remote database, so the one number that matters when
+// reading the log must be in the log.
+app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] :response-time ms'));
 // 15 MB is the global upload/body ceiling (mirrors MAX_UPLOAD_BYTES).
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ limit: '15mb', extended: true }));
@@ -116,6 +125,10 @@ app.get(['/health', '/backend/health'], (_req, res) => {
 for (const prefix of apiPrefixes) {
     app.use(`${prefix}/auth`, authRoutes);
     app.use(`${prefix}/employees`, employeeRoutes);
+    // Berechtigungsseite — eigener Router auf demselben Pfad; seine Routen
+    // ('/authorization/list', '/:id/authorization') sind zweigliedrig und
+    // kollidieren deshalb nicht mit dem '/:id' des Personal-Routers davor.
+    app.use(`${prefix}/employees`, authorizationRoutes);
     app.use(`${prefix}/leaves`, leaveRoutes);
     app.use(`${prefix}/tenants`, tenantRoutes);
     app.use(`${prefix}/customers`, customerRoutes);
@@ -138,6 +151,11 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/regie`, regieRoutes);
     app.use(`${prefix}/notifications`, notificationRoutes);
     app.use(`${prefix}/meetings`, meetingRoutes);
+    app.use(`${prefix}/crm`, crmRoutes);
+    // Checklisten / Formulare / Vorlagen (CRM-Modul, siehe forms.routes.ts).
+    app.use(`${prefix}/forms`, formsRoutes);
+    app.use(`${prefix}/settings`, settingsGateRoutes);
+    app.use(`${prefix}/settings/reminder-settings`, reminderSettingsRoutes);
     app.use(`${prefix}/fx`, fxRoutes);
     app.use(`${prefix}/files`, filesRoutes);
     app.use(`${prefix}/dashboard`, dashboardRoutes);
@@ -150,6 +168,7 @@ app.listen(PORT, () => {
     console.log(`API Docs  -> http://localhost:${PORT}/api-docs`);
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     startMaintenanceReminderService();
+    startReminderEngine();
     // Open the remote-DB connection pool now instead of on the first request,
     // which otherwise pays the connection handshakes itself. Several parallel
     // probes force several pool connections open: batch saves fire their

@@ -802,12 +802,14 @@ class TenderController {
                 else {
                     // Array or JSON string, bare percents or {percent, date} —
                     // one normaliser handles every shape the clients send.
+                    // Fälligkeiten gehören zum AUFTRAG: die Offerte hält nur die
+                    // Prozente, ein mitgeschicktes Datum wird verworfen.
                     const stages = (0, paymentSchedule_1.normalizePaymentStages)(rawMeta.paymentStages);
-                    const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages) : "Geçersiz ödeme planı.";
+                    const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages, { requireDates: false }) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         throw new TenderValidationError(stageError);
                     }
-                    metaData.paymentStages = (0, paymentSchedule_1.serializePaymentStages)(stages);
+                    metaData.paymentStages = (0, paymentSchedule_1.serializePaymentStages)((0, paymentSchedule_1.stripStageDates)(stages));
                 }
             }
             if (rawMeta.billingSameAsInstallation !== undefined) {
@@ -1000,11 +1002,10 @@ class TenderController {
                                 OR par.\`parentPositionId\` IN (${deletePlaceholders})
                                 OR par2.\`parentPositionId\` IN (${deletePlaceholders}))`;
                     const doomedParameters = [tenantId, tenderId, ...deleteIds, ...deleteIds, ...deleteIds, ...deleteIds];
-                    const clearDependentRows = () => prisma_client_1.default.$executeRawUnsafe(`DELETE ci, pam, pmm
+                    const clearDependentRows = () => prisma_client_1.default.$executeRawUnsafe(`DELETE ci, pam
                          FROM \`Position\` AS p${doomedJoins}
                          LEFT JOIN \`CalculationItem\` AS ci ON ci.\`positionId\` = p.\`id\`
                          LEFT JOIN \`PositionArticleMapping\` AS pam ON pam.\`positionId\` = p.\`id\`
-                         LEFT JOIN \`PositionMaterialMapping\` AS pmm ON pmm.\`positionId\` = p.\`id\`
                          WHERE ${doomedWhere}`, ...doomedParameters);
                     const deletePositionRows = () => prisma_client_1.default.$executeRawUnsafe(`DELETE p
                          FROM \`Position\` AS p${doomedJoins}
@@ -1668,11 +1669,10 @@ class TenderController {
                     // One statement clears every dependent table (correct whether
                     // or not their FKs cascade) instead of three round-trips.
                     const deletePlaceholders = allDeleteIdList.map(() => '?').join(', ');
-                    await tx.$executeRawUnsafe(`DELETE ci, pam, pmm
+                    await tx.$executeRawUnsafe(`DELETE ci, pam
                          FROM \`Position\` AS p
                          LEFT JOIN \`CalculationItem\` AS ci ON ci.\`positionId\` = p.\`id\`
                          LEFT JOIN \`PositionArticleMapping\` AS pam ON pam.\`positionId\` = p.\`id\`
-                         LEFT JOIN \`PositionMaterialMapping\` AS pmm ON pmm.\`positionId\` = p.\`id\`
                          WHERE p.\`tenantId\` = ? AND p.\`tenderId\` = ? AND p.\`id\` IN (${deletePlaceholders})`, tenantId, tenderId, ...allDeleteIdList);
                     const deleted = await tx.position.deleteMany({ where: { id: { in: allDeleteIdList }, tenderId, tenantId } });
                     if (deleted.count !== allDeleteIdList.length) {
@@ -1758,7 +1758,6 @@ class TenderController {
                     taxRate: item.data.taxRate,
                     calculation: null,
                     articleMappings: [],
-                    materialMappings: [],
                 },
             }));
             const updatedPositions = preparedUpdates.map((entry) => {
@@ -1919,12 +1918,14 @@ class TenderController {
                     data.paymentStages = null;
                 }
                 else {
+                    // Ödeme tarihleri SİPARİŞE aittir; teklif yalnızca yüzdeleri
+                    // tutar (gelen tarihler yazılmadan atılır).
                     const stages = (0, paymentSchedule_1.normalizePaymentStages)(paymentStages);
-                    const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages) : "Geçersiz ödeme planı.";
+                    const stageError = stages ? (0, paymentSchedule_1.validatePaymentStages)(stages, { requireDates: false }) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         return res.status(400).json({ error: stageError });
                     }
-                    data.paymentStages = (0, paymentSchedule_1.serializePaymentStages)(stages);
+                    data.paymentStages = (0, paymentSchedule_1.serializePaymentStages)((0, paymentSchedule_1.stripStageDates)(stages));
                 }
             }
             if (billingSameAsInstallation !== undefined) {

@@ -23,7 +23,7 @@ class Article {
     defaultSupplierId;
     itemType;
     constructor(id, tenantId, articleCode, name, baseCost, unit, description, systemBarcode, supplierBarcode, imageUrl, category, status = 'ACTIVE', isActive = true, minStockLevel = 0, criticalStockLevel = 0, maxStockLevel, lastPurchaseDate, salePrice = 0, defaultSupplierId, 
-    /** PRODUCT | MATERIAL — envanter kalemi tipi */
+    /** PRODUCT | SERVICE — ürün/hizmet sınıflandırması (detay ekranından değiştirilir) */
     itemType = 'PRODUCT') {
         this.id = id;
         this.tenantId = tenantId;

@@ -36,10 +36,16 @@ const sales_order_routes_1 = __importDefault(require("./presentation/routes/sale
 const billing_routes_1 = __importDefault(require("./presentation/routes/billing.routes"));
 const notification_routes_1 = __importDefault(require("./presentation/routes/notification.routes"));
 const meeting_routes_1 = __importDefault(require("./presentation/routes/meeting.routes"));
+const crm_routes_1 = __importDefault(require("./presentation/routes/crm.routes"));
+const forms_routes_1 = __importDefault(require("./presentation/routes/forms.routes"));
+const settingsGate_routes_1 = __importDefault(require("./presentation/routes/settingsGate.routes"));
+const reminderSettings_routes_1 = __importDefault(require("./presentation/routes/reminderSettings.routes"));
+const authorization_routes_1 = __importDefault(require("./presentation/routes/authorization.routes"));
 const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
 const files_routes_1 = __importDefault(require("./presentation/routes/files.routes"));
 const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashboard.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
+const ReminderEngine_1 = require("./infrastructure/services/ReminderEngine");
 const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
 const prisma_client_1 = __importDefault(require("./infrastructure/database/prisma.client"));
 const app = (0, express_1.default)();
@@ -88,7 +94,10 @@ app.use((0, cors_1.default)({
 }));
 app.use((0, helmet_1.default)({ crossOriginResourcePolicy: false }));
 app.use((0, cookie_parser_1.default)());
-app.use((0, morgan_1.default)('combined'));
+// 'combined' plus the response time: the API has a 100-200 ms budget per
+// endpoint against the remote database, so the one number that matters when
+// reading the log must be in the log.
+app.use((0, morgan_1.default)(':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] :response-time ms'));
 // 15 MB is the global upload/body ceiling (mirrors MAX_UPLOAD_BYTES).
 app.use(express_1.default.json({ limit: '15mb' }));
 app.use(express_1.default.urlencoded({ limit: '15mb', extended: true }));
@@ -110,6 +119,10 @@ app.get(['/health', '/backend/health'], (_req, res) => {
 for (const prefix of apiPrefixes) {
     app.use(`${prefix}/auth`, auth_routes_1.default);
     app.use(`${prefix}/employees`, employee_routes_1.default);
+    // Berechtigungsseite — eigener Router auf demselben Pfad; seine Routen
+    // ('/authorization/list', '/:id/authorization') sind zweigliedrig und
+    // kollidieren deshalb nicht mit dem '/:id' des Personal-Routers davor.
+    app.use(`${prefix}/employees`, authorization_routes_1.default);
     app.use(`${prefix}/leaves`, leave_routes_1.default);
     app.use(`${prefix}/tenants`, tenant_routes_1.default);
     app.use(`${prefix}/customers`, customer_routes_1.default);
@@ -132,6 +145,11 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/regie`, regie_routes_1.default);
     app.use(`${prefix}/notifications`, notification_routes_1.default);
     app.use(`${prefix}/meetings`, meeting_routes_1.default);
+    app.use(`${prefix}/crm`, crm_routes_1.default);
+    // Checklisten / Formulare / Vorlagen (CRM-Modul, siehe forms.routes.ts).
+    app.use(`${prefix}/forms`, forms_routes_1.default);
+    app.use(`${prefix}/settings`, settingsGate_routes_1.default);
+    app.use(`${prefix}/settings/reminder-settings`, reminderSettings_routes_1.default);
     app.use(`${prefix}/fx`, fx_routes_1.default);
     app.use(`${prefix}/files`, files_routes_1.default);
     app.use(`${prefix}/dashboard`, dashboard_routes_1.default);
@@ -142,6 +160,7 @@ app.listen(PORT, () => {
     console.log(`API Docs  -> http://localhost:${PORT}/api-docs`);
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     (0, MaintenanceReminderService_1.startMaintenanceReminderService)();
+    (0, ReminderEngine_1.startReminderEngine)();
     // Open the remote-DB connection pool now instead of on the first request,
     // which otherwise pays the connection handshakes itself. Several parallel
     // probes force several pool connections open: batch saves fire their

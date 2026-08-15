@@ -128,6 +128,9 @@ model Employee {
   issuedInvoices                Invoice[]                      @relation("EmployeeIssuedInvoices")
   createdMeetingActivities      MeetingActivity[]              @relation("MeetingActivityCreator")
   meetingParticipations         MeetingActivityParticipant[]   @relation("MeetingParticipantEmployee")
+  crmCommunications             CrmCommunication[]             @relation("CrmCommunicationCreator")
+  assignedCrmTasks              CrmTask[]                      @relation("CrmTaskAssignee")
+  createdCrmTasks               CrmTask[]                      @relation("CrmTaskCreator")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }

@@ -9,7 +9,6 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const AddProjectReportUseCase_1 = require("../../application/use-cases/project/AddProjectReportUseCase");
 const ProjectReportRepository_1 = require("../repositories/ProjectReportRepository");
 const ProjectRepository_1 = require("../repositories/ProjectRepository");
-const MaterialRepository_1 = require("../repositories/MaterialRepository");
 let started = false;
 const startOfDay = (date) => {
     const d = new Date(date);
@@ -22,7 +21,7 @@ const endOfDay = (date) => {
     return d;
 };
 const projectReportRepository = new ProjectReportRepository_1.ProjectReportRepository();
-const addProjectReportUseCase = new AddProjectReportUseCase_1.AddProjectReportUseCase(projectReportRepository, new ProjectRepository_1.ProjectRepository(), new MaterialRepository_1.MaterialRepository());
+const addProjectReportUseCase = new AddProjectReportUseCase_1.AddProjectReportUseCase(projectReportRepository, new ProjectRepository_1.ProjectRepository());
 const taskTechnicianIds = (task) => [
     task.assignedTechId,
     task.alternativeTechId,

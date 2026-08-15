@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "../../infrastructure/database/prisma.client";
 import { nanoid } from "nanoid";
+import { notifyProjectEvent } from "../../infrastructure/services/projectEventNotifications";
 
 type ResponseInput = {
     id?: string;
@@ -217,6 +218,10 @@ export class DeliveryReportController {
                         sentAt: now,
                     },
                 });
+                void notifyProjectEvent({
+                    tenantId, projectId: report.projectId, event: 'DELIVERY_REPORT_RECEIVED',
+                    report: 'DELIVERY', reportId: report.id, actorEmployeeId: employeeId,
+                });
                 return res.status(200).json(report);
             }
 
@@ -238,6 +243,11 @@ export class DeliveryReportController {
                     signedAt: signature ? now : null,
                     sentAt: now,
                 },
+            });
+            // Das Büro erfährt vom eingegangenen Übergabe-Rapport.
+            void notifyProjectEvent({
+                tenantId, projectId: report.projectId, event: 'DELIVERY_REPORT_RECEIVED',
+                report: 'DELIVERY', reportId: report.id, actorEmployeeId: employeeId,
             });
             res.status(201).json(report);
         } catch (error: any) {
@@ -282,6 +292,10 @@ export class DeliveryReportController {
             const report = await prisma.deliveryReport.update({
                 where: { id: existing.id },
                 data: { customerSignature: signature, isSigned: true, signedAt: new Date() },
+            });
+            void notifyProjectEvent({
+                tenantId, projectId: report.projectId, event: 'SIGNATURE_RECEIVED',
+                report: 'DELIVERY', reportId: report.id, actorEmployeeId: req.user!.id,
             });
             res.status(200).json(report);
         } catch (error: any) {

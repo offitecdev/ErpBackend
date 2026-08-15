@@ -1,14 +1,18 @@
 // Payment schedule (Zahlungsplan) helpers. A schedule is an array of
-// instalments, each carrying a percentage of the gross total and the day it
-// falls due (e.g. 30% on 2026-09-01, 70% on 2026-11-15), persisted as a JSON
-// string on Tender.paymentStages / SalesOrder.paymentStages. Stages carry no
-// identity: billing progress is derived by comparing the summed billedPercent
-// against the cumulative stage percents, so custom-percent deviations self-heal
-// instead of desyncing a stage↔invoice link.
+// instalments, each carrying a percentage of the gross total and — ON THE ORDER
+// — the day it falls due (e.g. 30% on 2026-09-01, 70% on 2026-11-15), persisted
+// as a JSON string on Tender.paymentStages / SalesOrder.paymentStages. Stages
+// carry no identity: billing progress is derived by comparing the summed
+// billedPercent against the cumulative stage percents, so custom-percent
+// deviations self-heal instead of desyncing a stage↔invoice link.
+//
+// DUE DATES BELONG TO THE ORDER, NOT THE OFFER (Vorgabe 15.08.2026). The offer
+// fixes only the percentages, so its write path validates with
+// `requireDates: false` and stores the dates as null (`stripStageDates`); the
+// order's own endpoint keeps demanding a date per instalment.
 //
 // Legacy rows hold a bare percent array (`[30,20,10,40]`) from before dates
-// existed. They still parse — the dates come back null — but validation now
-// demands a date per stage, so the next write fills them in.
+// existed. They still parse — the dates come back null.
 //
 // Frontend mirror: offitec-frontend/src/lib/paymentSchedule.ts — keep in sync.
 
@@ -68,7 +72,14 @@ const parseJsonArray = (raw: unknown): unknown[] | null => {
 export const parsePaymentStages = (raw: string | null | undefined): PaymentStage[] | null =>
     normalizePaymentStages(raw);
 
-export const validatePaymentStages = (stages: PaymentStage[]): string | null => {
+/** Drops the due dates — the offer stores percentages only. */
+export const stripStageDates = (stages: PaymentStage[]): PaymentStage[] =>
+    stages.map((stage) => ({ ...stage, date: null }));
+
+export const validatePaymentStages = (
+    stages: PaymentStage[],
+    { requireDates = true }: { requireDates?: boolean } = {},
+): string | null => {
     if (stages.length === 0 || stages.length > MAX_PAYMENT_STAGES) {
         return `Ödeme planı 1 ile ${MAX_PAYMENT_STAGES} taksit arasında olmalıdır.`;
     }
@@ -76,7 +87,7 @@ export const validatePaymentStages = (stages: PaymentStage[]): string | null => 
         if (!Number.isFinite(stage.percent) || round2(stage.percent) <= 0 || round2(stage.percent) > 100) {
             return "Her taksit %0'dan büyük ve en fazla %100 olmalıdır.";
         }
-        if (!isValidStageDate(stage.date)) {
+        if (requireDates && !isValidStageDate(stage.date)) {
             return 'Her taksit için bir ödeme tarihi seçilmelidir.';
         }
     }

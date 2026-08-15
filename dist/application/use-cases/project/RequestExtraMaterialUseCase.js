@@ -1,37 +1,49 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RequestExtraMaterialUseCase = void 0;
+const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const articleStock_1 = require("../../../shared/articleStock");
 const nanoid_1 = require("nanoid");
+/**
+ * Zusatzmaterial talebi. Malzeme/ürün birleşmesinden (2026-08-14) beri satırlar
+ * doğrudan Article'a bağlanır; istek gövdesi geriye uyum için `materialId`
+ * adıyla gelmeye devam eder ve artık bir ürün id'si taşır.
+ */
 class RequestExtraMaterialUseCase {
     projectRepository;
-    materialRepository;
-    constructor(projectRepository, materialRepository) {
+    constructor(projectRepository) {
         this.projectRepository = projectRepository;
-        this.materialRepository = materialRepository;
     }
-    async execute(projectId, employeeId, materialId, quantity, description, salesOrderId, appointmentId) {
+    async execute(projectId, employeeId, articleId, quantity, description, salesOrderId, appointmentId) {
         const project = await this.projectRepository.findById(projectId);
         if (!project)
             throw new Error("Proje bulunamadı.");
-        const material = await this.materialRepository.findById(materialId);
-        if (!material)
+        const article = await prisma_client_1.default.article.findFirst({
+            where: { id: articleId, deletedAt: null },
+            select: { id: true, name: true, salePrice: true },
+        });
+        if (!article)
             throw new Error("Ek malzeme bulunamadı.");
         const normalizedQuantity = Number(quantity || 0);
         if (normalizedQuantity <= 0)
             throw new Error("Miktar sıfırdan büyük olmalıdır.");
-        if (material.stockQuantity < normalizedQuantity) {
-            throw new Error(`[Stok uyarısı] ${material.name} için kayıtlı miktar yetersiz.`);
+        const stock = await (0, articleStock_1.articleStockTotal)(prisma_client_1.default, articleId);
+        if (stock < normalizedQuantity) {
+            throw new Error(`[Stok uyarısı] ${article.name} için kayıtlı miktar yetersiz.`);
         }
         return await this.projectRepository.createExtraMaterial({
             id: (0, nanoid_1.nanoid)(10),
             projectId,
             salesOrderId: salesOrderId || null,
             appointmentId: appointmentId || null,
-            materialId,
+            articleId,
             quantity: normalizedQuantity,
-            unitPrice: material.unitCost,
+            unitPrice: article.salePrice,
             description: description || null
-        });
+        }, employeeId, project.tenantId);
     }
 }
 exports.RequestExtraMaterialUseCase = RequestExtraMaterialUseCase;

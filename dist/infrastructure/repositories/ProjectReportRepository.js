@@ -6,6 +6,46 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectReportRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const nanoid_1 = require("nanoid");
+// Saha raporu kaydetme yanıtı: editör/PDF'nin kullandığı alanlar. İmza blobu,
+// tam Article/Material kayıtları ve diğer proje ilişkileri bilinçli olarak yoktur.
+const reportSaveSelect = {
+    id: true,
+    projectId: true,
+    salesOrderId: true,
+    appointmentId: true,
+    employeeId: true,
+    reportDate: true,
+    reportType: true,
+    workDate: true,
+    startedAt: true,
+    endedAt: true,
+    workedMinutes: true,
+    plannedMinutesForDay: true,
+    overtimeMinutes: true,
+    overtimeHourlyRate: true,
+    overtimeCost: true,
+    operationsDone: true,
+    technicalNotes: true,
+    isSigned: true,
+    signedAt: true,
+    hoursApprovedAt: true,
+    hoursApprovedById: true,
+    autoApproved: true,
+    employee: { select: { id: true, firstName: true, lastName: true } },
+    usedMaterials: {
+        select: {
+            id: true,
+            articleId: true,
+            quantity: true,
+            costAtTime: true,
+            article: { select: { id: true, name: true } },
+        },
+    },
+    images: {
+        orderBy: { createdAt: "asc" },
+        select: { id: true, imageData: true, caption: true, createdAt: true },
+    },
+};
 class ProjectReportRepository {
     async createReport(reportData) {
         return await prisma_client_1.default.projectReport.create({
@@ -40,10 +80,46 @@ class ProjectReportRepository {
             where: { id },
             include: {
                 usedMaterials: {
-                    include: { material: true }
+                    include: { article: true }
                 },
                 images: { orderBy: { createdAt: "asc" } }
             }
+        });
+    }
+    async findSaveResultById(id) {
+        return await prisma_client_1.default.projectReport.findUnique({
+            where: { id },
+            select: reportSaveSelect,
+        });
+    }
+    async updateReportLean(reportId, reportData) {
+        return await prisma_client_1.default.projectReport.update({
+            where: { id: reportId },
+            data: reportData,
+            select: {
+                id: true,
+                projectId: true,
+                salesOrderId: true,
+                appointmentId: true,
+                employeeId: true,
+                reportDate: true,
+                reportType: true,
+                workDate: true,
+                startedAt: true,
+                endedAt: true,
+                workedMinutes: true,
+                plannedMinutesForDay: true,
+                overtimeMinutes: true,
+                overtimeHourlyRate: true,
+                overtimeCost: true,
+                operationsDone: true,
+                technicalNotes: true,
+                isSigned: true,
+                signedAt: true,
+                hoursApprovedAt: true,
+                hoursApprovedById: true,
+                autoApproved: true,
+            },
         });
     }
     // A field report belongs to exactly one appointment once stamped. Used to
@@ -97,7 +173,7 @@ class ProjectReportRepository {
             data: reportData,
             include: {
                 employee: { select: { id: true, firstName: true, lastName: true, email: true } },
-                usedMaterials: { include: { article: true, material: true } },
+                usedMaterials: { include: { article: true } },
                 images: { orderBy: { createdAt: "asc" } }
             }
         });
@@ -117,7 +193,7 @@ class ProjectReportRepository {
             where: { projectId: projectId },
             include: {
                 usedMaterials: {
-                    include: { material: true }
+                    include: { article: true }
                 },
                 images: { orderBy: { createdAt: "asc" } }
             }

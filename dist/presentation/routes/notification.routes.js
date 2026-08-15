@@ -39,10 +39,15 @@ router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;
         const unreadOnly = String(req.query.unreadOnly || '') === 'true';
+        // ?since=<ISO> — nur Neues seit dem letzten Blick (Einblendungen rechts
+        // fragen so im Takt nach, ohne die ganze Liste zu ziehen).
+        const sinceRaw = String(req.query.since || '').trim();
+        const since = sinceRaw ? new Date(sinceRaw) : null;
         const notifications = await prisma_client_1.default.notification.findMany({
             where: {
                 tenantId: user.tenantId,
                 ...(unreadOnly ? { isRead: false } : {}),
+                ...(since && !Number.isNaN(since.getTime()) ? { createdAt: { gt: since } } : {}),
                 OR: [
                     { recipientEmployeeId: user.id },
                     { recipientEmployeeId: null },

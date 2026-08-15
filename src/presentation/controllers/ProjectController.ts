@@ -11,6 +11,7 @@ import {
 } from '../../infrastructure/repositories/ProjectRepository';
 import { ProjectReportRepository } from '../../infrastructure/repositories/ProjectReportRepository';
 import prisma from '../../infrastructure/database/prisma.client';
+import { notifyProjectEvent } from '../../infrastructure/services/projectEventNotifications';
 import { adjustArticleStock, articleStockTotal } from '../../shared/articleStock';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { getCompanyTreeTenantIds } from './serviceTenantScope';
@@ -2175,6 +2176,16 @@ export class ProjectController {
             // Denetim kaydı best-effort'tür; kullanıcı yanıtını ayrı bir INSERT
             // turu için bekletmez.
             void this.writeReportLog(reportResult.id, req.user!.id, 'SAVED');
+            // Das Büro erfährt vom eingegangenen Rapport (Glocke + Einblendung);
+            // die speichernde Person selbst bekommt nichts.
+            void notifyProjectEvent({
+                tenantId: req.user!.tenantId,
+                projectId: appointment.projectId,
+                event: 'FIELD_REPORT_RECEIVED',
+                report: 'FIELD',
+                reportId: reportResult.id,
+                actorEmployeeId: req.user!.id,
+            });
 
             // Frischer Stand in einer Antwort — der Client muss nicht nachladen.
             const [report, expenses, rawExtraMaterials] = await Promise.all([
@@ -2327,11 +2338,19 @@ export class ProjectController {
             const { signatureBase64 } = req.body;
             const report = await (prisma as any).projectReport.findFirst({
                 where: { id: reportId, project: { tenantId: req.user!.tenantId } },
-                select: { id: true },
+                select: { id: true, projectId: true },
             });
             if (!report) return res.status(404).json({ error: "Saha raporu bulunamadı." });
             await this.reportRepository.signReport(reportId, signatureBase64);
             await this.writeReportLog(reportId, req.user!.id, 'SIGNED');
+            void notifyProjectEvent({
+                tenantId: req.user!.tenantId,
+                projectId: report.projectId,
+                event: 'SIGNATURE_RECEIVED',
+                report: 'FIELD',
+                reportId,
+                actorEmployeeId: req.user!.id,
+            });
             res.status(200).json({ message: "Rapor müşteri tarafından imzalandı." });
         } catch (error: any) {
             res.status(400).json({ error: error.message });

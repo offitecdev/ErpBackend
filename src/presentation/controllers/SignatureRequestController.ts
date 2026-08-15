@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../infrastructure/database/prisma.client";
 import { SmtpMailService } from "../../infrastructure/services/SmtpMailService";
 import { nanoid } from "nanoid";
+import { notifyProjectEvent } from "../../infrastructure/services/projectEventNotifications";
 
 const smtp = new SmtpMailService();
 
@@ -10,6 +11,9 @@ const VALID_TYPES = new Set(["FIELD", "DELIVERY", "GENERAL"]);
 function frontendUrl() {
     return process.env.OFFITEC_FRONTEND_URL || "http://localhost:5173";
 }
+
+const reportKind = (value: string): 'FIELD' | 'DELIVERY' | 'GENERAL' =>
+    value === 'FIELD' || value === 'DELIVERY' ? value : 'GENERAL';
 
 export class SignatureRequestController {
     /** Admin: list signature requests, optionally filtered by report type (the 3 tabs). */
@@ -62,6 +66,11 @@ export class SignatureRequestController {
             const updated = await prisma.signatureRequest.update({
                 where: { id: existing.id },
                 data: { signatureBase64, signedAt, status: "SIGNED" },
+            });
+            void notifyProjectEvent({
+                tenantId, projectId: existing.projectId, event: 'SIGNATURE_RECEIVED',
+                report: reportKind(existing.reportType), reportId: existing.reportId ?? existing.id,
+                actorEmployeeId: req.user!.id,
             });
             res.status(200).json(updated);
         } catch (error: any) {
@@ -273,6 +282,16 @@ export class SignatureRequestController {
                 } catch (writeErr: any) {
                     console.warn("[SignatureRequest] write-back failed:", writeErr?.message);
                 }
+            }
+
+            // Die Kundin hat über den öffentlichen Link unterschrieben — das Büro
+            // erfährt es sofort (Glocke + Einblendung, "Öffnen" → Projekt).
+            if (signature) {
+                void notifyProjectEvent({
+                    tenantId: request.tenantId, projectId: request.projectId, event: 'SIGNATURE_RECEIVED',
+                    report: reportKind(request.reportType), reportId: request.reportId ?? request.id,
+                    actorEmployeeId: null,
+                });
             }
 
             res.status(200).json({ message: signature ? "İmza kaydedildi." : "Rapor imzasız olarak kaydedildi.", signed: Boolean(signature) });

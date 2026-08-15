@@ -14,13 +14,11 @@ const ProjectRepository_1 = require("../../infrastructure/repositories/ProjectRe
 const ProjectReportRepository_1 = require("../../infrastructure/repositories/ProjectReportRepository");
 const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepository");
 const TenantRepository_1 = require("../../infrastructure/repositories/TenantRepository");
-const MaterialRepository_1 = require("../../infrastructure/repositories/MaterialRepository");
 const tenantModules_1 = require("../../shared/tenantModules");
 const router = (0, express_1.Router)();
 const projectRepo = new ProjectRepository_1.ProjectRepository();
 const reportRepo = new ProjectReportRepository_1.ProjectReportRepository();
-const materialRepo = new MaterialRepository_1.MaterialRepository();
-const controller = new ProjectController_1.ProjectController(new CreateProjectFromTenderUseCase_1.CreateProjectFromTenderUseCase(projectRepo, new TenderRepository_1.TenderRepository(), new TenantRepository_1.TenantRepository()), new AddProjectReportUseCase_1.AddProjectReportUseCase(reportRepo, projectRepo, materialRepo), new RequestExtraMaterialUseCase_1.RequestExtraMaterialUseCase(projectRepo, materialRepo), new ApproveVariationUseCase_1.ApproveVariationUseCase(projectRepo), new AddProjectExpenseUseCase_1.AddProjectExpenseUseCase(projectRepo), projectRepo, reportRepo, materialRepo);
+const controller = new ProjectController_1.ProjectController(new CreateProjectFromTenderUseCase_1.CreateProjectFromTenderUseCase(projectRepo, new TenderRepository_1.TenderRepository(), new TenantRepository_1.TenantRepository()), new AddProjectReportUseCase_1.AddProjectReportUseCase(reportRepo, projectRepo), new RequestExtraMaterialUseCase_1.RequestExtraMaterialUseCase(projectRepo), new ApproveVariationUseCase_1.ApproveVariationUseCase(projectRepo), new AddProjectExpenseUseCase_1.AddProjectExpenseUseCase(projectRepo), projectRepo, reportRepo);
 // The company category ("Numara" profile) is the authority: it decides which
 // modules the selected company runs, and a company without a category runs all
 // of them. The legacy Tenant.isProjectModuleEnabled column is no longer
@@ -51,10 +49,9 @@ router.get('/technician/reports', (0, RbacMiddleware_1.requireAnyPermission)(['p
 router.get('/technician/report-orders/:salesOrderId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
 router.get('/technician/reports/:reportId/resources', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
 router.get('/technician/reports/:reportId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
+// Malzeme/ürün birleşmesi (2026-08-14): saha ekranlarının "malzeme" kataloğu
+// artık ürün (Article) listesidir; yanıt eski ProjectMaterial biçimini korur.
 router.get('/materials', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
-router.post('/materials', (0, RbacMiddleware_1.requirePermission)('inventory.articles.create'), (req, res) => controller.createMaterial(req, res));
-router.patch('/materials/:materialId', (0, RbacMiddleware_1.requirePermission)('inventory.articles.update'), (req, res) => controller.updateMaterial(req, res));
-router.delete('/materials/:materialId', (0, RbacMiddleware_1.requirePermission)('inventory.articles.delete'), (req, res) => controller.deleteMaterial(req, res));
 router.post('/from-tender', (0, RbacMiddleware_1.requirePermission)('projects.create'), (req, res) => controller.createFromTender(req, res));
 // Global field-report registry for the Services > Reports module. Must be declared before '/:id'.
 router.get('/reports', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report']), (req, res) => controller.listAllReports(req, res));

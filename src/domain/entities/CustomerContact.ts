@@ -10,6 +10,9 @@ export class CustomerContact{
         public email? : string | null ,
         public mobilePhone? : string | null ,
         public notes? : string | null ,
+        // Denormalized owner tenant (mirrors the customer's tenantId); required
+        // by the DB, filled by the create path.
+        public tenantId? : string ,
     ) {}
 
 

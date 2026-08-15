@@ -157,6 +157,7 @@ class TenderRepository {
                 SELECT
                     t.id, t.tenderNumber, t.version, t.projectId, t.sourceStatus,
                     t.createdByEmployeeId, t.currency, t.createdAt, t.offerMailSentAt,
+                    t.validUntil, t.offerAcceptedAt, t.commissionNumber,
                     c.companyName AS customerName,
                     e.firstName AS creatorFirstName,
                     e.lastName AS creatorLastName,
@@ -206,6 +207,9 @@ class TenderRepository {
             currency: row.currency ?? null,
             createdAt: row.createdAt,
             offerMailSentAt: row.offerMailSentAt ?? null,
+            validUntil: row.validUntil ?? null,
+            offerAcceptedAt: row.offerAcceptedAt ?? null,
+            commissionNumber: row.commissionNumber ?? null,
             positionCount: Number(row.positionCount ?? 0),
             grandTotal: Number(row.grandTotal ?? 0),
         }));

@@ -52,6 +52,10 @@ model Customer {
   productDiscounts      CustomerProductDiscount[]
   meetingActivities     MeetingActivity[]
   meetingParticipations MeetingActivityParticipant[] @relation("MeetingParticipantCustomer")
+  crmCommunications     CrmCommunication[]
+  crmTasks              CrmTask[]
+  formSubmissions       FormSubmission[]
+  fieldNotes            FieldNote[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
   // Liste sıralamaları tenant içinde yapılır. Tek başına tenantId indeksi
@@ -180,6 +184,10 @@ model SalesOrder {
 model CustomerContact {
   id               String   @id
   customerId       String
+  // Denormalized from the owning customer so the tenant-wide contact list
+  // ("Ansprechpartner") pages straight from an index instead of joining
+  // Customer on every request. Set by every create path, backfilled once.
+  tenantId         String
   firstName        String
   lastName         String
   title            String?
@@ -189,8 +197,131 @@ model CustomerContact {
   notes            String?  @db.Text
   isPrimaryContact Boolean  @default(false)
   customer         Customer @relation(fields: [customerId], references: [id])
+  communications   CrmCommunication[]
+  crmTasks         CrmTask[]
 
   @@index([customerId], map: "CustomerContact_customerId_fkey")
+  @@index([tenantId, lastName, firstName])
+}
+
+// CRM communication history — one row per customer touchpoint (phone call,
+// e-mail, meeting, note), written by Quick Entry / the communication page and
+// read as a tenant-wide filterable list. Deliberately flat: no participants,
+// no attachments; the calendar keeps using MeetingActivity.
+model CrmCommunication {
+  id                  String   @id
+  tenantId            String
+  customerId          String
+  contactId           String?
+  // PHONE | EMAIL | MEETING | NOTE
+  channel             String
+  note                String   @db.Text
+  // Business date of the touchpoint (API defaults it to "now"); createdAt
+  // stays the technical insert time.
+  occurredAt          DateTime @default(now())
+  createdByEmployeeId String
+  createdAt           DateTime @default(now())
+
+  customer  Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  contact   CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  createdBy Employee         @relation("CrmCommunicationCreator", fields: [createdByEmployeeId], references: [id])
+
+  @@index([tenantId, occurredAt])
+  @@index([customerId, occurredAt])
+  @@index([contactId])
+  @@index([createdByEmployeeId])
+}
+
+// Erinnerungs-Einstellung — je Belegart GENAU EINE (Vorgabe 15.08.2026):
+// Vorlauf (erste Erinnerung so viele Tage VOR dem Bezugsdatum, höchstens 30)
+// und Wiederholung (danach alle N Tage bis zum Bezugsdatum, das selbst noch
+// einmal erinnert). Keine Arten, Richtungen oder Regel-Listen mehr.
+//   QUOTE → Bezug Tender.validUntil (Angebot läuft ab)
+//   ORDER → Bezug Tender.internalDeliveryDate des Auftrags (Liefertermin)
+model ReminderSetting {
+  id           String   @id
+  tenantId     String
+  // QUOTE | ORDER
+  entityType   String
+  enabled      Boolean  @default(true)
+  leadDays     Int
+  intervalDays Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, entityType])
+}
+
+// Merkt, dass ein Beleg zu einem Termin bereits erinnert wurde — sonst würde
+// derselbe Termin bei jedem Takt des Hintergrunddienstes erneut feuern. Der
+// Schlüssel hängt am TERMIN, nicht an der Einstellung: ein Speichern der
+// Einstellung darf nicht alles noch einmal auslösen.
+model ReminderDispatch {
+  id         String   @id
+  tenantId   String
+  // QUOTE | ORDER
+  entityType String
+  entityId   String
+  dueAt      DateTime
+  firedAt    DateTime @default(now())
+
+  @@unique([entityType, entityId, dueAt])
+  @@index([tenantId, firedAt])
+}
+
+// CRM task / reminder ("ABC AG anrufen", "Offerte nachfassen"). A REMINDER is
+// just a dated task without further ceremony; both share one list.
+model CrmTask {
+  id                  String    @id
+  tenantId            String
+  // TASK | REMINDER
+  kind                String    @default("TASK")
+  title               String
+  customerId          String?
+  // Ansprechpartner des Kunden (Kundenwahl samt Ansprechpartner, 15.08.2026).
+  contactId           String?
+  assigneeEmployeeId  String?
+  dueDate             DateTime?
+  // OPEN | DONE | INCOMPLETE. INCOMPLETE = "Nicht erledigt": entweder per Hand
+  // (X-Knopf) oder automatisch, sobald der Termin einer offenen Aufgabe
+  // verstrichen ist (Hintergrunddienst + Listenaufruf); "Zurückholen" macht
+  // sie wieder OPEN.
+  status              String    @default("OPEN")
+  completedAt         DateTime?
+  // Erinnerungen: gesetzt, sobald das Einblendfenster gezeigt WURDE. Ohne den
+  // Stempel würde dieselbe Erinnerung bei jeder Abfrage erneut aufpoppen.
+  // Bei kind=TASK immer null.
+  notifiedAt          DateTime?
+  // Erinnerungen aus dem Hintergrunddienst: Sprungziel ("Öffnen") und die
+  // sprachneutralen Bausteine des Textes ({ template, number, customerName,
+  // daysLeft }) — die Oberfläche setzt den Satz in der Sprache der Person
+  // zusammen; `title` ist nur der deutsche Ersatztext.
+  linkUrl             String?
+  meta                Json?
+  // Beleg, an den eine Erinnerung des Hintergrunddienstes hängt (QUOTE →
+  // Tender.id, ORDER → SalesOrder.id). Läuft das Angebot ab (bzw. wird
+  // angenommen/bestellt) oder ist der Auftrag abgeschlossen/storniert,
+  // räumt der Dienst die Erinnerung darüber weg. Bei Hand-Erinnerungen null.
+  entityType          String?
+  entityId            String?
+  createdByEmployeeId String
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  customer  Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contact   CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  assignee  Employee? @relation("CrmTaskAssignee", fields: [assigneeEmployeeId], references: [id], onDelete: SetNull)
+  createdBy Employee  @relation("CrmTaskCreator", fields: [createdByEmployeeId], references: [id])
+
+  @@index([tenantId, status, dueDate])
+  // Fällige, noch nicht gezeigte Erinnerungen — die Abfrage läuft im Takt von
+  // Sekunden, sie darf die Tabelle nicht scannen.
+  @@index([tenantId, kind, notifiedAt, dueDate])
+  @@index([customerId])
+  @@index([contactId])
+  @@index([assigneeEmployeeId])
+  @@index([createdByEmployeeId])
+  @@index([entityType, entityId])
 }
 
 model CustomerNote {

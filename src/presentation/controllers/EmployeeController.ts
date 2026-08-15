@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../../infrastructure/database/prisma.client';
 import { CreateEmployeeUseCase } from '../../application/use-cases/employee/CreateEmployeeUseCase';
 import { GetEmployeeUseCase } from '../../application/use-cases/employee/GetEmployeeUseCase';
@@ -9,6 +10,7 @@ import { ICryptoService } from '../../application/interfaces/ICryptoService';
 import { assertPasswordPolicy } from '../../application/validation/password';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
 import { getCompanyTreeTenantIds } from './serviceTenantScope';
+import { getCachedStaffDirectory } from '../../shared/staffDirectoryCache';
 import { parseAllowedTenantIds } from '../utils/tenantAccess';
 
 // TS Hatasını çözmek için Request objesini genişletiyoruz
@@ -106,29 +108,58 @@ export class EmployeeController {
     }
 
     /** Trimmed name/role/e-mail rows for pickers & filters: skips the heavy
-        columns, so it answers in a fraction of the full listing's time. */
+        columns, so it answers in a fraction of the full listing's time.
+
+        ONE statement on purpose. The nested `employeeRoles → role` select this
+        used to carry made Prisma issue three SEQUENTIAL queries (employees,
+        then EmployeeRole, then Role); against the remote database that is three
+        round trips and the pickers measured ~750 ms. The role now arrives via a
+        correlated subquery — same "first role wins" semantics as the former
+        `take: 1`, one trip.
+
+        On top of that the result is briefly cached: the list is identical for
+        everyone in a company tree and barely ever changes, but a picker fetched
+        it on EVERY open. `EmployeeRepository` drops the cache on every write, so
+        the TTL is only a ceiling for changes made outside this process. */
     private async lightStaffRows(treeTenantIds: string[], isActive?: boolean, hideDeleted = false) {
-        const rows = await prisma.employee.findMany({
-            where: {
-                tenantId: { in: treeTenantIds },
-                ...(isActive !== undefined ? { isActive } : {}),
-                ...(hideDeleted ? { deletedAt: null } : {}),
-            },
-            select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-                roleName: true,
-                title: true,
-                // Some employees only carry their role via the RBAC join.
-                employeeRoles: { select: { role: { select: { roleName: true } } }, take: 1 },
-            },
-            orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
-        });
-        return rows.map(({ employeeRoles, ...rest }) => ({
-            ...rest,
-            roleName: employeeRoles?.[0]?.role?.roleName ?? rest.roleName,
+        if (treeTenantIds.length === 0) return [];
+
+        // Der Schlüssel trägt ALLE Eingaben der Abfrage; die Mandanten werden
+        // sortiert, damit dieselbe Menge in anderer Reihenfolge denselben
+        // Eintrag trifft.
+        const cacheKey = JSON.stringify([[...treeTenantIds].sort(), isActive ?? null, hideDeleted]);
+        return getCachedStaffDirectory(cacheKey, () => this.loadLightStaffRows(treeTenantIds, isActive, hideDeleted));
+    }
+
+    private async loadLightStaffRows(treeTenantIds: string[], isActive?: boolean, hideDeleted = false) {
+        const conditions: Prisma.Sql[] = [
+            Prisma.sql`e.tenantId IN (${Prisma.join(treeTenantIds)})`,
+        ];
+        if (isActive !== undefined) conditions.push(Prisma.sql`e.isActive = ${isActive}`);
+        if (hideDeleted) conditions.push(Prisma.sql`e.deletedAt IS NULL`);
+
+        const rows = await prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+            SELECT e.id, e.firstName, e.lastName, e.email, e.title,
+                   COALESCE(
+                       (SELECT r.roleName
+                          FROM EmployeeRole er
+                          JOIN Role r ON r.id = er.roleId
+                         WHERE er.employeeId = e.id
+                         LIMIT 1),
+                       e.roleName
+                   ) AS roleName
+            FROM Employee e
+            WHERE ${Prisma.join(conditions, ' AND ')}
+            ORDER BY e.firstName ASC, e.lastName ASC
+        `);
+
+        return rows.map((row) => ({
+            id: row.id,
+            firstName: row.firstName,
+            lastName: row.lastName,
+            email: row.email,
+            title: row.title ?? null,
+            roleName: row.roleName ?? null,
         }));
     }
 

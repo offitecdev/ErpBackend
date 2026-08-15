@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TenderArticleController = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const articleStock_1 = require("../../shared/articleStock");
 const nanoid_1 = require("nanoid");
 class TenderArticleController {
     mapArticleUseCase;
@@ -271,13 +272,20 @@ class TenderArticleController {
             res.status(400).json({ error: error.message });
         }
     }
+    /**
+     * Teklif "Materialien" sekmesi — malzeme/ürün birleşmesinden (2026-08-14)
+     * beri satırlar Article'a bağlıdır. İstek gövdesi geriye uyum için
+     * `materialId` adını korur (bir ürün id'si taşır); stok düşümü artık
+     * StockMovement/StockBalance üzerinden yazılır.
+     */
     async mapMaterial(req, res) {
         try {
             const tenderId = req.params.id;
             const tenantId = req.user?.tenantId;
             const employeeId = req.user?.id;
             const { materialId, quantity, description } = req.body;
-            if (!materialId || quantity === undefined) {
+            const articleId = String(materialId || '').trim();
+            if (!articleId || quantity === undefined) {
                 return res.status(400).json({ error: "Malzeme ID ve miktar zorunludur." });
             }
             const normalizedQuantity = Number(quantity);
@@ -290,28 +298,37 @@ class TenderArticleController {
             if (!tender || tender.tenantId !== tenantId) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
-            const material = await prisma_client_1.default.material.findUnique({ where: { id: materialId } });
-            if (!material || material.tenantId !== tenantId || !material.isActive) {
+            const article = await prisma_client_1.default.article.findFirst({
+                where: { id: articleId, tenantId, deletedAt: null },
+                select: { id: true, name: true, salePrice: true },
+            });
+            if (!article) {
                 return res.status(404).json({ error: "Malzeme bulunamadı." });
             }
-            if (material.stockQuantity < normalizedQuantity) {
-                return res.status(400).json({ error: `[Stok uyarısı] ${material.name} için kayıtlı miktar yetersiz.` });
+            const stock = await (0, articleStock_1.articleStockTotal)(prisma_client_1.default, article.id);
+            if (stock < normalizedQuantity) {
+                return res.status(400).json({ error: `[Stok uyarısı] ${article.name} için kayıtlı miktar yetersiz.` });
             }
             const usage = await prisma_client_1.default.$transaction(async (tx) => {
-                await tx.material.update({
-                    where: { id: materialId },
-                    data: { stockQuantity: { decrement: normalizedQuantity } },
+                await (0, articleStock_1.adjustArticleStock)(tx, {
+                    tenantId,
+                    articleId: article.id,
+                    employeeId,
+                    quantity: normalizedQuantity,
+                    direction: 'OUT',
+                    referenceId: tenderId,
+                    description: 'Teklif malzemesi',
                 });
                 return await tx.tenderMaterialUsage.create({
                     data: {
                         id: (0, nanoid_1.nanoid)(10),
                         tenderId,
-                        materialId,
+                        articleId: article.id,
                         quantity: normalizedQuantity,
-                        unitCost: material.unitCost,
+                        unitCost: article.salePrice,
                         description: description || null,
                     },
-                    include: { material: true },
+                    include: { article: true },
                 });
             });
             void this.tenderLogRepo.create({
@@ -319,13 +336,13 @@ class TenderArticleController {
                 tenderId,
                 positionId: null,
                 mappingId: usage.id,
-                articleId: null,
+                articleId: article.id,
                 employeeId,
                 actionType: "MATERIAL_MAPPED",
                 fieldName: "quantity",
                 oldValue: null,
                 newValue: String(normalizedQuantity),
-                description: `${material.name} malzemesi teklif ayarlarına ${normalizedQuantity} adet olarak eklendi. Fiyata dahil edilmedi.`,
+                description: `${article.name} malzemesi teklif ayarlarına ${normalizedQuantity} adet olarak eklendi. Fiyata dahil edilmedi.`,
             }).catch((error) => console.error('[mapMaterial] log write failed:', error));
             res.status(200).json({
                 message: "Malzeme eklendi. Fiyat toplamına dahil edilmedi.",
@@ -346,7 +363,7 @@ class TenderArticleController {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             const usages = await prisma_client_1.default.tenderMaterialUsage.findMany({
                 where: { tenderId },
-                include: { material: true },
+                include: { article: true },
                 orderBy: { createdAt: 'desc' },
             });
             res.status(200).json(usages);
@@ -356,60 +373,15 @@ class TenderArticleController {
             res.status(400).json({ error: error.message });
         }
     }
-    async updateMaterialMapping(req, res) {
-        try {
-            const tenderId = req.params.id;
-            const positionId = req.params.positionId;
-            const mappingId = req.params.mappingId;
-            const tenantId = req.user?.tenantId;
-            const { quantityMultiplier, discount } = req.body;
-            const before = await prisma_client_1.default.positionMaterialMapping.findUnique({
-                where: { id: mappingId },
-                include: {
-                    material: true,
-                    position: { include: { tender: { select: { id: true, tenantId: true, status: true } }, calculation: true } },
-                },
-            });
-            if (!before || before.positionId !== positionId || before.position.tender.id !== tenderId || before.position.tender.tenantId !== tenantId) {
-                return res.status(404).json({ error: "Malzeme eşleştirmesi bulunamadı." });
-            }
-            if (before.position.tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Onaylanmış tekliflerde malzeme güncellenemez." });
-            }
-            const patch = {};
-            if (quantityMultiplier !== undefined) {
-                const nextQuantity = Number(quantityMultiplier);
-                if (nextQuantity <= 0)
-                    return res.status(400).json({ error: "Miktar 0'dan büyük olmalıdır." });
-                patch.quantityMultiplier = nextQuantity;
-            }
-            if (discount !== undefined)
-                patch.discount = discount === null ? 0 : Number(discount);
-            const mapping = await prisma_client_1.default.positionMaterialMapping.update({
-                where: { id: mappingId },
-                data: patch,
-                include: { material: true },
-            });
-            res.status(200).json({
-                message: "Malzeme güncellendi. Fiyat toplamı değişmedi.",
-                mapping,
-                updatedCalculation: before.position.calculation ?? null,
-            });
-        }
-        catch (error) {
-            console.error('[updateMaterialMapping] error:', error);
-            res.status(400).json({ error: error.message });
-        }
-    }
     async removeMaterialMapping(req, res) {
         try {
             const tenderId = req.params.id;
             const mappingId = req.params.mappingId;
             const tenantId = req.user?.tenantId;
+            const employeeId = req.user?.id;
             const before = await prisma_client_1.default.tenderMaterialUsage.findUnique({
                 where: { id: mappingId },
                 include: {
-                    material: true,
                     tender: { select: { id: true, tenantId: true, status: true } },
                 },
             });
@@ -418,9 +390,14 @@ class TenderArticleController {
             }
             await prisma_client_1.default.$transaction(async (tx) => {
                 await tx.tenderMaterialUsage.delete({ where: { id: mappingId } });
-                await tx.material.update({
-                    where: { id: before.materialId },
-                    data: { stockQuantity: { increment: Number(before.quantity || 0) } },
+                await (0, articleStock_1.adjustArticleStock)(tx, {
+                    tenantId,
+                    articleId: before.articleId,
+                    employeeId,
+                    quantity: Number(before.quantity || 0),
+                    direction: 'IN',
+                    referenceId: tenderId,
+                    description: 'Teklif malzemesi iadesi',
                 });
             });
             res.status(200).json({

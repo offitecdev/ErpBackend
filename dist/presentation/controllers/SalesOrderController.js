@@ -298,7 +298,7 @@ class SalesOrderController {
                     extraMaterials: {
                         select: {
                             id: true, quantity: true, unitPrice: true, description: true, addedAt: true,
-                            material: { select: { id: true, name: true, serialId: true } },
+                            article: { select: { id: true, name: true, articleCode: true } },
                         },
                     },
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },

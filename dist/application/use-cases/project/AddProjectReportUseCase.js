@@ -35,16 +35,24 @@ const isPrimarySalesOrder = (project, salesOrderId) => {
 class AddProjectReportUseCase {
     reportRepository;
     projectRepository;
-    materialRepository;
-    constructor(reportRepository, projectRepository, 
-    // Kept in the constructor to avoid route wiring churn; project reports no longer consume stock.
-    materialRepository) {
+    constructor(reportRepository, projectRepository) {
         this.reportRepository = reportRepository;
         this.projectRepository = projectRepository;
-        this.materialRepository = materialRepository;
     }
     async buildReportPayload(input) {
-        const project = await this.projectRepository.findById(input.projectId);
+        // Bu hesap için teklif/rapor/gider/malzeme ağaçları gerekmez.
+        const project = input.projectContext || await prisma_client_1.default.project.findUnique({
+            where: { id: input.projectId },
+            select: {
+                status: true,
+                overtimeTolerancePercent: true,
+                overtimeHourlyRate: true,
+                salesOrders: {
+                    orderBy: { createdAt: 'asc' },
+                    select: { id: true, createdAt: true },
+                },
+            },
+        });
         if (!project)
             throw new Error("Proje bulunamadı.");
         if (project.status === "ON_HOLD")
@@ -78,7 +86,8 @@ class AddProjectReportUseCase {
                 status: { in: ["BOOKED", "COMPLETED"] },
                 startTime: { gte: dayStart },
                 endTime: { lte: dayEnd }
-            }
+            },
+            select: { id: true, startTime: true, endTime: true },
         });
         // The report's own appointment always counts towards the planned minutes, even
         // if it sits just outside the UTC day window (early-morning / late-night slots
@@ -86,6 +95,7 @@ class AddProjectReportUseCase {
         if (input.appointmentId && !appointments.some((appointment) => appointment.id === input.appointmentId)) {
             const own = await prisma_client_1.default.appointment.findFirst({
                 where: { id: input.appointmentId, projectId: input.projectId },
+                select: { id: true, startTime: true, endTime: true },
             });
             if (own)
                 appointments.push(own);
@@ -103,34 +113,38 @@ class AddProjectReportUseCase {
         const overtimeHourlyRate = Number(project.overtimeHourlyRate || 0);
         const overtimeCost = overtimeMinutes > 0 ? (overtimeMinutes / 60) * overtimeHourlyRate : 0;
         return {
-            projectId: input.projectId,
-            salesOrderId: input.salesOrderId || null,
-            appointmentId: input.appointmentId || null,
-            employeeId: input.employeeId,
-            reportDate: new Date(),
-            workDate,
-            startedAt,
-            endedAt,
-            reportType: "Project",
-            workedMinutes,
-            plannedMinutesForDay,
-            overtimeMinutes,
-            overtimeHourlyRate,
-            overtimeCost,
-            operationsDone: input.operationsDone.trim(),
-            technicalNotes: input.technicalNotes?.trim() || null
+            payload: {
+                projectId: input.projectId,
+                salesOrderId: input.salesOrderId || null,
+                appointmentId: input.appointmentId || null,
+                employeeId: input.employeeId,
+                reportDate: new Date(),
+                workDate,
+                startedAt,
+                endedAt,
+                reportType: "Project",
+                workedMinutes,
+                plannedMinutesForDay,
+                overtimeMinutes,
+                overtimeHourlyRate,
+                overtimeCost,
+                operationsDone: input.operationsDone.trim(),
+                technicalNotes: input.technicalNotes?.trim() || null,
+            },
+            includeUnscoped,
         };
     }
     async execute(input) {
-        const payload = await this.buildReportPayload(input);
-        const project = await this.projectRepository.findById(input.projectId);
+        const { payload, includeUnscoped } = await this.buildReportPayload(input);
         // A report stamped with an appointmentId is scoped to that appointment only, so
         // uniqueness is per-appointment — a sibling appointment on the same order/day may
         // still carry its own report. Reports without an appointmentId keep the legacy
         // one-per-order-day rule.
-        const existing = input.appointmentId
-            ? await this.reportRepository.findByAppointmentId(input.appointmentId)
-            : await this.reportRepository.findByProjectAndWorkDate(input.projectId, payload.workDate, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
+        const existing = input.duplicateCheckCompleted
+            ? null
+            : input.appointmentId
+                ? await this.reportRepository.findByAppointmentId(input.appointmentId)
+                : await this.reportRepository.findByProjectAndWorkDate(input.projectId, payload.workDate, input.salesOrderId || null, includeUnscoped);
         if (existing)
             throw new Error("Bu proje için aynı güne ait saha raporu zaten var. Lütfen mevcut raporu düzenleyin.");
         const report = await this.reportRepository.createReport({
@@ -140,7 +154,9 @@ class AddProjectReportUseCase {
         if (input.images !== undefined) {
             await this.reportRepository.replaceImages(report.id, input.images || [], input.employeeId);
         }
-        const withImages = await this.reportRepository.findById(report.id);
+        const withImages = input.deferResultHydration
+            ? report
+            : await this.reportRepository.findSaveResultById(report.id);
         return {
             ...(withImages || report),
             overtimeWarning: payload.overtimeMinutes > 0
@@ -149,21 +165,23 @@ class AddProjectReportUseCase {
         };
     }
     async update(reportId, input) {
-        const existingReport = await this.reportRepository.findById(reportId);
+        const existingReport = input.existingReportContext || await prisma_client_1.default.projectReport.findUnique({
+            where: { id: reportId },
+            select: { id: true, projectId: true, salesOrderId: true, appointmentId: true },
+        });
         if (!existingReport)
             throw new Error("Saha raporu bulunamadı.");
         if (existingReport.projectId !== input.projectId)
             throw new Error("Saha raporu bu projeye ait değil.");
         input.salesOrderId = input.salesOrderId ?? existingReport.salesOrderId ?? null;
         input.appointmentId = input.appointmentId ?? existingReport.appointmentId ?? null;
-        const payload = await this.buildReportPayload(input);
-        const project = await this.projectRepository.findById(input.projectId);
-        const sameDayReport = await this.reportRepository.findByProjectAndWorkDateExcept(input.projectId, payload.workDate, reportId, input.salesOrderId || null, isPrimarySalesOrder(project, input.salesOrderId));
-        // if (sameDayReport) throw new Error("Bu proje için aynı güne ait başka bir saha raporu var. Bir günde yalnızca bir rapor olabilir.");
-        let report = await this.reportRepository.updateReport(reportId, payload);
+        const { payload } = await this.buildReportPayload(input);
+        let report = await this.reportRepository.updateReportLean(reportId, payload);
         if (input.images !== undefined) {
             await this.reportRepository.replaceImages(reportId, input.images || [], input.employeeId);
-            report = await this.reportRepository.findById(reportId) || report;
+            if (!input.deferResultHydration) {
+                report = await this.reportRepository.findSaveResultById(reportId) || report;
+            }
         }
         return {
             ...report,

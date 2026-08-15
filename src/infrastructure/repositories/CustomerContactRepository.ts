@@ -24,6 +24,7 @@ export class CustomerContactRepository implements ICustomerContactRepository {
             data: {
                 id: contactData.id || nanoid(8),
                 customerId: contactData.customerId!,
+                tenantId: contactData.tenantId!,
                 firstName: contactData.firstName!,
                 lastName: contactData.lastName!,
                 title: contactData.title || null,
@@ -52,7 +53,7 @@ export class CustomerContactRepository implements ICustomerContactRepository {
     }
 
     async update(id: string, contactData: Partial<CustomerContact>): Promise<CustomerContact> {
-        const { id: _id, customerId: _cid, ...safeData } = contactData;
+        const { id: _id, customerId: _cid, tenantId: _tid, ...safeData } = contactData;
         const data = await prisma.customerContact.update({
             where: { id },
             data: safeData as any

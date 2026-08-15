@@ -7,6 +7,7 @@ exports.DeliveryReportController = void 0;
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const nanoid_1 = require("nanoid");
+const projectEventNotifications_1 = require("../../infrastructure/services/projectEventNotifications");
 const VALID_STATUS = new Set(["YES", "NO", "NA"]);
 // Rapor başına foto eki sınırı — imzayla aynı LongText/JSON yolundan gider;
 // sınırsız base64 yığını hem satırı hem PDF üretimini şişirir.
@@ -203,6 +204,10 @@ class DeliveryReportController {
                         sentAt: now,
                     },
                 });
+                void (0, projectEventNotifications_1.notifyProjectEvent)({
+                    tenantId, projectId: report.projectId, event: 'DELIVERY_REPORT_RECEIVED',
+                    report: 'DELIVERY', reportId: report.id, actorEmployeeId: employeeId,
+                });
                 return res.status(200).json(report);
             }
             const report = await prisma_client_1.default.deliveryReport.create({
@@ -223,6 +228,11 @@ class DeliveryReportController {
                     signedAt: signature ? now : null,
                     sentAt: now,
                 },
+            });
+            // Das Büro erfährt vom eingegangenen Übergabe-Rapport.
+            void (0, projectEventNotifications_1.notifyProjectEvent)({
+                tenantId, projectId: report.projectId, event: 'DELIVERY_REPORT_RECEIVED',
+                report: 'DELIVERY', reportId: report.id, actorEmployeeId: employeeId,
             });
             res.status(201).json(report);
         }
@@ -270,6 +280,10 @@ class DeliveryReportController {
             const report = await prisma_client_1.default.deliveryReport.update({
                 where: { id: existing.id },
                 data: { customerSignature: signature, isSigned: true, signedAt: new Date() },
+            });
+            void (0, projectEventNotifications_1.notifyProjectEvent)({
+                tenantId, projectId: report.projectId, event: 'SIGNATURE_RECEIVED',
+                report: 'DELIVERY', reportId: report.id, actorEmployeeId: req.user.id,
             });
             res.status(200).json(report);
         }

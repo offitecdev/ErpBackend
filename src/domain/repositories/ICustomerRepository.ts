@@ -21,7 +21,7 @@ export interface ICustomerFilter {
 }
 
 // Müşteri listesi tablosunun gerçekten kullandığı alanlar. Tam Customer
-// entity'si 24 kolon taşır; tablo bunların yedisini çiziyor.
+// entity'si 24 kolon taşır; tablo bunların dokuzunu çiziyor.
 export interface CustomerListRow {
     id: string;
     companyName: string;
@@ -29,6 +29,8 @@ export interface CustomerListRow {
     vatNumber: string | null;
     mainEmail: string | null;
     mainPhone: string | null;
+    responsibleFirstName: string | null;
+    responsibleLastName: string | null;
     status: string;
 }
 

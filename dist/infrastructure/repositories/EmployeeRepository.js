@@ -8,6 +8,7 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const client_1 = require("@prisma/client");
 const Employee_1 = require("../../domain/entities/Employee");
 const authIdentityCache_1 = require("../../shared/authIdentityCache");
+const staffDirectoryCache_1 = require("../../shared/staffDirectoryCache");
 class EmployeeRepository {
     mapToEntity(data) {
         const firstRole = data.employeeRoles?.[0]?.role;
@@ -100,6 +101,9 @@ class EmployeeRepository {
         const data = await prisma_client_1.default.employee.create({
             data: createData
         });
+        // Die Personal-Kurzliste der Auswahlfelder ist kurz zwischengespeichert;
+        // ohne diesen Aufruf fehlte die neue Person dort bis zum Ablauf der Frist.
+        (0, staffDirectoryCache_1.invalidateStaffDirectory)();
         return this.mapToEntity(data);
     }
     async update(id, updateData) {
@@ -118,6 +122,10 @@ class EmployeeRepository {
         // buradan geçer. Önbelleği hemen düşür ki oturum kontrolü bir sonraki
         // istekte güncel durumu görsün.
         (0, authIdentityCache_1.invalidateAuthIdentity)(id);
+        // Name, Rolle, aktiv/gesperrt — all das steht in der Kurzliste der
+        // Auswahlfelder. Jeder Schreibweg läuft hier durch, deshalb genügt
+        // dieser eine Ort statt eines Aufrufs je Endpunkt.
+        (0, staffDirectoryCache_1.invalidateStaffDirectory)();
         return this.mapToEntity(data);
     }
 }

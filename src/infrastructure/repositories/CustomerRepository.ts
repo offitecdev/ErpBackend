@@ -9,8 +9,9 @@ const INACTIVE_CUSTOMER_STATUSES = new Set(["PASSIVE", "BLOCKED"]);
 const deriveIsActive = (status: string) => !INACTIVE_CUSTOMER_STATUSES.has(status);
 
 // Müşteri listesi tablosunun çizdiği kolonlar. `fields=list` ile istendiğinde
-// hem SELECT hem de JSON gövdesi bu yedi alana iner; tam gövde 24 alan taşıyor
-// ve satır başına ~4x daha büyük.
+// hem SELECT hem de JSON gövdesi bu dokuz alana iner; tam gövde 24 alan taşıyor
+// ve satır başına ~4x daha büyük. responsible* alanları listedeki "Ansprech-
+// partner" sütunu içindir (CRM sadeleştirmesi 2026-08-14).
 const CUSTOMER_LIST_SELECT = {
     id: true,
     companyName: true,
@@ -18,6 +19,8 @@ const CUSTOMER_LIST_SELECT = {
     vatNumber: true,
     mainEmail: true,
     mainPhone: true,
+    responsibleFirstName: true,
+    responsibleLastName: true,
     status: true,
 } as const;
 
@@ -199,11 +202,25 @@ export class CustomerRepository implements ICustomerRepository {
         }
 
         if (filter.search) {
+            // Aranan metin firma adının yanı sıra KİŞİ adlarında da geçer:
+            // müşteri kartındaki yetkili (responsible*) ve müşterinin
+            // ansprechpartner listesi (CustomerContact). Kullanıcı isteği
+            // 15.08.2026: "müşterinin ya da yetkilinin adını yazarken sonuçlar
+            // gelsin" — yazan kişi firma adını değil, konuştuğu kişiyi hatırlar.
             whereClause.OR = [
                 { companyName: { contains: filter.search } },
                 { taxNumber: { contains: filter.search } },
                 { vatNumber: { contains: filter.search } },
-                { mainEmail: { contains: filter.search } }
+                { mainEmail: { contains: filter.search } },
+                { responsibleFirstName: { contains: filter.search } },
+                { responsibleLastName: { contains: filter.search } },
+                { contacts: { some: {
+                    OR: [
+                        { firstName: { contains: filter.search } },
+                        { lastName: { contains: filter.search } },
+                        { email: { contains: filter.search } },
+                    ],
+                } } },
             ];
         }
         // Kolon bazlı filtreler — üstteki genel arama ile AND'lenir (MySQL collation

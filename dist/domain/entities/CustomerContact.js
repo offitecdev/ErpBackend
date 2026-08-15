@@ -12,7 +12,11 @@ class CustomerContact {
     email;
     mobilePhone;
     notes;
-    constructor(id, customerId, firstName, lastName, isPrimaryContact, title, phone, email, mobilePhone, notes) {
+    tenantId;
+    constructor(id, customerId, firstName, lastName, isPrimaryContact, title, phone, email, mobilePhone, notes, 
+    // Denormalized owner tenant (mirrors the customer's tenantId); required
+    // by the DB, filled by the create path.
+    tenantId) {
         this.id = id;
         this.customerId = customerId;
         this.firstName = firstName;
@@ -23,6 +27,7 @@ class CustomerContact {
         this.email = email;
         this.mobilePhone = mobilePhone;
         this.notes = notes;
+        this.tenantId = tenantId;
     }
 }
 exports.CustomerContact = CustomerContact;

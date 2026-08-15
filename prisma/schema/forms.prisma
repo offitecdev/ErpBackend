@@ -1,0 +1,94 @@
+/// ── Checklisten / Formulare / Vorlagen (branchenneutral) ──────────────────────
+/// Firmen aus Heizung/Elektro/Malerei/Gips/… bauen ihre eigenen Checklisten:
+/// eine Vorlage ist eine geordnete Feldliste, ein ausgefülltes Formular hängt
+/// am Kunden und wandert die Kette Angebot → Auftrag → Projekt → Termin →
+/// Technikerbildschirm entlang (die Verknüpfungs-Ids unten).
+///
+/// fields JSON: FormFieldDef[] — { id, type, label, required?, placeholder?,
+///   help?, multiline?, options?: [{id,label}], display?: 'dropdown'|'radio',
+///   visibleWhen?: { fieldId, operator, value? } }
+/// type: TEXT | NUMBER | QUANTITY | METERS | KILOGRAMS | CENTIMETERS |
+///   MILLIMETERS | CHECKBOX | SELECT | PHOTO | FILE | DRAWING | SIGNATURE |
+///   DATE | SECTION   (siehe src/shared/formFields.ts — Frontend spiegelt es)
+model FormTemplate {
+  id                  String   @id
+  tenantId            String
+  name                String
+  description         String?  @db.Text
+  /// Freies Schlagwort ("Heizung", "Elektro", "Abnahme") — nur zum Filtern.
+  category            String?
+  fields              Json
+  isActive            Boolean  @default(true)
+  createdByEmployeeId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  submissions FormSubmission[]
+
+  @@index([tenantId, isActive, name])
+}
+
+/// Ein ausgefülltes Formular. `templateFields` ist der EINGEFRORENE Feldsatz
+/// der Vorlage zum Zeitpunkt des Anlegens — spätere Änderungen an der Vorlage
+/// verändern ausgefüllte Formulare nicht. `values` = { [fieldId]: Wert };
+/// Fotos/Dateien/Zeichnungen/Unterschriften liegen als Data-URLs darin
+/// (Listen-Endpunkte lassen `values` deshalb weg — Schwerlast-Regel wie bei
+/// DeliveryReport.responses/images).
+/// status: DRAFT | COMPLETED
+model FormSubmission {
+  id                 String    @id
+  tenantId           String
+  templateId         String?
+  templateName       String
+  templateFields     Json
+  customerId         String?
+  tenderId           String?
+  salesOrderId       String?
+  projectId          String?
+  appointmentId      String?
+  status             String    @default("DRAFT")
+  values             Json
+  notes              String?   @db.Text
+  filledByEmployeeId String?
+  filledByName       String?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  template FormTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  customer Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, customerId, createdAt])
+  @@index([tenantId, status])
+  @@index([templateId])
+  @@index([tenderId])
+  @@index([salesOrderId])
+  @@index([projectId])
+  @@index([appointmentId])
+}
+
+/// Hinweise für den Einsatz vor Ort ("Bitte ohne Schuhe eintreten", "Hund im
+/// Garten"): der Techniker erfasst sie am Termin, sie erscheinen im Projekt,
+/// in den Projektaufträgen und auf dem Technikerbildschirm. Bewusst
+/// unabhängig von den Formularen — ein Hinweis braucht keine Vorlage.
+model FieldNote {
+  id                  String   @id
+  tenantId            String
+  customerId          String?
+  projectId           String?
+  salesOrderId        String?
+  appointmentId       String?
+  text                String   @db.Text
+  createdByEmployeeId String?
+  createdByName       String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, projectId, createdAt])
+  @@index([tenantId, customerId, createdAt])
+  @@index([salesOrderId])
+  @@index([appointmentId])
+}

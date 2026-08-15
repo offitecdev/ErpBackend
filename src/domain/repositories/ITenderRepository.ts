@@ -47,6 +47,12 @@ export interface TenderListRow {
     currency: string | null;
     createdAt: Date;
     offerMailSentAt: Date | null;
+    // "Abgelaufen" (Vorgabe 15.08.2026): ein Entwurf, dessen "gültig bis" vor
+    // heute liegt und der nicht angenommen wurde — die Liste zeigt es als Status.
+    validUntil: Date | null;
+    offerAcceptedAt: Date | null;
+    // "Kommission" — Freitext des Kunden; die Liste zeigt ihn als eigene Spalte.
+    commissionNumber: string | null;
     positionCount: number;
     grandTotal: number;
 }

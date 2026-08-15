@@ -7,7 +7,7 @@ import { ImportTenderUseCase } from '../../application/use-cases/tender/ImportTe
 import { ImportSalesOrderCsvUseCase } from '../../application/use-cases/tender/ImportSalesOrderCsvUseCase';
 import { CalculatePositionCostUseCase } from '../../application/use-cases/tender/CalculatePositionCostUseCase';
 import { formatCustomerAddress } from '../../application/utils/customerAddress';
-import { normalizePaymentStages, serializePaymentStages, validatePaymentStages } from '../../application/utils/paymentSchedule';
+import { normalizePaymentStages, serializePaymentStages, stripStageDates, validatePaymentStages } from '../../application/utils/paymentSchedule';
 import { ITenderRepository } from '../../domain/repositories/ITenderRepository';
 import { IPositionRepository } from '../../domain/repositories/IPositionRepository';
 import { ICustomerActivityRepository } from '../../domain/repositories/ICustomerActivityRepository';
@@ -826,12 +826,14 @@ export class TenderController {
                 } else {
                     // Array or JSON string, bare percents or {percent, date} —
                     // one normaliser handles every shape the clients send.
+                    // Fälligkeiten gehören zum AUFTRAG: die Offerte hält nur die
+                    // Prozente, ein mitgeschicktes Datum wird verworfen.
                     const stages = normalizePaymentStages(rawMeta.paymentStages);
-                    const stageError = stages ? validatePaymentStages(stages) : "Geçersiz ödeme planı.";
+                    const stageError = stages ? validatePaymentStages(stages, { requireDates: false }) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         throw new TenderValidationError(stageError);
                     }
-                    metaData.paymentStages = serializePaymentStages(stages!);
+                    metaData.paymentStages = serializePaymentStages(stripStageDates(stages!));
                 }
             }
             if (rawMeta.billingSameAsInstallation !== undefined) {
@@ -2017,12 +2019,14 @@ export class TenderController {
                 if (paymentStages === null || paymentStages === '') {
                     data.paymentStages = null;
                 } else {
+                    // Ödeme tarihleri SİPARİŞE aittir; teklif yalnızca yüzdeleri
+                    // tutar (gelen tarihler yazılmadan atılır).
                     const stages = normalizePaymentStages(paymentStages);
-                    const stageError = stages ? validatePaymentStages(stages) : "Geçersiz ödeme planı.";
+                    const stageError = stages ? validatePaymentStages(stages, { requireDates: false }) : "Geçersiz ödeme planı.";
                     if (stageError) {
                         return res.status(400).json({ error: stageError });
                     }
-                    data.paymentStages = serializePaymentStages(stages!);
+                    data.paymentStages = serializePaymentStages(stripStageDates(stages!));
                 }
             }
             if (billingSameAsInstallation !== undefined) {

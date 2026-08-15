@@ -16,6 +16,7 @@ class CustomerContactRepository {
             data: {
                 id: contactData.id || (0, nanoid_1.nanoid)(8),
                 customerId: contactData.customerId,
+                tenantId: contactData.tenantId,
                 firstName: contactData.firstName,
                 lastName: contactData.lastName,
                 title: contactData.title || null,
@@ -41,7 +42,7 @@ class CustomerContactRepository {
         return data.map(item => this.mapToEntity(item));
     }
     async update(id, contactData) {
-        const { id: _id, customerId: _cid, ...safeData } = contactData;
+        const { id: _id, customerId: _cid, tenantId: _tid, ...safeData } = contactData;
         const data = await prisma_client_1.default.customerContact.update({
             where: { id },
             data: safeData

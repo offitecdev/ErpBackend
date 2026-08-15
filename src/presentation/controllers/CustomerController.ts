@@ -203,6 +203,9 @@ export class CustomerController {
 
             const contactData = {
                 customerId,
+                // customerInTenant above guarantees the customer belongs to
+                // this tenant, so the denormalized copy is safe to take here.
+                tenantId: req.user!.tenantId,
                 firstName: req.body.firstName,
                 lastName: req.body.lastName,
                 title: req.body.title,
