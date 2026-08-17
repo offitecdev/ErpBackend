@@ -1,0 +1,98 @@
+/// ── PERSONALMODUL (Neubau 16.08.2026) ────────────────────────────────────────
+/// Das alte Modul (AttendanceLog / LeaveRequest / LeaveType in iam.prisma) ist
+/// abgelöst: sein CODE wurde entfernt, seine TABELLEN bleiben unangetastet
+/// stehen, damit die bisherigen Zeit- und Urlaubsdaten nicht verloren gehen.
+/// Neu geschrieben wird alles hier — jede Zeile ist ein ECHTES Arbeitsfenster
+/// (Stempeln aus = Pausenbeginn), nicht mehr ein Tag mit Pausen-JSON.
+///
+/// Die Uhr, die Anmeldung und die Berichte hängen alle am selben QR-Schlüssel
+/// (`Employee.qrToken`): ein Code je Person, der sowohl anmeldet als auch
+/// stempelt.
+
+/// Schichtplan der Firma: welche Wochentage gearbeitet werden, wann die Schicht
+/// beginnt/endet und wie lange Pause ist. Genau EIN Plan je Mandant.
+model StaffShiftPlan {
+  id           String   @id
+  tenantId     String   @unique
+  /// ISO-Wochentage (Mo=1 … So=7), die als Arbeitstage zählen.
+  workdaysJson Json
+  /// "HH:MM" — bewusst Text: die Uhrzeit ist eine Regel, kein Zeitpunkt.
+  startTime    String   @db.VarChar(5)
+  endTime      String   @db.VarChar(5)
+  /// Pausendauer in Minuten (Oberfläche erfasst Stunden + Minuten getrennt).
+  breakMinutes Int      @default(60)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+}
+
+/// Ein Arbeitsfenster: Stempeln ein → Zeile offen, Stempeln aus → Zeile zu.
+/// Der Pausenbeginn IST ein Ausstempeln, deshalb entspricht jede Zeile genau
+/// der tatsächlich geleisteten Zeit (Vorgabe aus dem Detailbericht).
+model StaffTimeEntry {
+  id              String    @id
+  tenantId        String
+  employeeId      String
+  /// Kalendertag der Schicht (lokale Mitternacht) — Filter und Gruppierung
+  /// laufen darüber, damit eine über Mitternacht laufende Schicht ihrem
+  /// Anfangstag zugeordnet bleibt.
+  workDate        DateTime
+  startedAt       DateTime
+  endedAt         DateTime?
+  /// Sekunden zwischen Start und Ende; offene Zeile = null.
+  durationSeconds Int?
+  /// QR | MANUAL | REMOTE — REMOTE ist der automatische Ganztag der dauerhaft
+  /// im Homeoffice arbeitenden Personen (kein Scan nötig).
+  source          String    @default("QR") @db.VarChar(16)
+  note            String?   @db.Text
+  editedById      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  employee        Employee  @relation("StaffTimeEntries", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, workDate])
+  @@index([employeeId, workDate])
+}
+
+/// Urlaubs- UND Homeoffice-Antrag in einem Modell (`kind`), weil beide denselben
+/// Weg gehen: Antragsteller wählt eine freigebende Person (Admin).
+///   Urlaub    PENDING_MANAGER → PENDING_ACCOUNTING → APPROVED
+///   Homeoffice PENDING_MANAGER → APPROVED            (Buchhaltung entfällt)
+/// REJECTED kann in jeder Stufe entstehen; `rejectedById` hält fest, wer.
+model StaffLeaveRequest {
+  id                   String    @id
+  tenantId             String
+  employeeId           String
+  /// LEAVE | REMOTE
+  kind                 String    @default("LEAVE") @db.VarChar(16)
+  /// OTHER | EXCUSE | SICK_SHORT | SICK_LONG | REMOTE_WORK
+  /// (ANNUAL_PAID steht nur noch in Altanträgen — der Jahresurlaub läuft seit
+  /// dem 16.08.2026 als OTHER mit Freitext.)
+  leaveType            String    @db.VarChar(24)
+  /// Freitext zu `leaveType = 'OTHER'`: die selbst benannte Urlaubsart
+  /// ("Jahresurlaub", "unbezahlter Urlaub", …). Bei den festen Arten null.
+  leaveTypeLabel       String?   @db.VarChar(120)
+  startDate            DateTime
+  endDate              DateTime
+  /// Arbeitstage im Zeitraum (nach Schichtplan gezählt).
+  totalDays            Int
+  note                 String?   @db.Text
+  /// PENDING_MANAGER | PENDING_ACCOUNTING | APPROVED | REJECTED
+  status               String    @default("PENDING_MANAGER") @db.VarChar(24)
+  approverId           String
+  managerDecisionAt    DateTime?
+  managerNote          String?   @db.Text
+  accountantId         String?
+  accountingDecisionAt DateTime?
+  accountingNote       String?   @db.Text
+  rejectedById         String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @default(now()) @updatedAt
+  employee             Employee  @relation("StaffLeaveRequests", fields: [employeeId], references: [id], onDelete: Cascade)
+  approver             Employee  @relation("StaffLeaveApprovals", fields: [approverId], references: [id])
+  accountant           Employee? @relation("StaffLeaveAccounting", fields: [accountantId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([employeeId, startDate])
+  @@index([approverId, status])
+  @@index([accountantId], map: "StaffLeaveRequest_accountantId_fkey")
+}

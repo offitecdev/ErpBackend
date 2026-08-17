@@ -3,7 +3,9 @@ import { nanoid } from 'nanoid';
 import { IArticleRepository } from '../../domain/repositories/IArticleRepository';
 import { IInventoryRepository } from '../../domain/repositories/IInventoryRepository';
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
+import { auditLog } from '../../infrastructure/services/AuditLogService';
 import { normalizeRichText } from '../../shared/richText';
+import { checkDangerPassword, passwordFromRequest } from '../utils/dangerGate';
 
 export class ArticleController {
     constructor(
@@ -167,11 +169,67 @@ export class ArticleController {
         }
     }
 
+    /**
+     * Einzelne Produktkarte in den Papierkorb. Zwei Dinge gelten hier seit
+     * 17.08.2026 und ebenso für die Sammellöschung darunter:
+     *   • die Karte muss der ANGEMELDETEN Firma gehören (vorher löschte die
+     *     Kennung allein, ganz gleich aus welchem Mandanten sie stammte),
+     *   • jedes Konto ausser dem Administrator weist sein Kennwort vor.
+     */
     async remove(req: Request, res: Response) {
         try {
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
             const id = req.params.id as string;
-            await this.articleRepository.deleteArticle(id);
-            res.status(200).json({ message: 'Ürün silindi.' });
+
+            const gate = await checkDangerPassword(employeeId, passwordFromRequest(req));
+            if (!gate.ok) return res.status(gate.status).json({ error: gate.error, code: gate.code });
+
+            const deleted = await this.articleRepository.softDeleteArticles(tenantId, [id]);
+            if (!deleted) return res.status(404).json({ error: 'Ürün bulunamadı.' });
+
+            auditLog.log({
+                action: 'inventory.article.delete',
+                tenantId,
+                employeeId,
+                entityType: 'Article',
+                entityId: id,
+                ...auditLog.context(req),
+            });
+            res.status(200).json({ message: 'Ürün silindi.', deleted });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * Sammellöschung aus der Produktliste (Auswahlkästchen). Eine Anweisung für
+     * die ganze Auswahl; die Obergrenze deckt jede Seitengrösse der Liste ab und
+     * hält zugleich die IN-Liste der Datenbank in vernünftigen Grenzen.
+     */
+    async removeMany(req: Request, res: Response) {
+        try {
+            const tenantId = (req as any).user!.tenantId;
+            const employeeId = (req as any).user!.id;
+            const raw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+            const ids = [...new Set(raw.map((value: unknown) => String(value || '').trim()).filter(Boolean))] as string[];
+
+            if (!ids.length) return res.status(400).json({ error: 'Silinecek ürün seçilmedi.' });
+            if (ids.length > 500) return res.status(400).json({ error: 'Tek seferde en fazla 500 ürün silinebilir.' });
+
+            const gate = await checkDangerPassword(employeeId, passwordFromRequest(req));
+            if (!gate.ok) return res.status(gate.status).json({ error: gate.error, code: gate.code });
+
+            const deleted = await this.articleRepository.softDeleteArticles(tenantId, ids);
+            auditLog.log({
+                action: 'inventory.article.bulkDelete',
+                tenantId,
+                employeeId,
+                entityType: 'Article',
+                metadata: { requested: ids.length, deleted },
+                ...auditLog.context(req),
+            });
+            res.status(200).json({ deleted, requested: ids.length });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

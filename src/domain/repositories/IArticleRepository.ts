@@ -12,6 +12,10 @@ export interface IArticleRepository {
     createArticle(article: Partial<Article>): Promise<Article>;
     updateArticle(id: string, patch: Partial<Article>): Promise<Article>;
     deleteArticle(id: string): Promise<void>;
+    /** Mandantengebundene Sammellöschung (Papierkorb) — gibt die Trefferzahl zurück. */
+    softDeleteArticles(tenantId: string, ids: string[]): Promise<number>;
+    /** Die ganze Produktliste einer Firma in den Papierkorb. */
+    softDeleteAllArticles(tenantId: string): Promise<number>;
     findAllArticles(filter: IArticleFilter): Promise<Article[]>;
     findArticleById(id: string, options?: { includeImages?: boolean }): Promise<Article | null>;
     findArticleByCode(tenantId: string, codeOrBarcode: string): Promise<Article | null>;

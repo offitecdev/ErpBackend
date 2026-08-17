@@ -8,3 +8,28 @@
 (Use `node --trace-deprecation ...` to show where the warning was created)
 (node:31964) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
 (Use `node --trace-deprecation ...` to show where the warning was created)
+(node:19568) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\FormController.ts
+(node:53284) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\FormController.ts
+(node:50712) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\FormController.ts
+(node:5716) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts
+(node:15352) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts
+Compilation error in C:\ERP\Erp_Backend\src\presentation\routes\auth.routes.ts
+Compilation error in C:\ERP\Erp_Backend\src\presentation\routes\auth.routes.ts
+(node:15020) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Compilation error in C:\ERP\Erp_Backend\src\main.ts
+Compilation error in C:\ERP\Erp_Backend\src\main.ts
+(node:3348) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts
+Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts

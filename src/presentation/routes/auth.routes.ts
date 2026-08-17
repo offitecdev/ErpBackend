@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { AuthController } from '../controllers/AuthController';
 import { LoginUseCase } from '../../application/use-cases/auth/LoginUseCase';
+import { QrLoginUseCase } from '../../application/use-cases/auth/QrLoginUseCase';
 import { GetUserPermissionsUseCase } from '../../application/use-cases/auth/GetUserPermissionsUseCase';
 import { EmployeeRepository } from '../../infrastructure/repositories/EmployeeRepository';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
@@ -61,6 +62,7 @@ const requestPasswordResetUseCase = new RequestPasswordResetUseCase(employeeRepo
 const resetPasswordUseCase      = new ResetPasswordUseCase(employeeRepo, tokenService, cryptoService);
 const requestAccountDeletionUseCase = new RequestAccountDeletionUseCase(employeeRepo, tokenService, authMailService);
 const confirmAccountDeletionUseCase = new ConfirmAccountDeletionUseCase(employeeRepo, tokenService);
+const qrLoginUseCase            = new QrLoginUseCase(tokenService);
 
 const authController = new AuthController(
     loginUseCase,
@@ -73,6 +75,7 @@ const authController = new AuthController(
     resetPasswordUseCase,
     requestAccountDeletionUseCase,
     confirmAccountDeletionUseCase,
+    qrLoginUseCase,
 );
 /**
  * @swagger
@@ -102,6 +105,36 @@ const authController = new AuthController(
  *               $ref: '#/components/schemas/Error'
  */
 router.post('/login', loginRateLimiter, validate({ body: loginSchema }), (req, res) => authController.login(req, res));
+
+/**
+ * @swagger
+ * /auth/qr-login:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Anmeldung mit dem Personal-QR-Code
+ *     description: >
+ *       Der QR-Code des Personalmoduls (ein Code je Person) meldet an; derselbe
+ *       Code stempelt am Tablet ein und aus.
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [token]
+ *             properties:
+ *               token:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Angemeldet
+ *       400:
+ *         description: QR-Code ungültig
+ */
+// Teilt den Brute-Force-Zähler der Kennwortanmeldung: ein QR-Schlüssel ist eine
+// Zugangsangabe wie ein Kennwort und darf nicht schneller geraten werden dürfen.
+router.post('/qr-login', loginRateLimiter, (req, res) => authController.qrLogin(req, res));
 
 /**
  * @swagger

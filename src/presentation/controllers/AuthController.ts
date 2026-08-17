@@ -1,5 +1,6 @@
 import {Request , Response} from "express";
 import {LoginUseCase} from "../../application/use-cases/auth/LoginUseCase";
+import { QrLoginUseCase } from "../../application/use-cases/auth/QrLoginUseCase";
 import { GetUserPermissionsUseCase } from "../../application/use-cases/auth/GetUserPermissionsUseCase";
 import { GetMeUseCase } from "../../application/use-cases/auth/GetMeUseCase";
 import { RefreshTokenUseCase } from "../../application/use-cases/auth/RefreshTokenUseCase";
@@ -10,6 +11,11 @@ import { setAuthCookies, clearAuthCookies, REFRESH_COOKIE } from "../utils/authC
 import { auditLog } from "../../infrastructure/services/AuditLogService";
 import prisma from "../../infrastructure/database/prisma.client";
 import { Prisma } from "@prisma/client";
+import { RoleRepository } from "../../infrastructure/repositories/RoleRepository";
+
+/** Seitenstufen hängen an derselben Rollenzeile wie die Rechte; der Zugriff
+    läuft über dieselbe zwischenspeichernde Ablage (siehe RoleRepository). */
+const roleRepositoryForPages = new RoleRepository();
 
 export class AuthController {
     constructor(
@@ -23,7 +29,29 @@ export class AuthController {
         private resetPasswordUseCase: ResetPasswordUseCase,
         private requestAccountDeletionUseCase: RequestAccountDeletionUseCase,
         private confirmAccountDeletionUseCase: ConfirmAccountDeletionUseCase,
+        private qrLoginUseCase: QrLoginUseCase,
     ){}
+
+    /** Anmeldung mit dem Personal-QR-Code (siehe QrLoginUseCase). */
+    async qrLogin(req:Request , res:Response){
+        try{
+            const result = await this.qrLoginUseCase.execute(String(req.body?.token ?? ''));
+            setAuthCookies(res, { accessToken: result.accessToken, refreshToken: result.refreshToken });
+            auditLog.log({
+                action: 'auth.qrLogin.success',
+                tenantId: result.employee.tenantId,
+                employeeId: result.employee.id,
+                entityType: 'Employee',
+                entityId: result.employee.id,
+                ...auditLog.context(req),
+            });
+            res.status(200).json({ employee: result.employee });
+        }catch(error:any){
+            // Der Code selbst wird NICHT protokolliert — er ist ein Geheimnis.
+            auditLog.log({ action: 'auth.qrLogin.failed', ...auditLog.context(req) });
+            res.status(400).json({error:error.message});
+        }
+    }
 
     async login(req:Request , res:Response){
         const {email,password} = req.body;
@@ -162,8 +190,24 @@ export class AuthController {
             if (!employeeId) {
                 return res.status(401).json({ error: 'Yetkisiz erişim.' });
             }
-            const permissions = await this.getUserPermissionsUseCase.execute(employeeId);
-            res.status(200).json({ permissions });
+            // `pageAccess` (17.08.2026): die Stufe je SEITE aus der Rolle —
+            // Menü und Seitenwächter im Browser lesen daraus, welche Seiten
+            // diese Person überhaupt öffnen darf. Die flachen `permissions`
+            // bleiben daneben stehen: sie regeln, was INNERHALB einer Seite
+            // geht, und sind weiterhin das, was der Server prüft.
+            // Beide kommen aus demselben Cache — kein zweiter Rundgang.
+            const [permissions, roleInfo] = await Promise.all([
+                this.getUserPermissionsUseCase.execute(employeeId),
+                roleRepositoryForPages.getEmployeeRoleInfo(employeeId),
+            ]);
+            // `isSystemAdmin` = Administratorrolle. Nur die Anzeige hängt daran
+            // (gefährliche Aktionen fragen jedes ANDERE Konto nach dem
+            // Kennwort); geprüft wird die Rolle beim Aufruf erneut am Server.
+            res.status(200).json({
+                permissions,
+                pageAccess: roleInfo.pageAccess,
+                isSystemAdmin: roleInfo.isSystemAdmin,
+            });
         }catch(error:any){
             res.status(500).json({error: error.message});
         }

@@ -88,7 +88,16 @@ model Employee {
   hireDate                      DateTime?
   terminationDate               DateTime?
   annualLeaveEntitlement        Int                            @default(0)
-  profilePictureUrl             String?
+  /// Profilbild der Personenseite. Es steht als Daten-URL darin (der Browser
+  /// verkleinert es vorher auf ein Quadrat) — darum MEDIUMTEXT und nicht die
+  /// vorgegebenen 191 Zeichen, in die keine einzige Bildzeile passt.
+  profilePictureUrl             String?                        @db.MediumText
+  /// Daumennagel desselben Bildes (64 px). Seit dem Profilbild IST das Bild die
+  /// Person — es steht in Listen, im Kopfband und an jedem Namensplatz. Das
+  /// grosse Bild dorthin zu schicken hiesse, eine Mannschaft von 100 Personen
+  /// mit ~10 MB Daten-URLs zu laden; der Daumennagel wiegt rund 2 KB.
+  /// Er wird im Browser zusammen mit dem grossen Bild erzeugt.
+  profilePictureThumb           String?                        @db.MediumText
   notes                         String?                        @db.Text
   /// Personal module package: subset of module keys this employee can see.
   /// null = no restriction (sees everything the company's category allows).
@@ -97,8 +106,27 @@ model Employee {
   /// null = no restriction (every tenant of the company tree, as before).
   /// Ids outside the own tree are ignored — the list may only ever narrow it.
   allowedTenantIds              Json?
+  /// ── Personalmodul (Neubau 16.08.2026, siehe personnel.prisma) ────────────
+  /// Fortlaufende Personalnummer je Firmenbaum — die "Mitarbeiter-Nr." der
+  /// Berichte. Altbestand hat keine; sie wird beim ersten Speichern vergeben.
+  staffNumber                   Int?
+  /// Einmaliger QR-Schlüssel: DERSELBE Code meldet an der Anmeldeseite an und
+  /// stempelt am Tablet ein/aus. Rotierbar (alter Ausdruck wird damit ungültig).
+  qrToken                       String?                        @unique @db.VarChar(64)
+  /// STAFF | ADMIN | ACCOUNTANT — wer Anträge freigibt (ADMIN) und wer die
+  /// Buchhaltungsstufe des Urlaubswegs führt (ACCOUNTANT).
+  staffRole                     String                         @default("STAFF") @db.VarChar(16)
+  /// OFFICE | REMOTE — dauerhaft im Homeoffice heisst: der Tag zählt am
+  /// Abend als volles Tagessoll, ohne dass jemand einen QR-Code scannt.
+  workLocation                  String                         @default("OFFICE") @db.VarChar(16)
+  staffTimeEntries              StaffTimeEntry[]               @relation("StaffTimeEntries")
+  staffLeaveRequests            StaffLeaveRequest[]            @relation("StaffLeaveRequests")
+  staffLeaveApprovals           StaffLeaveRequest[]            @relation("StaffLeaveApprovals")
+  staffLeaveAccounting          StaffLeaveRequest[]            @relation("StaffLeaveAccounting")
   createdAt                     DateTime                       @default(now())
   updatedAt                     DateTime                       @default(now()) @updatedAt
+  /// LEGACY — Altdaten des abgelösten Personalmoduls. Die Tabellen bleiben
+  /// erhalten (kein Datenverlust), es greift aber kein Code mehr darauf zu.
   attendanceLogs                AttendanceLog[]
   customerNotes                 CustomerNote[]
   uploadedDocs                  Document[]
@@ -131,6 +159,8 @@ model Employee {
   crmCommunications             CrmCommunication[]             @relation("CrmCommunicationCreator")
   assignedCrmTasks              CrmTask[]                      @relation("CrmTaskAssignee")
   createdCrmTasks               CrmTask[]                      @relation("CrmTaskCreator")
+  passwordChangeRequests        PasswordChangeRequest[]        @relation("PasswordChangeRequests")
+  passwordChangeDecisions       PasswordChangeRequest[]        @relation("PasswordChangeDecisions")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }
@@ -162,6 +192,17 @@ model Role {
   id            String             @id
   tenantId      String
   roleName      String
+  /// ROLLENVORLAGE (17.08.2026): die Seitenrechte, wie die Tabelle unter
+  /// Einstellungen → Berechtigungen sie zeigt —
+  /// { "crm.customers": 2, "inventory.stock": 3 }, 1 ansehen / 2 bearbeiten /
+  /// 3 löschen (siehe shared/pageCatalog.ts). Die RolePermission-Zeilen und
+  /// das Modulpaket werden daraus ABGELEITET; diese Spalte ist die Fassung,
+  /// die bearbeitet wird. null = Altrolle aus der abgelösten Stufenseite; ihre
+  /// Karte wird beim Lesen aus den Rechten zurückgerechnet.
+  pageLevels    Json?
+  /// Feste Administratorrolle des Firmenbaums: alle Seiten, alle Rechte, nicht
+  /// änderbar und nicht löschbar. Genau EINE je Stamm.
+  isSystemAdmin Boolean            @default(false)
   employees     EmployeeRole[]
   tenant        Tenant             @relation(fields: [tenantId], references: [id])
   permissions   RolePermission[]
@@ -210,6 +251,35 @@ model EmployeeRole {
   @@index([roleId], map: "EmployeeRole_roleId_fkey")
 }
 
+/// Kennwortwunsch aus dem eigenen Profil (17.08.2026): wer nicht verwaltet,
+/// ändert sein Kennwort nicht selbst — er BEANTRAGT es. Der Entwurf liegt
+/// bereits gehasht hier (Klartext wird nie gespeichert) und wird erst bei der
+/// Freigabe auf Employee.passwordHash geschrieben. Verwaltende Personen
+/// ändern direkt; für sie entsteht gar kein Antrag.
+model PasswordChangeRequest {
+  id              String    @id
+  tenantId        String
+  employeeId      String
+  /// Der Entwurf — bcrypt-Hash des gewünschten Kennworts.
+  newPasswordHash String
+  /// PENDING | APPROVED | REJECTED
+  status          String    @default("PENDING") @db.VarChar(16)
+  note            String?   @db.Text
+  decidedAt       DateTime?
+  decidedById     String?
+  decisionNote    String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  employee        Employee  @relation("PasswordChangeRequests", fields: [employeeId], references: [id], onDelete: Cascade)
+  decidedBy       Employee? @relation("PasswordChangeDecisions", fields: [decidedById], references: [id])
+
+  @@index([tenantId, status])
+  @@index([employeeId, status])
+  @@index([decidedById], map: "PasswordChangeRequest_decidedById_fkey")
+}
+
+/// LEGACY (abgelöstes Personalmodul) — nur noch Datenhaltung, kein Code mehr.
+/// Der Neubau schreibt in StaffLeaveRequest (personnel.prisma).
 model LeaveType {
   id       String         @id
   tenantId String
@@ -220,6 +290,7 @@ model LeaveType {
   @@index([tenantId], map: "LeaveType_tenantId_fkey")
 }
 
+/// LEGACY (abgelöstes Personalmodul) — siehe LeaveType.
 model LeaveRequest {
   id           String    @id
   employeeId   String
@@ -240,6 +311,7 @@ model LeaveRequest {
   @@index([leaveTypeId], map: "LeaveRequest_leaveTypeId_fkey")
 }
 
+/// LEGACY (abgelöstes Personalmodul) — der Neubau schreibt StaffTimeEntry.
 model AttendanceLog {
   id               String    @id
   employeeId       String

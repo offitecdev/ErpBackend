@@ -55,13 +55,47 @@ model FormSubmission {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  template FormTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  customer Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  template FormTemplate?     @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  customer Customer?         @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  links    FormSubmissionLink[]
 
   @@index([tenantId, createdAt])
   @@index([tenantId, customerId, createdAt])
   @@index([tenantId, status])
   @@index([templateId])
+  @@index([tenderId])
+  @@index([salesOrderId])
+  @@index([projectId])
+  @@index([appointmentId])
+}
+
+/// Die Kunden (und deren Angebote) EINER Checkliste. Vorgabe 16.08.2026: eine
+/// Checkliste wird NICHT je Kunde vervielfältigt, sondern einmal angelegt und
+/// an mehrere Kunden gehängt — fünf Kunden mit je vier Angeboten ergeben EINE
+/// Checkliste mit zwanzig Verknüpfungen, nicht zwanzig Checklisten.
+///
+/// Die flachen Spalten auf `FormSubmission` bleiben bestehen und tragen die
+/// ERSTE Verknüpfung: Beschriftungen (PDF-Kopf, Listenspalte) und der alte
+/// Einzelabruf laufen unverändert weiter. Gesucht/gefiltert wird über diese
+/// Tabelle — die Kette Angebot → Auftrag → Projekt → Termin wird beim
+/// Speichern je Verknüpfung aufgelöst (completeLinks), damit eine Checkliste
+/// auch im Auftrag und beim Techniker auftaucht.
+model FormSubmissionLink {
+  id            String   @id
+  tenantId      String
+  submissionId  String
+  customerId    String?
+  tenderId      String?
+  salesOrderId  String?
+  projectId     String?
+  appointmentId String?
+  createdAt     DateTime @default(now())
+
+  submission FormSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  customer   Customer?      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([tenantId, customerId])
   @@index([tenderId])
   @@index([salesOrderId])
   @@index([projectId])

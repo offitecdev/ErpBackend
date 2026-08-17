@@ -110,10 +110,42 @@ router.patch(
 
 /**
  * @swagger
+ * /articles/bulk-delete:
+ *   post:
+ *     tags: [Articles]
+ *     summary: Seçili ürünleri toplu sil (çöp kutusu) — yönetici dışındaki hesaplar parola girer
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ids:
+ *                 type: array
+ *                 items: { type: string }
+ *               password:
+ *                 type: string
+ *                 description: "Oturumdaki kişinin parolası; yalnızca yönetici rolünde gerekmez"
+ *     responses:
+ *       200: { description: "Silinen kayıt sayısı" }
+ *       403: { description: "Parola hatalı (code=PASSWORD_WRONG)" }
+ */
+router.post(
+    '/bulk-delete',
+    requireAuth,
+    requirePermission('inventory.articles.delete'),
+    (req, res) => controller.removeMany(req, res)
+);
+
+/**
+ * @swagger
  * /articles/{id}:
  *   delete:
  *     tags: [Articles]
- *     summary: Ürünü sil
+ *     summary: Ürünü sil (yönetici dışındaki hesaplar parola girer)
  *     security:
  *       - bearerAuth: []
  */

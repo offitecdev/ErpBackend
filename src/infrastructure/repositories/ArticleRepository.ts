@@ -162,6 +162,31 @@ export class ArticleRepository implements IArticleRepository {
         });
     }
 
+    /**
+     * Mehrere Produktkarten in einem Zug in den Papierkorb — dieselbe Wirkung
+     * wie `deleteArticle`, aber MANDANTENGEBUNDEN und als eine Anweisung, damit
+     * eine Auswahl von 200 Zeilen nicht 200 Rundgänge zur fernen Datenbank
+     * kostet. Fremde oder schon gelöschte Karten fallen durch die Bedingung
+     * heraus; zurück kommt, was wirklich gelöscht wurde.
+     */
+    async softDeleteArticles(tenantId: string, ids: string[]): Promise<number> {
+        if (!ids.length) return 0;
+        const result = await (prisma as any).article.updateMany({
+            where: { id: { in: ids }, tenantId, deletedAt: null },
+            data: { deletedAt: new Date(), status: 'INACTIVE', isActive: false },
+        });
+        return result.count as number;
+    }
+
+    /** Die GANZE Produktliste einer Firma in den Papierkorb (Zurücksetzen). */
+    async softDeleteAllArticles(tenantId: string): Promise<number> {
+        const result = await (prisma as any).article.updateMany({
+            where: { tenantId, deletedAt: null },
+            data: { deletedAt: new Date(), status: 'INACTIVE', isActive: false },
+        });
+        return result.count as number;
+    }
+
     async findAllArticles(filter: IArticleFilter): Promise<Article[]> {
         const where: any = { tenantId: filter.tenantId, deletedAt: null };
         if (filter.onlyActive) where.isActive = true;

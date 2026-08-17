@@ -10,10 +10,11 @@ import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './infrastructure/config/swagger.config';
 import authRoutes     from './presentation/routes/auth.routes';
 import employeeRoutes from './presentation/routes/employee.routes';
-import leaveRoutes    from './presentation/routes/leave.routes';
-import tenantRoutes  from './presentation/routes/tenant.routes';    
+// Personalmodul (Neubau 16.08.2026): ersetzt die früheren Router
+// attendance.routes.ts und leave.routes.ts vollständig.
+import personnelRoutes from './presentation/routes/personnel.routes';
+import tenantRoutes  from './presentation/routes/tenant.routes';
 import customerRoutes from './presentation/routes/customer.routes';
-import attendanceRoutes from './presentation/routes/attendance.routes';
 import roleRoutes from './presentation/routes/role.routes';
 import moduleProfileRoutes from './presentation/routes/moduleProfile.routes';
 import tenderRoutes from './presentation/routes/tender.routes';
@@ -37,6 +38,10 @@ import formsRoutes from './presentation/routes/forms.routes';
 import settingsGateRoutes from './presentation/routes/settingsGate.routes';
 import reminderSettingsRoutes from './presentation/routes/reminderSettings.routes';
 import authorizationRoutes from './presentation/routes/authorization.routes';
+// Rollenvorlagen (Einstellungen → Berechtigungen) und der Kennwortwunsch aus
+// dem eigenen Profil — beide neu am 17.08.2026.
+import roleTemplateRoutes from './presentation/routes/roleTemplate.routes';
+import passwordRequestRoutes from './presentation/routes/passwordRequest.routes';
 import fxRoutes from './presentation/routes/fx.routes';
 import filesRoutes from './presentation/routes/files.routes';
 import dashboardRoutes from './presentation/routes/dashboard.routes';
@@ -129,13 +134,17 @@ for (const prefix of apiPrefixes) {
     // ('/authorization/list', '/:id/authorization') sind zweigliedrig und
     // kollidieren deshalb nicht mit dem '/:id' des Personal-Routers davor.
     app.use(`${prefix}/employees`, authorizationRoutes);
-    app.use(`${prefix}/leaves`, leaveRoutes);
+    // Personalmodul: Liste, Stempeluhr, Schichtplan, Berichte, Anträge.
+    app.use(`${prefix}/personnel`, personnelRoutes);
     app.use(`${prefix}/tenants`, tenantRoutes);
     app.use(`${prefix}/customers`, customerRoutes);
     app.use(`${prefix}/sales-orders`, salesOrderRoutes);
     app.use(`${prefix}/billing`, billingRoutes);
-    app.use(`${prefix}/attendance`, attendanceRoutes);
     app.use(`${prefix}/roles`, roleRoutes);
+    // Eigener Pfad statt eines Unterwegs von /roles: dort steht bereits ein
+    // '/:id', an dem '/templates' hängen bliebe.
+    app.use(`${prefix}/role-templates`, roleTemplateRoutes);
+    app.use(`${prefix}/password-requests`, passwordRequestRoutes);
     app.use(`${prefix}/module-profiles`, moduleProfileRoutes);
     app.use(`${prefix}/tenders`, tenderRoutes);
     app.use(`${prefix}/articles`, articleRoutes);

@@ -5,6 +5,8 @@ import { ProcessStockMovementUseCase } from '../../application/use-cases/invento
 import { ManagePurchaseProposalsUseCase } from '../../application/use-cases/inventory/ManagePurchaseProposalsUseCase';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
+import { requireItGate } from '../middlewares/ItGateMiddleware';
+import { auditLog } from '../../infrastructure/services/AuditLogService';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
@@ -1575,11 +1577,50 @@ router.get(
  *                 type: boolean
  *                 description: "true: kodu zaten kayıtlı satır hata yerine mevcut ürünü GÜNCELLER (dosya kazanır)"
  */
-router.post(
-    '/articles/bulk',
-    requireAuth,
-    requirePermission('inventory.articles.create'),
-    async (req, res) => {
+/** Kayıtları bir alana göre öbekle (toplu yazma düştüğünde satır satır dener). */
+const groupBy = <T extends Record<string, any>>(rows: T[], key: string): Map<any, T[]> => {
+    const groups = new Map<any, T[]>();
+    for (const row of rows) {
+        const bucket = groups.get(row[key]);
+        if (bucket) bucket.push(row);
+        else groups.set(row[key], [row]);
+    }
+    return groups;
+};
+
+/** Satır hatasını KOD'uyla birlikte fırlat — arayüz kodu çevirebilsin. */
+const rowError = (code: string, message: string): Error =>
+    Object.assign(new Error(message), { rowCode: code });
+
+/**
+ * Veritabanı hatasını satır listesine sığan tek cümleye indirger.
+ *
+ * Prisma'nın ham metni ekranlarca uzundur (çağrının kaynak kodunu da basar);
+ * satır tablosuna olduğu gibi konulursa okunmaz. `code` alanı arayüzün hatayı
+ * KULLANICININ dilinde göstermesini sağlar; metin yalnızca yedektir.
+ */
+const rowWriteFailure = (error: any): { code: string; message: string } => {
+    const raw = String(error?.message || '');
+    // Sütun adı Prisma'nın `meta`sında gelir; sürücü üzerinden gelen hatalarda
+    // orası boş kalıp yalnızca metinde ("… Column: name") durabiliyor.
+    const column = error?.meta?.column_name || error?.meta?.column || /Column:\s*(\w+)/.exec(raw)?.[1] || '';
+    if (error?.code === 'P2000' || /too long for the column/i.test(raw)) {
+        return { code: 'VALUE_TOO_LONG', message: column ? `Alan sütun sınırını aşıyor: ${column}.` : 'Bir alan sütun sınırını aşıyor.' };
+    }
+    if (error?.code === 'P2002') return { code: 'CODE_TAKEN', message: 'Bu kod zaten bir üründe kayıtlı.' };
+    return { code: 'WRITE_FAILED', message: 'Satır yazılamadı.' };
+};
+
+/**
+ * Toplu ürün yazma gövdesi — İKİ uç aynı işi yapar:
+ *   POST /inventory/articles/bulk    (tablo/Excel; `inventory.articles.create`)
+ *   POST /inventory/articles/import  (IT'nin CSV yüklemesi; IT kennwortu)
+ * `forceZeroStock` yalnızca ikincisinde açıktır: dosyada ne yazarsa yazsın
+ * miktar 0 kabul edilir, böylece içe aktarılan ürün STOKSUZ tanımlanır
+ * (bakiye satırı yazılmaz, yalnızca tanım hareketi düşer).
+ */
+const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =>
+    async (req: any, res: any) => {
         try {
             const tenantId = req.user!.tenantId;
             const employeeId = req.user!.id;
@@ -1595,7 +1636,8 @@ router.post(
             // güncellenen ürün için hareket/bakiye/parti yazılmaz.
             const overwrite = req.body.overwrite === true;
 
-            const errors: Array<{ index: number; articleCode: string; error: string }> = [];
+            // `code`: arayüz sık görülen hatayı kendi dilinde gösterebilsin.
+            const errors: Array<{ index: number; articleCode: string; error: string; code?: string }> = [];
             const created: any[] = [];
 
             // Yük içi mükerrer kod kontrolü
@@ -1604,7 +1646,7 @@ router.post(
                 const codeValue = String(item.articleCode || '').trim();
                 if (codeValue) {
                     if (seenCodes.has(codeValue)) {
-                        errors.push({ index, articleCode: codeValue, error: 'Aynı ürün kodu listede birden fazla kez var.' });
+                        errors.push({ index, articleCode: codeValue, error: 'Aynı ürün kodu listede birden fazla kez var.', code: 'DUPLICATE_IN_FILE' });
                     } else {
                         seenCodes.set(codeValue, index);
                     }
@@ -1633,7 +1675,9 @@ router.post(
             // sonra tek transaction içinde toplu INSERT'lerle yazılır. Yeni ürünler
             // olduğu için bakiye/parti satırlarının çakışma ihtimali yok.
             const articleCreates: any[] = [];
-            const articleUpdates: Array<{ id: string; data: any }> = [];
+            /** Hangi ürün hangi SATIRDAN geldi — toplu yazma düşerse gerekir. */
+            const createGroups: Array<{ index: number; articleCode: string; articleId: string }> = [];
+            const articleUpdates: Array<{ id: string; index: number; articleCode: string; data: any }> = [];
             const balanceCreates: any[] = [];
             const movementCreates: any[] = [];
             const lotCreates: any[] = [];
@@ -1646,8 +1690,9 @@ router.post(
                     if (!articleCode) throw new Error('Ürün kodu zorunludur.');
                     if (!name) throw new Error('Ürün adı zorunludur.');
                     const clash = existingCodes.get(articleCode);
-                    if (clash && !overwrite) throw new Error(clashMessage(clash));
-                    const quantity = Math.max(0, Number(item.quantity) || 0);
+                    if (clash && !overwrite) throw rowError('CODE_TAKEN', clashMessage(clash));
+                    // IT içe aktarımında miktar tartışmaya kapalıdır: 0.
+                    const quantity = options.forceZeroStock ? 0 : Math.max(0, Number(item.quantity) || 0);
                     const purchasePrice = Math.max(0, Number(item.purchasePrice) || 0);
                     const salePrice = Math.max(0, Number(item.salePrice) || 0);
                     // Açıklama ve görsel ürün KARTINA yazılır (hareket notu değil) —
@@ -1671,6 +1716,8 @@ router.post(
                     if (clash) {
                         articleUpdates.push({
                             id: clash.id,
+                            index,
+                            articleCode,
                             data: {
                                 name,
                                 ...(item.unit ? { unit: String(item.unit).trim() } : {}),
@@ -1758,36 +1805,225 @@ router.post(
 
                     existingCodes.set(articleCode, { id: articleId, deleted: false, itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType });
                     created.push({ id: articleId, articleCode, name });
+                    // Satırı id'siyle eşle: toplu yazma düşerse tek tek yeniden
+                    // denenecek ve hata SATIRINA yazılacak (aşağıya bakınız).
+                    createGroups.push({ index, articleCode, articleId });
                 } catch (error: any) {
-                    errors.push({ index, articleCode, error: error.message });
+                    errors.push({ index, articleCode, error: error.message, ...(error?.rowCode ? { code: error.rowCode } : {}) });
                 }
             });
 
-            if (articleCreates.length || articleUpdates.length) {
-                await (prisma as any).$transaction(async (tx: any) => {
-                    if (articleCreates.length) await tx.article.createMany({ data: articleCreates });
-                    if (balanceCreates.length) await tx.stockBalance.createMany({ data: balanceCreates });
-                    if (movementCreates.length) await tx.stockMovement.createMany({ data: movementCreates });
-                    if (lotCreates.length) await tx.articleSupplier.createMany({ data: lotCreates });
-                    // Üzerine yazılan ürünler tek tek güncellenir (dosyalar küçük;
-                    // satır başına UPDATE transaction içinde kalır).
-                    for (const update of articleUpdates) {
-                        await tx.article.update({ where: { id: update.id }, data: update.data });
+            // YENİ kayıtlar tek transaction içinde toplu INSERT'lerle yazılır:
+            // ürün kartı, bakiye, hareket ve parti satırları birbirini tutar.
+            const failedCreateIds = new Set<string>();
+            if (articleCreates.length) {
+                try {
+                    await (prisma as any).$transaction(async (tx: any) => {
+                        await tx.article.createMany({ data: articleCreates });
+                        if (balanceCreates.length) await tx.stockBalance.createMany({ data: balanceCreates });
+                        if (movementCreates.length) await tx.stockMovement.createMany({ data: movementCreates });
+                        if (lotCreates.length) await tx.articleSupplier.createMany({ data: lotCreates });
+                    });
+                } catch {
+                    /* TOPLU YAZMA TEK BİR SATIR YÜZÜNDEN DÜŞEBİLİR. `createMany`
+                       paketi TEK ifadedir: örneğin adı VARCHAR(191)'e sığmayan
+                       bir ürün, aynı paketteki 199 sağlam ürünü de götürüyordu
+                       (17.08.2026, IT yüklemesinde 4 uzun ad 600 satırı
+                       düşürdü). Bu yüzden düşen paket satır satır yeniden
+                       denenir: yalnızca gerçekten hatalı olanlar hata döner,
+                       komşuları yazılır. Yavaş yol bilerek yavaştır — sadece
+                       hata durumunda çalışır. */
+                    const balancesByArticle = groupBy(balanceCreates, 'articleId');
+                    const movementsByArticle = groupBy(movementCreates, 'articleId');
+                    const lotsByArticle = groupBy(lotCreates, 'articleId');
+
+                    for (const article of articleCreates) {
+                        const group = createGroups.find((entry) => entry.articleId === article.id);
+                        try {
+                            await (prisma as any).$transaction(async (tx: any) => {
+                                await tx.article.create({ data: article });
+                                const balances = balancesByArticle.get(article.id) ?? [];
+                                const movements = movementsByArticle.get(article.id) ?? [];
+                                const lots = lotsByArticle.get(article.id) ?? [];
+                                if (balances.length) await tx.stockBalance.createMany({ data: balances });
+                                if (movements.length) await tx.stockMovement.createMany({ data: movements });
+                                if (lots.length) await tx.articleSupplier.createMany({ data: lots });
+                            });
+                        } catch (error: any) {
+                            const failure = rowWriteFailure(error);
+                            failedCreateIds.add(article.id);
+                            errors.push({
+                                index: group?.index ?? -1,
+                                articleCode: group?.articleCode ?? String(article.articleCode ?? ''),
+                                error: failure.message,
+                                code: failure.code,
+                            });
+                        }
                     }
-                });
+                }
             }
+
+            /* ÜZERİNE YAZMA transaction DIŞINDA kalır. Her satır BAŞKA bir ürünü
+               günceller; aralarında tutarlılık bağı yoktur, tek satırlık UPDATE
+               kendi başına zaten atomiktir. İçeride bırakmak iki şeyi bozuyordu:
+               Prisma'nın etkileşimli transaction'ı 5 sn sonra kapanır ve uzak
+               veritabanında ~60 ms süren 200 UPDATE bunu kolayca aşıyordu
+               (P2028); dahası tek bir satırın hatası, aynı pakette BAŞARIYLA
+               yazılmış yeni ürünleri de geri alıyordu. Artık hatalı satır kendi
+               hatasını döner, komşuları yazılmış kalır.
+               Eşzamanlılık havuzun (10) altında tutulur. */
+            const UPDATE_CONCURRENCY = 8;
+            const failedUpdateIds = new Set<string>();
+            for (let start = 0; start < articleUpdates.length; start += UPDATE_CONCURRENCY) {
+                await Promise.all(articleUpdates.slice(start, start + UPDATE_CONCURRENCY).map(async (update) => {
+                    try {
+                        await (prisma as any).article.update({ where: { id: update.id }, data: update.data });
+                    } catch (error: any) {
+                        failedUpdateIds.add(update.id);
+                        errors.push({ index: update.index, articleCode: update.articleCode, error: error.message });
+                    }
+                }));
+            }
+
+            // Yazılamayan satırlar (yeni ya da güncelleme) `created` listesinden
+            // düşer — çağıran taraf oradaki id'ye satır bağlar, olmayan bir
+            // kayda bağlamamalı.
+            const writtenRows = failedUpdateIds.size || failedCreateIds.size
+                ? created.filter((row) => !failedUpdateIds.has(row.id) && !failedCreateIds.has(row.id))
+                : created;
             errors.sort((a, b) => a.index - b.index);
 
-            res.status(errors.length && !created.length ? 400 : 201).json({
-                createdCount: created.length,
-                updatedCount: articleUpdates.length,
-                created,
+            res.status(errors.length && !writtenRows.length ? 400 : 201).json({
+                createdCount: writtenRows.length,
+                updatedCount: articleUpdates.length - failedUpdateIds.size,
+                created: writtenRows,
                 errors,
             });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
-    }
+    };
+
+router.post(
+    '/articles/bulk',
+    requireAuth,
+    requirePermission('inventory.articles.create'),
+    bulkCreateArticlesHandler(),
+);
+
+/**
+ * @swagger
+ * /inventory/articles/import:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: IT-Produktupload — Stammdaten aus CSV/Excel, IMMER mit Bestand 0
+ *     description: >
+ *       Gleicher Rumpf wie `/inventory/articles/bulk`, aber hinter der
+ *       IT-Schleuse statt hinter dem Lagerrecht (Kopf `x-it-gate`, Ausweis von
+ *       `/settings/it-gate/verify`) — und die Menge der Datei wird verworfen:
+ *       jede angelegte Ware startet mit Bestand 0. Ein bereits vorhandener
+ *       Artikel wird bei `overwrite` in seinen Stammdaten aktualisiert, sein
+ *       BESTAND bleibt dabei unberührt.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               items:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     articleCode: { type: string, description: "Interne Referenz aus der Datei" }
+ *                     name: { type: string }
+ *                     salePrice: { type: number }
+ *                     purchasePrice: { type: number, description: "Kosten / durchschnittlicher Stückpreis" }
+ *                     unit: { type: string, nullable: true }
+ *                     imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... (max. 2 MB)" }
+ *               overwrite:
+ *                 type: boolean
+ *                 description: "true: vorhandene Artikelnummer wird aktualisiert statt abgewiesen"
+ */
+router.post(
+    '/articles/import',
+    requireAuth,
+    requireItGate,
+    bulkCreateArticlesHandler({ forceZeroStock: true }),
+);
+
+/**
+ * @swagger
+ * /inventory/articles/purge:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Produktliste der gewählten Firma zurücksetzen (alles in den Papierkorb)
+ *     description: >
+ *       Die Schranke ist die IT-SCHLEUSE — und nur sie (Vorgabe 17.08.2026): das
+ *       IT-Kennwort wird einmal je Sitzung eingegeben, danach genügt der
+ *       getippte Satz im Fenster. Das persönliche Kennwort, das eine Löschung in
+ *       der Produktliste verlangt, wird hier ausdrücklich NICHT gefordert.
+ *       Löscht nicht endgültig: jede Karte wandert in den Papierkorb
+ *       (`deletedAt`), Bestandshistorie und Verweise bleiben stehen. Betroffen
+ *       ist ausschliesslich die Firma, die im Aufruf gewählt ist.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               confirm:
+ *                 type: string
+ *                 description: "Muss wörtlich RESET_PRODUCTS sein (der getippte Satz im Fenster ist die Anzeige davon)"
+ *     responses:
+ *       200: { description: "Anzahl der in den Papierkorb verschobenen Karten" }
+ *       400: { description: "Bestätigung fehlt (code=CONFIRM_REQUIRED)" }
+ *       403: { description: "IT-Schleuse zu bzw. abgelaufen" }
+ */
+router.post(
+    '/articles/purge',
+    requireAuth,
+    requireItGate,
+    async (req: any, res: any) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const employeeId = req.user!.id;
+
+            // Der getippte Satz steht im Fenster in der Sprache des Anwenders und
+            // kann deshalb nicht die Prüfung des Servers sein; hierher kommt das
+            // feste Wort dahinter. So scheitert ein Aufruf "aus Versehen" auch
+            // dann, wenn jemand die Oberfläche umgeht.
+            if (String(req.body?.confirm || '') !== 'RESET_PRODUCTS') {
+                return res.status(400).json({ error: 'Bestätigung fehlt.', code: 'CONFIRM_REQUIRED' });
+            }
+
+            // KEIN persönliches Kennwort hier (anders als beim Löschen einzelner
+            // Karten): die Schranke dieser Fläche ist das IT-Kennwort, und das
+            // steht schon in `requireItGate` oben.
+            const result = await (prisma as any).article.updateMany({
+                where: { tenantId, deletedAt: null },
+                data: { deletedAt: new Date(), status: 'INACTIVE', isActive: false },
+            });
+
+            auditLog.log({
+                action: 'inventory.article.purge',
+                tenantId,
+                employeeId,
+                entityType: 'Article',
+                metadata: { deleted: result.count },
+                ...auditLog.context(req),
+            });
+            res.status(200).json({ deleted: result.count });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    },
 );
 
 /**

@@ -55,6 +55,7 @@ model Customer {
   crmCommunications     CrmCommunication[]
   crmTasks              CrmTask[]
   formSubmissions       FormSubmission[]
+  formSubmissionLinks   FormSubmissionLink[]
   fieldNotes            FieldNote[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")

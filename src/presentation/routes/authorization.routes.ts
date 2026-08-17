@@ -1,6 +1,4 @@
 import { Router } from 'express';
-import { Prisma } from '@prisma/client';
-import { nanoid } from 'nanoid';
 import prisma from '../../infrastructure/database/prisma.client';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
@@ -12,25 +10,19 @@ import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { parseAllowedTenantIds } from '../utils/tenantAccess';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
-import {
-    deriveRoleName,
-    levelsFromRole,
-    packageKeysForLevels,
-    permissionsForLevels,
-    sanitizeModuleLevels,
-} from '../../shared/authorizationLevels';
-import type { AuthorizationLevel } from '../../shared/authorizationLevels';
+import { ensureSystemAdminRole, resolvePageLevels } from './roleTemplate.routes';
 
-/* Berechtigungsseite (Einstellungen → Berechtigungen): je Person die Zugangs-
-   daten (E-Mail/Kennwort/Firmen) und je Modul eine Stufe (1 ansehen /
-   2 bearbeiten / 3 löschen). Der Personentyp wird aus der Auswahl ABGELEITET.
-
-   Persistenz läuft über das BESTEHENDE Rollenmodell, nicht daran vorbei:
-   die Stufen ergeben eine Rechtemenge + ein Modulpaket, und dafür wird eine
-   automatisch verwaltete, GETEILTE Rolle am Baum-Stamm gesucht oder angelegt
-   (gleicher Name + gleiche Rechte + gleiches Paket → gleiche Rolle). Zwei
-   Verkäufer mit identischen Stufen teilen sich also EINE Rolle — die
-   Rollenliste wächst nur, wenn wirklich neue Kombinationen entstehen. */
+/* ── ZUGANG EINER PERSON (Personal → Person → Zugang, 17.08.2026) ────────────
+ *
+ * Umgebaut: früher stellte diese Seite je Modul eine Stufe ein und LEITETE
+ * daraus eine Rolle ab. Jetzt ist es umgekehrt — die Rollen werden unter
+ * Einstellungen → Berechtigungen gebaut (roleTemplate.routes.ts), und hier
+ * wird EINE davon zugewiesen. Ein Ort für die Rechte, ein Ort für die Personen.
+ *
+ * Der Router hängt weiter an `/employees`; seine Routen sind zweigliedrig
+ * ('/:id/authorization') und kollidieren deshalb nicht mit dem '/:id' des
+ * Personal-Routers davor.
+ */
 
 const router = Router();
 
@@ -38,118 +30,64 @@ const employeeRepo = new EmployeeRepository();
 const roleRepo = new RoleRepository();
 const cryptoService = new BcryptCryptoService();
 
-const setsEqual = (a: Set<string>, b: Set<string>): boolean =>
-    a.size === b.size && [...a].every((value) => b.has(value));
-
 /**
- * GET /employees/authorization/list?page=&pageSize= — die Personalliste der
- * Seite (15 je Seite): Name, E-Mail, abgeleitete Rolle, aktiv. Eine Anweisung
- * plus Zählung, Rolle per COALESCE wie überall.
- */
-router.get('/authorization/list', requireAuth, requirePermission('roles.manage'), async (req, res) => {
-    try {
-        const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
-        if (treeTenantIds.length === 0) return res.status(200).json({ data: [], total: 0, page: 1, pageSize: 15 });
-
-        const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
-        const pageSize = Math.min(50, Math.max(1, parseInt(String(req.query.pageSize || '15'), 10) || 15));
-        const search = String(req.query.search || '').trim();
-
-        const conditions: Prisma.Sql[] = [
-            Prisma.sql`e.tenantId IN (${Prisma.join(treeTenantIds)})`,
-            Prisma.sql`e.deletedAt IS NULL`,
-        ];
-        if (search) {
-            const like = `%${search}%`;
-            conditions.push(Prisma.sql`(e.firstName LIKE ${like} OR e.lastName LIKE ${like} OR e.email LIKE ${like})`);
-        }
-        const whereSql = Prisma.join(conditions, ' AND ');
-
-        const [rows, countRows] = await Promise.all([
-            prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
-                SELECT e.id, e.firstName, e.lastName, e.email, e.isActive,
-                       COALESCE(
-                           (SELECT r.roleName FROM EmployeeRole er JOIN Role r ON r.id = er.roleId
-                             WHERE er.employeeId = e.id LIMIT 1),
-                           e.roleName
-                       ) AS roleName
-                FROM Employee e
-                WHERE ${whereSql}
-                ORDER BY e.firstName ASC, e.lastName ASC
-                LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
-            `),
-            prisma.$queryRaw<Array<{ total: bigint | number }>>(Prisma.sql`
-                SELECT COUNT(*) AS total FROM Employee e WHERE ${whereSql}
-            `),
-        ]);
-
-        res.status(200).json({
-            data: rows.map((row) => ({
-                id: row.id,
-                firstName: row.firstName,
-                lastName: row.lastName,
-                email: row.email,
-                isActive: Boolean(row.isActive),
-                roleName: row.roleName ?? null,
-            })),
-            total: Number(countRows[0]?.total ?? 0),
-            page,
-            pageSize,
-        });
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-/**
- * GET /employees/:id/authorization — der Stand EINER Person für das Formular:
- * E-Mail, Firmen, Rollenname und die je Modul zurückgerechnete Stufe.
+ * GET /employees/:id/authorization — der Zugangsstand EINER Person: E-Mail,
+ * sichtbare Firmen, zugewiesene Rolle, die Rollenauswahl und — nur zum Ansehen —
+ * die Seitenstufen, die diese Rolle mitbringt.
  */
 router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'), async (req, res) => {
     try {
+        const user = req.user!;
         const id = String(req.params.id || '');
-        const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
-        const employee = await prisma.employee.findFirst({
-            where: { id, tenantId: { in: treeTenantIds }, deletedAt: null },
-            select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-                roleName: true,
-                allowedTenantIds: true,
-                employeeRoles: {
-                    take: 1,
-                    select: {
-                        role: {
-                            select: {
-                                roleName: true,
-                                permissions: { select: { permission: { select: { permissionName: true } } } },
-                                moduleConfigs: { take: 1, select: { moduleKeys: true } },
-                            },
-                        },
-                    },
+        const treeTenantIds = await getCompanyTreeTenantIds(user.tenantId);
+        const rootTenantId = (await findTenantRootIdCached(user.tenantId)) ?? user.tenantId;
+        await ensureSystemAdminRole(rootTenantId, treeTenantIds);
+
+        const [employee, roles] = await Promise.all([
+            prisma.employee.findFirst({
+                where: { id, tenantId: { in: treeTenantIds }, deletedAt: null },
+                select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    email: true,
+                    isActive: true,
+                    allowedTenantIds: true,
+                    employeeRoles: { take: 1, select: { roleId: true } },
                 },
-            },
-        });
-        if (!employee) return res.status(404).json({ error: 'Personel bulunamadı.' });
+            }),
+            prisma.role.findMany({
+                where: { tenantId: { in: treeTenantIds } },
+                orderBy: { roleName: 'asc' },
+                select: {
+                    id: true,
+                    roleName: true,
+                    pageLevels: true,
+                    isSystemAdmin: true,
+                    permissions: { select: { permission: { select: { permissionName: true } } } },
+                } as any,
+            }) as any,
+        ]);
+        if (!employee) return res.status(404).json({ error: 'Person nicht gefunden.' });
 
-        const role = employee.employeeRoles[0]?.role ?? null;
-        const packageKeys = Array.isArray(role?.moduleConfigs?.[0]?.moduleKeys)
-            ? (role!.moduleConfigs[0].moduleKeys as string[])
-            : [];
-        const permissionNames = role
-            ? role.permissions.map((entry) => entry.permission.permissionName)
-            : [];
+        const options = (roles as any[]).map((role) => ({
+            id: role.id,
+            roleName: role.roleName,
+            isSystemAdmin: Boolean(role.isSystemAdmin),
+            pageLevels: resolvePageLevels(role, role.permissions.map((e: any) => e.permission.permissionName)),
+        }));
+        options.sort((a, b) => Number(b.isSystemAdmin) - Number(a.isSystemAdmin));
 
+        const roleId = employee.employeeRoles[0]?.roleId ?? null;
         res.status(200).json({
             id: employee.id,
             firstName: employee.firstName,
             lastName: employee.lastName,
             email: employee.email,
-            roleName: role?.roleName ?? employee.roleName ?? null,
+            isActive: employee.isActive,
             allowedTenantIds: Array.isArray(employee.allowedTenantIds) ? employee.allowedTenantIds : null,
-            moduleLevels: levelsFromRole(packageKeys, permissionNames),
+            roleId,
+            roles: options,
         });
     } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -157,12 +95,11 @@ router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'),
 });
 
 /**
- * PUT /employees/:id/authorization — { email?, password?, allowedTenantIds?, moduleLevels }
+ * PUT /employees/:id/authorization — { email?, password?, allowedTenantIds?, roleId }
  *
- * Rechnet die Stufen in Rechte + Modulpaket um, sucht/erzeugt die passende
- * automatisch verwaltete Rolle am Stamm, weist sie exklusiv zu (eine Rolle je
- * Person — Haus-Semantik) und schreibt die Zugangsdaten. Antwort = der neue
- * Stand in der Form des GET.
+ * Weist die gewählte Rolle exklusiv zu (eine Rolle je Person — Haus-Semantik)
+ * und schreibt die Zugangsdaten. `roleId: null` zieht jede Rolle ab: die Person
+ * kann sich anmelden, sieht aber nichts.
  */
 router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'), async (req, res) => {
     try {
@@ -173,79 +110,40 @@ router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'),
             where: { id, tenantId: { in: treeTenantIds }, deletedAt: null },
             select: { id: true, email: true },
         });
-        if (!employee) return res.status(404).json({ error: 'Personel bulunamadı.' });
+        if (!employee) return res.status(404).json({ error: 'Person nicht gefunden.' });
 
-        const levels = sanitizeModuleLevels(req.body?.moduleLevels);
-        const permissionNames = permissionsForLevels(levels);
-        const roleName = deriveRoleName(levels);
-        const packageKeys = packageKeysForLevels(levels);
+        const rawRoleId = req.body?.roleId;
+        const roleId = rawRoleId === null || rawRoleId === '' ? null : String(rawRoleId ?? '').trim() || undefined;
+
+        let targetRole: { id: string; roleName: string; isSystemAdmin: boolean } | null = null;
+        if (roleId) {
+            targetRole = await prisma.role.findFirst({
+                where: { id: roleId, tenantId: { in: treeTenantIds } },
+                select: { id: true, roleName: true, isSystemAdmin: true } as any,
+            }) as any;
+            if (!targetRole) return res.status(400).json({ error: 'Rolle nicht gefunden.' });
+        }
 
         /* Selbstaussperrung verhindern (Vorfall 14.08.2026: der Admin hat sein
            eigenes Konto gespeichert und dabei die Verwaltungsrechte verloren —
-           danach hatte NIEMAND mehr Zugriff auf diese Seite). Wer sich selbst
-           speichert, muss Einstellungen gewählt lassen; damit behält immer
-           mindestens die speichernde Person die Verwaltungsrechte. */
-        if (id === user.id && !permissionNames.includes('roles.manage')) {
+           danach hatte NIEMAND mehr Zugriff auf diese Seite). Nur die feste
+           Administratorrolle trägt `roles.manage`; wer sich selbst speichert,
+           muss sie also behalten. */
+        if (id === user.id && roleId !== undefined && !targetRole?.isSystemAdmin) {
             return res.status(400).json({
-                error: 'Das eigene Konto kann sich die Verwaltung nicht entziehen — Einstellungen gewählt lassen oder eine zweite Admin-Person speichern lassen.',
+                error: 'Das eigene Konto kann sich die Verwaltung nicht entziehen — Administratorrolle behalten oder eine zweite Admin-Person eintragen lassen.',
             });
         }
 
-        // Rechtenamen → ids (eine Abfrage; unbekannte Namen fallen still weg —
-        // der Katalog ist die Autorität, die Tabelle wird per Seed gefüllt).
-        const permissionRows = permissionNames.length
-            ? await prisma.permission.findMany({
-                  where: { permissionName: { in: permissionNames } },
-                  select: { id: true },
-              })
-            : [];
-        const wantedPermissionIds = new Set(permissionRows.map((row) => row.id));
-
-        // Passende verwaltete Rolle suchen: gleicher Name am Stamm, gleiche
-        // Rechtemenge, gleiches Modulpaket.
-        const rootId = (await findTenantRootIdCached(user.tenantId)) ?? user.tenantId;
-        const candidates = await prisma.role.findMany({
-            where: { tenantId: rootId, roleName },
-            select: {
-                id: true,
-                permissions: { select: { permissionId: true } },
-                moduleConfigs: { select: { tenantId: true, moduleKeys: true } },
-            },
-        });
-        const wantedPackage = new Set(packageKeys);
-        let role = candidates.find((candidate) => {
-            const candidatePerms = new Set(candidate.permissions.map((entry) => entry.permissionId));
-            const config = candidate.moduleConfigs[0];
-            const candidatePackage = new Set(Array.isArray(config?.moduleKeys) ? (config!.moduleKeys as string[]) : []);
-            return setsEqual(candidatePerms, wantedPermissionIds) && setsEqual(candidatePackage, wantedPackage);
-        }) ?? null;
-
-        if (!role) {
-            const created = await prisma.role.create({
-                data: {
-                    id: nanoid(8),
-                    tenantId: rootId,
-                    roleName,
-                    permissions: {
-                        create: [...wantedPermissionIds].map((permissionId) => ({ permissionId })),
-                    },
-                    // Das Paket gilt im GANZEN Baum: getMe zeigt einen Mandanten
-                    // nur, wenn die Rolle dort eine Konfigurationszeile hat.
-                    moduleConfigs: {
-                        create: treeTenantIds.map((tenantId) => ({ tenantId, moduleKeys: packageKeys })),
-                    },
-                },
-                select: { id: true },
-            });
-            role = { id: created.id, permissions: [], moduleConfigs: [] };
+        if (roleId !== undefined) {
+            if (targetRole) await roleRepo.assignRoleToEmployee(id, targetRole.id);
+            else await roleRepo.clearRolesOfEmployee(id);
         }
-
-        // Exklusive Zuweisung (löscht vorige Rollen, leert den Rechte-Cache).
-        await roleRepo.assignRoleToEmployee(id, role.id);
 
         // Zugangsdaten. EmployeeRepository.update leert Auth- und
         // Personallisten-Cache selbst.
-        const patch: Record<string, unknown> = { roleName };
+        const patch: Record<string, unknown> = {};
+        if (roleId !== undefined) patch.roleName = targetRole?.roleName ?? null;
         const email = String(req.body?.email || '').trim();
         if (email && email !== employee.email) patch.email = email;
         if (req.body?.password) {
@@ -258,11 +156,11 @@ router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'),
             const wanted = parseAllowedTenantIds(req.body.allowedTenantIds);
             if (wanted) {
                 const outside = wanted.filter((tenantId) => !treeTenantIds.includes(tenantId));
-                if (outside.length) return res.status(400).json({ error: 'Seçilen şirketlerden biri bu şirket ağacına ait değil.' });
+                if (outside.length) return res.status(400).json({ error: 'Eine der gewählten Firmen gehört nicht zu diesem Firmenbaum.' });
             }
             patch.allowedTenantIds = wanted;
         }
-        await employeeRepo.update(id, patch as any);
+        if (Object.keys(patch).length) await employeeRepo.update(id, patch as any);
 
         auditLog.log({
             action: 'employee.authorization',
@@ -275,8 +173,8 @@ router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'),
 
         res.status(200).json({
             id,
-            roleName,
-            moduleLevels: levels as Record<string, AuthorizationLevel>,
+            roleId: targetRole?.id ?? (roleId === null ? null : undefined),
+            roleName: targetRole?.roleName ?? null,
         });
     } catch (error: any) {
         res.status(400).json({ error: error.message });

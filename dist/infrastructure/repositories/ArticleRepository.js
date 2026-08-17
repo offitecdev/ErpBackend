@@ -117,6 +117,30 @@ class ArticleRepository {
             },
         });
     }
+    /**
+     * Mehrere Produktkarten in einem Zug in den Papierkorb — dieselbe Wirkung
+     * wie `deleteArticle`, aber MANDANTENGEBUNDEN und als eine Anweisung, damit
+     * eine Auswahl von 200 Zeilen nicht 200 Rundgänge zur fernen Datenbank
+     * kostet. Fremde oder schon gelöschte Karten fallen durch die Bedingung
+     * heraus; zurück kommt, was wirklich gelöscht wurde.
+     */
+    async softDeleteArticles(tenantId, ids) {
+        if (!ids.length)
+            return 0;
+        const result = await prisma_client_1.default.article.updateMany({
+            where: { id: { in: ids }, tenantId, deletedAt: null },
+            data: { deletedAt: new Date(), status: 'INACTIVE', isActive: false },
+        });
+        return result.count;
+    }
+    /** Die GANZE Produktliste einer Firma in den Papierkorb (Zurücksetzen). */
+    async softDeleteAllArticles(tenantId) {
+        const result = await prisma_client_1.default.article.updateMany({
+            where: { tenantId, deletedAt: null },
+            data: { deletedAt: new Date(), status: 'INACTIVE', isActive: false },
+        });
+        return result.count;
+    }
     async findAllArticles(filter) {
         const where = { tenantId: filter.tenantId, deletedAt: null };
         if (filter.onlyActive)

@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const AuthController_1 = require("../controllers/AuthController");
 const LoginUseCase_1 = require("../../application/use-cases/auth/LoginUseCase");
+const QrLoginUseCase_1 = require("../../application/use-cases/auth/QrLoginUseCase");
 const GetUserPermissionsUseCase_1 = require("../../application/use-cases/auth/GetUserPermissionsUseCase");
 const EmployeeRepository_1 = require("../../infrastructure/repositories/EmployeeRepository");
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
@@ -57,7 +58,8 @@ const requestPasswordResetUseCase = new PasswordResetUseCases_1.RequestPasswordR
 const resetPasswordUseCase = new PasswordResetUseCases_1.ResetPasswordUseCase(employeeRepo, tokenService, cryptoService);
 const requestAccountDeletionUseCase = new AccountDeletionUseCases_1.RequestAccountDeletionUseCase(employeeRepo, tokenService, authMailService);
 const confirmAccountDeletionUseCase = new AccountDeletionUseCases_1.ConfirmAccountDeletionUseCase(employeeRepo, tokenService);
-const authController = new AuthController_1.AuthController(loginUseCase, getUserPermissionsUseCase, getMeUseCase, refreshTokenUseCase, requestActivationUseCase, activateAccountUseCase, requestPasswordResetUseCase, resetPasswordUseCase, requestAccountDeletionUseCase, confirmAccountDeletionUseCase);
+const qrLoginUseCase = new QrLoginUseCase_1.QrLoginUseCase(tokenService);
+const authController = new AuthController_1.AuthController(loginUseCase, getUserPermissionsUseCase, getMeUseCase, refreshTokenUseCase, requestActivationUseCase, activateAccountUseCase, requestPasswordResetUseCase, resetPasswordUseCase, requestAccountDeletionUseCase, confirmAccountDeletionUseCase, qrLoginUseCase);
 /**
  * @swagger
  * /auth/login:
@@ -86,6 +88,35 @@ const authController = new AuthController_1.AuthController(loginUseCase, getUser
  *               $ref: '#/components/schemas/Error'
  */
 router.post('/login', loginRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.loginSchema }), (req, res) => authController.login(req, res));
+/**
+ * @swagger
+ * /auth/qr-login:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Anmeldung mit dem Personal-QR-Code
+ *     description: >
+ *       Der QR-Code des Personalmoduls (ein Code je Person) meldet an; derselbe
+ *       Code stempelt am Tablet ein und aus.
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [token]
+ *             properties:
+ *               token:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Angemeldet
+ *       400:
+ *         description: QR-Code ungültig
+ */
+// Teilt den Brute-Force-Zähler der Kennwortanmeldung: ein QR-Schlüssel ist eine
+// Zugangsangabe wie ein Kennwort und darf nicht schneller geraten werden dürfen.
+router.post('/qr-login', loginRateLimiter, (req, res) => authController.qrLogin(req, res));
 /**
  * @swagger
  * /auth/refresh:

@@ -2,7 +2,9 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ArticleController = void 0;
 const nanoid_1 = require("nanoid");
+const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const richText_1 = require("../../shared/richText");
+const dangerGate_1 = require("../utils/dangerGate");
 class ArticleController {
     articleRepository;
     inventoryRepository;
@@ -169,11 +171,66 @@ class ArticleController {
             res.status(400).json({ error: error.message });
         }
     }
+    /**
+     * Einzelne Produktkarte in den Papierkorb. Zwei Dinge gelten hier seit
+     * 17.08.2026 und ebenso für die Sammellöschung darunter:
+     *   • die Karte muss der ANGEMELDETEN Firma gehören (vorher löschte die
+     *     Kennung allein, ganz gleich aus welchem Mandanten sie stammte),
+     *   • jedes Konto ausser dem Administrator weist sein Kennwort vor.
+     */
     async remove(req, res) {
         try {
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
             const id = req.params.id;
-            await this.articleRepository.deleteArticle(id);
-            res.status(200).json({ message: 'Ürün silindi.' });
+            const gate = await (0, dangerGate_1.checkDangerPassword)(employeeId, (0, dangerGate_1.passwordFromRequest)(req));
+            if (!gate.ok)
+                return res.status(gate.status).json({ error: gate.error, code: gate.code });
+            const deleted = await this.articleRepository.softDeleteArticles(tenantId, [id]);
+            if (!deleted)
+                return res.status(404).json({ error: 'Ürün bulunamadı.' });
+            AuditLogService_1.auditLog.log({
+                action: 'inventory.article.delete',
+                tenantId,
+                employeeId,
+                entityType: 'Article',
+                entityId: id,
+                ...AuditLogService_1.auditLog.context(req),
+            });
+            res.status(200).json({ message: 'Ürün silindi.', deleted });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /**
+     * Sammellöschung aus der Produktliste (Auswahlkästchen). Eine Anweisung für
+     * die ganze Auswahl; die Obergrenze deckt jede Seitengrösse der Liste ab und
+     * hält zugleich die IN-Liste der Datenbank in vernünftigen Grenzen.
+     */
+    async removeMany(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const employeeId = req.user.id;
+            const raw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+            const ids = [...new Set(raw.map((value) => String(value || '').trim()).filter(Boolean))];
+            if (!ids.length)
+                return res.status(400).json({ error: 'Silinecek ürün seçilmedi.' });
+            if (ids.length > 500)
+                return res.status(400).json({ error: 'Tek seferde en fazla 500 ürün silinebilir.' });
+            const gate = await (0, dangerGate_1.checkDangerPassword)(employeeId, (0, dangerGate_1.passwordFromRequest)(req));
+            if (!gate.ok)
+                return res.status(gate.status).json({ error: gate.error, code: gate.code });
+            const deleted = await this.articleRepository.softDeleteArticles(tenantId, ids);
+            AuditLogService_1.auditLog.log({
+                action: 'inventory.article.bulkDelete',
+                tenantId,
+                employeeId,
+                entityType: 'Article',
+                metadata: { requested: ids.length, deleted },
+                ...AuditLogService_1.auditLog.context(req),
+            });
+            res.status(200).json({ deleted, requested: ids.length });
         }
         catch (error) {
             res.status(400).json({ error: error.message });

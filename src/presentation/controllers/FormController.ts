@@ -53,6 +53,12 @@ type SubmissionListRow = {
     projectNumber: string | null;
     appointmentId: string | null;
     appointmentStart: Date | null;
+    /** Zahl der Verknüpfungen und der beteiligten Kunden/Angebote. */
+    linkCount: number;
+    customerCount: number;
+    tenderCount: number;
+    /** Alle verknüpften Kundennamen als eine Zeile (Listenspalte). */
+    linkedCustomerNames: string | null;
     filledByEmployeeId: string | null;
     filledByName: string | null;
     notes: string | null;
@@ -82,6 +88,11 @@ export interface FormContext {
     salesOrderIds: string[];
 }
 
+/* Die flachen Spalten tragen die ERSTE Verknüpfung (Beschriftungen, PDF-Kopf);
+   die Zähler und die Namenszeile darunter kommen aus FormSubmissionLink, denn
+   eine Checkliste hängt seit dem 16.08.2026 an MEHREREN Kunden. Die
+   Unterabfragen laufen je Zeile, treffen aber jeweils den Index auf
+   submissionId — bei 25 Zeilen je Seite bleibt das eine Runde. */
 const SUBMISSION_LIST_SELECT = Prisma.sql`
     SELECT s.id, s.templateId, s.templateName, s.status, s.customerId, s.tenderId, s.salesOrderId,
            s.projectId, s.appointmentId, s.filledByEmployeeId, s.filledByName, s.notes,
@@ -90,7 +101,14 @@ const SUBMISSION_LIST_SELECT = Prisma.sql`
            te.tenderNumber AS tenderNumber,
            so.orderNumber AS orderNumber,
            pr.projectNumber AS projectNumber,
-           ap.startTime AS appointmentStart
+           ap.startTime AS appointmentStart,
+           (SELECT COUNT(*) FROM FormSubmissionLink lc WHERE lc.submissionId = s.id) AS linkCount,
+           (SELECT COUNT(DISTINCT lk.customerId) FROM FormSubmissionLink lk WHERE lk.submissionId = s.id AND lk.customerId IS NOT NULL) AS customerCount,
+           (SELECT COUNT(DISTINCT lt.tenderId) FROM FormSubmissionLink lt WHERE lt.submissionId = s.id AND lt.tenderId IS NOT NULL) AS tenderCount,
+           (SELECT GROUP_CONCAT(DISTINCT lcu.companyName ORDER BY lcu.companyName SEPARATOR ', ')
+              FROM FormSubmissionLink ln
+              JOIN Customer lcu ON lcu.id = ln.customerId
+             WHERE ln.submissionId = s.id) AS linkedCustomerNames
       FROM FormSubmission s
       LEFT JOIN Customer cu ON cu.id = s.customerId
       LEFT JOIN Tender te ON te.id = s.tenderId
@@ -115,6 +133,10 @@ const mapListRow = (row: Record<string, any>): SubmissionListRow => ({
     projectNumber: row.projectNumber ?? null,
     appointmentId: row.appointmentId ?? null,
     appointmentStart: row.appointmentStart ?? null,
+    linkCount: Number(row.linkCount ?? 0),
+    customerCount: Number(row.customerCount ?? 0),
+    tenderCount: Number(row.tenderCount ?? 0),
+    linkedCustomerNames: row.linkedCustomerNames ?? null,
     filledByEmployeeId: row.filledByEmployeeId ?? null,
     filledByName: row.filledByName ?? null,
     notes: row.notes ?? null,
@@ -214,6 +236,84 @@ async function completeLinks(tenantId: string, links: Links): Promise<Links> {
     return out;
 }
 
+const EMPTY_LINKS: Links = { customerId: null, tenderId: null, salesOrderId: null, projectId: null, appointmentId: null };
+
+const hasAnyLink = (link: Links) => Object.values(link).some(Boolean);
+const linkKey = (link: Links) => [link.customerId, link.tenderId, link.salesOrderId, link.projectId, link.appointmentId].join('|');
+
+/**
+ * Die Verknüpfungen aus dem Anfragekörper: entweder die neue Liste `links`
+ * (eine Checkliste an mehreren Kunden — Vorgabe 16.08.2026) oder die alten
+ * Einzelfelder `customerId`/`tenderId`/… als EINE Verknüpfung. Beides bleibt
+ * gültig, damit ältere Aufrufer (Technikerbildschirm, Kundenakte) weiterlaufen.
+ */
+function readLinkList(body: Record<string, any>): Links[] {
+    if (Array.isArray(body.links)) {
+        return body.links
+            .map((entry: unknown) => linkIds((entry || {}) as Record<string, unknown>))
+            .filter(hasAnyLink);
+    }
+    const single = linkIds(body);
+    return hasAnyLink(single) ? [single] : [];
+}
+
+/**
+ * Jede Verknüpfung wird für sich zur ganzen Kette ergänzt (Angebot → Auftrag →
+ * Projekt → Kunde). Gleiche Zeilen laufen nur einmal, doppelte Ergebnisse
+ * fallen weg: zwei Zeilen desselben Kunden mit demselben Angebot sind EINE
+ * Verknüpfung.
+ */
+async function completeLinkList(tenantId: string, list: Links[]): Promise<Links[]> {
+    const unique = new Map<string, Links>();
+    for (const entry of list) if (!unique.has(linkKey(entry))) unique.set(linkKey(entry), entry);
+    const resolved = await Promise.all([...unique.values()].map((entry) => completeLinks(tenantId, entry)));
+    const out = new Map<string, Links>();
+    for (const entry of resolved) if (hasAnyLink(entry)) out.set(linkKey(entry), entry);
+    return [...out.values()];
+}
+
+/** Verknüpfungszeilen schreiben (`replace` löscht die bisherigen zuerst). */
+async function writeLinks(tenantId: string, submissionId: string, links: Links[], replace: boolean): Promise<void> {
+    if (replace) await prisma.formSubmissionLink.deleteMany({ where: { submissionId } });
+    if (!links.length) return;
+    await prisma.formSubmissionLink.createMany({
+        data: links.map((link) => ({ id: nanoid(12), tenantId, submissionId, ...link })),
+    });
+}
+
+/** Die Verknüpfungen einer Checkliste mit Beschriftungen (Einzelabruf). */
+async function readLinks(submissionId: string): Promise<Array<Record<string, any>>> {
+    const rows = await prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+        SELECT l.id, l.customerId, l.tenderId, l.salesOrderId, l.projectId, l.appointmentId,
+               cu.companyName AS customerName,
+               te.tenderNumber AS tenderNumber,
+               so.orderNumber AS orderNumber,
+               pr.projectNumber AS projectNumber,
+               ap.startTime AS appointmentStart
+          FROM FormSubmissionLink l
+          LEFT JOIN Customer cu ON cu.id = l.customerId
+          LEFT JOIN Tender te ON te.id = l.tenderId
+          LEFT JOIN SalesOrder so ON so.id = l.salesOrderId
+          LEFT JOIN Project pr ON pr.id = l.projectId
+          LEFT JOIN Appointment ap ON ap.id = l.appointmentId
+         WHERE l.submissionId = ${submissionId}
+         ORDER BY cu.companyName ASC, te.tenderNumber ASC, l.id ASC
+    `);
+    return rows.map((row) => ({
+        id: row.id,
+        customerId: row.customerId ?? null,
+        customerName: row.customerName ?? null,
+        tenderId: row.tenderId ?? null,
+        tenderNumber: row.tenderNumber ?? null,
+        salesOrderId: row.salesOrderId ?? null,
+        orderNumber: row.orderNumber ?? null,
+        projectId: row.projectId ?? null,
+        projectNumber: row.projectNumber ?? null,
+        appointmentId: row.appointmentId ?? null,
+        appointmentStart: row.appointmentStart ?? null,
+    }));
+}
+
 /**
  * Der Kontext eines Bildschirms (Kundenakte, Angebot, Auftrag, Projekt,
  * Termin) samt Beschriftungen und der vollständigen Kette. Projekt und Termin
@@ -292,25 +392,47 @@ export async function resolveFormContext(tenantId: string, kind: string, id: str
 
 /**
  * WHERE-Bedingung "gehört zur Kette dieses Kontexts": direkt am Termin /
- * Projekt / einem der Aufträge / einem der Angebote — ODER allgemein am
- * Kunden (ohne jede Beleg-Verknüpfung). Für die Kundenakte: alles des Kunden.
+ * Projekt / einem der Aufträge / einem der Angebote. Für die Kundenakte:
+ * alles des Kunden.
+ *
+ * `customerFallback` entscheidet über die rein am KUNDEN hängenden Einträge
+ * (ohne Angebot/Auftrag/Projekt/Termin):
+ *  • Hinweise (FieldNote) führen ihn — "bitte ohne Schuhe eintreten" gilt für
+ *    jeden Einsatz bei diesem Kunden, auch ohne Beleg;
+ *  • Checklisten NICHT (Vorgabe 16.08.2026): eine Checkliste erscheint in
+ *    Auftrag, Projekt, Montage und Rapport nur, wenn sie ausdrücklich mit dem
+ *    Angebot (oder direkt mit dem Beleg) verknüpft wurde. Ohne Verknüpfung
+ *    bleibt sie in der Kundenakte und in der Checklisten-Liste.
  */
-function contextCondition(context: FormContext, alias: string, opts: { hasTender: boolean } = { hasTender: true }): Prisma.Sql {
-    const col = (name: string) => Prisma.raw(`${alias}.${name}`);
-    if (context.kind === 'customer') return Prisma.sql`${col('customerId')} = ${context.customerId}`;
-    const parts: Prisma.Sql[] = [];
-    if (context.appointmentId) parts.push(Prisma.sql`${col('appointmentId')} = ${context.appointmentId}`);
-    if (context.projectId) parts.push(Prisma.sql`${col('projectId')} = ${context.projectId}`);
-    if (context.salesOrderIds.length) parts.push(Prisma.sql`${col('salesOrderId')} IN (${Prisma.join(context.salesOrderIds)})`);
-    // FieldNote hat KEINE tenderId-Spalte (Hinweise hängen frühestens am
-    // Kunden/Projekt) — für sie entfällt der Angebots-Zweig.
-    if (opts.hasTender && context.tenderIds.length) parts.push(Prisma.sql`${col('tenderId')} IN (${Prisma.join(context.tenderIds)})`);
-    if (context.customerId) {
-        const tenderFree = opts.hasTender ? Prisma.sql`AND ${col('tenderId')} IS NULL` : Prisma.empty;
-        parts.push(Prisma.sql`(${col('customerId')} = ${context.customerId} ${tenderFree} AND ${col('salesOrderId')} IS NULL AND ${col('projectId')} IS NULL AND ${col('appointmentId')} IS NULL)`);
-    }
-    if (parts.length === 0) return Prisma.sql`1 = 0`;
-    return Prisma.sql`(${Prisma.join(parts, ' OR ')})`;
+function contextCondition(
+    context: FormContext,
+    alias: string,
+    opts: { hasTender: boolean; customerFallback?: boolean; viaLinks?: boolean } = { hasTender: true },
+): Prisma.Sql {
+    // Checklisten hängen seit dem 16.08.2026 an MEHREREN Kunden: dort steht die
+    // Bedingung auf der Verknüpfungstabelle und wird als EXISTS an die Zeile
+    // gehängt. Hinweise (FieldNote) haben weiter nur ihre eigenen Spalten.
+    const on = opts.viaLinks ? 'fl' : alias;
+    const col = (name: string) => Prisma.raw(`${on}.${name}`);
+    const build = (): Prisma.Sql => {
+        if (context.kind === 'customer') return Prisma.sql`${col('customerId')} = ${context.customerId}`;
+        const parts: Prisma.Sql[] = [];
+        if (context.appointmentId) parts.push(Prisma.sql`${col('appointmentId')} = ${context.appointmentId}`);
+        if (context.projectId) parts.push(Prisma.sql`${col('projectId')} = ${context.projectId}`);
+        if (context.salesOrderIds.length) parts.push(Prisma.sql`${col('salesOrderId')} IN (${Prisma.join(context.salesOrderIds)})`);
+        // FieldNote hat KEINE tenderId-Spalte (Hinweise hängen frühestens am
+        // Kunden/Projekt) — für sie entfällt der Angebots-Zweig.
+        if (opts.hasTender && context.tenderIds.length) parts.push(Prisma.sql`${col('tenderId')} IN (${Prisma.join(context.tenderIds)})`);
+        if (context.customerId && opts.customerFallback !== false) {
+            const tenderFree = opts.hasTender ? Prisma.sql`AND ${col('tenderId')} IS NULL` : Prisma.empty;
+            parts.push(Prisma.sql`(${col('customerId')} = ${context.customerId} ${tenderFree} AND ${col('salesOrderId')} IS NULL AND ${col('projectId')} IS NULL AND ${col('appointmentId')} IS NULL)`);
+        }
+        if (parts.length === 0) return Prisma.sql`1 = 0`;
+        return Prisma.sql`(${Prisma.join(parts, ' OR ')})`;
+    };
+    const condition = build();
+    if (!opts.viaLinks) return condition;
+    return Prisma.sql`EXISTS (SELECT 1 FROM FormSubmissionLink fl WHERE fl.submissionId = ${Prisma.raw(`${alias}.id`)} AND ${condition})`;
 }
 
 export class FormController {
@@ -454,14 +576,23 @@ export class FormController {
             const conditions: Prisma.Sql[] = [Prisma.sql`s.tenantId = ${tenantId}`];
             const status = String(req.query.status || '').trim().toUpperCase();
             if (SUBMISSION_STATUSES.has(status)) conditions.push(Prisma.sql`s.status = ${status}`);
-            for (const key of ['templateId', 'customerId', 'tenderId', 'salesOrderId', 'projectId', 'appointmentId'] as const) {
+            const templateId = String(req.query.templateId || '').trim();
+            if (templateId) conditions.push(Prisma.sql`s.templateId = ${templateId}`);
+            // Kunde/Angebot/… treffen JEDE Verknüpfung, nicht nur die erste —
+            // sonst fände der Kundenfilter eine geteilte Checkliste nur bei dem
+            // Kunden, der zufällig zuerst verknüpft wurde.
+            for (const key of ['customerId', 'tenderId', 'salesOrderId', 'projectId', 'appointmentId'] as const) {
                 const value = String(req.query[key] || '').trim();
-                if (value) conditions.push(Prisma.sql`${Prisma.raw(`s.${key}`)} = ${value}`);
+                if (value) {
+                    conditions.push(Prisma.sql`EXISTS (SELECT 1 FROM FormSubmissionLink fl WHERE fl.submissionId = s.id AND ${Prisma.raw(`fl.${key}`)} = ${value})`);
+                }
             }
             const search = String(req.query.search || '').trim();
             if (search) {
                 const like = `%${search}%`;
-                conditions.push(Prisma.sql`(s.templateName LIKE ${like} OR cu.companyName LIKE ${like} OR te.tenderNumber LIKE ${like} OR so.orderNumber LIKE ${like} OR pr.projectNumber LIKE ${like} OR s.filledByName LIKE ${like})`);
+                conditions.push(Prisma.sql`(s.templateName LIKE ${like} OR cu.companyName LIKE ${like} OR te.tenderNumber LIKE ${like} OR so.orderNumber LIKE ${like} OR pr.projectNumber LIKE ${like} OR s.filledByName LIKE ${like}
+                    OR EXISTS (SELECT 1 FROM FormSubmissionLink fs JOIN Customer fc ON fc.id = fs.customerId WHERE fs.submissionId = s.id AND fc.companyName LIKE ${like})
+                    OR EXISTS (SELECT 1 FROM FormSubmissionLink ft JOIN Tender fte ON fte.id = ft.tenderId WHERE ft.submissionId = s.id AND fte.tenderNumber LIKE ${like}))`);
             }
             const whereSql = Prisma.join(conditions, ' AND ');
             const [rows, countRows] = await Promise.all([
@@ -501,7 +632,7 @@ export class FormController {
             const [submissionRows, noteRows] = await Promise.all([
                 prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
                     ${SUBMISSION_LIST_SELECT}
-                    WHERE s.tenantId = ${tenantId} AND ${contextCondition(context, 's')}
+                    WHERE s.tenantId = ${tenantId} AND ${contextCondition(context, 's', { hasTender: true, customerFallback: false, viaLinks: true })}
                     ORDER BY s.createdAt DESC, s.id DESC
                     LIMIT 200
                 `),
@@ -539,13 +670,19 @@ export class FormController {
             const row = rows[0];
             if (!row) return res.status(404).json({ error: 'Formular nicht gefunden.' });
             // Schwerlast (eingefrorene Felder + Werte mit Data-URLs) getrennt und
-            // NUR hier — die Listenabfrage oben bleibt schlank.
-            const heavy = await prisma.formSubmission.findUnique({
-                where: { id: row.id },
-                select: { templateFields: true, values: true },
-            });
+            // NUR hier — die Listenabfrage oben bleibt schlank. Die
+            // Verknüpfungsliste (alle Kunden dieser Checkliste) kommt in
+            // derselben Runde dazu, der Editor braucht sie für Schritt 2.
+            const [heavy, links] = await Promise.all([
+                prisma.formSubmission.findUnique({
+                    where: { id: row.id },
+                    select: { templateFields: true, values: true },
+                }),
+                readLinks(row.id),
+            ]);
             res.status(200).json({
                 ...mapListRow(row),
+                links,
                 templateFields: heavy?.templateFields ?? [],
                 values: heavy?.values ?? {},
             });
@@ -555,9 +692,14 @@ export class FormController {
     }
 
     /**
-     * POST /forms/submissions — { templateId, customerId?, tenderId?,
-     *   salesOrderId?, projectId?, appointmentId?, values?, notes?, status? }
-     * Friert die Felder der Vorlage ein und ergänzt die Verknüpfungskette.
+     * POST /forms/submissions — { templateId, links?: [{ customerId, tenderId,
+     *   … }], customerId?, tenderId?, …, values?, notes?, status? }
+     * Friert die Felder der Vorlage ein und ergänzt jede Verknüpfungskette.
+     *
+     * Vorgabe 16.08.2026: EINE Checkliste für mehrere Kunden. `links` trägt
+     * alle Paare (Kunde, Angebot) auf einmal; die erste Zeile steht zusätzlich
+     * in den flachen Spalten, damit Beschriftungen und PDF-Kopf unverändert
+     * funktionieren.
      */
     async createSubmission(req: Request, res: Response) {
         try {
@@ -568,7 +710,8 @@ export class FormController {
             const template = await prisma.formTemplate.findFirst({ where: { id: templateId, tenantId: user.tenantId } });
             if (!template) return res.status(404).json({ error: 'Vorlage nicht gefunden.' });
             const fields = normalizeFormFields(template.fields);
-            const links = await completeLinks(user.tenantId, linkIds(body));
+            const links = await completeLinkList(user.tenantId, readLinkList(body));
+            const primary = links[0] ?? EMPTY_LINKS;
             const values = sanitizeFormValues(fields, body.values);
             const status = String(body.status || 'DRAFT').toUpperCase() === 'COMPLETED' ? 'COMPLETED' : 'DRAFT';
             if (status === 'COMPLETED') {
@@ -583,7 +726,7 @@ export class FormController {
                     templateId: template.id,
                     templateName: template.name,
                     templateFields: fields as unknown as Prisma.InputJsonValue,
-                    ...links,
+                    ...primary,
                     status,
                     values: values as Prisma.InputJsonValue,
                     notes: body.notes ? String(body.notes).slice(0, 5000) : null,
@@ -592,7 +735,8 @@ export class FormController {
                     completedAt: status === 'COMPLETED' ? new Date() : null,
                 },
             });
-            res.status(201).json(created);
+            await writeLinks(user.tenantId, created.id, links, false);
+            res.status(201).json({ ...created, links: await readLinks(created.id) });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -630,20 +774,29 @@ export class FormController {
                 }
                 data.status = status;
             }
-            // Verknüpfung nachträglich setzen (z. B. Kunde am kundenlosen Entwurf).
+            /* Verknüpfungen nachträglich ändern. Die Liste `links` ERSETZT den
+               ganzen Satz — so kommen Kunden dazu oder fallen weg. Die alten
+               Einzelfelder ändern nur die erste Verknüpfung; das Autospeichern
+               schickt gar keine Verknüpfung und darf hier nichts anfassen. */
             const linkKeys = ['customerId', 'tenderId', 'salesOrderId', 'projectId', 'appointmentId'] as const;
-            if (linkKeys.some((key) => body[key] !== undefined)) {
-                const merged = await completeLinks(user.tenantId, {
-                    customerId: body.customerId !== undefined ? (String(body.customerId || '').trim() || null) : existing.customerId,
-                    tenderId: body.tenderId !== undefined ? (String(body.tenderId || '').trim() || null) : existing.tenderId,
-                    salesOrderId: body.salesOrderId !== undefined ? (String(body.salesOrderId || '').trim() || null) : existing.salesOrderId,
-                    projectId: body.projectId !== undefined ? (String(body.projectId || '').trim() || null) : existing.projectId,
-                    appointmentId: body.appointmentId !== undefined ? (String(body.appointmentId || '').trim() || null) : existing.appointmentId,
-                });
-                Object.assign(data, merged);
+            const wantsLinkChange = Array.isArray(body.links) || linkKeys.some((key) => body[key] !== undefined);
+            let nextLinks: Links[] | null = null;
+            if (wantsLinkChange) {
+                const requested: Links[] = Array.isArray(body.links)
+                    ? readLinkList(body)
+                    : [{
+                        customerId: body.customerId !== undefined ? (String(body.customerId || '').trim() || null) : existing.customerId,
+                        tenderId: body.tenderId !== undefined ? (String(body.tenderId || '').trim() || null) : existing.tenderId,
+                        salesOrderId: body.salesOrderId !== undefined ? (String(body.salesOrderId || '').trim() || null) : existing.salesOrderId,
+                        projectId: body.projectId !== undefined ? (String(body.projectId || '').trim() || null) : existing.projectId,
+                        appointmentId: body.appointmentId !== undefined ? (String(body.appointmentId || '').trim() || null) : existing.appointmentId,
+                    }];
+                nextLinks = await completeLinkList(user.tenantId, requested);
+                Object.assign(data, nextLinks[0] ?? EMPTY_LINKS);
             }
             const updated = await prisma.formSubmission.update({ where: { id: existing.id }, data });
-            res.status(200).json(updated);
+            if (nextLinks) await writeLinks(user.tenantId, existing.id, nextLinks, true);
+            res.status(200).json({ ...updated, links: await readLinks(existing.id) });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

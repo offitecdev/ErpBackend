@@ -14,10 +14,11 @@ const swagger_ui_express_1 = __importDefault(require("swagger-ui-express"));
 const swagger_config_1 = require("./infrastructure/config/swagger.config");
 const auth_routes_1 = __importDefault(require("./presentation/routes/auth.routes"));
 const employee_routes_1 = __importDefault(require("./presentation/routes/employee.routes"));
-const leave_routes_1 = __importDefault(require("./presentation/routes/leave.routes"));
+// Personalmodul (Neubau 16.08.2026): ersetzt die früheren Router
+// attendance.routes.ts und leave.routes.ts vollständig.
+const personnel_routes_1 = __importDefault(require("./presentation/routes/personnel.routes"));
 const tenant_routes_1 = __importDefault(require("./presentation/routes/tenant.routes"));
 const customer_routes_1 = __importDefault(require("./presentation/routes/customer.routes"));
-const attendance_routes_1 = __importDefault(require("./presentation/routes/attendance.routes"));
 const role_routes_1 = __importDefault(require("./presentation/routes/role.routes"));
 const moduleProfile_routes_1 = __importDefault(require("./presentation/routes/moduleProfile.routes"));
 const tender_routes_1 = __importDefault(require("./presentation/routes/tender.routes"));
@@ -41,6 +42,10 @@ const forms_routes_1 = __importDefault(require("./presentation/routes/forms.rout
 const settingsGate_routes_1 = __importDefault(require("./presentation/routes/settingsGate.routes"));
 const reminderSettings_routes_1 = __importDefault(require("./presentation/routes/reminderSettings.routes"));
 const authorization_routes_1 = __importDefault(require("./presentation/routes/authorization.routes"));
+// Rollenvorlagen (Einstellungen → Berechtigungen) und der Kennwortwunsch aus
+// dem eigenen Profil — beide neu am 17.08.2026.
+const roleTemplate_routes_1 = __importDefault(require("./presentation/routes/roleTemplate.routes"));
+const passwordRequest_routes_1 = __importDefault(require("./presentation/routes/passwordRequest.routes"));
 const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
 const files_routes_1 = __importDefault(require("./presentation/routes/files.routes"));
 const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashboard.routes"));
@@ -123,13 +128,17 @@ for (const prefix of apiPrefixes) {
     // ('/authorization/list', '/:id/authorization') sind zweigliedrig und
     // kollidieren deshalb nicht mit dem '/:id' des Personal-Routers davor.
     app.use(`${prefix}/employees`, authorization_routes_1.default);
-    app.use(`${prefix}/leaves`, leave_routes_1.default);
+    // Personalmodul: Liste, Stempeluhr, Schichtplan, Berichte, Anträge.
+    app.use(`${prefix}/personnel`, personnel_routes_1.default);
     app.use(`${prefix}/tenants`, tenant_routes_1.default);
     app.use(`${prefix}/customers`, customer_routes_1.default);
     app.use(`${prefix}/sales-orders`, sales_order_routes_1.default);
     app.use(`${prefix}/billing`, billing_routes_1.default);
-    app.use(`${prefix}/attendance`, attendance_routes_1.default);
     app.use(`${prefix}/roles`, role_routes_1.default);
+    // Eigener Pfad statt eines Unterwegs von /roles: dort steht bereits ein
+    // '/:id', an dem '/templates' hängen bliebe.
+    app.use(`${prefix}/role-templates`, roleTemplate_routes_1.default);
+    app.use(`${prefix}/password-requests`, passwordRequest_routes_1.default);
     app.use(`${prefix}/module-profiles`, moduleProfile_routes_1.default);
     app.use(`${prefix}/tenders`, tender_routes_1.default);
     app.use(`${prefix}/articles`, article_routes_1.default);

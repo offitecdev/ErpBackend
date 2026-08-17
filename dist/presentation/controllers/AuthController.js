@@ -8,6 +8,10 @@ const authCookies_1 = require("../utils/authCookies");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const client_1 = require("@prisma/client");
+const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
+/** Seitenstufen hängen an derselben Rollenzeile wie die Rechte; der Zugriff
+    läuft über dieselbe zwischenspeichernde Ablage (siehe RoleRepository). */
+const roleRepositoryForPages = new RoleRepository_1.RoleRepository();
 class AuthController {
     loginUseCase;
     getUserPermissionsUseCase;
@@ -19,7 +23,8 @@ class AuthController {
     resetPasswordUseCase;
     requestAccountDeletionUseCase;
     confirmAccountDeletionUseCase;
-    constructor(loginUseCase, getUserPermissionsUseCase, getMeUseCase, refreshTokenUseCase, requestAccountActivationUseCase, activateAccountUseCase, requestPasswordResetUseCase, resetPasswordUseCase, requestAccountDeletionUseCase, confirmAccountDeletionUseCase) {
+    qrLoginUseCase;
+    constructor(loginUseCase, getUserPermissionsUseCase, getMeUseCase, refreshTokenUseCase, requestAccountActivationUseCase, activateAccountUseCase, requestPasswordResetUseCase, resetPasswordUseCase, requestAccountDeletionUseCase, confirmAccountDeletionUseCase, qrLoginUseCase) {
         this.loginUseCase = loginUseCase;
         this.getUserPermissionsUseCase = getUserPermissionsUseCase;
         this.getMeUseCase = getMeUseCase;
@@ -30,6 +35,28 @@ class AuthController {
         this.resetPasswordUseCase = resetPasswordUseCase;
         this.requestAccountDeletionUseCase = requestAccountDeletionUseCase;
         this.confirmAccountDeletionUseCase = confirmAccountDeletionUseCase;
+        this.qrLoginUseCase = qrLoginUseCase;
+    }
+    /** Anmeldung mit dem Personal-QR-Code (siehe QrLoginUseCase). */
+    async qrLogin(req, res) {
+        try {
+            const result = await this.qrLoginUseCase.execute(String(req.body?.token ?? ''));
+            (0, authCookies_1.setAuthCookies)(res, { accessToken: result.accessToken, refreshToken: result.refreshToken });
+            AuditLogService_1.auditLog.log({
+                action: 'auth.qrLogin.success',
+                tenantId: result.employee.tenantId,
+                employeeId: result.employee.id,
+                entityType: 'Employee',
+                entityId: result.employee.id,
+                ...AuditLogService_1.auditLog.context(req),
+            });
+            res.status(200).json({ employee: result.employee });
+        }
+        catch (error) {
+            // Der Code selbst wird NICHT protokolliert — er ist ein Geheimnis.
+            AuditLogService_1.auditLog.log({ action: 'auth.qrLogin.failed', ...AuditLogService_1.auditLog.context(req) });
+            res.status(400).json({ error: error.message });
+        }
     }
     async login(req, res) {
         const { email, password } = req.body;
@@ -173,8 +200,24 @@ class AuthController {
             if (!employeeId) {
                 return res.status(401).json({ error: 'Yetkisiz erişim.' });
             }
-            const permissions = await this.getUserPermissionsUseCase.execute(employeeId);
-            res.status(200).json({ permissions });
+            // `pageAccess` (17.08.2026): die Stufe je SEITE aus der Rolle —
+            // Menü und Seitenwächter im Browser lesen daraus, welche Seiten
+            // diese Person überhaupt öffnen darf. Die flachen `permissions`
+            // bleiben daneben stehen: sie regeln, was INNERHALB einer Seite
+            // geht, und sind weiterhin das, was der Server prüft.
+            // Beide kommen aus demselben Cache — kein zweiter Rundgang.
+            const [permissions, roleInfo] = await Promise.all([
+                this.getUserPermissionsUseCase.execute(employeeId),
+                roleRepositoryForPages.getEmployeeRoleInfo(employeeId),
+            ]);
+            // `isSystemAdmin` = Administratorrolle. Nur die Anzeige hängt daran
+            // (gefährliche Aktionen fragen jedes ANDERE Konto nach dem
+            // Kennwort); geprüft wird die Rolle beim Aufruf erneut am Server.
+            res.status(200).json({
+                permissions,
+                pageAccess: roleInfo.pageAccess,
+                isSystemAdmin: roleInfo.isSystemAdmin,
+            });
         }
         catch (error) {
             res.status(500).json({ error: error.message });
