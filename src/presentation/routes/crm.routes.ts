@@ -4,7 +4,6 @@ import { nanoid } from 'nanoid';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
-import { flipOverdueTasks } from '../../infrastructure/services/crmTaskMaintenance';
 
 /* CRM v2 surfaces: tenant-wide contact list (Ansprechpartner), unified
    communication history (phone/e-mail/meeting/note) and tasks & reminders.
@@ -32,9 +31,6 @@ const parseJson = (value: unknown): unknown => {
 };
 
 const COMMUNICATION_CHANNELS = new Set(['PHONE', 'EMAIL', 'MEETING', 'NOTE']);
-// OPEN | DONE | INCOMPLETE ("Nicht erledigt" — per X-Knopf oder automatisch,
-// sobald der Termin einer offenen Aufgabe verstrichen ist).
-const TASK_STATUSES = new Set(['OPEN', 'DONE', 'INCOMPLETE']);
 
 /* Interaktionsverlauf — die Typen der vereinten Sicht. Die Kundenakte schreibt
    Besuche vor Ort (SiteVisit) als CustomerActivity; die anderen vier sind die
@@ -66,16 +62,6 @@ interface BulkCommunicationEntry {
     channel: string;
     note: string;
     occurredAt: Date;
-}
-
-interface BulkTaskEntry {
-    index: number;
-    title: string;
-    customerId: string;
-    contactId: string;
-    assigneeId: string;
-    kind: string;
-    dueDate: Date | null;
 }
 
 /** The joined person block used by the list rows; null when the id is unset. */
@@ -275,6 +261,19 @@ router.get('/interactions', requireAuth, requirePermission('crm.customers.view')
         if (employeeId) actWhere.push(Prisma.sql`ca.employeeId = ${employeeId}`);
         if (from) actWhere.push(Prisma.sql`ca.activityDate >= ${from}`);
         if (to) actWhere.push(Prisma.sql`ca.activityDate <= ${to}`);
+        // Angebots-/Auftragsmails, die seit der Outlook-Anbindung als MailMessage
+        // festgehalten sind (activityId zeigt her), erscheinen nur einmal — als Mail.
+        actWhere.push(Prisma.sql`NOT EXISTS (SELECT 1 FROM MailMessage mm WHERE mm.activityId = ca.id)`);
+
+        // Zweig 4 — MailMessage (Outlook-Sync + ERP-Sendungen), nur mit Kundenbezug.
+        // Betreff + Vorschau als "note"; die Direction/den Outlook-Link tragen die
+        // Zusatzspalten, die die anderen Zweige mit NULL füllen.
+        const mailWhere: Prisma.Sql[] = [Prisma.sql`m.tenantId = ${user.tenantId}`, Prisma.sql`m.customerId IS NOT NULL`];
+        if (customerId) mailWhere.push(Prisma.sql`m.customerId = ${customerId}`);
+        if (typeFilter && typeFilter !== 'EMAIL') mailWhere.push(Prisma.sql`1 = 0`);
+        if (employeeId) mailWhere.push(Prisma.sql`m.employeeId = ${employeeId}`);
+        if (from) mailWhere.push(Prisma.sql`m.sentAt >= ${from}`);
+        if (to) mailWhere.push(Prisma.sql`m.sentAt <= ${to}`);
 
         const activityTypeCase = Prisma.sql`CASE ca.activityType ${Prisma.join(
             Object.entries(ACTIVITY_TYPE_TO_INTERACTION).map(([raw, interaction]) => Prisma.sql`WHEN ${raw} THEN ${interaction}`),
@@ -286,7 +285,8 @@ router.get('/interactions', requireAuth, requirePermission('crm.customers.view')
                    cc.contactId AS contactId, ct.firstName AS contactFirstName, ct.lastName AS contactLastName,
                    cc.channel AS type, cc.note AS note, cc.occurredAt AS occurredAt,
                    cc.createdByEmployeeId AS employeeId, e.firstName AS byFirstName, e.lastName AS byLastName,
-                   0 AS isHighlight, NULL AS rawType
+                   0 AS isHighlight, NULL AS rawType,
+                   NULL AS mailSubject, NULL AS mailDirection, NULL AS mailFrom, NULL AS mailHasWebLink, NULL AS mailEntityLabel
               FROM CrmCommunication cc
               JOIN Customer cu ON cu.id = cc.customerId
               LEFT JOIN CustomerContact ct ON ct.id = cc.contactId
@@ -297,7 +297,8 @@ router.get('/interactions', requireAuth, requirePermission('crm.customers.view')
                    NULL, NULL, NULL,
                    'NOTE', cn.noteText, cn.createdAt,
                    cn.createdByEmployeeId, e.firstName, e.lastName,
-                   cn.isHighlight, cn.noteType
+                   cn.isHighlight, cn.noteType,
+                   NULL, NULL, NULL, NULL, NULL
               FROM CustomerNote cn
               JOIN Customer cu ON cu.id = cn.customerId
               LEFT JOIN Employee e ON e.id = cn.createdByEmployeeId
@@ -307,11 +308,24 @@ router.get('/interactions', requireAuth, requirePermission('crm.customers.view')
                    NULL, NULL, NULL,
                    ${activityTypeCase}, ca.description, ca.activityDate,
                    ca.employeeId, e.firstName, e.lastName,
-                   0, ca.activityType
+                   0, ca.activityType,
+                   NULL, NULL, NULL, NULL, NULL
               FROM CustomerActivity ca
               JOIN Customer cu ON cu.id = ca.customerId
               LEFT JOIN Employee e ON e.id = ca.employeeId
              WHERE ${Prisma.join(actWhere, ' AND ')}
+            UNION ALL
+            SELECT 'MAIL', m.id, m.customerId, cu.companyName,
+                   m.contactId, ct.firstName, ct.lastName,
+                   'EMAIL', COALESCE(m.bodyPreview, ''), m.sentAt,
+                   m.employeeId, e.firstName, e.lastName,
+                   0, m.origin,
+                   m.subject, m.direction, COALESCE(m.fromName, m.fromAddress), (m.webLink IS NOT NULL), m.entityLabel
+              FROM MailMessage m
+              JOIN Customer cu ON cu.id = m.customerId
+              LEFT JOIN CustomerContact ct ON ct.id = m.contactId
+              LEFT JOIN Employee e ON e.id = m.employeeId
+             WHERE ${Prisma.join(mailWhere, ' AND ')}
         `;
 
         /* Reihenfolge (Vorgabe 15.08.2026: "der neueste Eintrag steht ganz
@@ -346,6 +360,13 @@ router.get('/interactions', requireAuth, requirePermission('crm.customers.view')
             customer: { id: row.customerId, companyName: row.customerName },
             contact: personOrNull(row.contactId, row.contactFirstName, row.contactLastName),
             createdBy: personOrNull(row.employeeId, row.byFirstName, row.byLastName),
+            mail: row.source === 'MAIL' ? {
+                subject: row.mailSubject ?? null,
+                direction: row.mailDirection ?? null,
+                from: row.mailFrom ?? null,
+                hasWebLink: Boolean(Number(row.mailHasWebLink ?? 0)),
+                entityLabel: row.mailEntityLabel ?? null,
+            } : null,
         }));
         res.status(200).json({ data, total: Number(countRows[0]?.total ?? 0), page, pageSize });
     } catch (error: any) {
@@ -543,401 +564,6 @@ router.delete('/communications/:id', requireAuth, requirePermission('crm.activit
     }
 });
 
-// ─────────────────────────── Reminders ───────────────────────────
-
-/**
- * GET /crm/reminders/due — fällige Erinnerungen für die angemeldete Person.
- *
- * Der Wecker der Oberfläche fragt das im Minutentakt, deshalb ist es bewusst
- * die kleinstmögliche Abfrage: EIN Statement, nur die Zeilen, die gerade
- * wirklich dran sind, gedeckelt auf 20. "Für mich" heisst zugewiesen ODER
- * selbst erfasst und niemandem zugewiesen — sonst hätte eine Erinnerung ohne
- * Verantwortliche gar keinen Empfänger.
- *
- * Auth-only (kein requirePermission): es sind die eigenen Erinnerungen, und
- * ein Wecker, der an fehlenden Rechten scheitert, fällt lautlos aus.
- */
-router.get('/reminders/due', requireAuth, async (req, res) => {
-    try {
-        const user = req.user!;
-        const rows = await prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
-            SELECT tk.id, tk.title, tk.dueDate, tk.customerId, tk.linkUrl, tk.meta,
-                   cu.companyName AS customerName
-            FROM CrmTask tk
-            LEFT JOIN Customer cu ON cu.id = tk.customerId
-            WHERE tk.tenantId = ${user.tenantId}
-              AND tk.kind = 'REMINDER'
-              AND tk.status = 'OPEN'
-              AND tk.notifiedAt IS NULL
-              AND tk.dueDate IS NOT NULL
-              AND tk.dueDate <= NOW(3)
-              AND (tk.assigneeEmployeeId = ${user.id}
-                   OR (tk.assigneeEmployeeId IS NULL AND tk.createdByEmployeeId = ${user.id}))
-            ORDER BY tk.dueDate ASC
-            LIMIT 20
-        `);
-
-        res.status(200).json(rows.map((row) => ({
-            id: row.id,
-            title: row.title,
-            dueDate: row.dueDate,
-            customerId: row.customerId ?? null,
-            customerName: row.customerName ?? null,
-            linkUrl: row.linkUrl ?? null,
-            meta: parseJson(row.meta),
-        })));
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-/**
- * POST /crm/reminders/ack — { ids: [] }. Stempelt die gezeigten Erinnerungen,
- * damit sie beim nächsten Takt nicht erneut aufpoppen. Die Oberfläche ruft das
- * SOFORT beim Einblenden auf, nicht erst beim Wegklicken: sonst zeigt ein
- * zweiter Browser-Tab dieselbe Erinnerung ein zweites Mal.
- */
-router.post('/reminders/ack', requireAuth, async (req, res) => {
-    try {
-        const user = req.user!;
-        const ids = Array.isArray(req.body?.ids)
-            ? req.body.ids.map((id: unknown) => String(id || '').trim()).filter(Boolean)
-            : [];
-        if (ids.length === 0) return res.status(200).json({ acknowledged: 0 });
-
-        const result = await prisma.crmTask.updateMany({
-            where: { id: { in: ids }, tenantId: user.tenantId, kind: 'REMINDER', notifiedAt: null },
-            data: { notifiedAt: new Date() },
-        });
-        res.status(200).json({ acknowledged: result.count });
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-/**
- * POST /crm/reminders/dismiss — { ids: [] }. Schliesst Erinnerungen ENDGÜLTIG
- * (Vorgabe 15.08.2026): eine geschlossene Erinnerung ist gelöscht, sie kommt
- * weder im Fenster noch in der Liste wieder. Auth-only wie /due und /ack — das
- * X am Einblendfenster muss auch ohne CRM-Rechte funktionieren; dafür nur die
- * EIGENEN Erinnerungen (zugewiesen oder selbst erfasst).
- */
-router.post('/reminders/dismiss', requireAuth, async (req, res) => {
-    try {
-        const user = req.user!;
-        const ids = Array.isArray(req.body?.ids)
-            ? req.body.ids.map((id: unknown) => String(id || '').trim()).filter(Boolean)
-            : [];
-        if (ids.length === 0) return res.status(200).json({ dismissed: 0 });
-
-        const result = await prisma.crmTask.deleteMany({
-            where: {
-                id: { in: ids },
-                tenantId: user.tenantId,
-                kind: 'REMINDER',
-                OR: [{ assigneeEmployeeId: user.id }, { createdByEmployeeId: user.id }],
-            },
-        });
-        res.status(200).json({ dismissed: result.count });
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-// ─────────────────────── Tasks & reminders ───────────────────────
-
-// GET /crm/tasks?status=&customerId=&assigneeId=&kind=&page=&pageSize=
-router.get('/tasks', requireAuth, requirePermission('crm.customers.view'), async (req, res) => {
-    try {
-        const user = req.user!;
-        const status = String(req.query.status || '').trim().toUpperCase();
-        const kind = String(req.query.kind || '').trim().toUpperCase();
-        const customerId = String(req.query.customerId || '').trim();
-        const assigneeId = String(req.query.assigneeId || '').trim();
-        const { page, pageSize, skip, take } = parsePage(req);
-
-        const conditions: Prisma.Sql[] = [Prisma.sql`tk.tenantId = ${user.tenantId}`];
-        if (TASK_STATUSES.has(status)) conditions.push(Prisma.sql`tk.status = ${status}`);
-        if (kind === 'TASK' || kind === 'REMINDER') conditions.push(Prisma.sql`tk.kind = ${kind}`);
-        if (customerId) conditions.push(Prisma.sql`tk.customerId = ${customerId}`);
-        if (assigneeId) conditions.push(Prisma.sql`tk.assigneeEmployeeId = ${assigneeId}`);
-        const whereSql = Prisma.join(conditions, ' AND ');
-
-        // Verstrichene offene Aufgaben zuerst auf "Nicht erledigt" kippen, damit
-        // die Liste den Stand von JETZT zeigt und nicht den des letzten Takts des
-        // Hintergrunddienstes. Nur wenn Aufgaben überhaupt gefragt sind.
-        if (kind !== 'REMINDER' && status !== 'DONE') await flipOverdueTasks(user.tenantId);
-
-        const [rows, countRows] = await Promise.all([
-            prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
-                SELECT tk.id, tk.kind, tk.title, tk.customerId, tk.contactId, tk.assigneeEmployeeId,
-                       tk.dueDate, tk.status, tk.completedAt, tk.createdByEmployeeId, tk.createdAt,
-                       tk.linkUrl, tk.meta, tk.entityType, tk.entityId,
-                       cu.companyName AS customerName,
-                       ct.firstName AS contactFirstName, ct.lastName AS contactLastName,
-                       a.firstName AS assigneeFirstName, a.lastName AS assigneeLastName,
-                       e.firstName AS byFirstName, e.lastName AS byLastName
-                FROM CrmTask tk
-                LEFT JOIN Customer cu ON cu.id = tk.customerId
-                LEFT JOIN CustomerContact ct ON ct.id = tk.contactId
-                LEFT JOIN Employee a ON a.id = tk.assigneeEmployeeId
-                JOIN Employee e ON e.id = tk.createdByEmployeeId
-                WHERE ${whereSql}
-                -- Reihenfolge (Vorgabe 15.08.2026): offene Arbeit zuerst
-                -- (OPEN < INCOMPLETE < DONE — nach Sinn, nicht nach Alphabet),
-                -- und INNERHALB einer Gruppe chronologisch: der zuletzt
-                -- angelegte Eintrag steht ZUUNTERST. Der Termin sortiert
-                -- bewusst NICHT mehr — verstrichene Aufgaben rutschen ohnehin
-                -- in die Gruppe "Nicht erledigt", und die Spalte "Fällig"
-                -- steht daneben.
-                ORDER BY FIELD(tk.status, 'OPEN', 'INCOMPLETE', 'DONE') ASC,
-                         tk.createdAt ASC, tk.id ASC
-                LIMIT ${take} OFFSET ${skip}
-            `),
-            prisma.$queryRaw<Array<{ total: bigint | number }>>(Prisma.sql`
-                SELECT COUNT(*) AS total FROM CrmTask tk WHERE ${whereSql}
-            `),
-        ]);
-
-        const data = rows.map((row) => ({
-            id: row.id,
-            kind: row.kind,
-            title: row.title,
-            customerId: row.customerId ?? null,
-            contactId: row.contactId ?? null,
-            assigneeEmployeeId: row.assigneeEmployeeId ?? null,
-            dueDate: row.dueDate ?? null,
-            status: row.status,
-            completedAt: row.completedAt ?? null,
-            createdAt: row.createdAt,
-            linkUrl: row.linkUrl ?? null,
-            meta: parseJson(row.meta),
-            entityType: row.entityType ?? null,
-            entityId: row.entityId ?? null,
-            customer: row.customerId ? { id: row.customerId, companyName: row.customerName } : null,
-            contact: personOrNull(row.contactId, row.contactFirstName, row.contactLastName),
-            assignee: personOrNull(row.assigneeEmployeeId, row.assigneeFirstName, row.assigneeLastName),
-            createdBy: personOrNull(row.createdByEmployeeId, row.byFirstName, row.byLastName),
-        }));
-        res.status(200).json({ data, total: Number(countRows[0]?.total ?? 0), page, pageSize });
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-/**
- * POST /crm/tasks/bulk — { entries: [{ title, customerId?, assigneeEmployeeId?, dueDate?, kind? }] }
- *
- * Gleiche Bauart wie /communications/bulk: feste Anzahl Prüfabfragen (Kunden
- * und Verantwortliche je einmal gesammelt), ein createMany, alles oder nichts.
- */
-router.post('/tasks/bulk', requireAuth, requirePermission('crm.activities.create'), async (req, res) => {
-    try {
-        const user = req.user!;
-        const rawEntries = Array.isArray(req.body?.entries) ? req.body.entries : [];
-        if (rawEntries.length === 0) return res.status(400).json({ error: 'Keine Zeilen übergeben.' });
-        if (rawEntries.length > 200) return res.status(400).json({ error: 'Höchstens 200 Zeilen pro Speicherung.' });
-
-        const entries: BulkTaskEntry[] = rawEntries.map((row: any, index: number) => ({
-            index,
-            title: String(row?.title || '').trim(),
-            customerId: String(row?.customerId || '').trim(),
-            contactId: String(row?.contactId || '').trim(),
-            assigneeId: String(row?.assigneeEmployeeId || '').trim(),
-            kind: row?.kind === 'REMINDER' ? 'REMINDER' : 'TASK',
-            dueDate: parseDate(row?.dueDate),
-        }));
-
-        const errors: Array<{ index: number; error: string }> = [];
-        const fail = (entry: BulkTaskEntry, error: string) => errors.push({ index: entry.index, error });
-
-        const customerIds = [...new Set(entries.map((entry) => entry.customerId).filter(Boolean))];
-        const contactIds = [...new Set(entries.map((entry) => entry.contactId).filter(Boolean))];
-        const assigneeIds = [...new Set(entries.map((entry) => entry.assigneeId).filter(Boolean))];
-        const [customers, contacts, assignees] = await Promise.all([
-            customerIds.length
-                ? prisma.customer.findMany({
-                      where: { id: { in: customerIds }, tenantId: user.tenantId },
-                      select: { id: true },
-                  })
-                : Promise.resolve([] as Array<{ id: string }>),
-            contactIds.length
-                ? prisma.customerContact.findMany({
-                      where: { id: { in: contactIds }, tenantId: user.tenantId },
-                      select: { id: true, customerId: true },
-                  })
-                : Promise.resolve([] as Array<{ id: string; customerId: string }>),
-            assigneeIds.length
-                ? prisma.employee.findMany({ where: { id: { in: assigneeIds } }, select: { id: true } })
-                : Promise.resolve([] as Array<{ id: string }>),
-        ]);
-        const allowedCustomers = new Set(customers.map((customer) => customer.id));
-        const contactOwner = new Map(contacts.map((contact) => [contact.id, contact.customerId]));
-        const allowedAssignees = new Set(assignees.map((assignee) => assignee.id));
-
-        const valid = entries.filter((entry) => {
-            if (!entry.title) { fail(entry, 'Titel fehlt.'); return false; }
-            if (entry.customerId && !allowedCustomers.has(entry.customerId)) {
-                fail(entry, 'Kunde nicht gefunden.');
-                return false;
-            }
-            if (entry.contactId && (!entry.customerId || contactOwner.get(entry.contactId) !== entry.customerId)) {
-                fail(entry, 'Ansprechpartner gehört nicht zu diesem Kunden.');
-                return false;
-            }
-            if (entry.assigneeId && !allowedAssignees.has(entry.assigneeId)) {
-                fail(entry, 'Verantwortliche Person nicht gefunden.');
-                return false;
-            }
-            return true;
-        });
-
-        const result = valid.length
-            ? await prisma.crmTask.createMany({
-                  data: valid.map((entry) => ({
-                      id: nanoid(12),
-                      tenantId: user.tenantId,
-                      kind: entry.kind,
-                      title: entry.title,
-                      customerId: entry.customerId || null,
-                      contactId: entry.contactId || null,
-                      assigneeEmployeeId: entry.assigneeId || null,
-                      dueDate: entry.dueDate,
-                      createdByEmployeeId: user.id,
-                  })),
-              })
-            : { count: 0 };
-        res.status(201).json({ createdCount: result.count, errors });
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-// POST /crm/tasks — { title, customerId?, contactId?, assigneeEmployeeId?, dueDate?, kind? }
-router.post('/tasks', requireAuth, requirePermission('crm.activities.create'), async (req, res) => {
-    try {
-        const user = req.user!;
-        const title = String(req.body?.title || '').trim();
-        if (!title) return res.status(400).json({ error: 'Titel gerekli.' });
-        const customerId = String(req.body?.customerId || '').trim();
-        const contactId = String(req.body?.contactId || '').trim();
-        const assigneeId = String(req.body?.assigneeEmployeeId || '').trim();
-        const kind = req.body?.kind === 'REMINDER' ? 'REMINDER' : 'TASK';
-        const dueDate = parseDate(req.body?.dueDate);
-
-        const [customer, contact, assignee] = await Promise.all([
-            customerId
-                ? prisma.customer.findFirst({ where: { id: customerId, tenantId: user.tenantId }, select: { id: true } })
-                : Promise.resolve(null),
-            contactId && customerId
-                ? prisma.customerContact.findFirst({ where: { id: contactId, customerId }, select: { id: true } })
-                : Promise.resolve(null),
-            assigneeId
-                ? prisma.employee.findUnique({ where: { id: assigneeId }, select: { id: true, tenantId: true } })
-                : Promise.resolve(null),
-        ]);
-        if (customerId && !customer) return res.status(404).json({ error: 'Müşteri bulunamadı.' });
-        if (contactId && !contact) return res.status(400).json({ error: 'Ansprechpartner gehört nicht zu diesem Kunden.' });
-        if (assigneeId && !assignee) return res.status(400).json({ error: 'Verantwortliche Person nicht gefunden.' });
-
-        const created = await prisma.crmTask.create({
-            data: {
-                id: nanoid(12),
-                tenantId: user.tenantId,
-                kind,
-                title,
-                customerId: customer ? customerId : null,
-                contactId: contact ? contactId : null,
-                assigneeEmployeeId: assignee ? assigneeId : null,
-                dueDate,
-                createdByEmployeeId: user.id,
-            },
-
-        });
-        res.status(201).json(created);
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-// PATCH /crm/tasks/:id — partial update; status DONE stamps completedAt.
-router.patch('/tasks/:id', requireAuth, requirePermission('crm.activities.create'), async (req, res) => {
-    try {
-        const user = req.user!;
-        const existing = await prisma.crmTask.findFirst({
-            where: { id: String(req.params.id || ''), tenantId: user.tenantId },
-            select: { id: true, status: true, customerId: true },
-        });
-        if (!existing) return res.status(404).json({ error: 'Aufgabe nicht gefunden.' });
-
-        const data: Record<string, unknown> = {};
-        if (req.body?.title !== undefined) {
-            const title = String(req.body.title).trim();
-            if (!title) return res.status(400).json({ error: 'Titel gerekli.' });
-            data.title = title;
-        }
-        if (req.body?.kind !== undefined) data.kind = req.body.kind === 'REMINDER' ? 'REMINDER' : 'TASK';
-        if (req.body?.dueDate !== undefined) data.dueDate = parseDate(req.body.dueDate);
-        if (req.body?.customerId !== undefined) {
-            const customerId = String(req.body.customerId || '').trim();
-            if (customerId) {
-                const customer = await prisma.customer.findFirst({
-                    where: { id: customerId, tenantId: user.tenantId },
-                    select: { id: true },
-                });
-                if (!customer) return res.status(404).json({ error: 'Müşteri bulunamadı.' });
-            }
-            data.customerId = customerId || null;
-            // Ein Kundenwechsel löst den Ansprechpartner — er gehört zum alten Kunden.
-            if (customerId !== existing.customerId) data.contactId = null;
-        }
-        if (req.body?.contactId !== undefined) {
-            const contactId = String(req.body.contactId || '').trim();
-            const ownerId = (data.customerId as string | null | undefined) ?? existing.customerId;
-            if (contactId) {
-                const contact = ownerId
-                    ? await prisma.customerContact.findFirst({ where: { id: contactId, customerId: ownerId }, select: { id: true } })
-                    : null;
-                if (!contact) return res.status(400).json({ error: 'Ansprechpartner gehört nicht zu diesem Kunden.' });
-            }
-            data.contactId = contactId || null;
-        }
-        if (req.body?.assigneeEmployeeId !== undefined) {
-            const assigneeId = String(req.body.assigneeEmployeeId || '').trim();
-            if (assigneeId) {
-                const assignee = await prisma.employee.findUnique({ where: { id: assigneeId }, select: { id: true } });
-                if (!assignee) return res.status(400).json({ error: 'Verantwortliche Person nicht gefunden.' });
-            }
-            data.assigneeEmployeeId = assigneeId || null;
-        }
-        if (req.body?.status !== undefined) {
-            const status = String(req.body.status).trim().toUpperCase();
-            if (!TASK_STATUSES.has(status)) return res.status(400).json({ error: 'Status OPEN, DONE oder INCOMPLETE olmalıdır.' });
-            data.status = status;
-            data.completedAt = status === 'DONE' ? new Date() : null;
-        }
-
-        const updated = await prisma.crmTask.update({ where: { id: existing.id }, data });
-        res.status(200).json(updated);
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
-
-// DELETE /crm/tasks/:id
-router.delete('/tasks/:id', requireAuth, requirePermission('crm.activities.create'), async (req, res) => {
-    try {
-        const user = req.user!;
-        const existing = await prisma.crmTask.findFirst({
-            where: { id: String(req.params.id || ''), tenantId: user.tenantId },
-            select: { id: true },
-        });
-        if (!existing) return res.status(404).json({ error: 'Aufgabe nicht gefunden.' });
-        await prisma.crmTask.delete({ where: { id: existing.id } });
-        res.status(200).json({ message: 'Aufgabe gelöscht.' });
-    } catch (error: any) {
-        res.status(400).json({ error: error.message });
-    }
-});
+/* Aufgaben & Erinnerungen: siehe crmTask.routes.ts (gleicher /crm-Pfad). */
 
 export default router;

@@ -161,6 +161,15 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 grants: { read: ['crm.customers.view'], write: ['crm.activities.create'] },
             },
             {
+                // E-Mail / Outlook-Postfach (17.08.2026): lesen = CRM-Recht,
+                // schreiben = senden.
+                key: 'crm.mail',
+                path: '/crm/mail',
+                labelKey: 'nav.crmMail',
+                maxLevel: 2,
+                grants: { read: ['crm.customers.view'], write: ['mail.send'] },
+            },
+            {
                 key: 'crm.tasks',
                 path: '/crm/tasks',
                 labelKey: 'nav.crmTasks',

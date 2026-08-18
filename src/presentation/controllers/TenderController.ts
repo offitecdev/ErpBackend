@@ -14,6 +14,7 @@ import { ICustomerActivityRepository } from '../../domain/repositories/ICustomer
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
+import { dispatchMail } from '../../infrastructure/services/outlook/MailDispatchService';
 import { getArticleThumbnails, getPositionThumbnails } from '../../infrastructure/services/PdfImageThumbnailService';
 import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
@@ -22,7 +23,10 @@ import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { nextDocumentNumber } from '../../shared/documentNumber';
 import { tenderDocumentStorageService } from '../../infrastructure/services/TenderDocumentStorageService';
 
-const smtp = new SmtpMailService();
+// Versand läuft über dispatchMail: verbundenes Outlook-Postfach des Benutzers,
+// sonst SMTP des Mandanten; jede Kundenmail landet zudem als MailMessage in der
+// Kundenkommunikation (siehe outlook/MailDispatchService.ts).
+void SmtpMailService;
 
 // Prisma şeması Position'ın bağımlı tablolarını (CalculationItem, article/
 // material mapping) onDelete: Cascade ilan ediyor; bu bayrak canlı FK'ların
@@ -2943,18 +2947,23 @@ export class TenderController {
             // tanımlanabilir.
             const cc = tenderCcForSend((tender as any).ccEmails, to);
 
-            const result = await smtp.send(settings || {}, {
-                fromEmail,
-                fromName,
-                to,
-                cc,
-                subject,
-                text: `${plainText}${signature.text}`,
-                html,
-                replyTo: settings?.replyTo || null,
-                attachments,
-                inlineImages: signature.inlineImages
-            });
+            const result = await dispatchMail(
+                { tenantId: tender.tenantId, employeeId: (req as any).user!.id },
+                settings,
+                {
+                    fromEmail,
+                    fromName,
+                    to,
+                    cc,
+                    subject,
+                    text: `${plainText}${signature.text}`,
+                    html,
+                    replyTo: settings?.replyTo || null,
+                    attachments,
+                    inlineImages: signature.inlineImages
+                },
+                { record: { customerId: tender.customerId, entityType: "TENDER", entityId: tender.id, entityLabel: tender.tenderNumber } },
+            );
 
             await (prisma as any).tender.update({
                 where: { id: tenderId },
@@ -2965,7 +2974,7 @@ export class TenderController {
             });
 
             if (tender.customerId) {
-                await this.customerActivityRepo.create({
+                const activity = await this.customerActivityRepo.create({
                     customerId: tender.customerId,
                     employeeId: (req as any).user!.id,
                     activityType: "OFFER_MAIL_SENT",
@@ -2973,6 +2982,14 @@ export class TenderController {
                     referenceId: tender.id,
                     activityDate: new Date()
                 });
+                // Dieselbe Sendung nur EINMAL im Interaktionsverlauf: die
+                // MailMessage kennt ihre Aktivität, die Liste blendet diese aus.
+                if (result.mailMessageId && (activity as any)?.id) {
+                    await prisma.mailMessage.update({
+                        where: { id: result.mailMessageId },
+                        data: { activityId: String((activity as any).id) },
+                    }).catch(() => undefined);
+                }
             }
 
             res.status(200).json({
@@ -2986,6 +3003,10 @@ export class TenderController {
             console.error('[sendOfferMail] error:', error);
             // SMTP connect/auth failures are a mail-settings problem, not a server bug —
             // surface a clear, actionable message instead of a generic 500.
+            // Outlook-Versand (Graph) meldet 409 = neu verbinden, 502 = Versand fehlgeschlagen.
+            if (error?.status === 409 || error?.status === 502) {
+                return res.status(error.status).json({ error: error.message, code: error.code });
+            }
             if (typeof error?.message === "string" && error.message.startsWith("SMTP")) {
                 return res.status(502).json({ error: "E-posta gönderilemedi: SMTP sunucusuna bağlanılamadı veya kullanıcı adı/parola hatalı. Lütfen mail ayarlarını kontrol edin." });
             }
@@ -3174,23 +3195,28 @@ export class TenderController {
             `;
             const detailsText = detailRows.map(([label, value]) => `${label}: ${value}`).join("\n");
 
-            const result = await smtp.send(settings || {}, {
-                fromEmail,
-                fromName,
-                to,
-                cc,
-                subject,
-                text: `${message}\n\n${detailsText}${signature.text}`,
-                html,
-                replyTo: settings?.replyTo || null,
-                attachments,
-                inlineImages: signature.inlineImages,
-            });
+            const result = await dispatchMail(
+                { tenantId: tender.tenantId, employeeId: (req as any).user!.id },
+                settings,
+                {
+                    fromEmail,
+                    fromName,
+                    to,
+                    cc,
+                    subject,
+                    text: `${message}\n\n${detailsText}${signature.text}`,
+                    html,
+                    replyTo: settings?.replyTo || null,
+                    attachments,
+                    inlineImages: signature.inlineImages,
+                },
+                { record: { customerId: tender.customerId, entityType: "ORDER", entityId: tender.id, entityLabel: salesOrder.orderNumber } },
+            );
 
             // SMTP yapılandırılmamışsa gerçek gönderim yoktur (preview); müşteri
             // geçmişine yalnızca gerçekten giden mail yazılır.
             if (!result.preview) {
-                await this.customerActivityRepo.create({
+                const activity = await this.customerActivityRepo.create({
                     customerId: tender.customerId,
                     employeeId: (req as any).user!.id,
                     activityType: "ORDER_MAIL_SENT",
@@ -3198,6 +3224,12 @@ export class TenderController {
                     referenceId: tender.id,
                     activityDate: new Date(),
                 });
+                if (result.mailMessageId && (activity as any)?.id) {
+                    await prisma.mailMessage.update({
+                        where: { id: result.mailMessageId },
+                        data: { activityId: String((activity as any).id) },
+                    }).catch(() => undefined);
+                }
             }
 
             res.status(200).json({
@@ -3214,6 +3246,10 @@ export class TenderController {
                 return res.status(400).json({ error: error.message });
             }
             console.error('[sendOrderMail] error:', error);
+            // Outlook-Versand (Graph) meldet 409 = neu verbinden, 502 = Versand fehlgeschlagen.
+            if (error?.status === 409 || error?.status === 502) {
+                return res.status(error.status).json({ error: error.message, code: error.code });
+            }
             if (typeof error?.message === "string" && error.message.startsWith("SMTP")) {
                 return res.status(502).json({ error: "E-posta gönderilemedi: SMTP sunucusuna bağlanılamadı veya kullanıcı adı/parola hatalı. Lütfen mail ayarlarını kontrol edin." });
             }

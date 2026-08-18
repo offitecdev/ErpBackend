@@ -14,6 +14,13 @@ import prisma from '../../infrastructure/database/prisma.client';
 import { notifyProjectEvent } from '../../infrastructure/services/projectEventNotifications';
 import { adjustArticleStock, articleStockTotal } from '../../shared/articleStock';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
+import { dispatchMail } from '../../infrastructure/services/outlook/MailDispatchService';
+import {
+    buildAppointmentCancellation,
+    inviteFailureMessage,
+    queueAppointmentCancellation,
+    sendAppointmentInvite,
+} from '../../infrastructure/services/calendarMailService';
 import { getCompanyTreeTenantIds } from './serviceTenantScope';
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import { nanoid } from 'nanoid';
@@ -1788,15 +1795,26 @@ export class ProjectController {
                 </div>
             `;
 
-            const result = await smtp.send(settings || {}, {
-                fromEmail,
-                fromName,
-                to,
-                subject,
-                text: `${message}\n\n${bookingLink}`,
-                html,
-                replyTo: req.body.replyTo || settings?.replyTo || null
-            });
+            // Kundenmail → über das Outlook-Postfach des Benutzers (sonst SMTP),
+            // festgehalten in der Kundenkommunikation (MailMessage).
+            const result = await dispatchMail(
+                { tenantId: req.user!.tenantId, employeeId: req.user!.id },
+                settings,
+                {
+                    fromEmail,
+                    fromName,
+                    to,
+                    subject,
+                    text: `${message}\n\n${bookingLink}`,
+                    html,
+                    replyTo: req.body.replyTo || settings?.replyTo || null
+                },
+                {
+                    record: (project as any).customerId
+                        ? { customerId: (project as any).customerId, entityType: 'PROJECT', entityId: project.id, entityLabel: (project as any).projectNumber || project.projectName }
+                        : null,
+                },
+            );
 
             res.status(200).json({
                 message: result.preview
@@ -3369,6 +3387,10 @@ export class ProjectController {
             });
             await this.replaceProjectAppointmentAssignments(appointment.id, technicianIds);
 
+            // KEINE Mail beim Anlegen (Vorgabe 19.08.2026): die Kalender-Einladung
+            // an den Kunden geht erst mit «Termin an Kunden senden» raus —
+            // siehe sendAppointmentInvite (POST …/appointments/:id/send-invite).
+
             if (technicianIds.length) {
                 await this.notifyMany((project as any).tenantId, technicianIds, {
                     type: "PROJECT_INSTALLATION_ASSIGNED",
@@ -3394,7 +3416,6 @@ export class ProjectController {
             if (!appointment?.project || appointment.project.tenantId !== req.user!.tenantId) {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
-
             const parsed = this.parseAppointmentBody(req.body);
             const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user!.tenantId, req.body.salesOrderId || appointment.salesOrderId);
             const sameDayForCustomer = await this.findCustomerSameDayAppointment(appointment.customerId || appointment.project.customerId, parsed.startTime, appointment.id);
@@ -3443,6 +3464,10 @@ export class ProjectController {
                 });
             }
 
+            // Auch die Änderung geht NICHT von selbst raus: wer den Kunden
+            // informieren will, sendet die Einladung erneut (gleiche UID,
+            // höherer Zählstand — Outlook ersetzt dann den Eintrag).
+
             res.status(200).json(updated);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
@@ -3458,6 +3483,10 @@ export class ProjectController {
             if (!appointment?.project || appointment.project.tenantId !== req.user!.tenantId) {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
+            // Die Absage EINSAMMELN, solange die Zeile noch da ist — verschickt
+            // wird sie erst, wenn das Löschen wirklich durchgelaufen ist. Nur
+            // für Termine, die je verschickt wurden (sonst null).
+            const cancellation = await buildAppointmentCancellation(appointment.id);
 
             const dayStart = startOfDay(new Date(appointment.startTime));
             const dayEnd = endOfDay(new Date(appointment.startTime));
@@ -3518,9 +3547,45 @@ export class ProjectController {
 
                 await tx.appointment.delete({ where: { id: appointment.id } });
             });
+
+            // Absage an alle Beteiligten: der Termin verschwindet damit auch aus
+            // deren Outlook. Erst NACH der erfolgreichen Löschung — und mit den
+            // Daten, die vorher geladen wurden, denn die Zeile ist nun fort.
+            queueAppointmentCancellation(cancellation, req.user!.id);
+
             res.status(204).send();
         } catch (error: any) {
             res.status(400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * POST /projects/appointments/:appointmentId/send-invite
+     * «Termin an Kunden senden» — DIE Stelle, an der die Kalender-Einladung
+     * rausgeht (Vorgabe 19.08.2026: nie von selbst). Body: { to, cc[], subject?,
+     * message? }. An = Kunde, CC = Mitarbeitende. Wird abgewartet, damit das
+     * Fenster ein echtes Ergebnis zeigt.
+     */
+    async sendAppointmentInvite(req: Request, res: Response) {
+        try {
+            const appointment = await (prisma as any).appointment.findUnique({
+                where: { id: req.params.appointmentId as string },
+                select: { id: true, tenantId: true },
+            });
+            if (!appointment || appointment.tenantId !== req.user!.tenantId) {
+                return res.status(404).json({ error: "Randevu bulunamadı." });
+            }
+            const cc = Array.isArray(req.body?.cc) ? req.body.cc.map((value: unknown) => String(value ?? "")) : [];
+            const result = await sendAppointmentInvite(appointment.id, req.user!.id, {
+                to: String(req.body?.to ?? ""),
+                cc,
+                subject: req.body?.subject ? String(req.body.subject) : null,
+                message: req.body?.message ? String(req.body.message) : null,
+            });
+            if (!result.sent) return res.status(400).json({ error: inviteFailureMessage(result) });
+            res.status(200).json({ sentAt: new Date().toISOString(), recipients: result.recipients });
+        } catch (error: any) {
+            res.status(error?.status || 400).json({ error: error.message });
         }
     }
 }

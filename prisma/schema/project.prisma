@@ -199,6 +199,13 @@ model Appointment {
   ccEmails                   Json?
   isLocked                   Boolean                        @default(false)
   installationReminderSentAt DateTime?
+  // KALENDER-EINLADUNG (18.08.2026): UID und Zählstand der iCalendar-Anfrage.
+  // Die UID bleibt über alle Änderungen gleich — daran erkennt Outlook, dass
+  // eine Aktualisierung DENSELBEN Termin meint und legt keinen zweiten an;
+  // `icalSequence` muss dabei jedes Mal steigen, sonst verwirft Outlook sie.
+  icalUid                    String?                        @db.VarChar(191)
+  icalSequence               Int                            @default(0)
+  inviteSentAt               DateTime?
   tenant                     Tenant                         @relation(fields: [tenantId], references: [id])
   project                    Project?                       @relation(fields: [projectId], references: [id])
   salesOrder                 SalesOrder?                    @relation(fields: [salesOrderId], references: [id])
@@ -468,6 +475,35 @@ model MailSetting {
   // data URI çoğu mail istemcisinde engellendiği için gövdede bırakılmaz.
   signatureHtml  String? @db.LongText
   signatureImage String? @db.LongText
+  // MICROSOFT-365-APP-REGISTRIERUNG (17.08.2026): Client-Id/-Secret/Azure-
+  // Mandant der Entra-App, über die Mitarbeitende ihr Outlook-Postfach
+  // verbinden. Secret verschlüsselt (mailCrypto.ts). Leer = Umgebung
+  // (OFFITEC_MS_CLIENT_ID/_SECRET/_TENANT) gilt, sonst gar nichts.
+  msClientId     String? @db.VarChar(128)
+  msClientSecret String? @db.Text
+  msTenantId     String? @db.VarChar(128)
+  // Rückwärtiges Fenster der Erstsynchronisation in Tagen (Vorgabe 30).
+  msSyncDays     Int     @default(30)
+  // ── POSTEINGANG DES EIGENEN SERVERS (18.08.2026) ──────────────────────────
+  // Eingehende Mail wird per IMAP vom EIGENEN Mailserver geholt (dieselben
+  // Zugangsdaten wie die Gesendet-Kopie oben), nicht von Microsoft. Es wird
+  // NICHT das ganze Postfach eingelesen: gespeichert wird nur, was zu einem
+  // Kunden gehört — Antworten auf ERP-Mails (In-Reply-To/References) und Mail
+  // von bekannten Kunden-/Ansprechpartneradressen. Alles andere wird gelesen,
+  // verworfen und nie gespeichert.
+  imapCaptureEnabled     Boolean   @default(false)
+  // Zu überwachender Ordner (leer = INBOX).
+  imapInboxFolder        String?
+  // Nur Antworten auf ERP-Mails aufnehmen (strenger Modus); sonst zählen
+  // zusätzlich alle Nachrichten bekannter Kundenadressen.
+  imapCaptureRepliesOnly Boolean   @default(false)
+  // Fortschritt: UIDVALIDITY schützt vor wiederverwendeten UIDs (Ordner neu
+  // aufgebaut → alles ab vorne prüfen).
+  imapUidValidity        BigInt?
+  imapLastUid            BigInt?
+  imapLastSyncAt         DateTime?
+  imapLastError          String?   @db.Text
+  imapLastSummary        String?   @db.VarChar(255)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

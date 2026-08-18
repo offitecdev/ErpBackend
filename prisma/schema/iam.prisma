@@ -159,8 +159,11 @@ model Employee {
   crmCommunications             CrmCommunication[]             @relation("CrmCommunicationCreator")
   assignedCrmTasks              CrmTask[]                      @relation("CrmTaskAssignee")
   createdCrmTasks               CrmTask[]                      @relation("CrmTaskCreator")
+  crmTaskAssignments            CrmTaskAssignee[]              @relation("CrmTaskAssigneeRows")
+  crmTaskNotes                  CrmTaskNote[]                  @relation("CrmTaskNoteAuthor")
   passwordChangeRequests        PasswordChangeRequest[]        @relation("PasswordChangeRequests")
   passwordChangeDecisions       PasswordChangeRequest[]        @relation("PasswordChangeDecisions")
+  mailAccounts                  MailAccount[]                  @relation("EmployeeMailAccounts")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }

@@ -1137,6 +1137,7 @@ router.get('/staff/:id/overview', requireAuth, async (req, res) => {
                 FROM CrmTask t
                 LEFT JOIN Customer c ON c.id = t.customerId
                 WHERE t.assigneeEmployeeId = ${id}
+                   OR EXISTS (SELECT 1 FROM CrmTaskAssignee ta WHERE ta.taskId = t.id AND ta.employeeId = ${id})
                 ORDER BY (t.status = 'OPEN') DESC, t.dueDate IS NULL, t.dueDate ASC, t.createdAt DESC
                 LIMIT 100
             `),
@@ -1325,8 +1326,17 @@ router.get('/staff/:id/overview', requireAuth, async (req, res) => {
  * Wer darf: die Person selbst immer; fremde Bilder braucht `employees.update`.
  */
 const PHOTO_MAX_CHARS = 2_000_000; // ≈ 1,5 MB Bild — mehr als ein Kopfbild je braucht.
-// Der Daumennagel ist 64 px gross; alles darüber wäre ein zweites Grossbild.
-const THUMB_MAX_CHARS = 80_000;
+/**
+ * Der Daumennagel ist 128 px gross; alles darüber wäre ein zweites Grossbild.
+ *
+ * 120_000 statt der früheren 80_000, seit der Browser gezeichnete Avatare
+ * verlustfrei als PNG ablegt (19.08.2026): ein Foto-Daumennagel bleibt bei
+ * rund 5 KB, ein PNG mit vielen Farbflächen darf aber ein Mehrfaches wiegen —
+ * und wurde vorher stumm abgewiesen. Selbst reines Rauschen käme bei 128 px
+ * nicht über rund 90 000 Zeichen. Die Grenze ist die NOTBREMSE gegen ein
+ * versehentlich durchgereichtes Grossbild, nicht die erwartete Grösse.
+ */
+const THUMB_MAX_CHARS = 120_000;
 const PHOTO_PREFIX = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 
 /** Prüft eine Bild-Daten-URL; gibt die Fehlermeldung zurück oder null. */

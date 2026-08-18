@@ -23,6 +23,7 @@ import inventoryRoutes from './presentation/routes/inventory.routes';
 import projectRoutes from './presentation/routes/project.routes';
 import bookingRoutes from './presentation/routes/booking.routes';
 import mailRoutes from './presentation/routes/mail.routes';
+import mailboxRoutes from './presentation/routes/mailbox.routes';
 import checklistRoutes from './presentation/routes/checklist.routes';
 import deliveryReportRoutes from './presentation/routes/delivery-report.routes';
 import signatureRequestRoutes from './presentation/routes/signature-request.routes';
@@ -34,6 +35,7 @@ import billingRoutes from './presentation/routes/billing.routes';
 import notificationRoutes from './presentation/routes/notification.routes';
 import meetingRoutes from './presentation/routes/meeting.routes';
 import crmRoutes from './presentation/routes/crm.routes';
+import crmTaskRoutes from './presentation/routes/crmTask.routes';
 import formsRoutes from './presentation/routes/forms.routes';
 import settingsGateRoutes from './presentation/routes/settingsGate.routes';
 import reminderSettingsRoutes from './presentation/routes/reminderSettings.routes';
@@ -47,6 +49,7 @@ import filesRoutes from './presentation/routes/files.routes';
 import dashboardRoutes from './presentation/routes/dashboard.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { startReminderEngine } from './infrastructure/services/ReminderEngine';
+import { startImapCaptureService } from './infrastructure/services/ImapCaptureService';
 import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
 import prisma from './infrastructure/database/prisma.client';
 
@@ -152,6 +155,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/projects`, projectRoutes);
     app.use(`${prefix}/booking`, bookingRoutes);
     app.use(`${prefix}/mail`, mailRoutes);
+    // Firmenpostfach: Abruf vom eigenen Mailserver + Nachrichten (mailbox.routes.ts).
+    app.use(`${prefix}/mail`, mailboxRoutes);
     app.use(`${prefix}/settings/checklists`, checklistRoutes);
     app.use(`${prefix}/delivery-reports`, deliveryReportRoutes);
     app.use(`${prefix}/signature-requests`, signatureRequestRoutes);
@@ -161,6 +166,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/notifications`, notificationRoutes);
     app.use(`${prefix}/meetings`, meetingRoutes);
     app.use(`${prefix}/crm`, crmRoutes);
+    app.use(`${prefix}/crm`, crmTaskRoutes);
     // Checklisten / Formulare / Vorlagen (CRM-Modul, siehe forms.routes.ts).
     app.use(`${prefix}/forms`, formsRoutes);
     app.use(`${prefix}/settings`, settingsGateRoutes);
@@ -178,6 +184,7 @@ app.listen(PORT, () => {
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     startMaintenanceReminderService();
     startReminderEngine();
+    startImapCaptureService();
     // Open the remote-DB connection pool now instead of on the first request,
     // which otherwise pays the connection handshakes itself. Several parallel
     // probes force several pool connections open: batch saves fire their

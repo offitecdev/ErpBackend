@@ -8,8 +8,29 @@ import {
     signatureHasContent,
 } from "../../infrastructure/services/mailSignature";
 import { nanoid } from "nanoid";
+import { resetTransporters } from "../../infrastructure/services/NodemailerTransport";
+import { dispatchMail } from "../../infrastructure/services/outlook/MailDispatchService";
 
-const smtp = new SmtpMailService();
+// Der eigentliche Versand läuft über dispatchMail (Outlook-Postfach des
+// Benutzers, sonst SMTP); die Klasse bleibt für die Typen importiert.
+void SmtpMailService;
+
+/** Antwortform der Einstellungen: Geheimnisse nie, nur "ist gesetzt". */
+const settingsDto = (settings: any) => ({
+    ...settings,
+    smtpPassword: undefined,
+    imapPassword: undefined,
+    // Die Spalten der ausgemusterten Microsoft-Anbindung bleiben in der
+    // Tabelle, gehen die Oberflaeche aber nichts mehr an.
+    msClientId: undefined,
+    msClientSecret: undefined,
+    msTenantId: undefined,
+    msSyncDays: undefined,
+    imapUidValidity: undefined,
+    imapLastUid: undefined,
+    hasPassword: Boolean(settings.smtpPassword),
+    hasImapPassword: Boolean(settings.imapPassword),
+});
 
 export class MailController {
     async getSettings(req: Request, res: Response) {
@@ -34,18 +55,18 @@ export class MailController {
                     saveToSent: true,
                     signatureHtml: null,
                     signatureImage: null,
+                    imapCaptureEnabled: false,
+                    imapInboxFolder: null,
+                    imapCaptureRepliesOnly: false,
+                    imapLastSyncAt: null,
+                    imapLastSummary: null,
+                    imapLastError: null,
                     hasPassword: false,
-                    hasImapPassword: false
+                    hasImapPassword: false,
                 });
             }
 
-            res.status(200).json({
-                ...settings,
-                smtpPassword: undefined,
-                imapPassword: undefined,
-                hasPassword: Boolean(settings.smtpPassword),
-                hasImapPassword: Boolean(settings.imapPassword)
-            });
+            res.status(200).json(settingsDto(settings));
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -137,9 +158,25 @@ export class MailController {
                 }
             }
 
+            // POSTEINGANG DES EIGENEN SERVERS: Schalter des IMAP-Abrufs. Nicht
+            // gesendete Felder bleiben unangetastet (Teilspeicherungen sollen
+            // den Abruf nicht heimlich abschalten).
+            const captureFields = {
+                imapCaptureEnabled: body.imapCaptureEnabled === undefined
+                    ? existing?.imapCaptureEnabled ?? false
+                    : Boolean(body.imapCaptureEnabled),
+                imapInboxFolder: body.imapInboxFolder === undefined
+                    ? existing?.imapInboxFolder ?? null
+                    : String(body.imapInboxFolder || "").trim() || null,
+                imapCaptureRepliesOnly: body.imapCaptureRepliesOnly === undefined
+                    ? existing?.imapCaptureRepliesOnly ?? false
+                    : Boolean(body.imapCaptureRepliesOnly),
+            };
+
             const settings = await prisma.mailSetting.upsert({
                 where: { tenantId },
                 update: {
+                    ...captureFields,
                     fromName: body.fromName || null,
                     fromEmail: body.fromEmail || null,
                     replyTo: body.replyTo || null,
@@ -155,6 +192,7 @@ export class MailController {
                 create: {
                     id: nanoid(8),
                     tenantId,
+                    ...captureFields,
                     fromName: body.fromName || null,
                     fromEmail: body.fromEmail || null,
                     replyTo: body.replyTo || null,
@@ -169,13 +207,10 @@ export class MailController {
                 }
             });
 
-            res.status(200).json({
-                ...settings,
-                smtpPassword: undefined,
-                imapPassword: undefined,
-                hasPassword: Boolean(settings.smtpPassword),
-                hasImapPassword: Boolean(settings.imapPassword)
-            });
+            // Geänderte Zugangsdaten dürfen nicht in einem Verbindungspool
+            // weiterleben: der nächste Versand baut die Verbindung neu auf.
+            resetTransporters();
+            res.status(200).json(settingsDto(settings));
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -200,12 +235,28 @@ export class MailController {
             if (!to || !subject || (!text && !html)) {
                 return res.status(400).json({ error: "Alıcı, konu ve mesaj zorunludur." });
             }
-            // Bu uç nokta manuel/test gönderimidir: SMTP tanımlı değilse mail
-            // GERÇEKTEN gitmez, bu yüzden "önizleme" sessizce başarı sayılmaz.
+            // Bu uç nokta manuel/test gönderimidir: mail YALNIZCA firmanın kendi
+            // SMTP sunucusundan çıkar. Sunucu tanımlı değilse mail GERÇEKTEN
+            // gitmez, bu yüzden "önizleme" sessizce başarı sayılmaz.
             if (!settings?.smtpHost || !settings?.smtpPort) {
                 return res.status(400).json({
                     error: "SMTP sunucusu tanimli degil: mail gonderilmedi. Once SMTP sunucusu, port ve (gerekiyorsa) kullanici/sifre bilgilerini kaydedin.",
+                    code: "no_transport",
                 });
+            }
+            // Kundenbezug (optional): landet als MailMessage in der Kundenkommunikation.
+            let record: { customerId: string | null; contactId: string | null; entityType: string | null; entityId: string | null; entityLabel: string | null } | null = null;
+            if (body.customerId) {
+                const customer = await prisma.customer.findFirst({ where: { id: String(body.customerId), tenantId }, select: { id: true } });
+                if (customer) {
+                    record = {
+                        customerId: customer.id,
+                        contactId: body.contactId ? String(body.contactId) : null,
+                        entityType: body.entityType ? String(body.entityType).toUpperCase().slice(0, 24) : null,
+                        entityId: body.entityId ? String(body.entityId) : null,
+                        entityLabel: body.entityLabel ? String(body.entityLabel).slice(0, 64) : null,
+                    };
+                }
             }
 
             // Tenant imzası varsa gövdenin sonuna eklenir; görseli CID'li inline
@@ -216,7 +267,7 @@ export class MailController {
                 : html;
             const textWithSignature = text && signature.text ? `${text}${signature.text}` : text;
 
-            const result = await smtp.send(settings || {}, {
+            const result = await dispatchMail({ tenantId, employeeId: req.user!.id }, settings, {
                 fromEmail,
                 fromName,
                 to,
@@ -232,6 +283,7 @@ export class MailController {
                 // ("kopya klasöre yazıldı / yazılamadı"), bu yüzden burada —
                 // ve yalnızca burada — kopya beklenir.
                 waitForSentCopy: true,
+                record,
             });
 
             res.status(200).json({

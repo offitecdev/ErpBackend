@@ -90,6 +90,8 @@ router.post('/reports/:reportId/signature-request', requirePermission('projects.
 router.post('/:id/appointments', requirePermission('projects.manage'), (req, res) => controller.createAppointment(req, res));
 router.patch('/appointments/:appointmentId', requirePermission('projects.manage'), (req, res) => controller.updateAppointment(req, res));
 router.delete('/appointments/:appointmentId', requirePermission('projects.manage'), (req, res) => controller.deleteAppointment(req, res));
+// «Termin an Kunden senden» — die Kalender-Einladung geht NUR hierüber raus.
+router.post('/appointments/:appointmentId/send-invite', requirePermission('projects.manage'), (req, res) => controller.sendAppointmentInvite(req, res));
 router.post('/appointments/:appointmentId/complete', requirePermission('projects.manage'), (req, res) => controller.completeInstallation(req, res, { allowManagerComplete: true }));
 
 router.post('/:id/variations', requirePermission('projects.report'), (req, res) => controller.requestExtraMaterial(req, res));

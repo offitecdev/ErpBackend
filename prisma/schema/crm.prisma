@@ -57,6 +57,7 @@ model Customer {
   formSubmissions       FormSubmission[]
   formSubmissionLinks   FormSubmissionLink[]
   fieldNotes            FieldNote[]
+  mailMessages          MailMessage[]
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
   // Liste sıralamaları tenant içinde yapılır. Tek başına tenantId indeksi
@@ -73,6 +74,15 @@ model Customer {
 model MeetingActivity {
   id                  String   @id
   tenantId            String
+  // KALENDER-EINLADUNG (18.08.2026). `icalUid` ist zugleich der Schlüssel für
+  // Termine, die AUS Outlook hereinkommen: trifft eine Einladung mit bekannter
+  // UID ein, wird der vorhandene Eintrag aktualisiert statt ein zweiter
+  // angelegt. `externalOrigin` = OUTLOOK bei importierten Terminen.
+  icalUid             String?  @db.VarChar(191)
+  icalSequence        Int      @default(0)
+  inviteSentAt        DateTime?
+  externalOrigin      String?  @db.VarChar(16)
+  externalOrganizer   String?  @db.VarChar(255)
   // MEETING | TASK
   kind                String   @default("MEETING")
   title               String
@@ -94,6 +104,7 @@ model MeetingActivity {
   @@index([tenantId, startTime])
   @@index([customerId])
   @@index([createdByEmployeeId])
+  @@index([tenantId, icalUid])
 }
 
 model MeetingActivityParticipant {
@@ -200,6 +211,7 @@ model CustomerContact {
   customer         Customer @relation(fields: [customerId], references: [id])
   communications   CrmCommunication[]
   crmTasks         CrmTask[]
+  mailMessages     MailMessage[]
 
   @@index([customerId], map: "CustomerContact_customerId_fkey")
   @@index([tenantId, lastName, firstName])
@@ -305,14 +317,18 @@ model CrmTask {
   // räumt der Dienst die Erinnerung darüber weg. Bei Hand-Erinnerungen null.
   entityType          String?
   entityId            String?
+  // Wer die Aufgabe zugewiesen hat — der Name steht auf der Karte ("von …").
   createdByEmployeeId String
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
   customer  Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   contact   CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  // Erste/„Haupt“-Verantwortliche — Altspalte, wird aus `assignees` gespiegelt.
   assignee  Employee? @relation("CrmTaskAssignee", fields: [assigneeEmployeeId], references: [id], onDelete: SetNull)
   createdBy Employee  @relation("CrmTaskCreator", fields: [createdByEmployeeId], references: [id])
+  assignees CrmTaskAssignee[]
+  notes     CrmTaskNote[]
 
   @@index([tenantId, status, dueDate])
   // Fällige, noch nicht gezeigte Erinnerungen — die Abfrage läuft im Takt von
@@ -401,4 +417,38 @@ model CustomerLocation {
   customer      Customer @relation(fields: [customerId], references: [id])
 
   @@index([customerId], map: "CustomerLocation_customerId_fkey")
+}
+
+/// Mehrere Verantwortliche je Aufgabe/Erinnerung (18.08.2026). `notifiedAt`
+/// ist der Erinnerungs-Stempel JE PERSON: eine Erinnerung an drei Leute läutet
+/// bei allen dreien einmal, nicht nur beim ersten, der sie sieht.
+model CrmTaskAssignee {
+  id         String    @id
+  taskId     String
+  employeeId String
+  notifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  task     CrmTask  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employee Employee @relation("CrmTaskAssigneeRows", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, employeeId])
+  @@index([employeeId, notifiedAt])
+}
+
+/// Notizen (mit Bildern als Daten-URLs, wie die Rapport-Bilder) an einer
+/// Aufgabe — der Verlauf auf der Aufgabenseite.
+model CrmTaskNote {
+  id               String   @id
+  tenantId         String
+  taskId           String
+  authorEmployeeId String
+  text             String   @db.Text
+  images           Json?
+  createdAt        DateTime @default(now())
+
+  task   CrmTask  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author Employee @relation("CrmTaskNoteAuthor", fields: [authorEmployeeId], references: [id])
+
+  @@index([taskId, createdAt])
 }

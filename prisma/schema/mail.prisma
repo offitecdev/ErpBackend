@@ -1,0 +1,123 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// OUTLOOK / MICROSOFT-365-ANBINDUNG (Phase 1, 17.08.2026)
+//
+// Bewusst SCHLANK: Es werden keine Mail-Dateien und keine Anhänge in das ERP
+// kopiert — nur die Grunddaten einer Nachricht (Absender, Empfänger, Betreff,
+// Zeitpunkt, Textkörper) plus die Zuordnung zum Kunden. Anhänge stehen nur als
+// Metadaten (Name/Grösse) und Link ins Outlook (`webLink`) da; wichtige PDFs
+// lädt der Benutzer bei Bedarf selbst in "Dokumente" hoch.
+//
+//   MailAccount  = das verbundene Postfach EINES Mitarbeitenden (OAuth,
+//                  delegierte Rechte). Refresh-/Access-Token liegen verschlüsselt
+//                  (mailCrypto.ts). Delta-Links merken sich den Sync-Stand.
+//   MailMessage  = eine Nachricht (eingehend aus Outlook, ausgehend aus Outlook
+//                  ODER aus dem ERP verschickt), sofern sie im Sync-Fenster lag.
+//                  `customerId` = die Kundenzuordnung (automatisch über die
+//                  E-Mail-Adresse / Domain der Ansprechpartner, oder manuell).
+//                  ERP-Sendungen (Angebot, Auftrag, Rechnung, freie Mail) werden
+//                  IMMER hier festgehalten — unabhängig vom Transport (Graph
+//                  oder SMTP) — damit die Kundenkommunikation vollständig ist.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MailAccount {
+  id                   String    @id
+  tenantId             String
+  employeeId           String
+  // MICROSOFT (einziger Anbieter in Phase 1)
+  provider             String    @default("MICROSOFT") @db.VarChar(16)
+  // Postfachadresse (userPrincipalName / mail) und Anzeigename aus dem Profil.
+  mailboxAddress       String    @db.VarChar(255)
+  displayName          String?   @db.VarChar(255)
+  externalUserId       String?   @db.VarChar(128)
+  // Verschlüsselt (enc:v1:…), niemals an das Frontend.
+  refreshToken         String    @db.Text
+  accessToken          String?   @db.Text
+  accessTokenExpiresAt DateTime?
+  scopes               String?   @db.Text
+  // ACTIVE | NEEDS_REAUTH | DISABLED
+  status               String    @default("ACTIVE") @db.VarChar(16)
+  lastError            String?   @db.Text
+  syncEnabled          Boolean   @default(true)
+  // Rückwärtiges Sync-Fenster der Erstsynchronisation (Nachrichten davor
+  // werden nie geholt).
+  syncFromDate         DateTime?
+  inboxDeltaLink       String?   @db.Text
+  sentDeltaLink        String?   @db.Text
+  lastSyncAt           DateTime?
+  lastSyncStartedAt    DateTime?
+  lastSyncSummary      String?   @db.VarChar(255)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  employee Employee      @relation("EmployeeMailAccounts", fields: [employeeId], references: [id], onDelete: Cascade)
+  messages MailMessage[]
+
+  @@unique([tenantId, employeeId, provider])
+  @@index([tenantId, status])
+}
+
+model MailMessage {
+  id                String    @id
+  tenantId          String
+  // Postfach, aus dem die Nachricht stammt bzw. über das sie ging; null bei
+  // ERP-Sendungen ohne verbundenes Postfach (SMTP-Transport).
+  accountId         String?
+  // Mitarbeitende:r, dem die Nachricht "gehört" (Postfachinhaber bzw. Sender
+  // der ERP-Mail).
+  employeeId        String?
+  // IN | OUT
+  direction         String    @db.VarChar(4)
+  // OUTLOOK (per Sync gefunden) | ERP (aus dem ERP verschickt)
+  origin            String    @db.VarChar(8)
+  // Graph-Nachrichten-Id (je Postfach eindeutig) und RFC-Message-ID (mandanten-
+  // weit vergleichbar; verbindet die ERP-Sendung mit ihrer Kopie in "Gesendet").
+  providerMessageId String?   @db.VarChar(255)
+  internetMessageId String?   @db.VarChar(255)
+  conversationId    String?   @db.VarChar(255)
+  subject           String?   @db.VarChar(500)
+  fromName          String?   @db.VarChar(255)
+  fromAddress       String?   @db.VarChar(255)
+  // [{ name, address }]
+  toRecipients      Json
+  ccRecipients      Json?
+  bodyPreview       String?   @db.VarChar(512)
+  // Reiner Text (HTML wird beim Sync in Text gewandelt); gedeckelt auf 60 000
+  // Zeichen — Grunddaten, keine Archivkopie.
+  bodyText          String?   @db.Text
+  // Empfangs- (IN) bzw. Sendezeitpunkt (OUT).
+  sentAt            DateTime
+  hasAttachments    Boolean   @default(false)
+  // Nur Metadaten: [{ id, name, size, contentType }] — keine Inhalte.
+  attachments       Json?
+  // Link zur Nachricht in Outlook im Web.
+  webLink           String?   @db.Text
+  isRead            Boolean   @default(true)
+  // Kundenzuordnung + wie sie zustande kam:
+  //   AUTO_ADDRESS (Adresse eines Kunden/Ansprechpartners), AUTO_DOMAIN
+  //   (eindeutige Firmendomain), MANUAL (vom Benutzer), ERP (Sendung aus dem ERP)
+  customerId        String?
+  contactId         String?
+  matchSource       String?   @db.VarChar(16)
+  // Beleg, aus dem die ERP-Sendung entstand: TENDER | ORDER | INVOICE | PROJECT …
+  entityType        String?   @db.VarChar(24)
+  entityId          String?
+  entityLabel       String?   @db.VarChar(64)
+  // Die CustomerActivity (OFFER_MAIL_SENT/ORDER_MAIL_SENT), die dieselbe
+  // Sendung schon festhält — die Interaktionsliste blendet sie dann aus.
+  activityId        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  account  MailAccount?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  customer Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contact  CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@unique([accountId, providerMessageId])
+  @@index([tenantId, sentAt])
+  @@index([tenantId, customerId, sentAt])
+  @@index([tenantId, direction, sentAt])
+  @@index([tenantId, internetMessageId])
+  @@index([entityType, entityId])
+  @@index([activityId])
+  @@index([contactId])
+}

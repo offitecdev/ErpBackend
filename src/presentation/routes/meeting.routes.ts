@@ -2,6 +2,12 @@ import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
+import {
+    buildMeetingCancellation,
+    inviteFailureMessage,
+    queueMeetingCancellation,
+    sendMeetingInvite,
+} from '../../infrastructure/services/calendarMailService';
 
 /* Workspace "meeting activities" (meetings & lightweight tasks) shown on the CRM
    overview and the unified calendar. Participants mix staff and customers. */
@@ -17,7 +23,8 @@ const PARTICIPANT_INCLUDE = {
             customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
         },
     },
-    customer: { select: { id: true, companyName: true } },
+    // mainEmail: the To of «Besprechung senden» in the calendar detail popup.
+    customer: { select: { id: true, companyName: true, mainEmail: true } },
     createdBy: { select: { id: true, firstName: true, lastName: true } },
 };
 
@@ -107,6 +114,8 @@ router.post('/', requireAuth, async (req, res) => {
             },
             include: PARTICIPANT_INCLUDE,
         });
+        // KEINE Mail beim Anlegen (19.08.2026): die Einladung geht erst über
+        // POST /meetings/:id/send-invite raus, wenn jemand «Senden» drückt.
         res.status(201).json(meeting);
     } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -169,10 +178,36 @@ router.delete('/:id', requireAuth, async (req, res) => {
             where: { id: String(req.params.id || ''), tenantId: user.tenantId },
         });
         if (!existing) return res.status(404).json({ error: 'Aktivite bulunamadı.' });
+        const cancellation = await buildMeetingCancellation(existing.id);
         await (prisma as any).meetingActivity.delete({ where: { id: existing.id } });
+        queueMeetingCancellation(cancellation, user.id);
         res.status(200).json({ message: 'Aktivite silindi.' });
     } catch (error: any) {
         res.status(400).json({ error: error.message });
+    }
+});
+
+// POST /meetings/:id/send-invite — «Besprechung senden»: die Kalender-Einladung
+// mit den im Fenster bestätigten Adressen (An = Kunde, CC = Mitarbeitende).
+router.post('/:id/send-invite', requireAuth, async (req, res) => {
+    try {
+        const user = req.user!;
+        const existing = await (prisma as any).meetingActivity.findFirst({
+            where: { id: String(req.params.id || ''), tenantId: user.tenantId },
+            select: { id: true },
+        });
+        if (!existing) return res.status(404).json({ error: 'Aktivite bulunamadı.' });
+        const cc = Array.isArray(req.body?.cc) ? req.body.cc.map((value: unknown) => String(value ?? '')) : [];
+        const result = await sendMeetingInvite(existing.id, user.id, {
+            to: String(req.body?.to ?? ''),
+            cc,
+            subject: req.body?.subject ? String(req.body.subject) : null,
+            message: req.body?.message ? String(req.body.message) : null,
+        });
+        if (!result.sent) return res.status(400).json({ error: inviteFailureMessage(result) });
+        res.status(200).json({ sentAt: new Date().toISOString(), recipients: result.recipients });
+    } catch (error: any) {
+        res.status(error?.status || 400).json({ error: error.message });
     }
 });
 
