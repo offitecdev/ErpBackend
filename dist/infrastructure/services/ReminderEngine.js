@@ -135,12 +135,15 @@ const dueHits = async (candidates) => {
 const fireHits = async (hits) => {
     if (hits.length === 0)
         return;
+    // Ids vorab, damit die Verantwortlichen-Zeile (CrmTaskAssignee, seit
+    // 18.08.2026 die eigentliche Zuweisung) im selben Zug entsteht.
+    const taskRows = hits.map((hit) => ({ hit, id: (0, nanoid_1.nanoid)(12) }));
     await prisma_client_1.default.$transaction([
         prisma_client_1.default.crmTask.createMany({
-            data: hits.map((hit) => {
+            data: taskRows.map(({ hit, id }) => {
                 const daysLeft = (0, reminderSchedule_1.daysBetween)(hit.dueAt, hit.reference);
                 return {
-                    id: (0, nanoid_1.nanoid)(12),
+                    id,
                     tenantId: hit.tenantId,
                     kind: 'REMINDER',
                     title: fallbackTitle(hit, daysLeft),
@@ -160,6 +163,9 @@ const fireHits = async (hits) => {
                     },
                 };
             }),
+        }),
+        prisma_client_1.default.crmTaskAssignee.createMany({
+            data: taskRows.map(({ hit, id }) => ({ id: (0, nanoid_1.nanoid)(12), taskId: id, employeeId: hit.ownerEmployeeId })),
         }),
         prisma_client_1.default.reminderDispatch.createMany({
             data: hits.map((hit) => ({

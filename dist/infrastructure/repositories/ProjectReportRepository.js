@@ -28,6 +28,8 @@ const reportSaveSelect = {
     technicalNotes: true,
     isSigned: true,
     signedAt: true,
+    technicianSignature: true,
+    technicianSignedAt: true,
     hoursApprovedAt: true,
     hoursApprovedById: true,
     autoApproved: true,
@@ -178,14 +180,24 @@ class ProjectReportRepository {
             }
         });
     }
-    async signReport(reportId, signatureBase64) {
+    /**
+     * `role = 'TECHNICIAN'` legt die Unterschrift des ausführenden Technikers
+     * ab. Nur die KUNDENSIGNATUR setzt `isSigned` — daran hängen Abschluss und
+     * Benachrichtigungen.
+     */
+    async signReport(reportId, signatureBase64, role = 'CUSTOMER') {
         await prisma_client_1.default.projectReport.update({
             where: { id: reportId },
-            data: {
-                isSigned: true,
-                customerSignature: signatureBase64,
-                signedAt: new Date(),
-            }
+            data: role === 'TECHNICIAN'
+                ? {
+                    technicianSignature: signatureBase64,
+                    technicianSignedAt: new Date(),
+                }
+                : {
+                    isSigned: true,
+                    customerSignature: signatureBase64,
+                    signedAt: new Date(),
+                }
         });
     }
     async getReportsByProjectId(projectId) {

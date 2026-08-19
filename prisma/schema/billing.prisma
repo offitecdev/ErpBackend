@@ -23,7 +23,11 @@ model Invoice {
   commissionNumber   String?
   billedPercent      Float    @default(100)
   baseAmount         Float    @default(0) // order/project total this invoice was computed from
-  amount             Float    @default(0) // baseAmount * billedPercent / 100
+  // baseAmount * billedPercent / 100 — HARIC: hedefi %100'e tamamlayan
+  // fatura (RECHNUNG/SCHLUSS) kalan FRANKI alir, boylece faturalarin
+  // toplami sozlesme tutarina kurusu kurusuna oturur ve geriye 0.01 bile
+  // kalmaz (bkz. CreateInvoiceUseCase).
+  amount             Float    @default(0)
   status             String   @default("ISSUED") // ISSUED | PAID | CANCELLED
   notes              String?  @db.Text
   issuedByEmployeeId String

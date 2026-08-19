@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import prisma from "../database/prisma.client";
 import { getAddressBook, matchAddresses, normalizeAddress } from "./outlook/mailCustomerMatcher";
 import { clampBody, htmlToText, previewOf } from "./outlook/mailText";
+import { mainBodyOf, stripImagePlaceholders } from "./outlook/mailBodyParts";
 import { importCalendarObject } from "./calendarImportService";
 
 /**
@@ -47,11 +48,32 @@ import { importCalendarObject } from "./calendarImportService";
  * Löschen — das Postfach bleibt so, wie der Benutzer es in Outlook sieht.
  */
 
-const TICK_MS = 2 * 60_000;
+/* Alle drei Minuten (Vorgabe 19.08.2026). Der Durchgang ist billig gehalten —
+   er holt nur die Kopfzeilen der Nachrichten hinter dem Lesestand. */
+const TICK_MS = 3 * 60_000;
 /** Höchstens so viele Nachrichten pro Durchgang (Rest im nächsten Lauf). */
 const MAX_PER_RUN = 200;
-/** Erstlauf: so weit zurück, wie die Einstellung erlaubt. */
-const FIRST_RUN_LOOKBACK_DAYS = 30;
+/**
+ * DAS FENSTER DES POSTFACHS: die letzten ZWEI Monate (Vorgabe 19.08.2026).
+ *
+ * Es wandert mit dem Tag — am 19.08. reicht es bis zum 19.06., am 20.08. bis
+ * zum 20.06. Darum KALENDERMONATE und keine 60 Tage: sonst rutschte die Grenze
+ * je nach Monatslänge, und die Angabe im Postfach («letzte 2 Monate») wäre
+ * eine andere als die des Abrufs.
+ *
+ * Es gilt beim ERSTEN Durchgang und nach jedem Zurücksetzen des Lesestands —
+ * also auch, nachdem das Postfach gewechselt wurde. Danach läuft der Abruf am
+ * Lesestand weiter und sieht nur noch das Neue an; schon durchsuchte
+ * Nachrichten kosten keinen zweiten Blick.
+ */
+export const DEFAULT_WINDOW_MONTHS = 2;
+/** Erlaubt sind 1 und 2 — alles andere fällt auf die Vorgabe zurück. */
+export const normalizeWindowMonths = (value: unknown): number => (Number(value) === 1 ? 1 : DEFAULT_WINDOW_MONTHS);
+const lookbackStart = (months: number): Date => {
+    const since = new Date();
+    since.setMonth(since.getMonth() - normalizeWindowMonths(months));
+    return since;
+};
 
 export interface CaptureSummary {
     tenantId: string;
@@ -62,10 +84,24 @@ export interface CaptureSummary {
     /** Übernommene Kalender-Einladungen (angelegt/aktualisiert/abgesagt). */
     calendar: number;
     skipped: number;
+    /**
+     * Wie viele davon NUR am Schalter «nur Antworten übernehmen» gescheitert
+     * sind: Absender bekannt, aber die Nachricht ist keine Antwort auf eine
+     * ERP-Mail. Ohne diese Zahl meldet der Abruf «1 geprüft, 0 übernommen» und
+     * verschweigt, dass eine EINSTELLUNG das war und kein Fehler.
+     */
+    skippedRepliesOnly: number;
     error?: string;
     durationMs: number;
     /** Nur im Probelauf: was übernommen WÜRDE (Betreff + Grund). */
     preview?: Array<{ subject: string; from: string; reason: string; customerId: string | null }>;
+    /**
+     * Nur im Probelauf: die Absender, die an der Schranke gescheitert sind —
+     * ihre Adresse steht nicht im System. Das ist die Antwort auf die Frage,
+     * wegen der «Testen» gedrückt wird ("warum kam meine Mail nicht an?"):
+     * ohne diese Liste sieht man nur eine Zahl und rät, welche Adresse fehlt.
+     */
+    unknownSenders?: Array<{ address: string; count: number }>;
 }
 
 export interface CaptureOptions {
@@ -193,6 +229,35 @@ const findCalendarPart = (node: any): { part: string } | null => {
     return null;
 };
 
+/* Bekannte Namen des Gesendet-Ordners, falls der Server sein `\\Sent`-Merkmal
+   nicht meldet (dieselbe Liste wie in ImapMailService, um Mehrsprachigkeit
+   erweitert). */
+const SENT_FOLDER_NAMES = [
+    "sent", "sent items", "sent messages", "sent mail",
+    "inbox.sent", "inbox.sent items",
+    "gesendet", "gesendete elemente", "gesendete objekte",
+    "g\u00f6nderilmi\u015f \u00f6\u011feler", "giden",
+];
+
+/**
+ * Der Ordner mit der gesendeten Post. Reihenfolge: eingetragener Name →
+ * `\\Sent`-Merkmal des Servers → bekannte Namen. Nichts gefunden = null; der
+ * Durchgang liest dann eben nur den Posteingang.
+ */
+const resolveSentFolder = async (client: ImapFlow, configured: string | null | undefined): Promise<string | null> => {
+    const wanted = String(configured || "").trim();
+    if (wanted) return wanted;
+    try {
+        const boxes = (await client.list()) as Array<{ path?: string; specialUse?: string }>;
+        const special = boxes.find((box) => String(box.specialUse || "") === "\\Sent");
+        if (special?.path) return special.path;
+        const known = boxes.find((box) => SENT_FOLDER_NAMES.includes(String(box.path || "").toLowerCase()));
+        return known?.path || null;
+    } catch {
+        return null;
+    }
+};
+
 export const buildImapClient = (settings: CaptureSettings): ImapFlow => {
     const port = Number(settings.imapPort || 993);
     return new ImapFlow({
@@ -219,7 +284,7 @@ export const buildImapClient = (settings: CaptureSettings): ImapFlow => {
 export const captureInbox = async (tenantId: string, options: CaptureOptions = {}): Promise<CaptureSummary> => {
     const startedAt = Date.now();
     const dryRun = Boolean(options.dryRun);
-    const summary: CaptureSummary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, calendar: 0, skipped: 0, durationMs: 0 };
+    const summary: CaptureSummary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, calendar: 0, skipped: 0, skippedRepliesOnly: 0, durationMs: 0 };
     if (dryRun) summary.preview = [];
     if (running.has(tenantId)) {
         summary.error = "Abruf läuft bereits.";
@@ -233,7 +298,8 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
             select: {
                 tenantId: true, imapHost: true, imapPort: true, imapSecure: true, imapUser: true, imapPassword: true,
                 smtpUser: true, smtpPassword: true, fromEmail: true, imapInboxFolder: true,
-                imapCaptureRepliesOnly: true, imapUidValidity: true, imapLastUid: true,
+                imapCaptureRepliesOnly: true, imapUidValidity: true, imapLastUid: true, imapWindowMonths: true,
+                sentFolder: true, imapSentUidValidity: true, imapSentLastUid: true,
             },
         });
         if (!settings?.imapHost?.trim()) {
@@ -243,19 +309,68 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
 
         // Der Ordner-Umweg gilt NUR im Probelauf: sonst liefe der Lesestand
         // eines fremden Ordners in die Einstellung des Posteingangs.
-        const folder = (dryRun && options.folder?.trim()) || settings.imapInboxFolder?.trim() || "INBOX";
+        const inboxFolder = (dryRun && options.folder?.trim()) || settings.imapInboxFolder?.trim() || "INBOX";
         client = buildImapClient(settings as CaptureSettings);
         await client.connect();
+
+        /* ZWEI ORDNER, ZWEI LESESTÄNDE (Vorgabe 19.08.2026: «nicht nur was
+           hereinkommt, auch was wir schicken — es soll nicht lokal bleiben»).
+
+             Posteingang   direction IN  — die Gegenstelle ist der ABSENDER
+             Gesendet      direction OUT — die Gegenstelle sind die EMPFÄNGER
+
+           Der Gesendet-Ordner führt einen eigenen Lesestand: seine UIDs haben
+           mit denen des Posteingangs nichts zu tun. Was das ERP selbst
+           verschickt hat, steht schon als Zeile da und wird an der Message-ID
+           wiedererkannt — es entsteht kein Doppel.
+
+           Im Probelauf mit ausdrücklichem Ordner bleibt es bei diesem einen. */
+        type FolderJob = {
+            folder: string;
+            direction: "IN" | "OUT";
+            uidValidity: bigint | null;
+            lastUid: bigint | null;
+            cursorFields: (validity: bigint, uid: bigint) => Record<string, bigint>;
+        };
+        const jobs: FolderJob[] = [{
+            folder: inboxFolder,
+            direction: "IN",
+            uidValidity: settings.imapUidValidity ?? null,
+            lastUid: settings.imapLastUid ?? null,
+            cursorFields: (validity, uid) => ({ imapUidValidity: validity, imapLastUid: uid }),
+        }];
+        const sentFolder = (dryRun && options.folder?.trim())
+            ? null
+            : await resolveSentFolder(client, settings.sentFolder);
+        if (sentFolder && sentFolder.toLowerCase() !== inboxFolder.toLowerCase()) {
+            jobs.push({
+                folder: sentFolder,
+                direction: "OUT",
+                uidValidity: settings.imapSentUidValidity ?? null,
+                lastUid: settings.imapSentLastUid ?? null,
+                cursorFields: (validity, uid) => ({ imapSentUidValidity: validity, imapSentLastUid: uid }),
+            });
+        }
+
+        for (const job of jobs) {
         // Nur lesen: der Ordner wird schreibgeschützt geöffnet, damit der Abruf
         // keine Gelesen-Markierungen im Postfach des Benutzers setzt.
-        const lock = await client.getMailboxLock(folder, { readOnly: true });
+        let lock;
+        try {
+            lock = await client.getMailboxLock(job.folder, { readOnly: true });
+        } catch (error: any) {
+            // Ein fehlender oder anders benannter Ordner darf den anderen
+            // Durchgang nicht mitreißen — gemeldet, nicht geworfen.
+            console.error(`[MAIL-IN] Ordner ${job.folder} nicht lesbar:`, error?.message || error);
+            continue;
+        }
         try {
             const mailbox: any = client.mailbox;
             const uidValidity = BigInt(mailbox?.uidValidity ?? 0);
-            const knownValidity = settings.imapUidValidity ?? null;
+            const knownValidity = job.uidValidity;
             // Ordner neu aufgebaut (UIDVALIDITY geändert) → Lesestand verwerfen.
             const resetCursor = Boolean(options.reset) || (knownValidity !== null && knownValidity !== uidValidity);
-            let lastUid = resetCursor ? 0n : (settings.imapLastUid ?? 0n);
+            let lastUid = resetCursor ? 0n : (job.lastUid ?? 0n);
 
             let uids: number[] = [];
             if (lastUid > 0n) {
@@ -263,8 +378,8 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 // Manche Server geben bei `n:*` immer die letzte Nachricht zurück.
                 uids = (uids || []).filter((uid) => BigInt(uid) > lastUid);
             } else {
-                // Erstlauf: nur das Rückblickfenster, nicht das ganze Postfach.
-                const since = new Date(Date.now() - FIRST_RUN_LOOKBACK_DAYS * 86_400_000);
+                // Erstlauf: nur das eingestellte Fenster, nicht das ganze Postfach.
+                const since = lookbackStart(settings.imapWindowMonths);
                 uids = await client.search({ since }, { uid: true }) as unknown as number[];
                 uids = uids || [];
             }
@@ -344,18 +459,38 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                     employeeId: string | null;
                 };
                 const keepers: Keeper[] = [];
+                /* NUR im Probelauf: Nachrichten, die einzig am Schalter «nur
+                   Antworten übernehmen» scheitern. Der Absender steht im System,
+                   die Nachricht ist bloss keine Antwort auf eine ERP-Mail. Ohne
+                   diese Liste meldet «Testen» nur «1 geprüft, 0 übernommen» und
+                   verschweigt, dass eine EINSTELLUNG das war. */
+                const blockedByRepliesOnly: Candidate[] = [];
+                /* Ebenfalls nur im Probelauf: wer an der Schranke scheitert,
+                   nach Adresse gezählt. */
+                const unknown = new Map<string, number>();
                 for (const candidate of candidates) {
                     if (candidate.messageId && known.has(candidate.messageId)) { summary.skipped += 1; continue; }
 
-                    // ── SCHRANKE: Absender muss im System stehen ─────────────
+                    // ── SCHRANKE: die GEGENSTELLE muss im System stehen ─────────────
                     // Zuerst und für JEDE Nachricht. Ohne Treffer wird nichts
                     // gespeichert — auch keine Antwort und keine Einladung.
-                    const counterparts = [
-                        ...partiesOf(candidate.envelope?.from),
-                        ...partiesOf(candidate.envelope?.replyTo),
-                    ].map((p) => p.address).filter((address) => address && address !== own);
+                    /* Im Posteingang ist die Gegenstelle der ABSENDER, im
+                       Gesendet-Ordner sind es die EMPFÄNGER: dort sind WIR der
+                       Absender, und «schreibt uns jemand Bekanntes» hiesse dort
+                       «schreiben wir uns selbst». */
+                    const counterparts = (job.direction === "OUT"
+                        ? [...partiesOf(candidate.envelope?.to), ...partiesOf(candidate.envelope?.cc)]
+                        : [...partiesOf(candidate.envelope?.from), ...partiesOf(candidate.envelope?.replyTo)]
+                    ).map((p) => p.address).filter((address) => address && address !== own);
                     const hit = matchAddresses(book, counterparts);
-                    if (!hit) { summary.skipped += 1; continue; }
+                    if (!hit) {
+                        summary.skipped += 1;
+                        if (dryRun) {
+                            const address = counterparts[0] || "(ohne Absender)";
+                            unknown.set(address, (unknown.get(address) || 0) + 1);
+                        }
+                        continue;
+                    }
 
                     const calendarPart = findCalendarPart(candidate.bodyStructure)?.part ?? null;
 
@@ -380,7 +515,14 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
 
                     // (2) Sonst zählt der Adresstreffer selbst. Der strenge
                     // Modus lässt nur Antworten durch und endet hier.
-                    if (settings.imapCaptureRepliesOnly) { summary.skipped += 1; continue; }
+                    // «Nur Antworten» ist eine Regel gegen fremde Post im
+                    // Posteingang. Was WIR verschickt haben, ist nie fremd.
+                    if (job.direction === "IN" && settings.imapCaptureRepliesOnly) {
+                        summary.skipped += 1;
+                        summary.skippedRepliesOnly += 1;
+                        if (dryRun) blockedByRepliesOnly.push(candidate);
+                        continue;
+                    }
                     keepers.push({
                         ...candidate,
                         customerId: hit.customerId,
@@ -398,12 +540,26 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 }
 
                 if (dryRun) {
-                    summary.preview = keepers.slice(0, 25).map((keeper) => ({
-                        subject: String(keeper.envelope?.subject || "(kein Betreff)").slice(0, 120),
-                        from: partiesOf(keeper.envelope?.from)[0]?.address || "",
-                        reason: keeper.matchSource,
-                        customerId: keeper.customerId,
-                    }));
+                    summary.preview = [
+                        ...keepers.map((keeper) => ({
+                            subject: String(keeper.envelope?.subject || "(kein Betreff)").slice(0, 120),
+                            from: partiesOf(keeper.envelope?.from)[0]?.address || "",
+                            reason: keeper.matchSource,
+                            customerId: keeper.customerId,
+                        })),
+                        ...blockedByRepliesOnly.map((candidate) => ({
+                            subject: String(candidate.envelope?.subject || "(kein Betreff)").slice(0, 120),
+                            from: partiesOf(candidate.envelope?.from)[0]?.address || "",
+                            // Absender bekannt, Schalter im Weg — genau der Fall,
+                            // den man beim Testen sucht.
+                            reason: "BLOCKED_REPLIES_ONLY",
+                            customerId: null,
+                        })),
+                    ].slice(0, 25);
+                    summary.unknownSenders = Array.from(unknown.entries())
+                        .map(([address, count]) => ({ address, count }))
+                        .sort((a, b) => b.count - a.count)
+                        .slice(0, 40);
                     summary.stored = keepers.length;
                     summary.durationMs = Date.now() - startedAt;
                     return summary;
@@ -424,7 +580,9 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         const chunks: Buffer[] = [];
                         for await (const chunk of download.content as any) chunks.push(chunk as Buffer);
                         const decoded = Buffer.concat(chunks).toString("utf8");
-                        bodyText = clampBody(textPart?.isHtml ? htmlToText(decoded) : decoded.trim());
+                        // Bildplatzhalter ("[cid:…]", "[image: …]") sind Reste der
+                        // Umwandlung und sagen nichts — sie stünden sonst mitten im Satz.
+                        bodyText = clampBody(stripImagePlaceholders(textPart?.isHtml ? htmlToText(decoded) : decoded.trim()));
                     } catch (error: any) {
                         console.error(`[MAIL-IN] Rumpf ${keeper.uid} nicht lesbar:`, error?.message || error);
                     }
@@ -442,11 +600,11 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         // die Zeile gehört dem Kunden, nicht einer Person.
                         accountId: null,
                         employeeId: keeper.employeeId,
-                        direction: "IN",
+                        direction: job.direction,
                         origin: "IMAP",
                         // Ordner + UID: damit ein Anhang später gezielt vom Server
                         // geladen werden kann, ohne ihn je zu speichern.
-                        providerMessageId: `${folder}:${uidValidity}:${keeper.uid}`,
+                        providerMessageId: `${job.folder}:${uidValidity}:${keeper.uid}`,
                         internetMessageId: keeper.messageId,
                         conversationId: keeper.refs[0] || keeper.messageId,
                         subject: String(keeper.envelope?.subject || "").slice(0, 500) || null,
@@ -454,13 +612,20 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         fromAddress: from?.address?.slice(0, 255) || null,
                         toRecipients: to as unknown as Prisma.InputJsonValue,
                         ccRecipients: cc.length ? (cc as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
-                        bodyPreview: previewOf(bodyText, 500),
+                        /* Die VORSCHAU kommt aus dem neuen Teil der Nachricht:
+                           bei einem "RE:" hängt der ganze Verlauf mit dran, und
+                           in der Liste stünde sonst der Anfang eines alten
+                           Zitats statt dessen, was gerade geschrieben wurde.
+                           Der volle Text bleibt gespeichert — der Lesebereich
+                           zerlegt ihn beim Anzeigen. */
+                        bodyPreview: previewOf(mainBodyOf(bodyText) || bodyText, 500),
                         bodyText,
                         sentAt: Number.isNaN(sentAt.getTime()) ? new Date() : sentAt,
                         hasAttachments: attachments.length > 0,
                         attachments: attachments.length ? (attachments as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
                         webLink: null,
-                        isRead: false,
+                        // Was wir selbst verschickt haben, ist gelesen.
+                        isRead: job.direction === "OUT",
                         customerId: keeper.customerId,
                         contactId: keeper.contactId,
                         matchSource: keeper.matchSource === "REPLY" ? "REPLY" : keeper.matchSource,
@@ -501,21 +666,23 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 lastUid = BigInt(highestUid);
                 await prisma.mailSetting.update({
                     where: { tenantId },
-                    data: { imapUidValidity: uidValidity, imapLastUid: lastUid },
+                    data: job.cursorFields(uidValidity, lastUid),
                 });
-            } else if (!dryRun && (resetCursor || settings.imapUidValidity === null)) {
+            } else if (!dryRun && (resetCursor || job.uidValidity === null)) {
                 await prisma.mailSetting.update({
                     where: { tenantId },
-                    data: { imapUidValidity: BigInt((client.mailbox as any)?.uidValidity ?? 0), imapLastUid: 0n },
+                    data: job.cursorFields(BigInt((client.mailbox as any)?.uidValidity ?? 0), 0n),
                 });
             }
         } finally {
             lock.release();
         }
+        }
 
         summary.durationMs = Date.now() - startedAt;
         if (dryRun) return summary;
-        const text = `${summary.examined} geprüft, ${summary.stored} übernommen (${summary.replies} Antworten, ${summary.byAddress} bekannte Adressen, ${summary.calendar} Termine), ${summary.skipped} übersprungen`;
+        const text = `${summary.examined} geprüft, ${summary.stored} übernommen (${summary.replies} Antworten, ${summary.byAddress} bekannte Adressen, ${summary.calendar} Termine), ${summary.skipped} übersprungen`
+            + (summary.skippedRepliesOnly > 0 ? ` — davon ${summary.skippedRepliesOnly} nur wegen «nur Antworten»` : "");
         await prisma.mailSetting.update({
             where: { tenantId },
             data: { imapLastSyncAt: new Date(), imapLastSummary: text.slice(0, 255), imapLastError: null },

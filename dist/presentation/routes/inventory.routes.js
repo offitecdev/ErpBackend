@@ -18,6 +18,9 @@ const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const postalAddress_1 = require("../../shared/postalAddress");
 const articleImage_1 = require("../../shared/articleImage");
 const richText_1 = require("../../shared/richText");
+// Mengeneinheiten: der Artikel traegt den kurzen Code als Text, gewaehlt wird
+// aber aus der Liste des Mandanten (Einstellungen -> Module -> Lager).
+const measurementUnitCatalog_1 = require("../../application/services/measurementUnitCatalog");
 const nanoid_1 = require("nanoid");
 /** Tedarikçi adresinin ayrı bileşenleri (tek serbest metin alanı yoktur). */
 const SUPPLIER_ADDRESS_FIELDS = ['address', 'addressSupplement', 'postalCode', 'city', 'state', 'country'];
@@ -499,7 +502,9 @@ router.patch('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             const unit = String(body.unit).trim();
             if (!unit)
                 return res.status(400).json({ error: 'Birim zorunludur.' });
-            data.unit = unit;
+            // Die Liste entscheidet ueber die Schreibweise: "stk" wird zu "Stk",
+            // damit derselbe Bestand nicht in mehreren Einheiten auseinanderlaeuft.
+            data.unit = (0, measurementUnitCatalog_1.resolveUnit)(unit, await (0, measurementUnitCatalog_1.listUnits)(tenantId));
         }
         if (body.salePrice !== undefined) {
             const salePrice = Number(body.salePrice);
@@ -1461,13 +1466,16 @@ const bulkCreateArticlesHandler = (options = {}) => async (req, res) => {
         // Birbirinden bağımsız hazırlık sorguları aynı anda çalışır. Uzak DB'de
         // bunları art arda beklemek toplu kayda gereksiz üç ağ turu ekliyordu.
         const supplierCache = new Map();
-        const [existing, defaultLocation, invalidSupplierIds] = await Promise.all([
+        const [existing, defaultLocation, invalidSupplierIds, units] = await Promise.all([
             prisma_client_1.default.article.findMany({
                 where: { tenantId, articleCode: { in: [...seenCodes.keys()] } },
                 select: { id: true, articleCode: true, deletedAt: true, itemType: true },
             }),
             repository.ensureDefaultLocation(tenantId),
             warmSupplierCache(tenantId, items, supplierCache),
+            // Die Einheitenliste des Mandanten: sie gibt die Schreibweise vor
+            // und liefert die Vorgabe fuer Zeilen ohne eigene Einheit.
+            (0, measurementUnitCatalog_1.listUnits)(tenantId),
         ]);
         const existingCodes = new Map(existing.map((row) => [row.articleCode, { id: row.id, deleted: Boolean(row.deletedAt), itemType: row.itemType || 'PRODUCT' }]));
         const clashMessage = (info) => info.deleted ? 'Bu kod çöpteki bir üründe kayıtlı.' : 'Bu kod zaten bir üründe kayıtlı.';
@@ -1524,7 +1532,7 @@ const bulkCreateArticlesHandler = (options = {}) => async (req, res) => {
                         articleCode,
                         data: {
                             name,
-                            ...(item.unit ? { unit: String(item.unit).trim() } : {}),
+                            ...(item.unit ? { unit: (0, measurementUnitCatalog_1.resolveUnit)(item.unit, units) } : {}),
                             ...(purchasePrice > 0 ? { baseCost: purchasePrice } : {}),
                             ...(salePrice > 0 ? { salePrice } : {}),
                             ...(supplier ? { defaultSupplierId: supplier.id } : {}),
@@ -1547,7 +1555,9 @@ const bulkCreateArticlesHandler = (options = {}) => async (req, res) => {
                     tenantId,
                     articleCode,
                     name,
-                    unit: item.unit ? String(item.unit).trim() : 'Adet',
+                    // Ohne eigene Angabe: die Vorgabe des Mandanten (frueher
+                    // stand hier fest "Adet" -- tuerkisch und nicht waehlbar).
+                    unit: (0, measurementUnitCatalog_1.resolveUnit)(item.unit, units),
                     baseCost: purchasePrice,
                     salePrice,
                     defaultSupplierId: supplier?.id || null,

@@ -4,8 +4,8 @@ import { MODULE_CATALOG } from './moduleCatalog';
  * ── SEITENKATALOG (Rollenvorlagen, 17.08.2026) ───────────────────────────────
  *
  * Die Berechtigungstabelle einer Rolle steht MODUL für MODUL und SEITE für
- * SEITE (Vorgabe): fünf aktive Module — Personal, CRM, Verkauf, Projekte,
- * Lager — und darunter die einzelnen Seiten, jede mit EINER Stufe:
+ * SEITE (Vorgabe): sechs aktive Module — Personal, CRM, Verkauf, Projekte,
+ * Montage, Lager — und darunter die einzelnen Seiten, jede mit EINER Stufe:
  *
  *   Stufe 0 = kein Zugriff  → die Seite erscheint für die Rolle gar nicht
  *   Stufe 1 = ansehen       → read
@@ -253,6 +253,39 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
         ],
     },
     {
+        // ── MONTAGE (Technikerarbeitsplatz) ─────────────────────────────────
+        // Eigene Zeile, kein Anhängsel der Projektverwaltung: der Techniker
+        // arbeitet AUSSCHLIESSLICH in /montage (eigene Termine, Rapporte,
+        // Übergaben) und darf dafür nicht die ganze Projektliste des Büros
+        // bekommen. Genau daran fehlte es bis 19.08.2026: `projects.report`
+        // war nur über die Seite "Projektverwaltung" auf Stufe 2 zu haben, also
+        // hatte eine hier gebaute Technikerrolle das Recht nie — jeder Aufruf
+        // aus /montage lief in "Erisim Engellendi ... projects.report".
+        //
+        // Stufe 1 = die eigenen Montagen und Rapporte ANSEHEN, Stufe 2 = sie
+        // ausfüllen, unterschreiben, abschliessen und Zusatzmaterial anfordern.
+        // Die Technikerendpunkte sind auf die anfragende Person eingeschränkt,
+        // darum genügt dort das Leserecht der Projekte.
+        key: 'montage',
+        labelKey: 'nav.montage',
+        catalogKeys: ['projects'],
+        pages: [
+            {
+                key: 'montage.workspace',
+                path: '/montage',
+                labelKey: 'nav.montageWorkspace',
+                maxLevel: 2,
+                grants: {
+                    read: ['projects.view'],
+                    // EIN Name (nicht mehr): so erkennt `pageLevelsFromPermissions`
+                    // die Altrollen der Techniker (projects.view + projects.report)
+                    // wieder als Stufe 2 statt sie auf "ansehen" zurückzusetzen.
+                    write: ['projects.report'],
+                },
+            },
+        ],
+    },
+    {
         key: 'inventory',
         labelKey: 'nav.inventory',
         catalogKeys: ['inventory'],
@@ -329,6 +362,21 @@ export const permissionsForPage = (pageKey: string, level: PageLevel): string[] 
     if (level >= 3) names.push(...(page.grants.delete ?? []));
     return names;
 };
+
+/**
+ * JEDER Rechtename, den dieser Katalog überhaupt vergeben kann. Beim Speichern
+ * einer Rolle darf nur INNERHALB dieser Menge weggenommen werden: Rechte, für
+ * die es keine Seitenzeile gibt (Wartung, Regie, Logistik, Arbeitsaufträge,
+ * Verwaltung), stehen nicht in der Tabelle und dürfen deshalb auch nicht still
+ * verschwinden, sobald jemand die Tabelle speichert.
+ */
+export const CATALOG_GRANTED_PERMISSION_NAMES: ReadonlySet<string> = new Set(
+    ALL_PAGES.flatMap((page) => [
+        ...(page.grants.read ?? []),
+        ...(page.grants.write ?? []),
+        ...(page.grants.delete ?? []),
+    ]),
+);
 
 /** Die vollständige Rechtemenge einer Stufenkarte. */
 export const permissionsForPageLevels = (levels: Record<string, PageLevel>): string[] => {

@@ -5,8 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GetBillingSummaryUseCase = void 0;
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const billingRounding_1 = require("../../utils/billingRounding");
 const paymentSchedule_1 = require("../../utils/paymentSchedule");
-const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
 class GetBillingSummaryUseCase {
     invoiceRepository;
     constructor(invoiceRepository) {
@@ -88,16 +88,20 @@ class GetBillingSummaryUseCase {
     }
     buildSummary(baseAmount, invoices, paymentStagesRaw) {
         const active = invoices.filter((inv) => inv.status !== "CANCELLED");
-        const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
-        const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
+        const billedPercent = (0, billingRounding_1.round2)(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
+        const billedAmount = (0, billingRounding_1.round2)(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
         const paid = active.filter((inv) => inv.status === "PAID");
-        const paidPercent = round2(paid.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
-        const paidAmount = round2(paid.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
-        const remainingPercent = round2(Math.max(0, 100 - billedPercent));
-        const remainingAmount = round2(Math.max(0, baseAmount - billedAmount));
+        const paidPercent = (0, billingRounding_1.round2)(paid.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
+        const paidAmount = (0, billingRounding_1.round2)(paid.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
+        const remainingPercent = (0, billingRounding_1.round2)(Math.max(0, 100 - billedPercent));
+        // %100 faturalandırılmış bir hedefte AÇIK BAKİYE KALMAZ — 0.01 bile
+        // (Vorgabe 19.08.2026). Kalan kuruş, her faturanın tutarı ayrı ayrı
+        // yuvarlandığı için oluşan yuvarlama tozudur; `openAmount` onu sıfırlar,
+        // gerçek bir fark (sipariş toplamı sonradan büyüdüyse) olduğu gibi kalır.
+        const remainingAmount = Math.max(0, (0, billingRounding_1.openAmount)(billedPercent, baseAmount, billedAmount));
         const paymentStages = (0, paymentSchedule_1.parsePaymentStages)(paymentStagesRaw);
         return {
-            baseAmount: round2(baseAmount),
+            baseAmount: (0, billingRounding_1.round2)(baseAmount),
             billedPercent,
             billedAmount,
             paidPercent,

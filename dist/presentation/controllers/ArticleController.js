@@ -4,6 +4,9 @@ exports.ArticleController = void 0;
 const nanoid_1 = require("nanoid");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const richText_1 = require("../../shared/richText");
+// Mengeneinheit: der Artikel traegt den kurzen Code, gewaehlt wird aus der
+// Liste des Mandanten (Einstellungen -> Module -> Lager -> Einheiten).
+const measurementUnitCatalog_1 = require("../../application/services/measurementUnitCatalog");
 const dangerGate_1 = require("../utils/dangerGate");
 class ArticleController {
     articleRepository;
@@ -79,7 +82,7 @@ class ArticleController {
                 baseCost: Number(baseCost ?? 0),
                 salePrice: Number(salePrice ?? 0),
                 defaultSupplierId: defaultSupplierId ?? null,
-                unit,
+                unit: (0, measurementUnitCatalog_1.resolveUnit)(unit, await (0, measurementUnitCatalog_1.listUnits)(tenantId)),
                 // Açıklama biçimli metindir (kalın/italik/madde) — dar beyaz listeden geçer.
                 description: (0, richText_1.normalizeRichText)(description),
                 systemBarcode: systemBarcode ?? null,
@@ -113,6 +116,10 @@ class ArticleController {
             delete patch.mappingId;
             if ('description' in patch)
                 patch.description = (0, richText_1.normalizeRichText)(patch.description);
+            // Einheit: die Liste des Mandanten gibt die Schreibweise vor.
+            if (patch.unit != null) {
+                patch.unit = (0, measurementUnitCatalog_1.resolveUnit)(patch.unit, await (0, measurementUnitCatalog_1.listUnits)(req.user.tenantId));
+            }
             if (patch.baseCost != null)
                 patch.baseCost = Number(patch.baseCost);
             if (patch.salePrice != null)

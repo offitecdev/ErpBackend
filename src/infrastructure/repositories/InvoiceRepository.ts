@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../database/prisma.client";
 import { Invoice, InvoiceStatus } from "../../domain/entities/Invoice";
-import { IInvoiceFilter, IInvoiceRepository, InvoiceLineItemInput, InvoiceSummaryRow } from "../../domain/repositories/IInvoiceRepository";
+import { BilledSoFar, IInvoiceFilter, IInvoiceRepository, InvoiceLineItemInput, InvoiceSummaryRow } from "../../domain/repositories/IInvoiceRepository";
 
 const invoiceInclude = {
     lineItems: true,
@@ -175,20 +175,25 @@ export class InvoiceRepository implements IInvoiceRepository {
         return (prisma as any).invoice.count({ where: { tenantId } });
     }
 
-    private async sumBilledPercent(where: any): Promise<number> {
+    // Yüzde ve tutar AYNI toplama sorgusundan gelir — kapanış faturası kalan
+    // frankı kuruşu kuruşuna alacağı için ikisine de ihtiyaç var, ek tur yok.
+    private async sumBilled(where: any): Promise<BilledSoFar> {
         const agg = await (prisma as any).invoice.aggregate({
             where: { ...where, status: { not: "CANCELLED" } },
-            _sum: { billedPercent: true },
+            _sum: { billedPercent: true, amount: true },
         });
-        return Number(agg?._sum?.billedPercent || 0);
+        return {
+            percent: Number(agg?._sum?.billedPercent || 0),
+            amount: Number(agg?._sum?.amount || 0),
+        };
     }
 
-    async sumBilledPercentForOrder(salesOrderId: string): Promise<number> {
-        return this.sumBilledPercent({ salesOrderId });
+    async sumBilledForOrder(salesOrderId: string): Promise<BilledSoFar> {
+        return this.sumBilled({ salesOrderId });
     }
 
-    async sumBilledPercentForProject(projectId: string): Promise<number> {
-        return this.sumBilledPercent({ projectId });
+    async sumBilledForProject(projectId: string): Promise<BilledSoFar> {
+        return this.sumBilled({ projectId });
     }
 
     async updateStatus(id: string, tenantId: string, status: InvoiceStatus): Promise<Invoice> {

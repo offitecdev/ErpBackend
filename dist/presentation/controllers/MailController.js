@@ -8,7 +8,50 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const nanoid_1 = require("nanoid");
-const smtp = new SmtpMailService_1.SmtpMailService();
+const NodemailerTransport_1 = require("../../infrastructure/services/NodemailerTransport");
+const MailDispatchService_1 = require("../../infrastructure/services/outlook/MailDispatchService");
+const ImapCaptureService_1 = require("../../infrastructure/services/ImapCaptureService");
+// Der eigentliche Versand läuft über dispatchMail (Outlook-Postfach des
+// Benutzers, sonst SMTP); die Klasse bleibt für die Typen importiert.
+void SmtpMailService_1.SmtpMailService;
+/** Antwortform der Einstellungen: Geheimnisse nie, nur "ist gesetzt". */
+/**
+ * DIE KENNUNG EINES POSTFACHS — Server plus Postfachadresse. Ändert sie sich,
+ * ist es ein ANDERES Postfach, und die gespeicherten Nachrichten des alten
+ * gehören nicht mehr hierher (Vorgabe 19.08.2026: «wird das Konto gewechselt,
+ * sollen die alten Nachrichten verschwinden»).
+ *
+ * Dieselbe Adresse wie in `inboxStatus`: IMAP-Benutzer, sonst SMTP-Benutzer,
+ * sonst die Absenderadresse.
+ */
+const mailboxIdentity = (host, imapUser, smtpUser, fromEmail) => {
+    const clean = (value) => String(value || "").trim().toLowerCase();
+    const box = clean(imapUser) || clean(smtpUser) || clean(fromEmail);
+    return box ? `${clean(host)}|${box}` : "";
+};
+const settingsDto = (settings) => ({
+    ...settings,
+    smtpPassword: undefined,
+    imapPassword: undefined,
+    // Die Spalten der ausgemusterten Microsoft-Anbindung bleiben in der
+    // Tabelle, gehen die Oberflaeche aber nichts mehr an.
+    msClientId: undefined,
+    msClientSecret: undefined,
+    msTenantId: undefined,
+    msSyncDays: undefined,
+    /* DIE LESESTÄNDE MÜSSEN HIER RAUS — und zwar ALLE. Es sind BigInt-Spalten,
+       und `JSON.stringify` kennt BigInt nicht ("Do not know how to serialize a
+       BigInt"). Der Fehler fällt nicht dort auf, wo er entsteht: er fliegt beim
+       Senden der Antwort, wird vom catch des Endpunkts geschluckt und kommt als
+       400 zurück — als wäre die EINGABE falsch. Wer hier eine Spalte ergänzt,
+       ergänzt sie also auch in dieser Liste. Die Oberfläche braucht keine davon. */
+    imapUidValidity: undefined,
+    imapLastUid: undefined,
+    imapSentUidValidity: undefined,
+    imapSentLastUid: undefined,
+    hasPassword: Boolean(settings.smtpPassword),
+    hasImapPassword: Boolean(settings.imapPassword),
+});
 class MailController {
     async getSettings(req, res) {
         try {
@@ -32,17 +75,17 @@ class MailController {
                     saveToSent: true,
                     signatureHtml: null,
                     signatureImage: null,
+                    imapCaptureEnabled: false,
+                    imapInboxFolder: null,
+                    imapCaptureRepliesOnly: false,
+                    imapLastSyncAt: null,
+                    imapLastSummary: null,
+                    imapLastError: null,
                     hasPassword: false,
-                    hasImapPassword: false
+                    hasImapPassword: false,
                 });
             }
-            res.status(200).json({
-                ...settings,
-                smtpPassword: undefined,
-                imapPassword: undefined,
-                hasPassword: Boolean(settings.smtpPassword),
-                hasImapPassword: Boolean(settings.imapPassword)
-            });
+            res.status(200).json(settingsDto(settings));
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -127,9 +170,47 @@ class MailController {
                     signatureImage = `data:${parsed.contentType};base64,${parsed.contentBase64}`;
                 }
             }
+            // POSTEINGANG DES EIGENEN SERVERS: Schalter des IMAP-Abrufs. Nicht
+            // gesendete Felder bleiben unangetastet (Teilspeicherungen sollen
+            // den Abruf nicht heimlich abschalten).
+            const captureFields = {
+                imapCaptureEnabled: body.imapCaptureEnabled === undefined
+                    ? existing?.imapCaptureEnabled ?? false
+                    : Boolean(body.imapCaptureEnabled),
+                imapInboxFolder: body.imapInboxFolder === undefined
+                    ? existing?.imapInboxFolder ?? null
+                    : String(body.imapInboxFolder || "").trim() || null,
+                imapCaptureRepliesOnly: body.imapCaptureRepliesOnly === undefined
+                    ? existing?.imapCaptureRepliesOnly ?? false
+                    : Boolean(body.imapCaptureRepliesOnly),
+                // Wie weit das Postfach zurückreicht: 1 oder 2 Monate.
+                imapWindowMonths: body.imapWindowMonths === undefined
+                    ? (0, ImapCaptureService_1.normalizeWindowMonths)(existing?.imapWindowMonths)
+                    : (0, ImapCaptureService_1.normalizeWindowMonths)(body.imapWindowMonths),
+            };
+            /* Wird das Postfach GEWECHSELT, verschwinden die Nachrichten des
+               alten mit ihm — sie gehören zu einem Konto, das dieses Haus nicht
+               mehr liest. Verglichen werden die Werte, die GESPEICHERT werden
+               (Teilspeicherungen erben die übrigen aus `existing`), nicht die
+               rohen Felder des Formulars.
+
+               Der Lesestand fällt dabei mit: die UIDs des neuen Servers haben
+               mit den alten nichts zu tun, und ohne Zurücksetzen bliebe der
+               erste Durchgang stumm. Danach liest der Abruf den letzten Monat
+               des neuen Postfachs von vorn. */
+            const previousIdentity = mailboxIdentity(existing?.imapHost, existing?.imapUser, existing?.smtpUser, existing?.fromEmail);
+            const nextIdentity = mailboxIdentity(imapFields.imapHost, imapFields.imapUser, String(body.smtpUser || "").trim() || null, body.fromEmail || null);
+            const mailboxChanged = Boolean(previousIdentity) && previousIdentity !== nextIdentity;
+            let purgedMessages = 0;
+            if (mailboxChanged) {
+                const removed = await prisma_client_1.default.mailMessage.deleteMany({ where: { tenantId } });
+                purgedMessages = removed.count;
+                console.log(`[MAIL] Postfachwechsel ${previousIdentity} → ${nextIdentity}: ${purgedMessages} Nachricht(en) entfernt.`);
+            }
             const settings = await prisma_client_1.default.mailSetting.upsert({
                 where: { tenantId },
                 update: {
+                    ...captureFields,
                     fromName: body.fromName || null,
                     fromEmail: body.fromEmail || null,
                     replyTo: body.replyTo || null,
@@ -139,12 +220,16 @@ class MailController {
                     smtpUser: String(body.smtpUser || "").trim() || null,
                     smtpPassword: password,
                     ...imapFields,
+                    ...(mailboxChanged
+                        ? { imapUidValidity: null, imapLastUid: 0n, imapLastSyncAt: null, imapLastSummary: null, imapLastError: null }
+                        : {}),
                     signatureHtml,
                     signatureImage
                 },
                 create: {
                     id: (0, nanoid_1.nanoid)(8),
                     tenantId,
+                    ...captureFields,
                     fromName: body.fromName || null,
                     fromEmail: body.fromEmail || null,
                     replyTo: body.replyTo || null,
@@ -158,13 +243,12 @@ class MailController {
                     signatureImage
                 }
             });
-            res.status(200).json({
-                ...settings,
-                smtpPassword: undefined,
-                imapPassword: undefined,
-                hasPassword: Boolean(settings.smtpPassword),
-                hasImapPassword: Boolean(settings.imapPassword)
-            });
+            // Geänderte Zugangsdaten dürfen nicht in einem Verbindungspool
+            // weiterleben: der nächste Versand baut die Verbindung neu auf.
+            (0, NodemailerTransport_1.resetTransporters)();
+            // `purgedMessages` sagt der Oberfläche, was der Wechsel gekostet hat —
+            // eine stille Löschung wäre eine böse Überraschung.
+            res.status(200).json({ ...settingsDto(settings), purgedMessages });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -188,12 +272,28 @@ class MailController {
             if (!to || !subject || (!text && !html)) {
                 return res.status(400).json({ error: "Alıcı, konu ve mesaj zorunludur." });
             }
-            // Bu uç nokta manuel/test gönderimidir: SMTP tanımlı değilse mail
-            // GERÇEKTEN gitmez, bu yüzden "önizleme" sessizce başarı sayılmaz.
+            // Bu uç nokta manuel/test gönderimidir: mail YALNIZCA firmanın kendi
+            // SMTP sunucusundan çıkar. Sunucu tanımlı değilse mail GERÇEKTEN
+            // gitmez, bu yüzden "önizleme" sessizce başarı sayılmaz.
             if (!settings?.smtpHost || !settings?.smtpPort) {
                 return res.status(400).json({
                     error: "SMTP sunucusu tanimli degil: mail gonderilmedi. Once SMTP sunucusu, port ve (gerekiyorsa) kullanici/sifre bilgilerini kaydedin.",
+                    code: "no_transport",
                 });
+            }
+            // Kundenbezug (optional): landet als MailMessage in der Kundenkommunikation.
+            let record = null;
+            if (body.customerId) {
+                const customer = await prisma_client_1.default.customer.findFirst({ where: { id: String(body.customerId), tenantId }, select: { id: true } });
+                if (customer) {
+                    record = {
+                        customerId: customer.id,
+                        contactId: body.contactId ? String(body.contactId) : null,
+                        entityType: body.entityType ? String(body.entityType).toUpperCase().slice(0, 24) : null,
+                        entityId: body.entityId ? String(body.entityId) : null,
+                        entityLabel: body.entityLabel ? String(body.entityLabel).slice(0, 64) : null,
+                    };
+                }
             }
             // Tenant imzası varsa gövdenin sonuna eklenir; görseli CID'li inline
             // ek olarak gider (test maili de gerçek gönderimle aynı görünür).
@@ -202,7 +302,7 @@ class MailController {
                 ? `${html || `<pre>${String(text || "")}</pre>`}${signature.html}`
                 : html;
             const textWithSignature = text && signature.text ? `${text}${signature.text}` : text;
-            const result = await smtp.send(settings || {}, {
+            const result = await (0, MailDispatchService_1.dispatchMail)({ tenantId, employeeId: req.user.id }, settings, {
                 fromEmail,
                 fromName,
                 to,
@@ -218,6 +318,7 @@ class MailController {
                 // ("kopya klasöre yazıldı / yazılamadı"), bu yüzden burada —
                 // ve yalnızca burada — kopya beklenir.
                 waitForSentCopy: true,
+                record,
             });
             res.status(200).json({
                 message: `Mail gonderildi: ${to}`,

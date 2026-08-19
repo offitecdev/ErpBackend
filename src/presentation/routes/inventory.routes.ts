@@ -13,6 +13,9 @@ import { buildSignatureParts } from '../../infrastructure/services/mailSignature
 import { composeAddressSnapshot } from '../../shared/postalAddress';
 import { parseArticleImage } from '../../shared/articleImage';
 import { normalizeRichText } from '../../shared/richText';
+// Mengeneinheiten: der Artikel traegt den kurzen Code als Text, gewaehlt wird
+// aber aus der Liste des Mandanten (Einstellungen -> Module -> Lager).
+import { listUnits, resolveUnit } from '../../application/services/measurementUnitCatalog';
 import { nanoid } from 'nanoid';
 
 /** Tedarikçi adresinin ayrı bileşenleri (tek serbest metin alanı yoktur). */
@@ -580,7 +583,9 @@ router.patch(
             if (body.unit !== undefined) {
                 const unit = String(body.unit).trim();
                 if (!unit) return res.status(400).json({ error: 'Birim zorunludur.' });
-                data.unit = unit;
+                // Die Liste entscheidet ueber die Schreibweise: "stk" wird zu "Stk",
+                // damit derselbe Bestand nicht in mehreren Einheiten auseinanderlaeuft.
+                data.unit = resolveUnit(unit, await listUnits(tenantId));
             }
 
             if (body.salePrice !== undefined) {
@@ -1657,13 +1662,16 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
             // Birbirinden bağımsız hazırlık sorguları aynı anda çalışır. Uzak DB'de
             // bunları art arda beklemek toplu kayda gereksiz üç ağ turu ekliyordu.
             const supplierCache: SupplierCache = new Map();
-            const [existing, defaultLocation, invalidSupplierIds] = await Promise.all([
+            const [existing, defaultLocation, invalidSupplierIds, units] = await Promise.all([
                 (prisma as any).article.findMany({
                     where: { tenantId, articleCode: { in: [...seenCodes.keys()] } },
                     select: { id: true, articleCode: true, deletedAt: true, itemType: true },
                 }),
                 repository.ensureDefaultLocation(tenantId),
                 warmSupplierCache(tenantId, items, supplierCache),
+                // Die Einheitenliste des Mandanten: sie gibt die Schreibweise vor
+                // und liefert die Vorgabe fuer Zeilen ohne eigene Einheit.
+                listUnits(tenantId),
             ]);
             const existingCodes = new Map<string, { id: string; deleted: boolean; itemType: string }>(
                 existing.map((row: any) => [row.articleCode, { id: row.id, deleted: Boolean(row.deletedAt), itemType: row.itemType || 'PRODUCT' }]),
@@ -1720,7 +1728,7 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
                             articleCode,
                             data: {
                                 name,
-                                ...(item.unit ? { unit: String(item.unit).trim() } : {}),
+                                ...(item.unit ? { unit: resolveUnit(item.unit, units) } : {}),
                                 ...(purchasePrice > 0 ? { baseCost: purchasePrice } : {}),
                                 ...(salePrice > 0 ? { salePrice } : {}),
                                 ...(supplier ? { defaultSupplierId: supplier.id } : {}),
@@ -1745,7 +1753,9 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
                         tenantId,
                         articleCode,
                         name,
-                        unit: item.unit ? String(item.unit).trim() : 'Adet',
+                        // Ohne eigene Angabe: die Vorgabe des Mandanten (frueher
+                        // stand hier fest "Adet" -- tuerkisch und nicht waehlbar).
+                        unit: resolveUnit(item.unit, units),
                         baseCost: purchasePrice,
                         salePrice,
                         defaultSupplierId: supplier?.id || null,

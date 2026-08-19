@@ -42,6 +42,13 @@ export interface DispatchRecord {
     entityId?: string | null;
     entityLabel?: string | null;
     activityId?: string | null;
+    /**
+     * Woher die Zuordnung stammt. Ohne Angabe: "ERP", sobald ein Kunde
+     * dranhängt, sonst nichts. Die Kalendermeldungen ans eigene Team setzen
+     * hier "CALENDAR" — sie haben keinen Kunden, sind aber trotzdem zugeordnet
+     * und sollen in der Liste nicht als «nicht zugeordnet» erscheinen.
+     */
+    matchSource?: string | null;
 }
 
 export interface DispatchOptions {
@@ -119,7 +126,7 @@ const recordMessage = async (
             isRead: true,
             customerId: record.customerId || null,
             contactId,
-            matchSource: record.customerId ? "ERP" : null,
+            matchSource: record.matchSource ?? (record.customerId ? "ERP" : null),
             entityType: record.entityType || null,
             entityId: record.entityId || null,
             entityLabel: record.entityLabel?.slice(0, 64) || null,

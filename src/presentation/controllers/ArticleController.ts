@@ -5,6 +5,9 @@ import { IInventoryRepository } from '../../domain/repositories/IInventoryReposi
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
 import { normalizeRichText } from '../../shared/richText';
+// Mengeneinheit: der Artikel traegt den kurzen Code, gewaehlt wird aus der
+// Liste des Mandanten (Einstellungen -> Module -> Lager -> Einheiten).
+import { listUnits, resolveUnit } from '../../application/services/measurementUnitCatalog';
 import { checkDangerPassword, passwordFromRequest } from '../utils/dangerGate';
 
 export class ArticleController {
@@ -83,7 +86,7 @@ export class ArticleController {
                 baseCost: Number(baseCost ?? 0),
                 salePrice: Number(salePrice ?? 0),
                 defaultSupplierId: defaultSupplierId ?? null,
-                unit,
+                unit: resolveUnit(unit, await listUnits(tenantId)),
                 // Açıklama biçimli metindir (kalın/italik/madde) — dar beyaz listeden geçer.
                 description: normalizeRichText(description),
                 systemBarcode: systemBarcode ?? null,
@@ -116,6 +119,10 @@ export class ArticleController {
             delete patch.positionId;
             delete patch.mappingId;
             if ('description' in patch) patch.description = normalizeRichText(patch.description);
+            // Einheit: die Liste des Mandanten gibt die Schreibweise vor.
+            if (patch.unit != null) {
+                patch.unit = resolveUnit(patch.unit, await listUnits((req as any).user!.tenantId));
+            }
             if (patch.baseCost != null) patch.baseCost = Number(patch.baseCost);
             if (patch.salePrice != null) patch.salePrice = Number(patch.salePrice);
             if (patch.minStockLevel != null) patch.minStockLevel = Number(patch.minStockLevel);

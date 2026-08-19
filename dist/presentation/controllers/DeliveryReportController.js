@@ -26,6 +26,11 @@ function normalizeImages(raw) {
         .filter((img) => img.imageData.startsWith("data:image/"))
         .slice(0, MAX_IMAGES);
 }
+/** Signaturfeld aus dem Body: leerer String / null => gelöscht. */
+function signatureOf(raw) {
+    const value = raw === null || raw === undefined ? "" : String(raw);
+    return value.startsWith("data:image/") ? value : null;
+}
 function normalizeResponses(raw) {
     if (!Array.isArray(raw))
         return [];
@@ -168,6 +173,10 @@ class DeliveryReportController {
                 return res.status(400).json({ error: "Kontrol listesi yanıtları zorunludur." });
             }
             const signature = body.signatureBase64 ? String(body.signatureBase64) : null;
+            // Zweite Signatur: der ausführende Techniker unterschreibt den
+            // Rapport auf seinem Tablet; sie ist unabhängig von `isSigned`,
+            // das weiterhin allein die KUNDENSIGNATUR meldet.
+            const technicianSignature = body.technicianSignatureBase64 ? String(body.technicianSignatureBase64) : null;
             const now = new Date();
             const projectId = body.projectId ? String(body.projectId) : null;
             const salesOrderId = body.salesOrderId ? String(body.salesOrderId) : null;
@@ -201,6 +210,7 @@ class DeliveryReportController {
                         ...(images !== null ? { images } : {}),
                         // Only overwrite the signature when a fresh one is supplied.
                         ...(signature ? { customerSignature: signature, isSigned: true, signedAt: now } : {}),
+                        ...(technicianSignature ? { technicianSignature, technicianSignedAt: now } : {}),
                         sentAt: now,
                     },
                 });
@@ -224,6 +234,8 @@ class DeliveryReportController {
                     notes,
                     ...(images !== null ? { images } : {}),
                     customerSignature: signature,
+                    technicianSignature,
+                    technicianSignedAt: technicianSignature ? now : null,
                     isSigned: Boolean(signature),
                     signedAt: signature ? now : null,
                     sentAt: now,
@@ -256,6 +268,18 @@ class DeliveryReportController {
                     checklistName: body.checklistName !== undefined ? (body.checklistName ? String(body.checklistName) : null) : existing.checklistName,
                     // `images: []` leert die Anhänge; ohne Feld bleiben sie unverändert.
                     ...(body.images !== undefined ? { images: normalizeImages(body.images) ?? [] } : {}),
+                    // Unterschriften: nur wenn das Feld MITGESCHICKT wurde. `null`
+                    // löscht sie bewusst (Signatur neu aufnehmen), ein fehlendes
+                    // Feld lässt sie unangetastet.
+                    ...(body.technicianSignature !== undefined ? {
+                        technicianSignature: signatureOf(body.technicianSignature),
+                        technicianSignedAt: signatureOf(body.technicianSignature) ? (existing.technicianSignedAt || new Date()) : null,
+                    } : {}),
+                    ...(body.customerSignature !== undefined ? {
+                        customerSignature: signatureOf(body.customerSignature),
+                        isSigned: Boolean(signatureOf(body.customerSignature)),
+                        signedAt: signatureOf(body.customerSignature) ? (existing.signedAt || new Date()) : null,
+                    } : {}),
                 },
             });
             res.status(200).json(report);
@@ -264,7 +288,11 @@ class DeliveryReportController {
             res.status(400).json({ error: error.message });
         }
     }
-    /** Attach (or replace) a customer signature on an existing delivery report. */
+    /**
+     * Attach (or replace) a signature on an existing delivery report.
+     * `role: 'TECHNICIAN'` stores the technician's own signature — only the
+     * CUSTOMER signature flips `isSigned` and notifies the office.
+     */
     async sign(req, res) {
         try {
             const tenantId = req.user.tenantId;
@@ -272,6 +300,7 @@ class DeliveryReportController {
             const signature = body.signatureBase64 ? String(body.signatureBase64) : null;
             if (!signature)
                 return res.status(400).json({ error: "İmza zorunludur." });
+            const technician = String(body.role || "").toUpperCase() === "TECHNICIAN";
             const existing = await prisma_client_1.default.deliveryReport.findFirst({
                 where: { id: String(req.params.id), tenantId },
             });
@@ -279,12 +308,16 @@ class DeliveryReportController {
                 return res.status(404).json({ error: "Teslim raporu bulunamadı." });
             const report = await prisma_client_1.default.deliveryReport.update({
                 where: { id: existing.id },
-                data: { customerSignature: signature, isSigned: true, signedAt: new Date() },
+                data: technician
+                    ? { technicianSignature: signature, technicianSignedAt: new Date() }
+                    : { customerSignature: signature, isSigned: true, signedAt: new Date() },
             });
-            void (0, projectEventNotifications_1.notifyProjectEvent)({
-                tenantId, projectId: report.projectId, event: 'SIGNATURE_RECEIVED',
-                report: 'DELIVERY', reportId: report.id, actorEmployeeId: req.user.id,
-            });
+            if (!technician) {
+                void (0, projectEventNotifications_1.notifyProjectEvent)({
+                    tenantId, projectId: report.projectId, event: 'SIGNATURE_RECEIVED',
+                    report: 'DELIVERY', reportId: report.id, actorEmployeeId: req.user.id,
+                });
+            }
             res.status(200).json(report);
         }
         catch (error) {

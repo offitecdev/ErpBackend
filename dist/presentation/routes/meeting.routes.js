@@ -7,6 +7,7 @@ const express_1 = require("express");
 const nanoid_1 = require("nanoid");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const calendarMailService_1 = require("../../infrastructure/services/calendarMailService");
 /* Workspace "meeting activities" (meetings & lightweight tasks) shown on the CRM
    overview and the unified calendar. Participants mix staff and customers. */
 const router = (0, express_1.Router)();
@@ -17,7 +18,8 @@ const PARTICIPANT_INCLUDE = {
             customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
         },
     },
-    customer: { select: { id: true, companyName: true } },
+    // mainEmail: the To of «Besprechung senden» in the calendar detail popup.
+    customer: { select: { id: true, companyName: true, mainEmail: true } },
     createdBy: { select: { id: true, firstName: true, lastName: true } },
 };
 // CC listesi: dizi ya da virgüllü tek satır kabul edilir; boşlar ve
@@ -110,6 +112,13 @@ router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
             },
             include: PARTICIPANT_INCLUDE,
         });
+        /* WIE BEIM PROJEKTTERMIN (19.08.2026, Vorgabe Samet): die AUFBIETUNG
+           der eigenen Leute geht beim Anlegen von selbst raus — an die
+           teilnehmenden Mitarbeitenden, die CC-Liste und die Person, die die
+           Besprechung angesetzt hat. Der KUNDE erfährt weiterhin erst über
+           «Besprechung senden» davon. Aufgaben laden niemanden ein. */
+        if (kind === 'MEETING')
+            (0, calendarMailService_1.queueMeetingTeamInvite)(meeting.id, user.id);
         res.status(201).json(meeting);
     }
     catch (error) {
@@ -179,11 +188,40 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
         });
         if (!existing)
             return res.status(404).json({ error: 'Aktivite bulunamadı.' });
+        const cancellation = await (0, calendarMailService_1.buildMeetingCancellation)(existing.id);
         await prisma_client_1.default.meetingActivity.delete({ where: { id: existing.id } });
+        (0, calendarMailService_1.queueMeetingCancellation)(cancellation, user.id);
         res.status(200).json({ message: 'Aktivite silindi.' });
     }
     catch (error) {
         res.status(400).json({ error: error.message });
+    }
+});
+/* POST /meetings/:id/send-invite — «Besprechung senden»: EIN Klick, ZWEI
+   Nachrichten (Kunde und Team), genau wie beim Projekttermin. Der Dienst wirft,
+   wenn keine der beiden rausgehen konnte; der Fehlertext steht dann schon
+   darin. */
+router.post('/:id/send-invite', AuthMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const user = req.user;
+        const existing = await prisma_client_1.default.meetingActivity.findFirst({
+            where: { id: String(req.params.id || ''), tenantId: user.tenantId },
+            select: { id: true },
+        });
+        if (!existing)
+            return res.status(404).json({ error: 'Aktivite bulunamadı.' });
+        const cc = Array.isArray(req.body?.cc) ? req.body.cc.map((value) => String(value ?? '')) : [];
+        const result = await (0, calendarMailService_1.sendMeetingInvite)(existing.id, user.id, {
+            to: String(req.body?.to ?? ''),
+            cc,
+            subject: req.body?.subject ? String(req.body.subject) : null,
+            message: req.body?.message ? String(req.body.message) : null,
+            teamMail: req.body?.teamMail !== false,
+        });
+        res.status(200).json(result);
+    }
+    catch (error) {
+        res.status(error?.status || 400).json({ error: error.message });
     }
 });
 exports.default = router;

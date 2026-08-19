@@ -41,14 +41,19 @@ router.get('/', (0, RbacMiddleware_1.requirePermission)('projects.view'), (req, 
 router.get('/options/technicians', (0, RbacMiddleware_1.requireAnyPermission)(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
 router.get('/appointments', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.listAppointments(req, res));
 router.get('/appointments/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentDetail(req, res));
-router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
-router.get('/technician/installations/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
-router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
+// Technikerendpunkte: jede Abfrage ist auf die anfragende Person
+// eingeschraenkt (assignedTechId / employeeId), darum genuegt zum LESEN das
+// Projekt-Leserecht - so traegt Stufe 1 der Seite "Montage" auch etwas.
+// Geschrieben (abschliessen, Rapport, Unterschrift) wird weiterhin nur mit
+// 'projects.report' bzw. dem Wartungsrecht.
+router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
+router.get('/technician/installations/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
+router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
-router.get('/technician/reports', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
-router.get('/technician/report-orders/:salesOrderId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
-router.get('/technician/reports/:reportId/resources', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
-router.get('/technician/reports/:reportId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
+router.get('/technician/reports', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
+router.get('/technician/report-orders/:salesOrderId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
+router.get('/technician/reports/:reportId/resources', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
+router.get('/technician/reports/:reportId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
 // Malzeme/ürün birleşmesi (2026-08-14): saha ekranlarının "malzeme" kataloğu
 // artık ürün (Article) listesidir; yanıt eski ProjectMaterial biçimini korur.
 router.get('/materials', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));
@@ -73,6 +78,8 @@ router.post('/reports/:reportId/signature-request', (0, RbacMiddleware_1.require
 router.post('/:id/appointments', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.createAppointment(req, res));
 router.patch('/appointments/:appointmentId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.updateAppointment(req, res));
 router.delete('/appointments/:appointmentId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.deleteAppointment(req, res));
+// «Termin an Kunden senden» — die Kalender-Einladung geht NUR hierüber raus.
+router.post('/appointments/:appointmentId/send-invite', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.sendAppointmentInvite(req, res));
 router.post('/appointments/:appointmentId/complete', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.completeInstallation(req, res, { allowManagerComplete: true }));
 router.post('/:id/variations', (0, RbacMiddleware_1.requirePermission)('projects.report'), (req, res) => controller.requestExtraMaterial(req, res));
 router.patch('/variations/:variationId/approve', (0, RbacMiddleware_1.requirePermission)('projects.approveVariation'), (req, res) => controller.approveVariation(req, res));

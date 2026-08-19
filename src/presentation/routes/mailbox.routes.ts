@@ -4,7 +4,7 @@ import { requireAuth } from "../middlewares/AuthMiddleware";
 import { requireAnyPermission, requirePermission } from "../middlewares/RbacMiddleware";
 import prisma from "../../infrastructure/database/prisma.client";
 import { buildSignatureParts } from "../../infrastructure/services/mailSignature";
-import { captureInbox, fetchImapAttachment, isCaptureRunning } from "../../infrastructure/services/ImapCaptureService";
+import { captureInbox, fetchImapAttachment, isCaptureRunning, normalizeWindowMonths } from "../../infrastructure/services/ImapCaptureService";
 import { dispatchMail } from "../../infrastructure/services/outlook/MailDispatchService";
 import { getAddressBook, invalidateAddressBook, normalizeAddress } from "../../infrastructure/services/outlook/mailCustomerMatcher";
 import { getCompanyTreeTenantIds } from "../controllers/serviceTenantScope";
@@ -49,7 +49,7 @@ const inboxStatus = async (tenantId: string) => {
         select: {
             smtpHost: true, smtpPort: true, smtpUser: true, fromEmail: true,
             imapHost: true, imapPort: true, imapUser: true, imapPassword: true, smtpPassword: true,
-            imapCaptureEnabled: true, imapInboxFolder: true, imapCaptureRepliesOnly: true,
+            imapCaptureEnabled: true, imapInboxFolder: true, imapCaptureRepliesOnly: true, imapWindowMonths: true,
             imapLastSyncAt: true, imapLastSummary: true, imapLastError: true,
         },
     });
@@ -69,6 +69,9 @@ const inboxStatus = async (tenantId: string) => {
         folder: settings?.imapInboxFolder?.trim() || "INBOX",
         captureEnabled: Boolean(settings?.imapCaptureEnabled),
         repliesOnly: Boolean(settings?.imapCaptureRepliesOnly),
+        // Wie weit das Postfach zurückreicht — die Seite schlägt denselben
+        // Zeitraum auf, damit Sicht und Bestand dasselbe sagen.
+        windowMonths: normalizeWindowMonths(settings?.imapWindowMonths),
         hasCredentials: Boolean((settings?.imapPassword || settings?.smtpPassword)),
         lastSyncAt: settings?.imapLastSyncAt ?? null,
         lastSummary: settings?.imapLastSummary ?? null,
@@ -131,12 +134,137 @@ router.patch("/inbox/settings", requireAuth, requireAnyPermission(["mail.manage"
 
 const READ = requirePermission("crm.customers.view");
 
+/* ── Filter der Postfach-Seite (19.08.2026) ───────────────────────
+   Vier Filter liegen über der Liste; sie werden mit UND verknüpft:
+
+     scope        DAUERFILTER (die Seite merkt ihn sich über das Neuladen
+                  hinweg): EINE Wahl aus all | customers | personnel |
+                  calendar. Keine Mehrfachauswahl — man sieht eine Sicht auf
+                  das Postfach, nicht eine Summe von Sichten.
+     customerIds  Kundenauswahl (mehrfach)
+     employeeIds  Personalauswahl (mehrfach)
+
+   Beide Auswahlen treffen die Post in BEIDEN Richtungen (Vorgabe 19.08.2026):
+   nicht nur, was wir geschrieben haben, sondern auch, was von dort kam. Die
+   gespeicherte Zuordnung (`customerId`/`employeeId`) allein reicht dafür
+   nicht — `employeeId` nennt die Person, der die Nachricht GEHÖRT (Absender
+   bei interner Post, Senderin bei ERP-Mail), also nie die Empfängerin. Darum
+   zählt zusätzlich die ADRESSE in Von, An und CC.
+     from / to    Zeitraum über `sentAt`, tagesgenau (beide Tage inklusive).
+
+   Alles ausser `scope` ist bewusst FLÜCHTIG — es lebt nur in der offenen
+   Seite; nur der erste Filter bleibt stehen. */
+
+const csvIds = (value: string | undefined): string[] => {
+    const seen = new Set<string>();
+    for (const part of String(value || "").split(",")) {
+        const clean = part.trim();
+        if (clean) seen.add(clean);
+    }
+    return Array.from(seen).slice(0, 200);
+};
+
+/* Die drei Bereiche schliessen einander AUS und ergeben zusammen «Alle» (bis
+   auf noch unzugeordnete Post, die weder Kunde noch Person kennt). Was eine
+   KALENDERMELDUNG von gewöhnlicher Post trennt, ist `entityType`
+   (APPOINTMENT/MEETING, von calendarMailService gestempelt) — Termine und
+   Besprechungen gehen ohnehin automatisch raus, darum liegen sie in EINEM
+   Topf und nicht in vieren. */
+const NOT_CALENDAR = Prisma.sql`(m.entityType IS NULL OR m.entityType NOT IN ('APPOINTMENT', 'MEETING'))`;
+
+const SCOPE_SQL: Record<string, Prisma.Sql> = {
+    // Das Gespräch mit dem Kunden selbst.
+    customers: Prisma.sql`(m.customerId IS NOT NULL AND ${NOT_CALENDAR})`,
+    // Post unter Mitarbeitenden — kein Kunde, aber eine registrierte Person
+    // dahinter: Technikerinnen und Techniker eingeschlossen, das ganze Haus.
+    personnel: Prisma.sql`(m.customerId IS NULL AND m.employeeId IS NOT NULL AND ${NOT_CALENDAR})`,
+    // Die automatischen Termin- und Besprechungsmeldungen.
+    calendar: Prisma.sql`m.entityType IN ('APPOINTMENT', 'MEETING')`,
+};
+
+/** Tagesanfang aus «YYYY-MM-DD»; alles andere ergibt null. */
+const dayStart = (value: string | undefined): Date | null => {
+    const text = String(value || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+    const date = new Date(`${text}T00:00:00`);
+    return Number.isNaN(date.getTime()) ? null : date;
+};
+const dayEnd = (value: string | undefined): Date | null => {
+    const date = dayStart(value);
+    if (date) date.setHours(23, 59, 59, 999);
+    return date;
+};
+
+const cleanAddresses = (values: Array<string | null | undefined>): string[] => {
+    const seen = new Set<string>();
+    for (const value of values) {
+        const address = normalizeAddress(value || "");
+        if (address.includes("@")) seen.add(address);
+    }
+    // Gedeckelt: aus jeder Adresse wird ein LIKE, und eine Kundenkartei mit 200
+    // Ansprechpartnern soll keine Abfrage mit 600 ODER-Zweigen bauen.
+    return Array.from(seen).slice(0, 60);
+};
+
+/** Die Adressen der gewählten Kunden — Hauptadresse und Ansprechpartner. */
+const customerAddresses = async (ids: string[], tenantId: string): Promise<string[]> => {
+    const [customers, contacts] = await Promise.all([
+        prisma.customer.findMany({ where: { id: { in: ids }, tenantId }, select: { mainEmail: true } }),
+        prisma.customerContact.findMany({ where: { customerId: { in: ids }, tenantId }, select: { email: true } }),
+    ]);
+    return cleanAddresses([...customers.map((row) => row.mainEmail), ...contacts.map((row) => row.email)]);
+};
+
+const employeeAddresses = async (ids: string[]): Promise<string[]> => {
+    const rows = await prisma.employee.findMany({ where: { id: { in: ids } }, select: { email: true } });
+    return cleanAddresses(rows.map((row) => row.email));
+};
+
+/** «Kommt in dieser Nachricht vor»: als gespeicherte Zuordnung ODER als
+    Adresse in Von, An oder CC. `toRecipients`/`ccRecipients` sind JSON-Spalten
+    — dafür steht LIKE, wie schon in der Volltextsuche darüber. */
+const partyCondition = (link: Prisma.Sql, addresses: string[]): Prisma.Sql => {
+    if (!addresses.length) return link;
+    const parts: Prisma.Sql[] = [link, Prisma.sql`m.fromAddress IN (${Prisma.join(addresses)})`];
+    for (const address of addresses) {
+        const like = `%${address}%`;
+        parts.push(Prisma.sql`m.toRecipients LIKE ${like}`);
+        parts.push(Prisma.sql`m.ccRecipients LIKE ${like}`);
+    }
+    return Prisma.sql`(${Prisma.join(parts, " OR ")})`;
+};
+
+/** Die Filterbedingungen der Postfach-Seite — Liste und Zählung teilen sie. */
+const filterConditions = async (q: Record<string, string | undefined>, tenantId: string): Promise<Prisma.Sql[]> => {
+    const where: Prisma.Sql[] = [];
+    // Unbekannt oder 'all' = keine Einschränkung.
+    const scope = SCOPE_SQL[String(q.scope || "").trim()];
+    if (scope) where.push(scope);
+    const customerIds = csvIds(q.customerIds);
+    const employeeIds = csvIds(q.employeeIds);
+    const [customerMails, employeeMails] = await Promise.all([
+        customerIds.length ? customerAddresses(customerIds, tenantId) : Promise.resolve([]),
+        employeeIds.length ? employeeAddresses(employeeIds) : Promise.resolve([]),
+    ]);
+    if (customerIds.length) {
+        where.push(partyCondition(Prisma.sql`m.customerId IN (${Prisma.join(customerIds)})`, customerMails));
+    }
+    if (employeeIds.length) {
+        where.push(partyCondition(Prisma.sql`m.employeeId IN (${Prisma.join(employeeIds)})`, employeeMails));
+    }
+    const from = dayStart(q.from);
+    if (from) where.push(Prisma.sql`m.sentAt >= ${from}`);
+    const to = dayEnd(q.to);
+    if (to) where.push(Prisma.sql`m.sentAt <= ${to}`);
+    return where;
+};
+
 router.get("/messages", requireAuth, READ, async (req, res) => {
     try {
         const user = req.user!;
         const q = req.query as Record<string, string | undefined>;
         const page = Math.max(1, Number(q.page) || 1);
-        const pageSize = Math.min(100, Math.max(1, Number(q.pageSize) || 25));
+        const pageSize = Math.min(100, Math.max(1, Number(q.pageSize) || 50));
         const folder = q.folder || "inbox";
         const where: Prisma.Sql[] = [Prisma.sql`m.tenantId = ${user.tenantId}`];
         if (folder === "inbox") where.push(Prisma.sql`m.direction = 'IN'`);
@@ -148,6 +276,7 @@ router.get("/messages", requireAuth, READ, async (req, res) => {
         if (q.entityType && q.entityId) {
             where.push(Prisma.sql`m.entityType = ${String(q.entityType)} AND m.entityId = ${String(q.entityId)}`);
         }
+        where.push(...await filterConditions(q, user.tenantId));
         const search = String(q.search || "").trim();
         if (search) {
             const like = `%${search}%`;
@@ -222,6 +351,107 @@ router.get("/messages/stats", requireAuth, READ, async (req, res) => {
         });
     } catch (error: any) {
         res.status(500).json({ error: error?.message || "Statistik konnte nicht geladen werden." });
+    }
+});
+
+/** Die Auswahl der beiden Suchfilter.
+
+    OHNE Suchbegriff: nur, wer im Postfach wirklich vorkommt — mit der Zahl
+    seiner Nachrichten. Das ist die Liste, die beim Öffnen etwas taugt.
+
+    MIT Suchbegriff: dazu die übrigen Kunden und Mitarbeitenden, damit man auch
+    nach jemandem filtern kann, von dem noch keine Post da ist (Vorgabe
+    19.08.2026). Sie kommen mit `mails: 0` und stehen im Fenster unter den
+    anderen. */
+router.get("/messages/filter-options", requireAuth, READ, async (req, res) => {
+    try {
+        const tenantId = req.user!.tenantId;
+        const search = String(req.query.search || "").trim().slice(0, 80);
+        const like = `%${search}%`;
+        // Personal ist über den ganzen Firmenbaum sichtbar (siehe crm.routes.ts).
+        const staffTenants = await getCompanyTreeTenantIds(tenantId);
+        const [customers, employees] = await Promise.all([
+            /* Kunden zählen über die gespeicherte Zuordnung. Die reicht hier,
+               weil `customerId` in BEIDEN Richtungen gesetzt wird (der Abruf
+               ordnet eingehende Post über die Adresse zu, der Versand schreibt
+               sie mit) — die Liste ist also vollständig.
+
+               Die ZAHL bleibt dabei vorsichtig: der Filter findet zusätzlich
+               Post über die Adressen der Ansprechpartner, und die hier
+               mitzuzählen hiesse, Nachrichten × Ansprechpartner mit LIKE zu
+               verbinden. Beim Personal ist das gefahrlos (eine Belegschaft),
+               bei einer Kundenkartei mit Tausenden Kontakten wäre es eine
+               langsame Abfrage bei jedem Tastendruck im Suchfeld. */
+            prisma.$queryRaw<any[]>`
+                SELECT cu.id, cu.companyName, COUNT(*) AS mails
+                FROM MailMessage m
+                JOIN Customer cu ON cu.id = m.customerId
+                WHERE m.tenantId = ${tenantId}
+                GROUP BY cu.id, cu.companyName
+                ORDER BY cu.companyName ASC`,
+            /* Auch über die ADRESSE, nicht nur über `employeeId`: dieses Feld
+               nennt die Person, der die Nachricht GEHÖRT (Absender bei interner
+               Post, Senderin bei ERP-Mail) — nie die Empfängerin. Ohne den
+               Adressteil stand im Personalfenster genau EIN Name, obwohl fünf
+               Leute Post im Haus haben; die Zahl der Zeile wäre ausserdem
+               kleiner als das, was der Filter danach findet.
+
+               Kosten: eine Verbindung Nachricht × Personal mit LIKE, also ohne
+               Index. Beide Seiten sind klein und wachsen langsam (ein Postfach,
+               eine Belegschaft) — die Abfrage läuft einmal beim Öffnen des
+               Fensters, nicht je Zeile. */
+            prisma.$queryRaw<any[]>`
+                SELECT e.id, e.firstName, e.lastName, COUNT(DISTINCT m.id) AS mails
+                FROM MailMessage m
+                JOIN Employee e
+                  ON e.tenantId IN (${Prisma.join(staffTenants)})
+                 AND e.deletedAt IS NULL
+                 AND (e.id = m.employeeId
+                      OR m.fromAddress = e.email
+                      OR m.toRecipients LIKE CONCAT('%', e.email, '%')
+                      OR m.ccRecipients LIKE CONCAT('%', e.email, '%'))
+                WHERE m.tenantId = ${tenantId}
+                GROUP BY e.id, e.firstName, e.lastName
+                ORDER BY e.firstName ASC, e.lastName ASC`,
+        ]);
+        const [moreCustomers, moreEmployees] = search
+            ? await Promise.all([
+                prisma.customer.findMany({
+                    where: { tenantId, companyName: { contains: search } },
+                    select: { id: true, companyName: true },
+                    orderBy: { companyName: "asc" },
+                    take: 25,
+                }),
+                prisma.$queryRaw<any[]>`
+                    SELECT e.id, e.firstName, e.lastName
+                    FROM Employee e
+                    WHERE e.tenantId IN (${Prisma.join(staffTenants)})
+                      AND e.deletedAt IS NULL
+                      AND (CONCAT(e.firstName, ' ', e.lastName) LIKE ${like} OR e.email LIKE ${like})
+                    ORDER BY e.firstName ASC, e.lastName ASC
+                    LIMIT 25`,
+            ])
+            : [[], []];
+
+        const customerRows = customers.map((row) => ({ id: row.id, companyName: row.companyName, mails: Number(row.mails || 0) }));
+        const seenCustomers = new Set(customerRows.map((row) => row.id));
+        for (const row of moreCustomers as Array<{ id: string; companyName: string }>) {
+            if (!seenCustomers.has(row.id)) customerRows.push({ id: row.id, companyName: row.companyName, mails: 0 });
+        }
+
+        const employeeRows = employees.map((row) => ({
+            id: row.id, firstName: row.firstName, lastName: row.lastName, mails: Number(row.mails || 0),
+        }));
+        const seenEmployees = new Set(employeeRows.map((row) => row.id));
+        for (const row of moreEmployees as any[]) {
+            if (!seenEmployees.has(row.id)) {
+                employeeRows.push({ id: row.id, firstName: row.firstName, lastName: row.lastName, mails: 0 });
+            }
+        }
+
+        res.json({ customers: customerRows, employees: employeeRows });
+    } catch (error: any) {
+        res.status(500).json({ error: error?.message || "Filter konnten nicht geladen werden." });
     }
 });
 

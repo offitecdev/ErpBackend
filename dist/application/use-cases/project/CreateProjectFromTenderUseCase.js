@@ -98,6 +98,10 @@ class CreateProjectFromTenderUseCase {
                     tenantId: tender.tenantId,
                     projectId: project.id,
                     customerId: tender.customerId,
+                    // Wer den Auftrag erteilt, hat auch diese Termine gesetzt.
+                    // KEINE automatische Teammail hier: ein Auftrag legt mehrere
+                    // Termine auf einmal an, das waere ein Schwall.
+                    createdByEmployeeId: employeeId,
                     assignedTechId: slot.assignedTechId || null,
                     startTime: slot.startTime,
                     endTime: slot.endTime,

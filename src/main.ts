@@ -39,6 +39,8 @@ import crmTaskRoutes from './presentation/routes/crmTask.routes';
 import formsRoutes from './presentation/routes/forms.routes';
 import settingsGateRoutes from './presentation/routes/settingsGate.routes';
 import reminderSettingsRoutes from './presentation/routes/reminderSettings.routes';
+// Mengeneinheiten des Lagers (Einstellungen -> Module -> Lager -> Einheiten).
+import measurementUnitRoutes from './presentation/routes/measurementUnit.routes';
 import authorizationRoutes from './presentation/routes/authorization.routes';
 // Rollenvorlagen (Einstellungen → Berechtigungen) und der Kennwortwunsch aus
 // dem eigenen Profil — beide neu am 17.08.2026.
@@ -171,6 +173,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/forms`, formsRoutes);
     app.use(`${prefix}/settings`, settingsGateRoutes);
     app.use(`${prefix}/settings/reminder-settings`, reminderSettingsRoutes);
+    app.use(`${prefix}/settings/units`, measurementUnitRoutes);
     app.use(`${prefix}/fx`, fxRoutes);
     app.use(`${prefix}/files`, filesRoutes);
     app.use(`${prefix}/dashboard`, dashboardRoutes);

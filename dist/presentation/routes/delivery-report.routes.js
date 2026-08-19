@@ -11,7 +11,10 @@ const controller = new DeliveryReportController_1.DeliveryReportController();
 const canReport = (0, RbacMiddleware_1.requireAnyPermission)(["projects.report", "projects.manage", "maintenance.tasks.manage"]);
 const canView = (0, RbacMiddleware_1.requireAnyPermission)(["projects.view", "projects.manage", "projects.report"]);
 router.get("/", AuthMiddleware_1.requireAuth, canView, (req, res) => controller.list(req, res));
-router.get("/by-appointment/:appointmentId", AuthMiddleware_1.requireAuth, canReport, (req, res) => controller.getByAppointment(req, res));
+// Lesen bleibt Lesen: die Uebergabe eines Termins darf auch die Stufe
+// "ansehen" der Seite Montage oeffnen (canReport gilt weiter fuer Anlegen,
+// Aendern und Unterschreiben).
+router.get("/by-appointment/:appointmentId", AuthMiddleware_1.requireAuth, canView, (req, res) => controller.getByAppointment(req, res));
 router.get("/:id", AuthMiddleware_1.requireAuth, canView, (req, res) => controller.getOne(req, res));
 router.post("/", AuthMiddleware_1.requireAuth, canReport, (req, res) => controller.create(req, res));
 router.patch("/:id", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(["projects.manage", "projects.report"]), (req, res) => controller.update(req, res));

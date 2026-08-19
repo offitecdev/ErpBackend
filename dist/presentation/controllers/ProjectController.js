@@ -9,6 +9,8 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const projectEventNotifications_1 = require("../../infrastructure/services/projectEventNotifications");
 const articleStock_1 = require("../../shared/articleStock");
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
+const MailDispatchService_1 = require("../../infrastructure/services/outlook/MailDispatchService");
+const calendarMailService_1 = require("../../infrastructure/services/calendarMailService");
 const serviceTenantScope_1 = require("./serviceTenantScope");
 const technicianSchedule_1 = require("./technicianSchedule");
 const nanoid_1 = require("nanoid");
@@ -1704,7 +1706,9 @@ class ProjectController {
                     <p style="font-size:12px;color:#64748b">${bookingLink}</p>
                 </div>
             `;
-            const result = await smtp.send(settings || {}, {
+            // Kundenmail → über das Outlook-Postfach des Benutzers (sonst SMTP),
+            // festgehalten in der Kundenkommunikation (MailMessage).
+            const result = await (0, MailDispatchService_1.dispatchMail)({ tenantId: req.user.tenantId, employeeId: req.user.id }, settings, {
                 fromEmail,
                 fromName,
                 to,
@@ -1712,6 +1716,10 @@ class ProjectController {
                 text: `${message}\n\n${bookingLink}`,
                 html,
                 replyTo: req.body.replyTo || settings?.replyTo || null
+            }, {
+                record: project.customerId
+                    ? { customerId: project.customerId, entityType: 'PROJECT', entityId: project.id, entityLabel: project.projectNumber || project.projectName }
+                    : null,
             });
             res.status(200).json({
                 message: result.preview
@@ -2078,6 +2086,18 @@ class ProjectController {
                 extraMaterials: Array.isArray(req.body.extraMaterials) ? req.body.extraMaterials : undefined,
                 usedMaterials: Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : undefined,
             });
+            // Technikerunterschrift reist mit dem Rapport: mitgeschickt = setzen
+            // oder löschen, weggelassen = unverändert. Die Kundensignatur bleibt
+            // ihrem eigenen Weg (Signaturanfrage / Abschluss) vorbehalten.
+            if (req.body.technicianSignature !== undefined) {
+                const signature = String(req.body.technicianSignature || '').startsWith('data:image/')
+                    ? String(req.body.technicianSignature)
+                    : null;
+                await prisma_client_1.default.projectReport.update({
+                    where: { id: reportResult.id },
+                    data: { technicianSignature: signature, technicianSignedAt: signature ? new Date() : null },
+                });
+            }
             // Denetim kaydı best-effort'tür; kullanıcı yanıtını ayrı bir INSERT
             // turu için bekletmez.
             void this.writeReportLog(reportResult.id, req.user.id, 'SAVED');
@@ -2240,23 +2260,28 @@ class ProjectController {
         try {
             const reportId = req.params.reportId;
             const { signatureBase64 } = req.body;
+            // `role: 'TECHNICIAN'` = Unterschrift des Technikers selbst; sie
+            // schliesst den Rapport NICHT ab und löst keine Meldung aus.
+            const technician = String(req.body.role || "").toUpperCase() === "TECHNICIAN";
             const report = await prisma_client_1.default.projectReport.findFirst({
                 where: { id: reportId, project: { tenantId: req.user.tenantId } },
                 select: { id: true, projectId: true },
             });
             if (!report)
                 return res.status(404).json({ error: "Saha raporu bulunamadı." });
-            await this.reportRepository.signReport(reportId, signatureBase64);
+            await this.reportRepository.signReport(reportId, signatureBase64, technician ? 'TECHNICIAN' : 'CUSTOMER');
             await this.writeReportLog(reportId, req.user.id, 'SIGNED');
-            void (0, projectEventNotifications_1.notifyProjectEvent)({
-                tenantId: req.user.tenantId,
-                projectId: report.projectId,
-                event: 'SIGNATURE_RECEIVED',
-                report: 'FIELD',
-                reportId,
-                actorEmployeeId: req.user.id,
-            });
-            res.status(200).json({ message: "Rapor müşteri tarafından imzalandı." });
+            if (!technician) {
+                void (0, projectEventNotifications_1.notifyProjectEvent)({
+                    tenantId: req.user.tenantId,
+                    projectId: report.projectId,
+                    event: 'SIGNATURE_RECEIVED',
+                    report: 'FIELD',
+                    reportId,
+                    actorEmployeeId: req.user.id,
+                });
+            }
+            res.status(200).json({ message: "Rapor imzalandı." });
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -2467,8 +2492,18 @@ class ProjectController {
             await this.writeReportLog(reportResult.id, req.user.id, 'COMPLETED');
             let report = reportResult;
             const signatureBase64 = typeof req.body.signatureBase64 === "string" ? req.body.signatureBase64 : "";
+            // Der Techniker unterschreibt im Rapport-Editor selbst; sie reist mit
+            // dem Abschluss mit, damit sie nicht beim "Abschliessen" verlorengeht.
+            const technicianSignature = String(req.body.technicianSignature || "").startsWith("data:image/")
+                ? String(req.body.technicianSignature)
+                : null;
+            if (technicianSignature) {
+                await this.reportRepository.signReport(reportResult.id, technicianSignature, 'TECHNICIAN');
+            }
             if (signatureBase64) {
                 await this.reportRepository.signReport(reportResult.id, signatureBase64);
+            }
+            if (signatureBase64 || technicianSignature) {
                 report = await this.reportRepository.findById(reportResult.id) || reportResult;
             }
             await prisma_client_1.default.appointment.update({
@@ -3203,6 +3238,8 @@ class ProjectController {
                     endTime: parsed.endTime,
                     notes: parsed.notes ?? null,
                     ccEmails: parsed.ccEmails ?? [],
+                    // Wer den Termin setzt, bekommt die automatische Teammail mit.
+                    createdByEmployeeId: req.user.id,
                     status: "BOOKED",
                     isLocked: true
                 },
@@ -3212,6 +3249,16 @@ class ProjectController {
                 }
             });
             await this.replaceProjectAppointmentAssignments(appointment.id, technicianIds);
+            /* DIE INTERNE AUFBIETUNG GEHT SOFORT RAUS (Vorgabe 19.08.2026): an das
+               zugeteilte Team, die CC-Liste und die Person, die den Termin angelegt
+               hat. Feuern und vergessen — ein stummer Mailserver darf das Anlegen
+               nicht scheitern lassen; die Antwort wartet nicht darauf.
+
+               An den KUNDEN geht weiterhin nichts von selbst: seine Einladung
+               verlässt das Haus erst mit «Termin senden» (POST
+               …/appointments/:id/send-invite), und nur dort reisen auch die
+               Checklisten mit (die PDFs entstehen im Browser). */
+            (0, calendarMailService_1.queueAppointmentTeamInvite)(appointment.id, req.user.id);
             if (technicianIds.length) {
                 await this.notifyMany(project.tenantId, technicianIds, {
                     type: "PROJECT_INSTALLATION_ASSIGNED",
@@ -3283,6 +3330,9 @@ class ProjectController {
                     metadata: { projectId: appointment.projectId, appointmentId: appointment.id, salesOrderId },
                 });
             }
+            // Auch die Änderung geht NICHT von selbst raus: wer den Kunden
+            // informieren will, sendet die Einladung erneut (gleiche UID,
+            // höherer Zählstand — Outlook ersetzt dann den Eintrag).
             res.status(200).json(updated);
         }
         catch (error) {
@@ -3298,6 +3348,10 @@ class ProjectController {
             if (!appointment?.project || appointment.project.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
+            // Die Absage EINSAMMELN, solange die Zeile noch da ist — verschickt
+            // wird sie erst, wenn das Löschen wirklich durchgelaufen ist. Nur
+            // für Termine, die je verschickt wurden (sonst null).
+            const cancellation = await (0, calendarMailService_1.buildAppointmentCancellation)(appointment.id);
             const dayStart = startOfDay(new Date(appointment.startTime));
             const dayEnd = endOfDay(new Date(appointment.startTime));
             const fallbackScope = {
@@ -3353,10 +3407,53 @@ class ProjectController {
                 }
                 await tx.appointment.delete({ where: { id: appointment.id } });
             });
+            // Absage an alle Beteiligten: der Termin verschwindet damit auch aus
+            // deren Outlook. Erst NACH der erfolgreichen Löschung — und mit den
+            // Daten, die vorher geladen wurden, denn die Zeile ist nun fort.
+            (0, calendarMailService_1.queueAppointmentCancellation)(cancellation, req.user.id);
             res.status(204).send();
         }
         catch (error) {
             res.status(400).json({ error: error.message });
+        }
+    }
+    /**
+     * POST /projects/appointments/:appointmentId/send-invite
+     * «Termin senden» — DIE Stelle, an der die Kalender-Einladung rausgeht
+     * (Vorgabe 19.08.2026: nie von selbst).
+     *
+     * Body: { to, cc[], subject?, message?, teamMail?, attachments[] }
+     *   to/cc/subject/message  — die von Hand verfasste Mail an den KUNDEN.
+     *   teamMail (Standard an) — zusätzlich die automatische Mail an das
+     *                            Montageteam, die CC-Liste und die Person, die
+     *                            den Termin angelegt hat.
+     *   attachments            — die Checklisten des Projekts/Auftrags als PDF,
+     *                            im Browser gezeichnet; sie hängen NUR an der
+     *                            Teammail.
+     * Wird abgewartet, damit das Fenster ein echtes Ergebnis zeigt.
+     */
+    async sendAppointmentInvite(req, res) {
+        try {
+            const appointment = await prisma_client_1.default.appointment.findUnique({
+                where: { id: req.params.appointmentId },
+                select: { id: true, tenantId: true },
+            });
+            if (!appointment || appointment.tenantId !== req.user.tenantId) {
+                return res.status(404).json({ error: "Randevu bulunamadı." });
+            }
+            const cc = Array.isArray(req.body?.cc) ? req.body.cc.map((value) => String(value ?? "")) : [];
+            const result = await (0, calendarMailService_1.sendAppointmentInvite)(appointment.id, req.user.id, {
+                to: String(req.body?.to ?? ""),
+                cc,
+                subject: req.body?.subject ? String(req.body.subject) : null,
+                message: req.body?.message ? String(req.body.message) : null,
+                teamMail: req.body?.teamMail !== false,
+                attachments: (0, calendarMailService_1.sanitizeInviteAttachments)(req.body?.attachments),
+            });
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
         }
     }
 }

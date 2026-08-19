@@ -173,18 +173,23 @@ class InvoiceRepository {
     async countForTenant(tenantId) {
         return prisma_client_1.default.invoice.count({ where: { tenantId } });
     }
-    async sumBilledPercent(where) {
+    // Yüzde ve tutar AYNI toplama sorgusundan gelir — kapanış faturası kalan
+    // frankı kuruşu kuruşuna alacağı için ikisine de ihtiyaç var, ek tur yok.
+    async sumBilled(where) {
         const agg = await prisma_client_1.default.invoice.aggregate({
             where: { ...where, status: { not: "CANCELLED" } },
-            _sum: { billedPercent: true },
+            _sum: { billedPercent: true, amount: true },
         });
-        return Number(agg?._sum?.billedPercent || 0);
+        return {
+            percent: Number(agg?._sum?.billedPercent || 0),
+            amount: Number(agg?._sum?.amount || 0),
+        };
     }
-    async sumBilledPercentForOrder(salesOrderId) {
-        return this.sumBilledPercent({ salesOrderId });
+    async sumBilledForOrder(salesOrderId) {
+        return this.sumBilled({ salesOrderId });
     }
-    async sumBilledPercentForProject(projectId) {
-        return this.sumBilledPercent({ projectId });
+    async sumBilledForProject(projectId) {
+        return this.sumBilled({ projectId });
     }
     async updateStatus(id, tenantId, status) {
         const existing = await prisma_client_1.default.invoice.findFirst({ where: { id, tenantId } });

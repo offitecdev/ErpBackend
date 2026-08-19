@@ -270,6 +270,10 @@ export class ProjectRepository {
                 } : {}),
                 ...(withReportAssets ? {
                     customerSignature: true,
+                    // Zweite Signatur des Rapports (Techniker) — sie hängt an
+                    // denselben schweren Ansichten wie die Kundensignatur.
+                    technicianSignature: true,
+                    technicianSignedAt: true,
                     images: {
                         orderBy: { createdAt: "asc" },
                         select: {

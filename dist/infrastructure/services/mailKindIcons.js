@@ -1,0 +1,93 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.kindIconInline = void 0;
+const mailBrand_1 = require("./mailBrand");
+/**
+ * DIE ZWEI KENNZEICHEN DER KALENDER-MAILS (19.08.2026) — als Base64.
+ *
+ * ERZEUGT von `scripts/mail-kind-icons.py`; von Hand geaendert wird hier
+ * nichts. Beide Bilder sind WEISS auf durchsichtigem Grund: die Farbe kommt
+ * aus der Flaeche darunter (Marineblau beim Termin, Gruen bei der Aufgabe,
+ * Rot bei der Absage), damit ein Bild fuer alle Faelle reicht.
+ */
+const APPOINTMENT_PNG_BASE64 = "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";
+const TASK_PNG_BASE64 = "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";
+/** Inline-Bild fuer `SendMailInput.inlineImages`; im HTML per `cid:` einsetzen. */
+const kindIconInline = (kind) => (kind === "TASK"
+    ? { cid: mailBrand_1.BRAND_ICON_TASK_CID, contentType: "image/png", contentBase64: TASK_PNG_BASE64 }
+    : { cid: mailBrand_1.BRAND_ICON_APPOINTMENT_CID, contentType: "image/png", contentBase64: APPOINTMENT_PNG_BASE64 });
+exports.kindIconInline = kindIconInline;
+//# sourceMappingURL=mailKindIcons.js.map

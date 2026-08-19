@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.adminModuleKeys = exports.adminPermissionNames = exports.ADMIN_PAGE_LEVELS = exports.pageLevelsFromPermissions = exports.moduleKeysForPageLevels = exports.permissionsForPageLevels = exports.permissionsForPage = exports.sanitizePageLevels = exports.clampPageLevel = exports.getPage = exports.ALL_PAGES = exports.PAGE_MODULES = exports.ALWAYS_ON_MODULE_KEYS = void 0;
+exports.adminModuleKeys = exports.adminPermissionNames = exports.ADMIN_PAGE_LEVELS = exports.pageLevelsFromPermissions = exports.moduleKeysForPageLevels = exports.permissionsForPageLevels = exports.CATALOG_GRANTED_PERMISSION_NAMES = exports.permissionsForPage = exports.sanitizePageLevels = exports.clampPageLevel = exports.getPage = exports.ALL_PAGES = exports.PAGE_MODULES = exports.ALWAYS_ON_MODULE_KEYS = void 0;
 const moduleCatalog_1 = require("./moduleCatalog");
 /** Immer im Paket — der Kalender steht allen offen (wie bisher). */
 exports.ALWAYS_ON_MODULE_KEYS = ['calendar'];
@@ -104,6 +104,15 @@ exports.PAGE_MODULES = [
                 grants: { read: ['crm.customers.view'], write: ['crm.activities.create'] },
             },
             {
+                // E-Mail / Outlook-Postfach (17.08.2026): lesen = CRM-Recht,
+                // schreiben = senden.
+                key: 'crm.mail',
+                path: '/crm/mail',
+                labelKey: 'nav.crmMail',
+                maxLevel: 2,
+                grants: { read: ['crm.customers.view'], write: ['mail.send'] },
+            },
+            {
                 key: 'crm.tasks',
                 path: '/crm/tasks',
                 labelKey: 'nav.crmTasks',
@@ -187,6 +196,39 @@ exports.PAGE_MODULES = [
         ],
     },
     {
+        // ── MONTAGE (Technikerarbeitsplatz) ─────────────────────────────────
+        // Eigene Zeile, kein Anhängsel der Projektverwaltung: der Techniker
+        // arbeitet AUSSCHLIESSLICH in /montage (eigene Termine, Rapporte,
+        // Übergaben) und darf dafür nicht die ganze Projektliste des Büros
+        // bekommen. Genau daran fehlte es bis 19.08.2026: `projects.report`
+        // war nur über die Seite "Projektverwaltung" auf Stufe 2 zu haben, also
+        // hatte eine hier gebaute Technikerrolle das Recht nie — jeder Aufruf
+        // aus /montage lief in "Erisim Engellendi ... projects.report".
+        //
+        // Stufe 1 = die eigenen Montagen und Rapporte ANSEHEN, Stufe 2 = sie
+        // ausfüllen, unterschreiben, abschliessen und Zusatzmaterial anfordern.
+        // Die Technikerendpunkte sind auf die anfragende Person eingeschränkt,
+        // darum genügt dort das Leserecht der Projekte.
+        key: 'montage',
+        labelKey: 'nav.montage',
+        catalogKeys: ['projects'],
+        pages: [
+            {
+                key: 'montage.workspace',
+                path: '/montage',
+                labelKey: 'nav.montageWorkspace',
+                maxLevel: 2,
+                grants: {
+                    read: ['projects.view'],
+                    // EIN Name (nicht mehr): so erkennt `pageLevelsFromPermissions`
+                    // die Altrollen der Techniker (projects.view + projects.report)
+                    // wieder als Stufe 2 statt sie auf "ansehen" zurückzusetzen.
+                    write: ['projects.report'],
+                },
+            },
+        ],
+    },
+    {
         key: 'inventory',
         labelKey: 'nav.inventory',
         catalogKeys: ['inventory'],
@@ -265,6 +307,18 @@ const permissionsForPage = (pageKey, level) => {
     return names;
 };
 exports.permissionsForPage = permissionsForPage;
+/**
+ * JEDER Rechtename, den dieser Katalog überhaupt vergeben kann. Beim Speichern
+ * einer Rolle darf nur INNERHALB dieser Menge weggenommen werden: Rechte, für
+ * die es keine Seitenzeile gibt (Wartung, Regie, Logistik, Arbeitsaufträge,
+ * Verwaltung), stehen nicht in der Tabelle und dürfen deshalb auch nicht still
+ * verschwinden, sobald jemand die Tabelle speichert.
+ */
+exports.CATALOG_GRANTED_PERMISSION_NAMES = new Set(exports.ALL_PAGES.flatMap((page) => [
+    ...(page.grants.read ?? []),
+    ...(page.grants.write ?? []),
+    ...(page.grants.delete ?? []),
+]));
 /** Die vollständige Rechtemenge einer Stufenkarte. */
 const permissionsForPageLevels = (levels) => {
     const names = new Set();

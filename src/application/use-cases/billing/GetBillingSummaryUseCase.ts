@@ -1,8 +1,7 @@
 import { IInvoiceRepository } from "../../../domain/repositories/IInvoiceRepository";
 import prisma from "../../../infrastructure/database/prisma.client";
+import { openAmount, round2 } from "../../utils/billingRounding";
 import { NextStageInfo, nextStageInfo, parsePaymentStages, PaymentStage } from "../../utils/paymentSchedule";
-
-const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
 export interface BillingSummary {
     baseAmount: number;
@@ -129,7 +128,11 @@ export class GetBillingSummaryUseCase {
         const paidPercent = round2(paid.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const paidAmount = round2(paid.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
         const remainingPercent = round2(Math.max(0, 100 - billedPercent));
-        const remainingAmount = round2(Math.max(0, baseAmount - billedAmount));
+        // %100 faturalandırılmış bir hedefte AÇIK BAKİYE KALMAZ — 0.01 bile
+        // (Vorgabe 19.08.2026). Kalan kuruş, her faturanın tutarı ayrı ayrı
+        // yuvarlandığı için oluşan yuvarlama tozudur; `openAmount` onu sıfırlar,
+        // gerçek bir fark (sipariş toplamı sonradan büyüdüyse) olduğu gibi kalır.
+        const remainingAmount = Math.max(0, openAmount(billedPercent, baseAmount, billedAmount));
         const paymentStages = parsePaymentStages(paymentStagesRaw);
 
         return {

@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TOTAL_PAGE_COUNT = exports.ensureSystemAdminRole = exports.resolvePageLevels = void 0;
 const express_1 = require("express");
+const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
@@ -63,15 +64,34 @@ const permissionIdsForNames = async (names) => {
     }
     return names.map((name) => known.get(name)).filter((id) => Boolean(id));
 };
-/** Rechtezeilen einer Rolle auf die Sollmenge bringen (nur bei Abweichung). */
+/**
+ * Rechtezeilen einer Rolle auf die Sollmenge bringen (nur bei Abweichung).
+ *
+ * Weggenommen wird NUR, was der Seitenkatalog selbst vergeben kann. Rechte
+ * ausserhalb des Katalogs (Wartung, Regie, Logistik, Arbeitsaufträge, die
+ * Verwaltungsrechte) stehen in dieser Tabelle nicht zur Wahl — ein Speichern
+ * hier ist also keine Aussage über sie und darf sie nicht löschen. Vorher hat
+ * jedes Speichern einer Technikerrolle `maintenance.tasks.manage` mitgerissen
+ * und die Person aus /montage ausgesperrt.
+ */
 const syncRolePermissions = async (roleId, permissionNames) => {
     const wantedIds = new Set(await permissionIdsForNames(permissionNames));
-    const currentRows = await prisma_client_1.default.rolePermission.findMany({ where: { roleId }, select: { permissionId: true } });
+    // Ein Join statt `include`: der Name entscheidet, ob eine Zeile
+    // überhaupt zur Tabelle gehört (siehe oben).
+    const currentRows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT rp.permissionId AS permissionId, p.permissionName AS permissionName
+        FROM RolePermission rp
+        JOIN Permission p ON p.id = rp.permissionId
+        WHERE rp.roleId = ${roleId}
+    `);
     const currentIds = new Set(currentRows.map((row) => row.permissionId));
-    if (setsEqual(currentIds, wantedIds))
-        return false;
-    const toRemove = [...currentIds].filter((id) => !wantedIds.has(id));
+    const removableIds = new Set(currentRows
+        .filter((row) => pageCatalog_1.CATALOG_GRANTED_PERMISSION_NAMES.has(row.permissionName))
+        .map((row) => row.permissionId));
+    const toRemove = [...removableIds].filter((id) => !wantedIds.has(id));
     const toAdd = [...wantedIds].filter((id) => !currentIds.has(id));
+    if (!toRemove.length && !toAdd.length)
+        return false;
     if (toRemove.length) {
         await prisma_client_1.default.rolePermission.deleteMany({ where: { roleId, permissionId: { in: toRemove } } });
     }

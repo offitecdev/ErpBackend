@@ -94,6 +94,10 @@ model ProjectReport {
   technicalNotes       String?   @db.Text
 
   customerSignature String?   @db.LongText
+  /// Unterschrift des Technikers auf dem Montage-Rapport (neben der
+  /// Kundensignatur; beide erscheinen im PDF).
+  technicianSignature String?   @db.LongText
+  technicianSignedAt  DateTime?
   isSigned          Boolean   @default(false)
   signedAt          DateTime?
 
@@ -206,11 +210,17 @@ model Appointment {
   icalUid                    String?                        @db.VarChar(191)
   icalSequence               Int                            @default(0)
   inviteSentAt               DateTime?
+  // WER DEN TERMIN ANGELEGT HAT (19.08.2026). Die automatische Teammail geht
+  // an das Montageteam, die CC-Liste UND an diese Person — sie hat den Termin
+  // gesetzt und muss die Bestaetigung im eigenen Posteingang haben.
+  // Optional, weil Termine aus der Zeit davor niemanden hinterlegt haben.
+  createdByEmployeeId        String?
   tenant                     Tenant                         @relation(fields: [tenantId], references: [id])
   project                    Project?                       @relation(fields: [projectId], references: [id])
   salesOrder                 SalesOrder?                    @relation(fields: [salesOrderId], references: [id])
   assignedTechnician         Employee?                      @relation("ProjectAppointmentTechnician", fields: [assignedTechId], references: [id])
   customer                   Customer?                      @relation(fields: [customerId], references: [id])
+  createdBy                  Employee?                      @relation("ProjectAppointmentCreator", fields: [createdByEmployeeId], references: [id])
   technicianAssignments      ProjectAppointmentAssignment[]
   reports                    ProjectReport[]                @relation("ProjectAppointmentReports")
   expenses                   ProjectExpense[]               @relation("ProjectAppointmentExpenses")
@@ -220,6 +230,7 @@ model Appointment {
   @@index([projectId])
   @@index([salesOrderId])
   @@index([assignedTechId])
+  @@index([createdByEmployeeId])
   @@index([startTime, endTime])
   @@index([tenantId, status, startTime])
   @@index([tenantId, assignedTechId, status, startTime])
@@ -398,6 +409,10 @@ model DeliveryReport {
   /// zusätzlich zu den live referenzierten Feldbericht-Bildern.
   images              Json?
   customerSignature   String?   @db.LongText
+  /// Unterschrift des ausführenden Technikers — der Rapport trägt zwei
+  /// Signaturen: Techniker (links) und Kunde (rechts).
+  technicianSignature String?   @db.LongText
+  technicianSignedAt  DateTime?
   isSigned            Boolean   @default(false)
   signedAt            DateTime?
   sentAt              DateTime?
@@ -497,10 +512,21 @@ model MailSetting {
   // Nur Antworten auf ERP-Mails aufnehmen (strenger Modus); sonst zählen
   // zusätzlich alle Nachrichten bekannter Kundenadressen.
   imapCaptureRepliesOnly Boolean   @default(false)
+  // Wie weit das Postfach zurueckreicht, in Monaten (1 oder 2; Vorgabe 2).
+  // Steuert BEIDES: wie weit der Abruf zurueckliest und welchen Zeitraum die
+  // Postfach-Seite aufschlaegt -- was man sieht, ist was das ERP fuehrt.
+  imapWindowMonths       Int       @default(2)
   // Fortschritt: UIDVALIDITY schützt vor wiederverwendeten UIDs (Ordner neu
   // aufgebaut → alles ab vorne prüfen).
   imapUidValidity        BigInt?
   imapLastUid            BigInt?
+  // GESENDETE POST (19.08.2026): der Ordner "Gesendet" wird mitgelesen, damit
+  // auch das im ERP steht, was jemand aus Outlook heraus verschickt hat. Er
+  // fuehrt einen EIGENEN Lesestand -- seine UIDs haben mit denen des
+  // Posteingangs nichts zu tun. Ordnername: `sentFolder` (leer = am
+  // `\Sent`-Merkmal des Servers gesucht).
+  imapSentUidValidity    BigInt?
+  imapSentLastUid        BigInt?
   imapLastSyncAt         DateTime?
   imapLastError          String?   @db.Text
   imapLastSummary        String?   @db.VarChar(255)

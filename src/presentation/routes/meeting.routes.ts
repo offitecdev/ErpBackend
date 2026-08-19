@@ -4,8 +4,8 @@ import { requireAuth } from '../middlewares/AuthMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
 import {
     buildMeetingCancellation,
-    inviteFailureMessage,
     queueMeetingCancellation,
+    queueMeetingTeamInvite,
     sendMeetingInvite,
 } from '../../infrastructure/services/calendarMailService';
 
@@ -114,8 +114,12 @@ router.post('/', requireAuth, async (req, res) => {
             },
             include: PARTICIPANT_INCLUDE,
         });
-        // KEINE Mail beim Anlegen (19.08.2026): die Einladung geht erst über
-        // POST /meetings/:id/send-invite raus, wenn jemand «Senden» drückt.
+        /* WIE BEIM PROJEKTTERMIN (19.08.2026, Vorgabe Samet): die AUFBIETUNG
+           der eigenen Leute geht beim Anlegen von selbst raus — an die
+           teilnehmenden Mitarbeitenden, die CC-Liste und die Person, die die
+           Besprechung angesetzt hat. Der KUNDE erfährt weiterhin erst über
+           «Besprechung senden» davon. Aufgaben laden niemanden ein. */
+        if (kind === 'MEETING') queueMeetingTeamInvite(meeting.id, user.id);
         res.status(201).json(meeting);
     } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -187,8 +191,10 @@ router.delete('/:id', requireAuth, async (req, res) => {
     }
 });
 
-// POST /meetings/:id/send-invite — «Besprechung senden»: die Kalender-Einladung
-// mit den im Fenster bestätigten Adressen (An = Kunde, CC = Mitarbeitende).
+/* POST /meetings/:id/send-invite — «Besprechung senden»: EIN Klick, ZWEI
+   Nachrichten (Kunde und Team), genau wie beim Projekttermin. Der Dienst wirft,
+   wenn keine der beiden rausgehen konnte; der Fehlertext steht dann schon
+   darin. */
 router.post('/:id/send-invite', requireAuth, async (req, res) => {
     try {
         const user = req.user!;
@@ -203,9 +209,9 @@ router.post('/:id/send-invite', requireAuth, async (req, res) => {
             cc,
             subject: req.body?.subject ? String(req.body.subject) : null,
             message: req.body?.message ? String(req.body.message) : null,
+            teamMail: req.body?.teamMail !== false,
         });
-        if (!result.sent) return res.status(400).json({ error: inviteFailureMessage(result) });
-        res.status(200).json({ sentAt: new Date().toISOString(), recipients: result.recipients });
+        res.status(200).json(result);
     } catch (error: any) {
         res.status(error?.status || 400).json({ error: error.message });
     }

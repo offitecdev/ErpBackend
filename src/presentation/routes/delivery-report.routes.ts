@@ -12,7 +12,10 @@ const canReport = requireAnyPermission(["projects.report", "projects.manage", "m
 const canView = requireAnyPermission(["projects.view", "projects.manage", "projects.report"]);
 
 router.get("/", requireAuth, canView, (req, res) => controller.list(req, res));
-router.get("/by-appointment/:appointmentId", requireAuth, canReport, (req, res) => controller.getByAppointment(req, res));
+// Lesen bleibt Lesen: die Uebergabe eines Termins darf auch die Stufe
+// "ansehen" der Seite Montage oeffnen (canReport gilt weiter fuer Anlegen,
+// Aendern und Unterschreiben).
+router.get("/by-appointment/:appointmentId", requireAuth, canView, (req, res) => controller.getByAppointment(req, res));
 router.get("/:id", requireAuth, canView, (req, res) => controller.getOne(req, res));
 router.post("/", requireAuth, canReport, (req, res) => controller.create(req, res));
 router.patch("/:id", requireAuth, requireAnyPermission(["projects.manage", "projects.report"]), (req, res) => controller.update(req, res));

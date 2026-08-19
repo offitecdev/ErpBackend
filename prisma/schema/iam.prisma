@@ -139,6 +139,7 @@ model Employee {
   purchaseProposals             PurchaseProposal[]
   projects                      Project[]                      @relation("ProjectManager")
   projectAppointments           Appointment[]                  @relation("ProjectAppointmentTechnician")
+  createdProjectAppointments    Appointment[]                  @relation("ProjectAppointmentCreator")
   projectAppointmentAssignments ProjectAppointmentAssignment[] @relation("ProjectAppointmentAssignmentTech")
   offerScheduleSlots            OfferScheduleSlot[]            @relation("OfferScheduleSlotTechnician")
   offerScheduleSlotAssignments  OfferScheduleSlotAssignment[]  @relation("OfferScheduleSlotAssignmentTech")

@@ -1,3 +1,5 @@
+import { BRAND_WAVE_PNG_BASE64 } from "./mailWaveAsset";
+
 /**
  * MARKENZEICHEN FÜR SYSTEM-MAILS (18.08.2026).
  *
@@ -14,8 +16,25 @@
  */
 
 export const BRAND_LOGO_CID = "offitec-brand-logo";
+/** Die Welle aus dem Briefkopf — dasselbe Bild wie im Angebots-PDF. */
+export const BRAND_WAVE_CID = "offitec-brand-wave";
 export const BRAND_NAVY = "#1f2654";
 export const BRAND_RED = "#d30f15";
+/**
+ * DIE FARBE DER AUFGABENKARTE (19.08.2026, Vorgabe Samet: "wie die Terminkarte,
+ * aber eine andere Farbe"). Dasselbe Gruen, das die Aufgabe im Kalender traegt
+ * (`--ofi-cal-task`) — wer die Aufgabe dort kennt, erkennt die Mail sofort.
+ */
+export const BRAND_TASK = "#0f766e";
+
+/**
+ * DIE ZEICHEN DER KARTE (19.08.2026). Ein Kalenderblatt fuer Termine und
+ * Besprechungen, ein Haken im Kreis fuer Aufgaben. Beide liegen als weisses
+ * PNG auf durchsichtigem Grund in `mailKindIcons.ts`; die Farbe kommt aus der
+ * Zelle darunter.
+ */
+export const BRAND_ICON_APPOINTMENT_CID = "offitec-kind-appointment";
+export const BRAND_ICON_TASK_CID = "offitec-kind-task";
 
 const BRAND_LOGO_PNG_BASE64 =
     "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAQAElEQVR4nOydB3gU1RbHz+wSeheeCoQEU5CiUqQICUSsoLQQQKWKFB827HSlCAg+FEGfIo8u" +
@@ -112,4 +131,14 @@ export const brandLogoInline = () => ({
     cid: BRAND_LOGO_CID,
     contentType: "image/png",
     contentBase64: BRAND_LOGO_PNG_BASE64,
+});
+
+/**
+ * Die Welle für den Briefkopf der Mail (`cid:${BRAND_WAVE_CID}`). Sie steht
+ * rechts neben dem Logo — genau wie auf der ersten Seite des Angebots-PDF.
+ */
+export const brandWaveInline = () => ({
+    cid: BRAND_WAVE_CID,
+    contentType: "image/png",
+    contentBase64: BRAND_WAVE_PNG_BASE64,
 });

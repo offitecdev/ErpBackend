@@ -37,9 +37,14 @@ const summariesFromInvoices = (targets, invoices) => {
     }
 };
 // The list only ever shows "total / invoiced / remaining", and remaining is
-// derived client-side as total - billed. Sending the whole summary would ship
-// every invoice row of every order, so the list gets just these two figures.
-const listBillingFigures = (summary) => summary ? { baseAmount: summary.baseAmount, billedAmount: summary.billedAmount } : null;
+// derived client-side from these figures. Sending the whole summary would ship
+// every invoice row of every order, so the list gets just these three.
+// `billedPercent` rides along because "fully billed" is decided on the share:
+// without it the list cannot tell a rappen of rounding dust (open balance 0.00)
+// from a real remainder.
+const listBillingFigures = (summary) => summary
+    ? { baseAmount: summary.baseAmount, billedAmount: summary.billedAmount, billedPercent: summary.billedPercent }
+    : null;
 const allowedOrderModes = new Set(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
 class SalesOrderController {
     /**
@@ -536,6 +541,10 @@ class SalesOrderController {
                                 projectId: project.id,
                                 salesOrderId: salesOrder.id,
                                 customerId: tender.customerId,
+                                // Wer den Auftrag erteilt, hat auch diese Termine gesetzt.
+                                // KEINE automatische Teammail hier: ein Auftrag legt
+                                // mehrere Termine auf einmal an, das waere ein Schwall.
+                                createdByEmployeeId: employeeId,
                                 assignedTechId: slot.assignedTechId || null,
                                 startTime: slot.startTime,
                                 endTime: slot.endTime,

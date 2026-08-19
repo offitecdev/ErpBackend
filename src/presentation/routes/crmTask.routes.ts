@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
+import { queueTaskAssignmentMail } from '../../infrastructure/services/taskMailService';
 import { flipOverdueTasks } from '../../infrastructure/services/crmTaskMaintenance';
 import { GetUserPermissionsUseCase } from '../../application/use-cases/auth/GetUserPermissionsUseCase';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
@@ -546,6 +547,10 @@ router.post('/tasks', requireAuth, requirePermission('crm.activities.create'), a
         // Fremd zugewiesene Aufgaben melden sich bei den Verantwortlichen.
         if (kind === 'TASK') {
             await notify(user.tenantId, assigneeIds.filter((id) => id !== user.id), created, await actorName(user.id));
+            /* … und zusätzlich per Mail (19.08.2026): die Meldung im ERP sieht
+               nur, wer gerade angemeldet ist. Die Mail geht NUR an die
+               Verantwortlichen, nie an die Person, die die Aufgabe verteilt hat. */
+            queueTaskAssignmentMail(created.id, user.id);
         }
         res.status(201).json(created);
     } catch (error: any) {
@@ -617,7 +622,10 @@ router.post('/tasks/bulk', requireAuth, requirePermission('crm.activities.create
             }));
             const actor = await actorName(user.id);
             for (const row of createdIds) {
-                if (row.kind === 'TASK') await notify(user.tenantId, row.assigneeIds.filter((id) => id !== user.id), row, actor);
+                if (row.kind === 'TASK') {
+                    await notify(user.tenantId, row.assigneeIds.filter((id) => id !== user.id), row, actor);
+                    queueTaskAssignmentMail(row.id, user.id);
+                }
             }
         }
         res.status(201).json({ createdCount: createdIds.length, errors });
@@ -706,7 +714,14 @@ router.patch('/tasks/:id', requireAuth, async (req, res) => {
             await replaceAssignees(existing.id, assigneeIds);
             const before = new Set(existing.assignees.map((row) => row.employeeId));
             const fresh = assigneeIds.filter((id) => !before.has(id) && id !== user.id);
-            if (fresh.length && existing.kind === 'TASK') await notify(user.tenantId, fresh, existing, await actorName(user.id));
+            if (fresh.length && existing.kind === 'TASK') {
+                await notify(user.tenantId, fresh, existing, await actorName(user.id));
+                /* Nur die NEU hinzugekommenen Personen bekommen Post — wer schon
+                   vorher verantwortlich war, hat ihre Mail längst. */
+                queueTaskAssignmentMail(existing.id, user.id, {
+                    skipEmployeeIds: existing.assignees.map((row) => row.employeeId),
+                });
+            }
         }
         res.status(200).json({ ...updated, assigneeIds: assigneeIds ?? existing.assignees.map((row) => row.employeeId) });
     } catch (error: any) {

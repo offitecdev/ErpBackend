@@ -111,17 +111,13 @@ router.patch('/:id/read', AuthMiddleware_1.requireAuth, async (req, res) => {
 router.patch('/read-all', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;
-        await prisma_client_1.default.notification.updateMany({
-            where: {
-                tenantId: user.tenantId,
-                isRead: false,
-                OR: [
-                    { recipientEmployeeId: user.id },
-                    { recipientEmployeeId: null },
-                ],
-            },
-            data: { isRead: true, readAt: new Date() },
-        });
+        await prisma_client_1.default.$executeRaw `
+            UPDATE Notification
+               SET isRead = 1, readAt = NOW(3)
+             WHERE tenantId = ${user.tenantId}
+               AND isRead = 0
+               AND (recipientEmployeeId = ${user.id} OR recipientEmployeeId IS NULL)
+        `;
         res.status(200).json({ message: 'Bildirimler okundu.' });
     }
     catch (error) {

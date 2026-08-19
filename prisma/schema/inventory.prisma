@@ -298,3 +298,32 @@ model ArticleSupplier {
   // Tedarikçi özeti her zaman tenant içindeki tek ürüne daralır.
   @@index([tenantId, articleId])
 }
+
+/// MENGENEINHEIT (Einstellungen → Module → Lager → Einheiten). Je Mandant eine
+/// eigene, pflegbare Liste — Stück, Meter, Kilogramm, Liter, Set, Packung … —
+/// aus der beim Artikel gewählt wird. Eigene Einheiten kommen einfach dazu.
+///
+/// `code` ist das kurze Zeichen, das neben der Menge steht ("Stk") und das auf
+/// dem Artikel gespeichert wird (`Article.unit` bleibt ein Text, damit alle
+/// bestehenden Belege und Importe weiterlaufen); `name` ist der ausgeschriebene
+/// Name im Auswahlfeld ("Stück"). Der Erstbestand steht in
+/// `shared/measurementUnits.ts`.
+///
+/// Eine benutzte Einheit wird nicht gelöscht, sondern STILLGELEGT
+/// (`isActive = false`): sie verschwindet aus der Auswahl, bestehende Artikel
+/// behalten sie aber lesbar. Genau eine Einheit je Mandant trägt `isDefault`
+/// und wird neuen Artikeln vorgegeben.
+model MeasurementUnit {
+  id        String   @id
+  tenantId  String
+  code      String   @db.VarChar(24)
+  name      String   @db.VarChar(60)
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive, sortOrder])
+}

@@ -53,14 +53,19 @@ router.get('/', requirePermission('projects.view'), (req, res) => controller.lis
 router.get('/options/technicians', requireAnyPermission(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
 router.get('/appointments', requireAnyPermission(['projects.view', 'projects.manage']), (req, res) => controller.listAppointments(req, res));
 router.get('/appointments/:appointmentId/detail', requireAnyPermission(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentDetail(req, res));
-router.get('/technician/installations', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
-router.get('/technician/installations/:appointmentId/detail', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
-router.get('/technician/installations/:appointmentId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
+// Technikerendpunkte: jede Abfrage ist auf die anfragende Person
+// eingeschraenkt (assignedTechId / employeeId), darum genuegt zum LESEN das
+// Projekt-Leserecht - so traegt Stufe 1 der Seite "Montage" auch etwas.
+// Geschrieben (abschliessen, Rapport, Unterschrift) wird weiterhin nur mit
+// 'projects.report' bzw. dem Wartungsrecht.
+router.get('/technician/installations', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
+router.get('/technician/installations/:appointmentId/detail', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
+router.get('/technician/installations/:appointmentId', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
-router.get('/technician/reports', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
-router.get('/technician/report-orders/:salesOrderId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
-router.get('/technician/reports/:reportId/resources', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
-router.get('/technician/reports/:reportId', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
+router.get('/technician/reports', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
+router.get('/technician/report-orders/:salesOrderId', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
+router.get('/technician/reports/:reportId/resources', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportResources(req, res));
+router.get('/technician/reports/:reportId', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReport(req, res));
 // Malzeme/ürün birleşmesi (2026-08-14): saha ekranlarının "malzeme" kataloğu
 // artık ürün (Article) listesidir; yanıt eski ProjectMaterial biçimini korur.
 router.get('/materials', requireAnyPermission(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMaterials(req, res));

@@ -17,8 +17,9 @@ import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { dispatchMail } from '../../infrastructure/services/outlook/MailDispatchService';
 import {
     buildAppointmentCancellation,
-    inviteFailureMessage,
     queueAppointmentCancellation,
+    queueAppointmentTeamInvite,
+    sanitizeInviteAttachments,
     sendAppointmentInvite,
 } from '../../infrastructure/services/calendarMailService';
 import { getCompanyTreeTenantIds } from './serviceTenantScope';
@@ -2191,6 +2192,19 @@ export class ProjectController {
                 usedMaterials: Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : undefined,
             });
 
+            // Technikerunterschrift reist mit dem Rapport: mitgeschickt = setzen
+            // oder löschen, weggelassen = unverändert. Die Kundensignatur bleibt
+            // ihrem eigenen Weg (Signaturanfrage / Abschluss) vorbehalten.
+            if (req.body.technicianSignature !== undefined) {
+                const signature = String(req.body.technicianSignature || '').startsWith('data:image/')
+                    ? String(req.body.technicianSignature)
+                    : null;
+                await (prisma as any).projectReport.update({
+                    where: { id: reportResult.id },
+                    data: { technicianSignature: signature, technicianSignedAt: signature ? new Date() : null },
+                });
+            }
+
             // Denetim kaydı best-effort'tür; kullanıcı yanıtını ayrı bir INSERT
             // turu için bekletmez.
             void this.writeReportLog(reportResult.id, req.user!.id, 'SAVED');
@@ -2354,22 +2368,27 @@ export class ProjectController {
         try {
             const reportId = req.params.reportId as string;
             const { signatureBase64 } = req.body;
+            // `role: 'TECHNICIAN'` = Unterschrift des Technikers selbst; sie
+            // schliesst den Rapport NICHT ab und löst keine Meldung aus.
+            const technician = String(req.body.role || "").toUpperCase() === "TECHNICIAN";
             const report = await (prisma as any).projectReport.findFirst({
                 where: { id: reportId, project: { tenantId: req.user!.tenantId } },
                 select: { id: true, projectId: true },
             });
             if (!report) return res.status(404).json({ error: "Saha raporu bulunamadı." });
-            await this.reportRepository.signReport(reportId, signatureBase64);
+            await this.reportRepository.signReport(reportId, signatureBase64, technician ? 'TECHNICIAN' : 'CUSTOMER');
             await this.writeReportLog(reportId, req.user!.id, 'SIGNED');
-            void notifyProjectEvent({
-                tenantId: req.user!.tenantId,
-                projectId: report.projectId,
-                event: 'SIGNATURE_RECEIVED',
-                report: 'FIELD',
-                reportId,
-                actorEmployeeId: req.user!.id,
-            });
-            res.status(200).json({ message: "Rapor müşteri tarafından imzalandı." });
+            if (!technician) {
+                void notifyProjectEvent({
+                    tenantId: req.user!.tenantId,
+                    projectId: report.projectId,
+                    event: 'SIGNATURE_RECEIVED',
+                    report: 'FIELD',
+                    reportId,
+                    actorEmployeeId: req.user!.id,
+                });
+            }
+            res.status(200).json({ message: "Rapor imzalandı." });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -2601,8 +2620,18 @@ export class ProjectController {
 
             let report = reportResult;
             const signatureBase64 = typeof req.body.signatureBase64 === "string" ? req.body.signatureBase64 : "";
+            // Der Techniker unterschreibt im Rapport-Editor selbst; sie reist mit
+            // dem Abschluss mit, damit sie nicht beim "Abschliessen" verlorengeht.
+            const technicianSignature = String(req.body.technicianSignature || "").startsWith("data:image/")
+                ? String(req.body.technicianSignature)
+                : null;
+            if (technicianSignature) {
+                await this.reportRepository.signReport(reportResult.id, technicianSignature, 'TECHNICIAN');
+            }
             if (signatureBase64) {
                 await this.reportRepository.signReport(reportResult.id, signatureBase64);
+            }
+            if (signatureBase64 || technicianSignature) {
                 report = await this.reportRepository.findById(reportResult.id) || reportResult;
             }
 
@@ -3377,6 +3406,8 @@ export class ProjectController {
                     endTime: parsed.endTime,
                     notes: parsed.notes ?? null,
                     ccEmails: parsed.ccEmails ?? [],
+                    // Wer den Termin setzt, bekommt die automatische Teammail mit.
+                    createdByEmployeeId: req.user!.id,
                     status: "BOOKED",
                     isLocked: true
                 },
@@ -3387,9 +3418,16 @@ export class ProjectController {
             });
             await this.replaceProjectAppointmentAssignments(appointment.id, technicianIds);
 
-            // KEINE Mail beim Anlegen (Vorgabe 19.08.2026): die Kalender-Einladung
-            // an den Kunden geht erst mit «Termin an Kunden senden» raus —
-            // siehe sendAppointmentInvite (POST …/appointments/:id/send-invite).
+            /* DIE INTERNE AUFBIETUNG GEHT SOFORT RAUS (Vorgabe 19.08.2026): an das
+               zugeteilte Team, die CC-Liste und die Person, die den Termin angelegt
+               hat. Feuern und vergessen — ein stummer Mailserver darf das Anlegen
+               nicht scheitern lassen; die Antwort wartet nicht darauf.
+
+               An den KUNDEN geht weiterhin nichts von selbst: seine Einladung
+               verlässt das Haus erst mit «Termin senden» (POST
+               …/appointments/:id/send-invite), und nur dort reisen auch die
+               Checklisten mit (die PDFs entstehen im Browser). */
+            queueAppointmentTeamInvite(appointment.id, req.user!.id);
 
             if (technicianIds.length) {
                 await this.notifyMany((project as any).tenantId, technicianIds, {
@@ -3561,10 +3599,18 @@ export class ProjectController {
 
     /**
      * POST /projects/appointments/:appointmentId/send-invite
-     * «Termin an Kunden senden» — DIE Stelle, an der die Kalender-Einladung
-     * rausgeht (Vorgabe 19.08.2026: nie von selbst). Body: { to, cc[], subject?,
-     * message? }. An = Kunde, CC = Mitarbeitende. Wird abgewartet, damit das
-     * Fenster ein echtes Ergebnis zeigt.
+     * «Termin senden» — DIE Stelle, an der die Kalender-Einladung rausgeht
+     * (Vorgabe 19.08.2026: nie von selbst).
+     *
+     * Body: { to, cc[], subject?, message?, teamMail?, attachments[] }
+     *   to/cc/subject/message  — die von Hand verfasste Mail an den KUNDEN.
+     *   teamMail (Standard an) — zusätzlich die automatische Mail an das
+     *                            Montageteam, die CC-Liste und die Person, die
+     *                            den Termin angelegt hat.
+     *   attachments            — die Checklisten des Projekts/Auftrags als PDF,
+     *                            im Browser gezeichnet; sie hängen NUR an der
+     *                            Teammail.
+     * Wird abgewartet, damit das Fenster ein echtes Ergebnis zeigt.
      */
     async sendAppointmentInvite(req: Request, res: Response) {
         try {
@@ -3581,9 +3627,10 @@ export class ProjectController {
                 cc,
                 subject: req.body?.subject ? String(req.body.subject) : null,
                 message: req.body?.message ? String(req.body.message) : null,
+                teamMail: req.body?.teamMail !== false,
+                attachments: sanitizeInviteAttachments(req.body?.attachments),
             });
-            if (!result.sent) return res.status(400).json({ error: inviteFailureMessage(result) });
-            res.status(200).json({ sentAt: new Date().toISOString(), recipients: result.recipients });
+            res.status(200).json(result);
         } catch (error: any) {
             res.status(error?.status || 400).json({ error: error.message });
         }

@@ -20,6 +20,16 @@ export type InvoiceSummaryRow = Pick<
     "id" | "salesOrderId" | "invoiceNumber" | "billingType" | "kind" | "billedPercent" | "amount" | "status" | "createdAt"
 >;
 
+/**
+ * Ne kadarının faturalandığı — hem yüzde hem FRANK. İkisi tek toplama
+ * sorgusundan gelir: kapanış faturası kalan frankı kuruşu kuruşuna alabilsin
+ * diye tutar toplamı da gerekir (bkz. `CreateInvoiceUseCase`).
+ */
+export interface BilledSoFar {
+    percent: number;
+    amount: number;
+}
+
 export interface IInvoiceRepository {
     createWithItems(invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice>;
     updateWithItems(id: string, invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice>;
@@ -29,8 +39,8 @@ export interface IInvoiceRepository {
     list(filter: IInvoiceFilter): Promise<Invoice[]>;
     listForOrders(tenantId: string, salesOrderIds: string[]): Promise<InvoiceSummaryRow[]>;
     countForTenant(tenantId: string): Promise<number>;
-    sumBilledPercentForOrder(salesOrderId: string): Promise<number>;
-    sumBilledPercentForProject(projectId: string): Promise<number>;
+    sumBilledForOrder(salesOrderId: string): Promise<BilledSoFar>;
+    sumBilledForProject(projectId: string): Promise<BilledSoFar>;
     updateStatus(id: string, tenantId: string, status: InvoiceStatus): Promise<Invoice>;
     /** Kalıcı silme — yalnızca kullanım senaryosu iptal edilmiş faturalar için çağırır. */
     delete(id: string, tenantId: string): Promise<void>;

@@ -27,6 +27,7 @@ const inventory_routes_1 = __importDefault(require("./presentation/routes/invent
 const project_routes_1 = __importDefault(require("./presentation/routes/project.routes"));
 const booking_routes_1 = __importDefault(require("./presentation/routes/booking.routes"));
 const mail_routes_1 = __importDefault(require("./presentation/routes/mail.routes"));
+const mailbox_routes_1 = __importDefault(require("./presentation/routes/mailbox.routes"));
 const checklist_routes_1 = __importDefault(require("./presentation/routes/checklist.routes"));
 const delivery_report_routes_1 = __importDefault(require("./presentation/routes/delivery-report.routes"));
 const signature_request_routes_1 = __importDefault(require("./presentation/routes/signature-request.routes"));
@@ -38,9 +39,12 @@ const billing_routes_1 = __importDefault(require("./presentation/routes/billing.
 const notification_routes_1 = __importDefault(require("./presentation/routes/notification.routes"));
 const meeting_routes_1 = __importDefault(require("./presentation/routes/meeting.routes"));
 const crm_routes_1 = __importDefault(require("./presentation/routes/crm.routes"));
+const crmTask_routes_1 = __importDefault(require("./presentation/routes/crmTask.routes"));
 const forms_routes_1 = __importDefault(require("./presentation/routes/forms.routes"));
 const settingsGate_routes_1 = __importDefault(require("./presentation/routes/settingsGate.routes"));
 const reminderSettings_routes_1 = __importDefault(require("./presentation/routes/reminderSettings.routes"));
+// Mengeneinheiten des Lagers (Einstellungen -> Module -> Lager -> Einheiten).
+const measurementUnit_routes_1 = __importDefault(require("./presentation/routes/measurementUnit.routes"));
 const authorization_routes_1 = __importDefault(require("./presentation/routes/authorization.routes"));
 // Rollenvorlagen (Einstellungen → Berechtigungen) und der Kennwortwunsch aus
 // dem eigenen Profil — beide neu am 17.08.2026.
@@ -51,6 +55,7 @@ const files_routes_1 = __importDefault(require("./presentation/routes/files.rout
 const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashboard.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const ReminderEngine_1 = require("./infrastructure/services/ReminderEngine");
+const ImapCaptureService_1 = require("./infrastructure/services/ImapCaptureService");
 const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
 const prisma_client_1 = __importDefault(require("./infrastructure/database/prisma.client"));
 const app = (0, express_1.default)();
@@ -146,6 +151,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/projects`, project_routes_1.default);
     app.use(`${prefix}/booking`, booking_routes_1.default);
     app.use(`${prefix}/mail`, mail_routes_1.default);
+    // Firmenpostfach: Abruf vom eigenen Mailserver + Nachrichten (mailbox.routes.ts).
+    app.use(`${prefix}/mail`, mailbox_routes_1.default);
     app.use(`${prefix}/settings/checklists`, checklist_routes_1.default);
     app.use(`${prefix}/delivery-reports`, delivery_report_routes_1.default);
     app.use(`${prefix}/signature-requests`, signature_request_routes_1.default);
@@ -155,10 +162,12 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/notifications`, notification_routes_1.default);
     app.use(`${prefix}/meetings`, meeting_routes_1.default);
     app.use(`${prefix}/crm`, crm_routes_1.default);
+    app.use(`${prefix}/crm`, crmTask_routes_1.default);
     // Checklisten / Formulare / Vorlagen (CRM-Modul, siehe forms.routes.ts).
     app.use(`${prefix}/forms`, forms_routes_1.default);
     app.use(`${prefix}/settings`, settingsGate_routes_1.default);
     app.use(`${prefix}/settings/reminder-settings`, reminderSettings_routes_1.default);
+    app.use(`${prefix}/settings/units`, measurementUnit_routes_1.default);
     app.use(`${prefix}/fx`, fx_routes_1.default);
     app.use(`${prefix}/files`, files_routes_1.default);
     app.use(`${prefix}/dashboard`, dashboard_routes_1.default);
@@ -170,6 +179,7 @@ app.listen(PORT, () => {
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     (0, MaintenanceReminderService_1.startMaintenanceReminderService)();
     (0, ReminderEngine_1.startReminderEngine)();
+    (0, ImapCaptureService_1.startImapCaptureService)();
     // Open the remote-DB connection pool now instead of on the first request,
     // which otherwise pays the connection handshakes itself. Several parallel
     // probes force several pool connections open: batch saves fire their

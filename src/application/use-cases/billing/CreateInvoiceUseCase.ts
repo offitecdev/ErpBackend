@@ -127,9 +127,10 @@ export class CreateInvoiceUseCase {
         // summed billedPercent across active invoices is the billing progress
         // (matches GetBillingSummaryUseCase). Corrections go through the cancel
         // flow, which releases the cancelled invoice's percentage again.
-        const billedSoFar = salesOrderId
-            ? await this.invoiceRepository.sumBilledPercentForOrder(salesOrderId)
-            : await this.invoiceRepository.sumBilledPercentForProject(projectId!);
+        const billed = salesOrderId
+            ? await this.invoiceRepository.sumBilledForOrder(salesOrderId)
+            : await this.invoiceRepository.sumBilledForProject(projectId!);
+        const billedSoFar = billed.percent;
         const remaining = Math.max(0, round2(100 - billedSoFar));
         if (remaining <= 0.005) {
             throw new Error("Bu hedef zaten tamamen faturalandırılmış.");
@@ -170,7 +171,17 @@ export class CreateInvoiceUseCase {
             percent = round2(requested);
         }
 
-        const amount = round2((baseAmount * percent) / 100);
+        // KAPANIŞ FATURASI KALAN FRANKI ALIR (Vorgabe 19.08.2026). Yüzdeden
+        // hesaplanan tutar her faturada kuruşa yuvarlandığı için (%33.33 +
+        // %33.33 + %33.34 → 4'094.99 ≠ 4'095.00), hedefi %100'e tamamlayan
+        // fatura yüzdesinden değil, AÇIK BAKİYEDEN hesaplanır: böylece
+        // faturaların toplamı sözleşme tutarına birebir oturur ve geriye 0.01
+        // bile kalmaz. Aradaki fark sipariş toplamı sonradan değiştiği için
+        // büyümüşse de kapanış faturası onu kapatır — açık bakiye 0'dır.
+        const closesTarget = percent >= remaining - 0.005;
+        const amount = closesTarget
+            ? Math.max(0, round2(baseAmount - billed.amount))
+            : round2((baseAmount * percent) / 100);
 
         // Scale line items by percent
         const lineItems: InvoiceLineItemInput[] = sources.map((source) => {
@@ -184,6 +195,18 @@ export class CreateInvoiceUseCase {
                 lineTotal,
             };
         });
+
+        // Kalemler faturanın tutarını AYNEN toplamalı: kapanışta oluşan yuvarlama
+        // farkı son kaleme yazılır (tek kalemli sipariş faturasında bu, kalemi
+        // doğrudan kalan bakiyeye eşitler).
+        const lastItem = lineItems[lineItems.length - 1];
+        if (lastItem) {
+            const drift = round2(amount - lineItems.reduce((sum, item) => sum + item.lineTotal, 0));
+            if (drift !== 0) {
+                lastItem.lineTotal = round2(lastItem.lineTotal + drift);
+                lastItem.unitAmount = lastItem.lineTotal;
+            }
+        }
 
         const invoiceData = {
             tenantId,
