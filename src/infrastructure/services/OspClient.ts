@@ -94,15 +94,28 @@ const describeFetchFailure = (error: any, url: string): string => {
  * Einen Bearbeitungsstand an die OSP melden. `salesmanEmail` ist bei
  * "under review" und "offer has been sent" Pflicht (OSP antwortet sonst 400) —
  * die Prüfung dazu macht der Aufrufer, hier wird nur übertragen.
+ *
+ * Seit Vertragsfassung (2) darf die zuständige Person als OBJEKT mitgehen
+ * (§3 "salesman"): hat die Adresse drüben KEIN OSP-Konto, sieht die Kundschaft
+ * dann trotzdem einen Namen statt einer nackten E-Mail-Adresse. Der Name wird
+ * am ersten Leerzeichen in Vor-/Nachname geteilt — mehr wissen wir nicht.
  */
 export const reportOspOfferStatus = async (
     endpoint: OspEndpoint,
     reference: string,
     wireStatus: string,
     salesmanEmail?: string | null,
+    salesmanName?: string | null,
 ): Promise<OspCallResult> => {
     if (!endpointReady(endpoint)) return { ok: false, skipped: true };
     const url = `${baseUrl(endpoint)}/integration/offer-status`;
+    const fullName = (salesmanName || '').trim();
+    const [firstName, ...rest] = fullName.split(/\s+/);
+    const salesman = salesmanEmail
+        ? (fullName
+            ? { salesman: { email: salesmanEmail, name: firstName, surname: rest.join(' ') || undefined } }
+            : { salesmanEmail })
+        : {};
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -113,8 +126,38 @@ export const reportOspOfferStatus = async (
             body: JSON.stringify({
                 projectNumber: reference,
                 status: wireStatus,
-                ...(salesmanEmail ? { salesmanEmail } : {}),
+                ...salesman,
             }),
+            signal: AbortSignal.timeout(OSP_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+            const message = await response.text().catch(() => '');
+            return { ok: false, error: `OSP ${response.status}: ${message.slice(0, 300)}` };
+        }
+        const rows = (await response.json().catch(() => [])) as OspStatusRow[];
+        return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+    } catch (error: any) {
+        return { ok: false, error: describeFetchFailure(error, url) };
+    }
+};
+
+/**
+ * Eine Offertanfrage bei der OSP ZURÜCKZIEHEN (§4b, Vertragsfassung (2)):
+ * DELETE /integration/offer-status/{reference}. Drüben wird nichts gelöscht —
+ * nur Status und Zuständigkeit werden geleert, die Karte zeigt wieder "keine
+ * Offerte" und die Kundschaft darf neu anfragen. Idempotent: ein Verweis ohne
+ * laufende Anfrage antwortet 200 mit unverändertem Stand.
+ */
+export const withdrawOspOfferStatus = async (
+    endpoint: OspEndpoint,
+    reference: string,
+): Promise<OspCallResult> => {
+    if (!endpointReady(endpoint)) return { ok: false, skipped: true };
+    const url = `${baseUrl(endpoint)}/integration/offer-status/${encodeURIComponent(reference)}`;
+    try {
+        const response = await fetch(url, {
+            method: 'DELETE',
+            headers: { 'X-OSP-Integration-Key': (endpoint.ospApiKey || '').trim() },
             signal: AbortSignal.timeout(OSP_TIMEOUT_MS),
         });
         if (!response.ok) {

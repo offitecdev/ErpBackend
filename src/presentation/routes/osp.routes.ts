@@ -103,10 +103,13 @@ const reportDocumentStatus = async (
     doc: { id: string; reference: string },
     internalStatus: string,
     salesmanEmail?: string | null,
+    // Mitgeschickt als §3-"salesman"-Objekt, damit die Kundschaft drüben einen
+    // Namen sieht, auch wenn die Adresse dort kein OSP-Konto hat.
+    salesmanName?: string | null,
 ): Promise<void> => {
     const wireStatus = OSP_WIRE_STATUS[internalStatus];
     if (!wireStatus || !setting) return;
-    const result = await reportOspOfferStatus(setting, doc.reference, wireStatus, salesmanEmail);
+    const result = await reportOspOfferStatus(setting, doc.reference, wireStatus, salesmanEmail, salesmanName);
     await (prisma as any).ospDocument.update({
         where: { id: doc.id },
         data: result.ok
@@ -266,6 +269,60 @@ router.post('/webhook', async (req, res) => {
     }
 });
 
+/* ── 1b) Änderungs-Webhook (Vertragsfassung (2), §1b) ────────────────────────
+   Die Kundschaft arbeitet nach der Anfrage weiter (Neuberechnung, Optionen,
+   Sprache …) — die OSP rendert das Datenblatt neu und meldet das hier als
+   EINZELNES Objekt je Änderung: { projectNumber, projectName, model, change,
+   offerStatus, pdfUrl, changed_at }. Wir holen das NEUE PDF und lesen die
+   Angaben neu aus; Bearbeitungsstand, Zuständigkeit und die Angaben der
+   anfragenden Person bleiben unangetastet (die stehen nur im §1-Webhook).
+   Eigene Adresse (DOCUMENT_CHANGE_WEBHOOK_URL), derselbe Schlüssel wie §1. */
+
+router.post('/webhook/change', async (req, res) => {
+    try {
+        const key = asTrimmed(req.header('x-osp-integration-key'));
+        const settings = await (prisma as any).ospSetting.findMany({
+            where: { NOT: { webhookKey: null } },
+        });
+        const armed = settings.filter((row: any) => asTrimmed(row.webhookKey));
+        if (!armed.length) {
+            return res.status(503).json({ message: 'OSP integration key is not configured.' });
+        }
+        const setting = key ? armed.find((row: any) => keysMatch(asTrimmed(row.webhookKey) || '', key)) : null;
+        if (!setting) return res.status(401).json({ message: 'Missing or wrong X-OSP-Integration-Key.' });
+
+        const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
+        const reference = asTrimmed(body?.projectNumber);
+        if (!reference) return res.status(400).json({ message: 'projectNumber is required.' });
+
+        const doc = await (prisma as any).ospDocument.findUnique({
+            where: { tenantId_reference: { tenantId: setting.tenantId, reference } },
+            select: { id: true, datasheetUrl: true },
+        });
+        // Eine Änderung zu einem Beleg, den wir nie bekommen haben, ist kein
+        // Fehler — die OSP wiederholt nicht, also freundlich quittieren.
+        if (!doc) return res.status(200).json({ received: 1, matched: 0 });
+
+        const url = pickDatasheetUrl(body);
+        const data: any = {};
+        const projectName = asTrimmed(body?.projectName);
+        const model = asTrimmed(body?.model);
+        if (projectName) data.projectName = projectName;
+        if (model) data.model = model;
+        if (url) data.datasheetUrl = url;
+        if (Object.keys(data).length) {
+            await (prisma as any).ospDocument.update({ where: { id: doc.id }, data });
+        }
+
+        res.status(200).json({ received: 1, matched: 1, datasheets: url ? 1 : 0 });
+        // Das NEUE Datenblatt ersetzt die abgelegte Kopie samt Angaben — im
+        // Hintergrund, die OSP wartet nur auf die Quittung.
+        if (url) void storeDatasheet(setting, doc.id, url).catch(() => undefined);
+    } catch (error: any) {
+        res.status(500).json({ message: error?.message || 'Change webhook failed.' });
+    }
+});
+
 /* ── 2) Belegliste der OSP-Seite (Seiten zu 15) ──────────────────────────── */
 
 router.get('/documents', requireAuth, requirePermission('tenders.view'), async (req, res) => {
@@ -310,6 +367,29 @@ router.get('/documents', requireAuth, requirePermission('tenders.view'), async (
             }),
         ]);
 
+        /* Selbstheilung verwaister Verknüpfungen (27.08.2026): wurde die
+           Offerte einer Zeile gelöscht, ohne dass die Zeile freigegeben wurde
+           (Löschung über einen älteren Serverstand), verliert sie ihre
+           tenderId HIER — und bietet sofort wieder "Offerte erstellen" an. */
+        const linked = items.filter((doc: any) => doc.tenderId);
+        if (linked.length) {
+            const existingTenders = new Set((await prisma.tender.findMany({
+                where: { id: { in: linked.map((doc: any) => doc.tenderId) } },
+                select: { id: true },
+            })).map((t) => t.id));
+            const orphaned = linked.filter((doc: any) => !existingTenders.has(doc.tenderId));
+            if (orphaned.length) {
+                await (prisma as any).ospDocument.updateMany({
+                    where: { id: { in: orphaned.map((doc: any) => doc.id) } },
+                    data: { tenderId: null, tenderNumber: null },
+                });
+                for (const doc of orphaned) {
+                    doc.tenderId = null;
+                    doc.tenderNumber = null;
+                }
+            }
+        }
+
         /* Selbstpflege des Standes: hängt an einer Zeile eine Offerte, deren
            Angebotsmail inzwischen HINAUS ist, rückt die Zeile von IN_OFFER auf
            SENT vor — und die OSP bekommt "offer has been sent" gemeldet. So
@@ -325,7 +405,7 @@ router.get('/documents', requireAuth, requirePermission('tenders.view'), async (
                 if (!sentTenders.has(doc.tenderId)) continue;
                 doc.status = 'SENT';
                 await (prisma as any).ospDocument.update({ where: { id: doc.id }, data: { status: 'SENT' } });
-                void reportDocumentStatus(feed.setting, doc, 'SENT', doc.salespersonEmail).catch(() => undefined);
+                void reportDocumentStatus(feed.setting, doc, 'SENT', doc.salespersonEmail, doc.salespersonName).catch(() => undefined);
             }
         }
 
@@ -423,7 +503,7 @@ router.patch('/documents/:id', requireAuth, requirePermission('tenders.manage'),
         const statusChanged = nextStatus !== doc.status;
         const personChanged = nextEmail !== doc.salespersonEmail;
         if ((statusChanged || personChanged) && (nextStatus === 'IN_OFFER' || nextStatus === 'SENT')) {
-            await reportDocumentStatus(feed.setting, updatedDoc, nextStatus, nextEmail);
+            await reportDocumentStatus(feed.setting, updatedDoc, nextStatus, nextEmail, updatedDoc.salespersonName);
         }
 
         res.json(await (prisma as any).ospDocument.findUnique({ where: { id: doc.id } }));
@@ -510,9 +590,10 @@ router.post('/documents/:id/import', requireAuth, requirePermission('tenders.man
         const customerId = asTrimmed(body.customerId);
         const manual = body.manualCustomer && typeof body.manualCustomer === 'object' ? body.manualCustomer : null;
         const manualName = manual ? asTrimmed(manual.name) : null;
-        if (!customerId && !manualName) {
-            return res.status(400).json({ error: 'Kunde wählen oder von Hand erfassen.' });
-        }
+        // Kein Name ist KEIN Fehler mehr (27.08.2026): der Import läuft ohne
+        // Fenster durch, und der Kundenname ist an der Offerte frei tippbar —
+        // eine Anfrage ohne Firmennamen erzeugt schlicht eine Offerte ohne
+        // Kundschaft, die danach dort erfasst wird.
         let crmCustomer: {
             id: string; companyName: string; mainEmail: string | null;
             address: string | null; postalCode: string | null; city: string | null; country: string | null;
@@ -680,7 +761,7 @@ router.post('/documents/:id/import', requireAuth, requirePermission('tenders.man
         // "under review" braucht die zuständige Person — ohne E-Mail-Adresse
         // wird gar nicht gemeldet (die OSP würde mit 400 ablehnen).
         if (salesperson.email) {
-            await reportDocumentStatus(feed.setting, updatedDoc, 'IN_OFFER', salesperson.email);
+            await reportDocumentStatus(feed.setting, updatedDoc, 'IN_OFFER', salesperson.email, salesperson.name);
         }
 
         res.status(201).json({ tenderId: tender.id, tenderNumber, document: updatedDoc });
@@ -766,6 +847,9 @@ router.get('/settings', requireAuth, requireAnyPermission(SETTINGS_MANAGE), asyn
             // Die Adresse, die der OSP als OFFER_WEBHOOK_URL zu nennen ist —
             // relativ; die Oberfläche stellt den eigenen Ursprung davor.
             webhookPath: '/backend/api/v1/osp/webhook',
+            // … und die DOCUMENT_CHANGE_WEBHOOK_URL für §1b (eigene Adresse,
+            // weil die beiden Körper verschieden geformt sind).
+            changeWebhookPath: '/backend/api/v1/osp/webhook/change',
         });
     } catch (error: any) {
         res.status(500).json({ error: error?.message || 'OSP-Einstellungen fehlgeschlagen.' });

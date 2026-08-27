@@ -20,6 +20,7 @@ import { buildSignatureParts } from '../../infrastructure/services/mailSignature
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import { MAX_TOTAL_DISCOUNTS, normalizeDiscountList, resolveLineDiscount } from './tender.discounts';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
+import { withdrawOspOfferStatus } from '../../infrastructure/services/OspClient';
 import { nextDocumentNumber } from '../../shared/documentNumber';
 import { tenderDocumentStorageService } from '../../infrastructure/services/TenderDocumentStorageService';
 
@@ -2333,8 +2334,39 @@ export class TenderController {
             if (tender.status !== 'Draft') {
                 return res.status(403).json({ error: "Sadece taslak (Draft) teklifler silinebilir." });
             }
+            // Aus OSP entstandene Offerte? Die Zeilen VOR dem Löschen merken —
+            // danach ist die Verknüpfung (absichtlich) weg.
+            const ospRows = await (prisma as any).ospDocument.findMany({
+                where: { tenderId },
+                select: { id: true, reference: true, tenantId: true },
+            }).catch(() => [] as Array<{ id: string; reference: string; tenantId: string }>);
             await this.tenderRepository.delete(tenderId, tender.tenantId);
             res.status(200).json({ message: "Teklif silindi." });
+            // §4b (Vertragsfassung (2)): die Anfrage bei der OSP ZURÜCKZIEHEN,
+            // damit drüben kein Stand mehr steht, den nichts mehr trägt — und
+            // die Zeile hier auf LISTED zurücksetzen ("Offerte erstellen" ist
+            // durch das Löschen ja wieder der nächste Schritt). Best-Effort im
+            // Hintergrund; das Ergebnis steht wie jede Meldung an der Zeile.
+            void (async () => {
+                for (const row of ospRows as Array<{ id: string; reference: string; tenantId: string }>) {
+                    const setting = await (prisma as any).ospSetting.findUnique({
+                        where: { tenantId: row.tenantId },
+                    }).catch(() => null);
+                    const result = setting ? await withdrawOspOfferStatus(setting, row.reference) : { ok: false, skipped: true as const };
+                    await (prisma as any).ospDocument.update({
+                        where: { id: row.id },
+                        data: {
+                            status: 'LISTED',
+                            lastReportedStatus: null,
+                            ...(result.ok
+                                ? { lastReportAt: new Date(), lastReportError: null }
+                                : result.skipped
+                                    ? {}
+                                    : { lastReportError: result.error || 'Rückzug bei der OSP fehlgeschlagen.' }),
+                        },
+                    }).catch(() => undefined);
+                }
+            })().catch(() => undefined);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
