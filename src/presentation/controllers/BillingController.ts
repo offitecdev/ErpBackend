@@ -1,10 +1,13 @@
 import { Request, Response } from 'express';
 import { CreateInvoiceUseCase } from '../../application/use-cases/billing/CreateInvoiceUseCase';
+import { CreateDirectInvoiceUseCase } from '../../application/use-cases/billing/CreateDirectInvoiceUseCase';
 import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/GetBillingSummaryUseCase';
 import { ListInvoicesUseCase } from '../../application/use-cases/billing/ListInvoicesUseCase';
 import { UpdateInvoiceStatusUseCase } from '../../application/use-cases/billing/UpdateInvoiceStatusUseCase';
 import { DeleteInvoiceUseCase } from '../../application/use-cases/billing/DeleteInvoiceUseCase';
-import { InvoiceStatus } from '../../domain/entities/Invoice';
+import { InvoiceCategory, InvoiceStatus } from '../../domain/entities/Invoice';
+
+const INVOICE_CATEGORIES: InvoiceCategory[] = ['PROJECT', 'DELIVERY', 'DIRECT'];
 
 export class BillingController {
     constructor(
@@ -12,7 +15,8 @@ export class BillingController {
         private getSummaryUseCase: GetBillingSummaryUseCase,
         private listInvoicesUseCase: ListInvoicesUseCase,
         private updateStatusUseCase: UpdateInvoiceStatusUseCase,
-        private deleteInvoiceUseCase: DeleteInvoiceUseCase
+        private deleteInvoiceUseCase: DeleteInvoiceUseCase,
+        private createDirectInvoiceUseCase: CreateDirectInvoiceUseCase
     ) {}
 
     async getSummary(req: Request, res: Response) {
@@ -28,12 +32,19 @@ export class BillingController {
 
     async list(req: Request, res: Response) {
         try {
+            // Der Rechnungstyp ist abgeleitet; ein unbekannter Wert wird still
+            // fallen gelassen statt die Liste leer zu lassen.
+            const rawCategory = req.query.category ? String(req.query.category) : '';
+            const category = INVOICE_CATEGORIES.includes(rawCategory as InvoiceCategory)
+                ? (rawCategory as InvoiceCategory)
+                : undefined;
             const invoices = await this.listInvoicesUseCase.execute({
                 tenantId: req.user!.tenantId,
                 projectId: req.query.projectId ? String(req.query.projectId) : undefined,
                 salesOrderId: req.query.salesOrderId ? String(req.query.salesOrderId) : undefined,
                 customerId: req.query.customerId ? String(req.query.customerId) : undefined,
                 status: req.query.status ? (String(req.query.status) as InvoiceStatus) : undefined,
+                category,
             });
             res.status(200).json(invoices);
         } catch (error: any) {
@@ -60,6 +71,34 @@ export class BillingController {
                 notes: req.body.notes,
             });
             res.status(201).json({ message: 'Fatura oluşturuldu.', invoice });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * Direktrechnung — die selbst ausgefüllte Vorlage: kein Auftrag, kein
+     * Projekt, die Positionen sind der Betrag. Die Zeilen kommen so an, wie sie
+     * auf dem Beleg stehen; die Reihenfolge ist ihre Reihenfolge im Feld.
+     */
+    async createDirect(req: Request, res: Response) {
+        try {
+            const invoice = await this.createDirectInvoiceUseCase.execute({
+                tenantId: req.user!.tenantId,
+                issuedByEmployeeId: req.user!.id,
+                customerId: req.body.customerId ?? null,
+                recipientName: String(req.body.recipientName || ''),
+                recipientAddress: req.body.recipientAddress ?? null,
+                introText: req.body.introText ?? null,
+                invoiceDate: req.body.invoiceDate ?? null,
+                dueDate: req.body.dueDate ?? null,
+                salespersonName: req.body.salespersonName ?? null,
+                commissionNumber: req.body.commissionNumber ?? null,
+                vatRate: req.body.vatRate ?? null,
+                notes: req.body.notes ?? null,
+                lines: Array.isArray(req.body.lines) ? req.body.lines : [],
+            });
+            res.status(201).json({ message: 'Rechnung erstellt.', invoice });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import prisma from '../../infrastructure/database/prisma.client';
 import { requireAuth } from '../middlewares/AuthMiddleware';
-import { requirePermission } from '../middlewares/RbacMiddleware';
+import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
 import { EmployeeRepository } from '../../infrastructure/repositories/EmployeeRepository';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
 import { BcryptCryptoService } from '../../infrastructure/services/BcryptCryptoService';
@@ -155,8 +155,12 @@ router.get('/mine', requireAuth, async (req, res) => {
     }
 });
 
-/** GET /password-requests?status=PENDING — die Freigabeliste (Verwaltung). */
-router.get('/', requireAuth, requirePermission('roles.manage'), async (req, res) => {
+/** GET /password-requests?status=PENDING — die Freigabeliste.
+    SEIT DEM 27.08.2026 auch für die Projektleitung (Vorgabe: «Kennwörter
+    ändern dürfen nur Projektleitung und Administrator»): `employees.update`
+    genügt — das Recht trägt, wer die Personalliste auf Stufe «bearbeiten»
+    führt. */
+router.get('/', requireAuth, requireAnyPermission(['roles.manage', 'employees.update']), async (req, res) => {
     try {
         const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
         const status = String(req.query.status || 'PENDING').toUpperCase();
@@ -175,8 +179,10 @@ router.get('/', requireAuth, requirePermission('roles.manage'), async (req, res)
     }
 });
 
-/** POST /password-requests/:id/decide — { approve: boolean, note? } (Verwaltung). */
-router.post('/:id/decide', requireAuth, requirePermission('roles.manage'), async (req, res) => {
+/** POST /password-requests/:id/decide — { approve, note? }. Entscheiden darf,
+    wer Kennwörter führen darf: Administrator (roles.manage) und Projektleitung
+    (employees.update). */
+router.post('/:id/decide', requireAuth, requireAnyPermission(['roles.manage', 'employees.update']), async (req, res) => {
     try {
         const user = req.user!;
         const id = String(req.params.id || '');

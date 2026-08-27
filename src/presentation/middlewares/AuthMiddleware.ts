@@ -12,6 +12,8 @@ declare module 'express-serve-static-core' {
             tenantId: string;
             homeTenantId: string;
             email: string;
+            firstName?: string;
+            lastName?: string;
         };
     }
 }
@@ -152,7 +154,9 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
             id: decoded.id,
             tenantId,
             homeTenantId,
-            email: decoded.email
+            email: decoded.email,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
         };
 
         // Yanıtların Server-Timing başlığında görünsün: uç noktadaki yavaşlık

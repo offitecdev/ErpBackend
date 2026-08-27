@@ -72,39 +72,48 @@ model Customer {
 // CRM overview and the unified calendar. Participants can be staff members or
 // customers, mixed freely.
 model MeetingActivity {
-  id                  String   @id
+  id                  String    @id
   tenantId            String
   // KALENDER-EINLADUNG (18.08.2026). `icalUid` ist zugleich der Schlüssel für
-  // Termine, die AUS Outlook hereinkommen: trifft eine Einladung mit bekannter
-  // UID ein, wird der vorhandene Eintrag aktualisiert statt ein zweiter
-  // angelegt. `externalOrigin` = OUTLOOK bei importierten Terminen.
-  icalUid             String?  @db.VarChar(191)
-  icalSequence        Int      @default(0)
+  // Termine, die AUS Outlook/Teams hereinkommen: trifft eine Einladung mit
+  // bekannter UID ein, wird der vorhandene Eintrag aktualisiert statt ein
+  // zweiter angelegt — deshalb ist das Paar EINDEUTIG und nicht nur indiziert.
+  // `externalOrigin` = OUTLOOK | TEAMS bei importierten Terminen und ist
+  // zugleich die Besitzfrage: gesetzt ⇒ der Organisator sitzt draussen, der
+  // Eintrag wird aus der Mail nachgeführt und im ERP nicht bearbeitet.
+  // `meetingUrl` ist der Beitrittslink einer Online-Besprechung.
+  icalUid             String?   @db.VarChar(191)
+  icalSequence        Int       @default(0)
   inviteSentAt        DateTime?
-  externalOrigin      String?  @db.VarChar(16)
-  externalOrganizer   String?  @db.VarChar(255)
+  externalOrigin      String?   @db.VarChar(16)
+  externalOrganizer   String?   @db.VarChar(255)
+  meetingUrl          String?   @db.VarChar(512)
   // MEETING | TASK
-  kind                String   @default("MEETING")
+  kind                String    @default("MEETING")
+  // KALENDER-ETIKETT (25.08.2026) — siehe CalendarLabel. Leer = ohne Etikett.
+  labelId             String?
   title               String
-  notes               String?  @db.Text
+  notes               String?   @db.Text
   // Bilgi (CC) e-posta adresleri — ["a@b.com", ...]; toplantı maillerinde kullanılır.
   ccEmails            Json?
   startTime           DateTime
   endTime             DateTime
   customerId          String?
   createdByEmployeeId String
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   tenant       Tenant                       @relation(fields: [tenantId], references: [id])
+  label        CalendarLabel?               @relation(fields: [labelId], references: [id], onDelete: SetNull)
   customer     Customer?                    @relation(fields: [customerId], references: [id])
   createdBy    Employee                     @relation("MeetingActivityCreator", fields: [createdByEmployeeId], references: [id])
   participants MeetingActivityParticipant[]
 
+  @@unique([tenantId, icalUid])
   @@index([tenantId, startTime])
   @@index([customerId])
   @@index([createdByEmployeeId])
-  @@index([tenantId, icalUid])
+  @@index([labelId])
 }
 
 model MeetingActivityParticipant {
@@ -194,7 +203,7 @@ model SalesOrder {
 }
 
 model CustomerContact {
-  id               String   @id
+  id               String             @id
   customerId       String
   // Denormalized from the owning customer so the tenant-wide contact list
   // ("Ansprechpartner") pages straight from an index instead of joining
@@ -206,9 +215,9 @@ model CustomerContact {
   phone            String?
   mobilePhone      String?
   email            String?
-  notes            String?  @db.Text
-  isPrimaryContact Boolean  @default(false)
-  customer         Customer @relation(fields: [customerId], references: [id])
+  notes            String?            @db.Text
+  isPrimaryContact Boolean            @default(false)
+  customer         Customer           @relation(fields: [customerId], references: [id])
   communications   CrmCommunication[]
   crmTasks         CrmTask[]
   mailMessages     MailMessage[]
@@ -289,6 +298,8 @@ model CrmTask {
   tenantId            String
   // TASK | REMINDER
   kind                String    @default("TASK")
+  // KALENDER-ETIKETT (25.08.2026) — siehe CalendarLabel. Leer = ohne Etikett.
+  labelId             String?
   title               String
   customerId          String?
   // Ansprechpartner des Kunden (Kundenwahl samt Ansprechpartner, 15.08.2026).
@@ -322,11 +333,12 @@ model CrmTask {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  customer  Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  contact   CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  customer  Customer?         @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  label     CalendarLabel?    @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  contact   CustomerContact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
   // Erste/„Haupt“-Verantwortliche — Altspalte, wird aus `assignees` gespiegelt.
-  assignee  Employee? @relation("CrmTaskAssignee", fields: [assigneeEmployeeId], references: [id], onDelete: SetNull)
-  createdBy Employee  @relation("CrmTaskCreator", fields: [createdByEmployeeId], references: [id])
+  assignee  Employee?         @relation("CrmTaskAssignee", fields: [assigneeEmployeeId], references: [id], onDelete: SetNull)
+  createdBy Employee          @relation("CrmTaskCreator", fields: [createdByEmployeeId], references: [id])
   assignees CrmTaskAssignee[]
   notes     CrmTaskNote[]
 
@@ -339,6 +351,7 @@ model CrmTask {
   @@index([assigneeEmployeeId])
   @@index([createdByEmployeeId])
   @@index([entityType, entityId])
+  @@index([labelId])
 }
 
 model CustomerNote {
@@ -393,12 +406,12 @@ model CustomerActivity {
 }
 
 model CustomerLocation {
-  id            String   @id
-  customerId    String
-  name          String
+  id                String   @id
+  customerId        String
+  name              String
   // Address list this entry belongs to: INSTALLATION (Projekt/Montage),
   // DELIVERY (Lieferung) or BILLING (Rechnung).
-  kind          String   @default("INSTALLATION")
+  kind              String   @default("INSTALLATION")
   // Same distinct components as Customer: `address` is the street + house
   // number, `addressSupplement` the supplement / apartment.
   address           String?
@@ -407,14 +420,14 @@ model CustomerLocation {
   postalCode        String?
   state             String?
   country           String?
-  phone         String?
-  email         String?
-  contactPerson String?
-  isPrimary     Boolean  @default(false)
-  notes         String?  @db.Text
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  customer      Customer @relation(fields: [customerId], references: [id])
+  phone             String?
+  email             String?
+  contactPerson     String?
+  isPrimary         Boolean  @default(false)
+  notes             String?  @db.Text
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  customer          Customer @relation(fields: [customerId], references: [id])
 
   @@index([customerId], map: "CustomerLocation_customerId_fkey")
 }

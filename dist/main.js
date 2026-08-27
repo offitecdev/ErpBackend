@@ -17,6 +17,9 @@ const employee_routes_1 = __importDefault(require("./presentation/routes/employe
 // Personalmodul (Neubau 16.08.2026): ersetzt die früheren Router
 // attendance.routes.ts und leave.routes.ts vollständig.
 const personnel_routes_1 = __importDefault(require("./presentation/routes/personnel.routes"));
+// Personalakte, Feiertage, Urlaubsanspruch und die Arbeitszeiterfassung
+// (26.08.2026) - zweiter Router auf demselben Pfad, siehe dort.
+const personnelHr_routes_1 = __importDefault(require("./presentation/routes/personnelHr.routes"));
 const tenant_routes_1 = __importDefault(require("./presentation/routes/tenant.routes"));
 const customer_routes_1 = __importDefault(require("./presentation/routes/customer.routes"));
 const role_routes_1 = __importDefault(require("./presentation/routes/role.routes"));
@@ -45,12 +48,17 @@ const settingsGate_routes_1 = __importDefault(require("./presentation/routes/set
 const reminderSettings_routes_1 = __importDefault(require("./presentation/routes/reminderSettings.routes"));
 // Mengeneinheiten des Lagers (Einstellungen -> Module -> Lager -> Einheiten).
 const measurementUnit_routes_1 = __importDefault(require("./presentation/routes/measurementUnit.routes"));
+// Kalender-Etiketten (Kalender -> Leiste "Etiketten").
+const calendarLabel_routes_1 = __importDefault(require("./presentation/routes/calendarLabel.routes"));
 const authorization_routes_1 = __importDefault(require("./presentation/routes/authorization.routes"));
 // Rollenvorlagen (Einstellungen → Berechtigungen) und der Kennwortwunsch aus
 // dem eigenen Profil — beide neu am 17.08.2026.
 const roleTemplate_routes_1 = __importDefault(require("./presentation/routes/roleTemplate.routes"));
 const passwordRequest_routes_1 = __importDefault(require("./presentation/routes/passwordRequest.routes"));
 const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
+// OSP-Integration (Offitec Selection Platform): Webhook, Belegliste der
+// OSP-Seite, Statusmeldung zurück und der Offerten-Import (04.09.2026).
+const osp_routes_1 = __importDefault(require("./presentation/routes/osp.routes"));
 const files_routes_1 = __importDefault(require("./presentation/routes/files.routes"));
 const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashboard.routes"));
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
@@ -135,6 +143,10 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/employees`, authorization_routes_1.default);
     // Personalmodul: Liste, Stempeluhr, Schichtplan, Berichte, Anträge.
     app.use(`${prefix}/personnel`, personnel_routes_1.default);
+    // Personalakte (Profil, Unterlagen, Urlaubskonto), Feiertage und die
+    // Arbeitszeiterfassung. Eigener Router, dieselbe Adresse: seine Wege sind
+    // anders benannt und kollidieren nicht mit denen davor.
+    app.use(`${prefix}/personnel`, personnelHr_routes_1.default);
     app.use(`${prefix}/tenants`, tenant_routes_1.default);
     app.use(`${prefix}/customers`, customer_routes_1.default);
     app.use(`${prefix}/sales-orders`, sales_order_routes_1.default);
@@ -168,7 +180,9 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/settings`, settingsGate_routes_1.default);
     app.use(`${prefix}/settings/reminder-settings`, reminderSettings_routes_1.default);
     app.use(`${prefix}/settings/units`, measurementUnit_routes_1.default);
+    app.use(`${prefix}/calendar/labels`, calendarLabel_routes_1.default);
     app.use(`${prefix}/fx`, fx_routes_1.default);
+    app.use(`${prefix}/osp`, osp_routes_1.default);
     app.use(`${prefix}/files`, files_routes_1.default);
     app.use(`${prefix}/dashboard`, dashboard_routes_1.default);
 }

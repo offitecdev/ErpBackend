@@ -1,4 +1,4 @@
-import { Invoice, InvoiceLineItem, InvoiceStatus } from "../entities/Invoice";
+import { Invoice, InvoiceCategory, InvoiceLineItem, InvoiceStatus } from "../entities/Invoice";
 
 export interface IInvoiceFilter {
     tenantId: string;
@@ -6,9 +6,39 @@ export interface IInvoiceFilter {
     salesOrderId?: string | undefined;
     customerId?: string | undefined;
     status?: InvoiceStatus | undefined;
+    /**
+     * Rechnungstyp der Liste (30.08.2026). Wird NICHT gespeichert, sondern im
+     * SELECT aus dem hängenden Beleg abgeleitet — die Bedingung steht deshalb
+     * in einem HAVING, nicht in der WHERE-Kette.
+     */
+    category?: InvoiceCategory | undefined;
 }
 
 export type InvoiceLineItemInput = Omit<InvoiceLineItem, "id" | "invoiceId">;
+
+/**
+ * Eine Zeile der Rechnungsliste: die Rechnung selbst, ihr abgeleiteter Typ und
+ * die drei Namen, die die Tabelle zeigt (Kunde, Projekt, Auftrag). Sie kommen
+ * aus DEMSELBEN SELECT wie die Rechnung — ein `include` je Beziehung wäre je
+ * eine zusätzliche Abfragerunde (siehe `InvoiceRepository.list`).
+ */
+export interface InvoiceListItem extends Invoice {
+    category: InvoiceCategory;
+    /** Auftragsart des hängenden Auftrags (INVOICE / REGIE / PROJECT_*). */
+    orderType?: string | null;
+    customer?: { id: string; companyName: string } | null;
+    project?: { id: string; projectNumber?: string | null; projectName: string } | null;
+    salesOrder?: {
+        id: string;
+        orderNumber: string;
+        orderType?: string | null;
+        /** Offerte hinter dem Auftrag — die Gesamtrechnung druckt ihre Positionen. */
+        tenderId?: string | null;
+        /** Ratenplan des Auftrags als JSON-Zeichenkette (Zahlungsplan im PDF). */
+        paymentStages?: string | null;
+    } | null;
+    issuedBy?: { id: string; firstName: string; lastName: string } | null;
+}
 
 /**
  * The only columns a billing summary is computed from. Deliberately narrower
@@ -36,7 +66,7 @@ export interface IInvoiceRepository {
     findById(id: string, tenantId: string): Promise<Invoice | null>;
     findActiveByOrder(salesOrderId: string, tenantId: string): Promise<Invoice | null>;
     findActiveByProject(projectId: string, tenantId: string): Promise<Invoice | null>;
-    list(filter: IInvoiceFilter): Promise<Invoice[]>;
+    list(filter: IInvoiceFilter): Promise<InvoiceListItem[]>;
     listForOrders(tenantId: string, salesOrderIds: string[]): Promise<InvoiceSummaryRow[]>;
     countForTenant(tenantId: string): Promise<number>;
     sumBilledForOrder(salesOrderId: string): Promise<BilledSoFar>;

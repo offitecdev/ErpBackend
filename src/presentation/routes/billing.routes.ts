@@ -3,6 +3,7 @@ import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import { BillingController } from '../controllers/BillingController';
 import { CreateInvoiceUseCase } from '../../application/use-cases/billing/CreateInvoiceUseCase';
+import { CreateDirectInvoiceUseCase } from '../../application/use-cases/billing/CreateDirectInvoiceUseCase';
 import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/GetBillingSummaryUseCase';
 import { ListInvoicesUseCase } from '../../application/use-cases/billing/ListInvoicesUseCase';
 import { UpdateInvoiceStatusUseCase } from '../../application/use-cases/billing/UpdateInvoiceStatusUseCase';
@@ -17,7 +18,8 @@ const controller = new BillingController(
     new GetBillingSummaryUseCase(invoiceRepo),
     new ListInvoicesUseCase(invoiceRepo),
     new UpdateInvoiceStatusUseCase(invoiceRepo),
-    new DeleteInvoiceUseCase(invoiceRepo)
+    new DeleteInvoiceUseCase(invoiceRepo),
+    new CreateDirectInvoiceUseCase(invoiceRepo)
 );
 
 router.use(requireAuth);
@@ -25,6 +27,8 @@ router.use(requireAuth);
 router.get('/summary', requirePermission('billing.view'), (req, res) => controller.getSummary(req, res));
 router.get('/invoices', requirePermission('billing.view'), (req, res) => controller.list(req, res));
 router.post('/invoices', requirePermission('billing.create'), (req, res) => controller.create(req, res));
+// Direktrechnung — die selbst ausgefüllte Vorlage (weder Auftrag noch Projekt).
+router.post('/invoices/direct', requirePermission('billing.create'), (req, res) => controller.createDirect(req, res));
 router.patch('/invoices/:id/status', requirePermission('billing.manage'), (req, res) => controller.updateStatus(req, res));
 // Kalıcı silme — yalnızca CANCELLED faturalar (use case doğrular).
 router.delete('/invoices/:id', requirePermission('billing.manage'), (req, res) => controller.delete(req, res));

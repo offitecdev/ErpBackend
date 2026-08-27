@@ -1,6 +1,10 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const multer_1 = __importDefault(require("multer"));
 // (Yukarıda oluşturduğumuz ProjectController ve UseCase/Repo sınıflarını import edin)
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
@@ -16,6 +20,14 @@ const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepo
 const TenantRepository_1 = require("../../infrastructure/repositories/TenantRepository");
 const tenantModules_1 = require("../../shared/tenantModules");
 const router = (0, express_1.Router)();
+/* TERMINUNTERLAGEN (24.08.2026): die Datei bleibt im Arbeitsspeicher, bis sie
+   auf die Platte geschrieben ist — nichts landet in einem Zwischenordner.
+   Dieselbe Einstellung wie beim Angebotsanhang, nur mit der Grenze der
+   Unterlagen (12 MB). */
+const appointmentDocumentUpload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: { fileSize: 12 * 1024 * 1024, files: 40 },
+});
 const projectRepo = new ProjectRepository_1.ProjectRepository();
 const reportRepo = new ProjectReportRepository_1.ProjectReportRepository();
 const controller = new ProjectController_1.ProjectController(new CreateProjectFromTenderUseCase_1.CreateProjectFromTenderUseCase(projectRepo, new TenderRepository_1.TenderRepository(), new TenantRepository_1.TenantRepository()), new AddProjectReportUseCase_1.AddProjectReportUseCase(reportRepo, projectRepo), new RequestExtraMaterialUseCase_1.RequestExtraMaterialUseCase(projectRepo), new ApproveVariationUseCase_1.ApproveVariationUseCase(projectRepo), new AddProjectExpenseUseCase_1.AddProjectExpenseUseCase(projectRepo), projectRepo, reportRepo);
@@ -48,6 +60,10 @@ router.get('/appointments/:appointmentId/detail', (0, RbacMiddleware_1.requireAn
 // 'projects.report' bzw. dem Wartungsrecht.
 router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
 router.get('/technician/installations/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
+// Der ganze Einsatz aus Sicht der Monteurin: seine Tage (mehrtägige Einsätze)
+// samt Begleitwort und Unterlagen. Lesen genügt — angelegt wird im Büro.
+router.get('/technician/installations/:appointmentId/series', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentSeries(req, res, { technicianScope: true }));
+router.get('/technician/appointment-documents/:documentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDocument(req, res, { technicianScope: true }));
 router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
 router.get('/technician/reports', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
@@ -78,6 +94,26 @@ router.post('/reports/:reportId/signature-request', (0, RbacMiddleware_1.require
 router.post('/:id/appointments', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.createAppointment(req, res));
 router.patch('/appointments/:appointmentId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.updateAppointment(req, res));
 router.delete('/appointments/:appointmentId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.deleteAppointment(req, res));
+/* MEHRTÄGIGE EINSÄTZE UND TERMINUNTERLAGEN (24.08.2026).
+   `…/series`          — der ganze Einsatz: Tage, Begleitwort, Unterlagen.
+   `…/series/days`     — der Einsatzplan, wie er sein soll (anhängen, ändern,
+                         streichen in EINEM Aufruf).
+   `…/documents`       — Begleitzettel, Bilder, PDF für die Monteurin. Sie gehen
+                         an keine Kundenmail; der Inhalt kommt erst beim Öffnen
+                         über `/appointment-documents/:id`. */
+router.get('/appointments/:appointmentId/series', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentSeries(req, res));
+router.put('/appointments/:appointmentId/series/days', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.saveAppointmentSeriesDays(req, res));
+router.patch('/appointments/:appointmentId/series', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.saveAppointmentSeriesNote(req, res));
+// Die Datei reist ROH (multipart) — derselbe Weg wie der Angebotsanhang, und
+// der Grund, warum das Anhängen sofort geht. Base64 in einem JSON-Körper bleibt
+// als zweiter Weg möglich (Skripte), ist aber ein Drittel grösser.
+// Mehrere Unterlagen fahren in EINEM Request. Dadurch laufen Authentisierung,
+// Modul-/Rechtepruefung, Terminabfrage und Serienpruefung auch bei zwanzig
+// Dateien nur einmal statt zwanzigmal parallel durch MariaDB.
+router.post('/appointments/:appointmentId/documents/batch', (0, RbacMiddleware_1.requirePermission)('projects.manage'), appointmentDocumentUpload.array('files', 40), (req, res) => controller.addAppointmentDocuments(req, res));
+router.post('/appointments/:appointmentId/documents', (0, RbacMiddleware_1.requirePermission)('projects.manage'), appointmentDocumentUpload.single('file'), (req, res) => controller.addAppointmentDocument(req, res));
+router.get('/appointment-documents/:documentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentDocument(req, res));
+router.delete('/appointment-documents/:documentId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.deleteAppointmentDocument(req, res));
 // «Termin an Kunden senden» — die Kalender-Einladung geht NUR hierüber raus.
 router.post('/appointments/:appointmentId/send-invite', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.sendAppointmentInvite(req, res));
 router.post('/appointments/:appointmentId/complete', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.completeInstallation(req, res, { allowManagerComplete: true }));

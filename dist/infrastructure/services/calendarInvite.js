@@ -19,7 +19,7 @@
  * muss (Zeilenfaltung und Escaping sind die einzigen echten Fallen).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.parseCalendarObject = exports.buildInvite = exports.newIcalUid = exports.icalDate = void 0;
+exports.parseCalendarObject = exports.cleanLocation = exports.cleanDescription = exports.onlineMeetingOrigin = exports.buildInvite = exports.newIcalUid = exports.icalDate = void 0;
 /** RFC 5545: `\` `;` `,` und Zeilenumbrüche müssen maskiert werden. */
 const escapeText = (value) => String(value ?? "")
     .replace(/\\/g, "\\\\")
@@ -56,39 +56,45 @@ const address = (email, name) => name ? `;CN="${String(name).replace(/"/g, "")}"
 const newIcalUid = (id, domain) => `offitec-${id}@${domain || "offitec-erp.local"}`;
 exports.newIcalUid = newIcalUid;
 const buildInvite = (invite) => {
+    /* MEHRERE TAGE, MEHRERE VEVENT (24.08.2026). Die Karte in der Mail zeigt
+       den ganzen Einsatzplan; das Kalenderobjekt trägt je Tag einen Eintrag.
+       Was ein Programm daraus macht, ist unterschiedlich: Outlook und Gmail
+       bieten den ERSTEN Eintrag zum Annehmen an, die angehängte Datei
+       (invite.ics, dieselbe Fracht) trägt alle Tage. Ein einzelner Balken über
+       vier Tage wäre die Alternative — er stünde in jedem Kalender falsch. */
+    const occurrences = invite.occurrences?.length
+        ? invite.occurrences
+        : [{ uid: invite.uid, sequence: invite.sequence, start: invite.start, end: invite.end }];
     const lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
         "PRODID:-//Offitec//ERP Kalender//DE",
         "CALSCALE:GREGORIAN",
         `METHOD:${invite.method}`,
-        "BEGIN:VEVENT",
-        `UID:${invite.uid}`,
-        `SEQUENCE:${Math.max(0, invite.sequence)}`,
-        `DTSTAMP:${(0, exports.icalDate)(new Date())}`,
-        `DTSTART:${(0, exports.icalDate)(invite.start)}`,
-        `DTEND:${(0, exports.icalDate)(invite.end)}`,
-        `SUMMARY:${escapeText(invite.summary)}`,
     ];
-    if (invite.description)
-        lines.push(`DESCRIPTION:${escapeText(invite.description)}`);
-    if (invite.location)
-        lines.push(`LOCATION:${escapeText(invite.location)}`);
-    lines.push(`ORGANIZER${address(invite.organizer.email, invite.organizer.name)}`);
-    for (const attendee of invite.attendees) {
-        if (!attendee.email)
-            continue;
-        const role = attendee.optional ? "OPT-PARTICIPANT" : "REQ-PARTICIPANT";
-        lines.push(`ATTENDEE;ROLE=${role};PARTSTAT=NEEDS-ACTION;RSVP=TRUE` +
-            address(attendee.email, attendee.name));
+    for (const occurrence of occurrences) {
+        lines.push("BEGIN:VEVENT", `UID:${occurrence.uid}`, `SEQUENCE:${Math.max(0, occurrence.sequence)}`, `DTSTAMP:${(0, exports.icalDate)(new Date())}`, `DTSTART:${(0, exports.icalDate)(occurrence.start)}`, `DTEND:${(0, exports.icalDate)(occurrence.end)}`, `SUMMARY:${escapeText(invite.summary)}`);
+        if (invite.description)
+            lines.push(`DESCRIPTION:${escapeText(invite.description)}`);
+        if (invite.location)
+            lines.push(`LOCATION:${escapeText(invite.location)}`);
+        lines.push(`ORGANIZER${address(invite.organizer.email, invite.organizer.name)}`);
+        for (const attendee of invite.attendees) {
+            if (!attendee.email)
+                continue;
+            const role = attendee.optional ? "OPT-PARTICIPANT" : "REQ-PARTICIPANT";
+            lines.push(`ATTENDEE;ROLE=${role};PARTSTAT=NEEDS-ACTION;RSVP=TRUE` +
+                address(attendee.email, attendee.name));
+        }
+        // CANCEL zieht den Termin beim Empfänger zurück; REQUEST bestätigt ihn.
+        lines.push(`STATUS:${invite.cancelled || invite.method === "CANCEL" ? "CANCELLED" : "CONFIRMED"}`);
+        if (invite.method === "REQUEST") {
+            // Erinnerung 30 Minuten vorher — was Outlook selbst auch vorschlägt.
+            lines.push("BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Erinnerung", "TRIGGER:-PT30M", "END:VALARM");
+        }
+        lines.push("END:VEVENT");
     }
-    // CANCEL zieht den Termin beim Empfänger zurück; REQUEST bestätigt ihn.
-    lines.push(`STATUS:${invite.cancelled || invite.method === "CANCEL" ? "CANCELLED" : "CONFIRMED"}`);
-    if (invite.method === "REQUEST") {
-        // Erinnerung 30 Minuten vorher — was Outlook selbst auch vorschlägt.
-        lines.push("BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Erinnerung", "TRIGGER:-PT30M", "END:VALARM");
-    }
-    lines.push("END:VEVENT", "END:VCALENDAR");
+    lines.push("END:VCALENDAR");
     return lines.map(foldLine).join("\r\n") + "\r\n";
 };
 exports.buildInvite = buildInvite;
@@ -114,6 +120,56 @@ const parseIcalDate = (value, params) => {
     return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
 };
 const mailtoOf = (value) => value.replace(/^mailto:/i, "").trim().toLowerCase();
+/**
+ * ONLINE-BESPRECHUNGEN (Teams & Co., 21.08.2026).
+ *
+ * Ein Teams-Termin ist eine ganz normale Einladung mit EINEM Zusatz, der zählt:
+ * dem Beitrittslink. Outlook legt ihn in eine eigene X-Eigenschaft, andere
+ * Anbieter nur in den Beschreibungstext — deshalb beides.
+ */
+const ONLINE_HOSTS = /^https:\/\/(?:[\w.-]+\.)?(?:teams\.microsoft\.com|teams\.live\.com|teams\.microsoft\.us|zoom\.us|meet\.google\.com|webex\.com|gotomeet\.me|gotomeeting\.com|whereby\.com)\//i;
+/** Ein Link endet an Anführungszeichen, Klammern und Satzzeichen, nicht am Zeilenende. */
+const cleanUrl = (value) => value.trim().replace(/^[<("']+/, "").replace(/[>)"'.,;]+$/, "");
+/** Der erste Beitrittslink in einem Freitext (Beschreibung, Ort, HTML-Fassung). */
+const findOnlineUrl = (text) => {
+    if (!text)
+        return null;
+    for (const match of String(text).matchAll(/https:\/\/[^\s<>"']+/gi)) {
+        const url = cleanUrl(match[0]);
+        if (ONLINE_HOSTS.test(url))
+            return url.slice(0, 512);
+    }
+    return null;
+};
+/** Teams-Link ⇒ Teams-Besprechung; sonst ein gewöhnlicher Termin aus der Mail. */
+const onlineMeetingOrigin = (onlineUrl) => onlineUrl && /teams\.(microsoft|live)\.com/i.test(onlineUrl) ? "TEAMS" : "OUTLOOK";
+exports.onlineMeetingOrigin = onlineMeetingOrigin;
+/**
+ * Teams hängt an jede Beschreibung einen Block mit Beitrittslink, Einwahl-
+ * nummern und Hilfeadressen, abgetrennt durch eine lange Unterstrichlinie.
+ * Der Link steht als `meetingUrl` am Termin — der Rest ist im Kalender nur
+ * Rauschen und fliegt raus. Bleibt nichts übrig, bleibt die Notiz leer.
+ */
+const isJoinBlock = (part) => /teams\.microsoft\.com|meetup-join|zoom\.us\/j\/|besprechungs-id|meeting id|konferenz-id|conference id/i.test(part);
+const cleanDescription = (text) => {
+    if (!text)
+        return "";
+    const parts = String(text).split(/_{20,}/);
+    return parts.filter((part) => part.trim() && !isJoinBlock(part)).join("\n\n").trim();
+};
+exports.cleanDescription = cleanDescription;
+/**
+ * Der Ort einer Online-Besprechung ist bei manchen Absendern der komplette
+ * Beitrittslink — als "Ort: https://teams.microsoft.com/l/meetup-join/19%3a…"
+ * wäre die Zeile länger als der ganze Termin.
+ */
+const cleanLocation = (location) => {
+    if (!location)
+        return "";
+    const withoutUrl = String(location).replace(/https?:\/\/\S+/gi, "").replace(/\s{2,}/g, " ").trim();
+    return withoutUrl.replace(/^[,;·|-]+|[,;·|-]+$/g, "").trim();
+};
+exports.cleanLocation = cleanLocation;
 const paramValue = (params, name) => {
     const match = new RegExp(`${name}=("[^"]*"|[^;:]*)`, "i").exec(params);
     if (!match)
@@ -140,10 +196,14 @@ const parseCalendarObject = (text) => {
     // ein `DESCRIPTION:Erinnerung`. Ohne diese Tiefenzählung überschriebe sie
     // die Beschreibung des Termins.
     let nested = 0;
+    // Die HTML-Fassung der Beschreibung (Outlook: X-ALT-DESC) trägt den
+    // Teams-Link auch dann, wenn die Textfassung ihn verstümmelt hat.
+    let richText = "";
     const event = {
         method, uid: "", sequence: 0, start: null, end: null,
         summary: null, description: null, location: null,
         organizer: null, attendees: [], cancelled: false,
+        recurring: false, onlineUrl: null,
     };
     for (const line of lines) {
         const separator = line.indexOf(":");
@@ -206,6 +266,21 @@ const parseCalendarObject = (text) => {
             case "RDATE":
                 hasRecurrence = true;
                 break;
+            // Teams schreibt den Beitrittslink in eine eigene Eigenschaft;
+            // RFC 7986 kennt dafür CONFERENCE. Beides ist eindeutiger als der
+            // Beschreibungstext und geht ihm deshalb vor.
+            case "X-MICROSOFT-SKYPETEAMSMEETINGURL":
+            case "X-MICROSOFT-ONLINEMEETINGEXTERNALLINK":
+            case "X-GOOGLE-CONFERENCE":
+            case "CONFERENCE": {
+                const url = cleanUrl(unescapeText(value));
+                if (!event.onlineUrl && /^https:\/\//i.test(url))
+                    event.onlineUrl = url.slice(0, 512);
+                break;
+            }
+            case "X-ALT-DESC":
+                richText = unescapeText(value);
+                break;
             case "ORGANIZER":
                 event.organizer = { email: mailtoOf(value), name: paramValue(params, "CN") };
                 break;
@@ -222,9 +297,11 @@ const parseCalendarObject = (text) => {
     if (!event.uid || !event.start)
         return null;
     // Serientermine werden NICHT übernommen: ein einzelner Eintrag an ihrer
-    // Stelle wäre falsch und würde jede Woche neu falsch sein.
-    if (hasRecurrence)
-        return null;
+    // Stelle wäre falsch und würde jede Woche neu falsch sein. Gelesen wird die
+    // Einladung trotzdem — der Abruf soll den Grund nennen können.
+    event.recurring = hasRecurrence;
+    if (!event.onlineUrl)
+        event.onlineUrl = findOnlineUrl(event.description) || findOnlineUrl(richText) || findOnlineUrl(event.location);
     event.method = method;
     if (method === "CANCEL")
         event.cancelled = true;

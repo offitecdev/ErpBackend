@@ -535,9 +535,16 @@ const captureInbox = async (tenantId, options = {}) => {
                         await prisma_client_1.default.mailMessage.createMany({ data: inserts, skipDuplicates: true });
                         summary.stored += inserts.length;
                     }
-                    // KALENDER: Einladungen in den ERP-Kalender übernehmen. Erst nach
-                    // dem Speichern der Nachricht — der Termin ist die Zugabe, die
-                    // Mail bleibt in jedem Fall in der Kommunikation stehen.
+                    /* KALENDER: Einladungen in den ERP-Kalender übernehmen. Erst nach
+                       dem Speichern der Nachricht — der Termin ist die Zugabe, die
+                       Mail bleibt in jedem Fall in der Kommunikation stehen.
+    
+                       BEIDE RICHTUNGEN: im Posteingang die Einladungen, die WIR
+                       bekommen haben, im Gesendet-Ordner die, die aus dem
+                       Firmenpostfach rausgegangen sind (ein in Outlook angesetztes
+                       Teams-Meeting). Deshalb kennt der Import die Richtung — im
+                       Gesendet-Ordner ist die erkannte Person eine Empfängerin und
+                       NICHT die Urheberin des Termins. */
                     for (const keeper of keepers) {
                         if (!keeper.calendarPart)
                             continue;
@@ -550,10 +557,16 @@ const captureInbox = async (tenantId, options = {}) => {
                                 senderEmail: partiesOf(keeper.envelope?.from)[0]?.address || null,
                                 customerId: keeper.customerId,
                                 employeeId: keeper.employeeId,
+                                direction: job.direction,
                             });
                             if (result.action !== "ignored") {
                                 summary.calendar += 1;
                                 console.log(`[MAIL-IN] Termin ${result.action}: ${keeper.envelope?.subject || ""}`);
+                            }
+                            else {
+                                // Der häufigste Anruf ist «warum steht der Termin
+                                // nicht im Kalender» — der Grund gehört ins Protokoll.
+                                console.log(`[MAIL-IN] Termin übersprungen (${result.reason}): ${keeper.envelope?.subject || ""}`);
                             }
                         }
                         catch (error) {

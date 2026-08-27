@@ -33,6 +33,8 @@ const BcryptCryptoService_1 = require("../../infrastructure/services/BcryptCrypt
 const password_1 = require("../../application/validation/password");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const staffDirectoryCache_1 = require("../../shared/staffDirectoryCache");
+// Meldung + Mail an alle mit der zuständigen Rolle (26.08.2026).
+const leaveRequestMailService_1 = require("../../infrastructure/services/leaveRequestMailService");
 const personnel_1 = require("../../shared/personnel");
 const personnelReports_1 = require("../../application/services/personnelReports");
 const router = (0, express_1.Router)();
@@ -153,7 +155,14 @@ router.get('/staff', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireP
         const [rows, countRows] = await Promise.all([
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT e.id, e.staffNumber, e.firstName, e.lastName, e.email, e.createdAt,
-                       e.isActive, e.qrToken, e.staffRole, e.workLocation
+                       e.isActive, e.qrToken, e.staffRole, e.workLocation,
+                       (
+                           SELECT r.roleName
+                           FROM EmployeeRole er
+                           JOIN Role r ON r.id = er.roleId
+                           WHERE er.employeeId = e.id
+                           LIMIT 1
+                       ) AS roleName
                 FROM Employee e
                 WHERE ${whereSql}
                 ORDER BY e.createdAt DESC
@@ -175,6 +184,9 @@ router.get('/staff', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireP
                 qrToken: row.qrToken == null ? null : String(row.qrToken),
                 staffRole: String(row.staffRole ?? 'STAFF'),
                 workLocation: String(row.workLocation ?? 'OFFICE'),
+                /* Die Rolle aus den Einstellungen — sie hat die Personalrolle
+                   in der Liste abgelöst (Vorgabe 27.08.2026). */
+                roleName: row.roleName == null ? null : String(row.roleName),
             })),
             total: Number(countRows[0]?.total ?? 0),
             page,
@@ -323,40 +335,68 @@ router.post('/staff/:id/qr', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
     }
 });
 /**
- * Wer einen Antrag freigeben darf.
+ * Wer einen Antrag freigeben darf (Stufe 1 des Weges).
  *
- * NICHT nur die Personalrolle ADMIN: die steht auf einer Spalte, die es erst
- * seit dem Neubau gibt und die im Bestand bei allen auf STAFF steht — die
- * Auswahlliste des Antrags wäre damit LEER und niemand könnte einen Urlaub
- * einreichen. Als freigebend gilt deshalb auch, wer die Verwaltungsrechte des
- * Hauses trägt (`roles.manage` / `users.manage`, also die abgeleitete Rolle
- * „Manager" der Berechtigungsseite). Wer ausdrücklich als ADMIN eingetragen
- * ist, kommt zusätzlich dazu.
+ * SEIT DEM 27.08.2026 EINE FRAGE DER ROLLE aus den Einstellungen, nicht mehr
+ * der Personalrolle (die Spalte `staffRole` ist aus der Oberfläche entfernt):
+ * freigebend ist, wessen Rolle das Antragspostfach auf Stufe «entscheiden»
+ * trägt (`leaves.approve` — typischerweise Administrator und Projektleitung).
+ * `roles.manage`/`users.manage` bleiben als Altbestand dabei, damit eine vor
+ * dem Umbau gebaute Verwaltungsrolle nicht plötzlich aus der Auswahl fällt.
  *
  * Eine Anweisung mit EXISTS statt findMany+include: die Rechte hängen über
  * EmployeeRole → Role → RolePermission → Permission, und jede Beziehung wäre
  * bei Prisma ein eigener Netzwerkweg.
  */
-const APPROVER_PERMISSIONS = ['roles.manage', 'users.manage'];
+const APPROVER_PERMISSIONS = ['leaves.approve', 'roles.manage', 'users.manage'];
 const approverRowsSql = (tenantIds) => client_1.Prisma.sql `
-    SELECT e.id, e.firstName, e.lastName, e.email, e.staffRole
+    SELECT e.id, e.firstName, e.lastName, e.email, e.staffNumber
     FROM Employee e
     WHERE e.tenantId IN (${client_1.Prisma.join(tenantIds)})
       AND e.deletedAt IS NULL
       AND e.isActive = 1
-      AND (
-        e.staffRole = 'ADMIN'
-        OR EXISTS (
+      AND EXISTS (
             SELECT 1
             FROM EmployeeRole er
             JOIN RolePermission rp ON rp.roleId = er.roleId
             JOIN Permission p ON p.id = rp.permissionId
             WHERE er.employeeId = e.id
               AND p.permissionName IN (${client_1.Prisma.join(APPROVER_PERMISSIONS)})
-        )
       )
     ORDER BY e.firstName ASC, e.lastName ASC
 `;
+/**
+ * Führt diese Person die PURSER-Stufe? Der Purser ist die feste Rolle aus den
+ * Einstellungen (Role.isPurser) — er hat die Personalrolle ACCOUNTANT abgelöst.
+ * Seine Freigabe schliesst einen Urlaubsantrag ab.
+ */
+const isPurserEmployee = async (employeeId) => {
+    const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT er.employeeId AS id
+        FROM EmployeeRole er
+        JOIN Role r ON r.id = er.roleId
+        WHERE er.employeeId = ${employeeId}
+          AND r.isPurser = 1
+        LIMIT 1
+    `);
+    return rows.length > 0;
+};
+/** Wie viele aktive Personen im Baum die Purser-Rolle tragen. */
+const purserCount = async (tenantIds) => {
+    if (tenantIds.length === 0)
+        return 0;
+    const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT COUNT(DISTINCT e.id) AS total
+        FROM Employee e
+        JOIN EmployeeRole er ON er.employeeId = e.id
+        JOIN Role r ON r.id = er.roleId
+        WHERE e.tenantId IN (${client_1.Prisma.join(tenantIds)})
+          AND e.deletedAt IS NULL
+          AND e.isActive = 1
+          AND r.isPurser = 1
+    `);
+    return Number(rows[0]?.total ?? 0);
+};
 router.get('/approvers', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const tenantIds = await treeOf(req);
@@ -368,7 +408,7 @@ router.get('/approvers', AuthMiddleware_1.requireAuth, async (req, res) => {
             firstName: String(row.firstName ?? ''),
             lastName: String(row.lastName ?? ''),
             email: String(row.email ?? ''),
-            staffRole: String(row.staffRole ?? 'STAFF'),
+            staffNumber: row.staffNumber == null ? null : Number(row.staffNumber),
         })));
     }
     catch (error) {
@@ -386,16 +426,13 @@ const isApprover = async (employeeId, tenantIds) => {
           AND e.tenantId IN (${client_1.Prisma.join(tenantIds)})
           AND e.deletedAt IS NULL
           AND e.isActive = 1
-          AND (
-            e.staffRole = 'ADMIN'
-            OR EXISTS (
+          AND EXISTS (
                 SELECT 1
                 FROM EmployeeRole er
                 JOIN RolePermission rp ON rp.roleId = er.roleId
                 JOIN Permission p ON p.id = rp.permissionId
                 WHERE er.employeeId = e.id
                   AND p.permissionName IN (${client_1.Prisma.join(APPROVER_PERMISSIONS)})
-            )
           )
         LIMIT 1
     `);
@@ -752,12 +789,37 @@ const LEAVE_SELECT = {
     accountant: { select: { id: true, firstName: true, lastName: true } },
 };
 /**
- * GET /personnel/leaves?scope=mine|approver|accounting|all
+ * Die vier Antragsarten der Oberfläche als Bedingung auf die Zeile.
+ * Sie sind eine SICHT auf `kind` + `leaveType` (siehe shared/personnel.ts) —
+ * es gibt keine eigene Spalte, die widersprechen könnte.
+ */
+const requestTypeCondition = (requestType) => {
+    switch (requestType) {
+        case 'VACATION': return { kind: 'LEAVE', leaveType: 'ANNUAL_PAID' };
+        case 'REMOTE': return { kind: 'REMOTE' };
+        case 'SICK': return { kind: 'LEAVE', leaveType: { in: ['SICK_SHORT', 'SICK_LONG'] } };
+        case 'OTHER': return { kind: 'LEAVE', leaveType: { in: ['OTHER', 'EXCUSE'] } };
+        default: return null;
+    }
+};
+/**
+ * GET /personnel/leaves?scope=mine|incoming|approver|accounting|all
+ *
  *   mine        eigene Anträge
- *   approver    was auf MICH als freigebende Person wartet (+ meine Entscheide)
- *   accounting  was die Buchhaltung sieht: NUR was der Vorgesetzte durchgelassen
- *               hat — vor seiner Freigabe erfährt die Buchhaltung nichts.
+ *   incoming    ALLES, was auf MICH wartet oder von mir entschieden wurde —
+ *               die Freigabestufe UND die Buchhaltungsstufe in einer Liste.
+ *               Sie ist der Reiter «Eingehende Anträge» der einen Antragsseite
+ *               (Vorgabe 26.08.2026: nicht drei Menüpunkte, sondern einer mit
+ *               Reitern). `approver` und `accounting` bleiben als die beiden
+ *               Hälften bestehen — Altlinks und der Zähler brauchen sie.
+ *   approver    nur die Freigabestufe
+ *   accounting  nur die Buchhaltungsstufe: NUR was der Vorgesetzte durch-
+ *               gelassen hat — vorher erfährt die Buchhaltung nichts.
  *   all         Übersicht für die Personalverwaltung (leaves.read)
+ *
+ * Zusätzliche Filter, die für JEDEN Bereich gelten (Vorgabe: «es muss alles
+ * filterbar sein»): `requestType` (Urlaub/Homeoffice/Krankheit/Sonstiges),
+ * `status`, `from`/`to` und die Freitextsuche `search` über den Namen.
  */
 router.get('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
@@ -769,8 +831,56 @@ router.get('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
         };
         if (kind === 'LEAVE' || kind === 'REMOTE')
             where.kind = kind;
+        /* ── Filter, die für JEDEN Bereich gelten ────────────────────────────
+           Sie hängen bewusst in einem eigenen `AND` und nicht direkt am
+           `where`: der Bereich setzt teils dieselben Felder (die Buchhaltung
+           schränkt `status` selbst ein), und ein direkt gesetztes Feld würde
+           das eine oder das andere still überschreiben. Zwei getrennte
+           Bedingungen, die BEIDE gelten müssen, kann sich nicht widersprechen. */
+        const extra = [];
+        const typeCondition = requestTypeCondition(String(req.query.requestType || '').trim());
+        if (typeCondition)
+            extra.push(typeCondition);
+        const status = String(req.query.status || '').trim();
+        if (personnel_1.LEAVE_STATUSES.includes(status))
+            extra.push({ status });
+        // Ein Antrag zählt zum Zeitraum, wenn er ihn BERÜHRT — nicht nur, wenn
+        // er ganz darin liegt. Ein Urlaub über den Monatswechsel gehört in
+        // beide Monatslisten.
+        const from = (0, personnel_1.parseDateOnly)(req.query.from);
+        if (from)
+            extra.push({ endDate: { gte: (0, personnel_1.startOfDay)(from) } });
+        const to = (0, personnel_1.parseDateOnly)(req.query.to);
+        if (to)
+            extra.push({ startDate: { lte: (0, personnel_1.endOfDay)(to) } });
+        const search = String(req.query.search || '').trim();
+        if (search) {
+            extra.push({
+                employee: {
+                    OR: [
+                        { firstName: { contains: search } },
+                        { lastName: { contains: search } },
+                        { email: { contains: search } },
+                    ],
+                },
+            });
+        }
         if (scope === 'mine') {
             where.employeeId = req.user.id;
+        }
+        else if (scope === 'incoming') {
+            /* Beide Stufen in EINER Liste. Die Purser-Hälfte kommt nur dazu,
+               wenn der Aufrufer die Rolle auch trägt — sonst verriete der
+               Reiter jeder Person den Rückstand der zweiten Stufe. */
+            const branches = [{ approverId: req.user.id }];
+            if (await isPurserEmployee(req.user.id)) {
+                branches.push({
+                    kind: 'LEAVE',
+                    status: { in: ['PENDING_ACCOUNTING', 'APPROVED', 'REJECTED'] },
+                    managerDecisionAt: { not: null },
+                });
+            }
+            where.OR = branches;
         }
         else if (scope === 'approver') {
             // Das Postfach der freigebenden Person zeigt NUR, was an sie
@@ -778,16 +888,11 @@ router.get('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
             where.approverId = req.user.id;
         }
         else if (scope === 'accounting') {
-            // Die Buchhaltungsansicht steht nur der Buchhaltung offen, und sie
-            // beginnt ERST nach der Freigabe des Vorgesetzten: vorher erfährt
-            // die Buchhaltung von einem Antrag nichts. Homeoffice läuft gar
-            // nicht über sie (Vorgabe).
-            const me = await prisma_client_1.default.employee.findUnique({
-                where: { id: req.user.id },
-                select: { staffRole: true },
-            });
-            if (me?.staffRole !== 'ACCOUNTANT')
-                return fail(res, 403, 'Diese Ansicht führt die Buchhaltung.');
+            // Die zweite Stufe steht nur dem PURSER offen, und sie beginnt
+            // ERST nach der Freigabe des Vorgesetzten: vorher erfährt er von
+            // einem Antrag nichts. Homeoffice läuft gar nicht über ihn.
+            if (!(await isPurserEmployee(req.user.id)))
+                return fail(res, 403, 'Diese Ansicht führt der Purser.');
             where.kind = 'LEAVE';
             where.status = { in: ['PENDING_ACCOUNTING', 'APPROVED', 'REJECTED'] };
             where.managerDecisionAt = { not: null };
@@ -802,6 +907,8 @@ router.get('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
         else {
             where.employeeId = req.user.id;
         }
+        if (extra.length)
+            where.AND = extra;
         const rows = await prisma_client_1.default.staffLeaveRequest.findMany({
             where,
             select: LEAVE_SELECT,
@@ -814,10 +921,26 @@ router.get('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
         fail(res, 400, error.message);
     }
 });
+/**
+ * POST /personnel/leaves — einen Antrag stellen.
+ *
+ * Die Oberfläche schickt seit dem 26.08.2026 die ANTRAGSART (`requestType`:
+ * VACATION | REMOTE | SICK | OTHER); daraus werden `kind` und `leaveType`
+ * abgeleitet. Der alte Weg (`kind` + `leaveType` direkt) bleibt gültig —
+ * die Stempeluhr-Tablets und Altskripte sprechen ihn noch.
+ */
 router.post('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
-        const kind = String(req.body?.kind) === 'REMOTE' ? 'REMOTE' : 'LEAVE';
-        const leaveType = kind === 'REMOTE' ? personnel_1.REMOTE_LEAVE_TYPE : String(req.body?.leaveType ?? '');
+        const requestType = String(req.body?.requestType ?? '').trim();
+        const derived = (0, personnel_1.isRequestType)(requestType)
+            ? (0, personnel_1.requestTypeToLeave)(requestType, req.body?.leaveType)
+            : null;
+        const kind = derived
+            ? derived.kind
+            : (String(req.body?.kind) === 'REMOTE' ? 'REMOTE' : 'LEAVE');
+        const leaveType = derived
+            ? derived.leaveType
+            : (kind === 'REMOTE' ? personnel_1.REMOTE_LEAVE_TYPE : String(req.body?.leaveType ?? ''));
         if (kind === 'LEAVE' && !(0, personnel_1.isLeaveType)(leaveType)) {
             return fail(res, 400, `Urlaubsart muss eine von ${personnel_1.LEAVE_TYPES.join(', ')} sein.`);
         }
@@ -861,6 +984,11 @@ router.post('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
             },
             select: LEAVE_SELECT,
         });
+        /* MELDUNG UND MAIL an ALLE mit der Verwaltungsrolle (Vorgabe
+           26.08.2026). Feuern und vergessen: ein stummer Mailserver darf das
+           Einreichen nicht scheitern lassen — die Meldung im Programm steht
+           auch dann, weil sie zuerst geschrieben wird. */
+        (0, leaveRequestMailService_1.queueLeaveRequestNotice)(created.id, 'MANAGER');
         res.status(201).json(created);
     }
     catch (error) {
@@ -888,30 +1016,24 @@ router.patch('/leaves/:id/decision', AuthMiddleware_1.requireAuth, async (req, r
         });
         if (!request)
             return fail(res, 404, 'Antrag nicht gefunden.');
-        const me = await prisma_client_1.default.employee.findUnique({
-            where: { id: req.user.id },
-            select: { id: true, staffRole: true },
-        });
         const now = new Date();
         if (request.status === 'PENDING_MANAGER') {
             if (request.approverId !== req.user.id) {
                 return fail(res, 403, 'Nur die im Antrag gewählte freigebende Person darf hier entscheiden.');
             }
-            /* Wohin der Antrag nach dem Ja geht. Urlaub gehört in die
-               Buchhaltung — ABER nur, wenn es dort jemanden gibt. Führt die
-               Firma (noch) niemanden mit der Personalrolle „Buchhaltung",
-               bliebe der Antrag sonst für immer in einem Postfach liegen, das
-               keiner öffnen kann. Dann schliesst die Freigabe ihn ab, und der
-               Vermerk hält fest, warum keine zweite Stufe lief. */
+            /* Wohin der Antrag nach dem Ja geht. Urlaub gehört zum PURSER —
+               ABER nur, wenn jemand die Rolle trägt. Führt die Firma (noch)
+               niemanden als Purser, bliebe der Antrag sonst für immer in einem
+               Postfach liegen, das keiner öffnen kann. Dann schliesst die
+               Freigabe ihn ab, und der Vermerk hält fest, warum keine zweite
+               Stufe lief. */
             let nextStatus = reject ? 'REJECTED' : (0, personnel_1.nextStatusAfterManagerApproval)(request.kind);
             let accountingNote = null;
             if (nextStatus === 'PENDING_ACCOUNTING') {
-                const accountants = await prisma_client_1.default.employee.count({
-                    where: { tenantId: { in: tenantIds }, deletedAt: null, isActive: true, staffRole: 'ACCOUNTANT' },
-                });
+                const accountants = await purserCount(tenantIds);
                 if (accountants === 0) {
                     nextStatus = 'APPROVED';
-                    accountingNote = 'Keine Buchhaltung hinterlegt — mit der Freigabe abgeschlossen.';
+                    accountingNote = 'Kein Purser hinterlegt — mit der Freigabe abgeschlossen.';
                 }
             }
             const updated = await prisma_client_1.default.staffLeaveRequest.update({
@@ -925,11 +1047,17 @@ router.patch('/leaves/:id/decision', AuthMiddleware_1.requireAuth, async (req, r
                 },
                 select: LEAVE_SELECT,
             });
+            /* «Ich gebe diesen Urlaub frei» → «an die Buchhaltung senden»:
+               genau hier erfährt die Buchhaltung zum ersten Mal von dem
+               Antrag. Ist er dagegen fertig (Homeoffice, abgelehnt, oder es
+               gibt keine Buchhaltung), geht die Nachricht an die
+               antragstellende Person. */
+            (0, leaveRequestMailService_1.queueLeaveRequestNotice)(updated.id, nextStatus === 'PENDING_ACCOUNTING' ? 'ACCOUNTING' : 'DECIDED');
             return res.status(200).json(updated);
         }
         if (request.status === 'PENDING_ACCOUNTING') {
-            if (me?.staffRole !== 'ACCOUNTANT') {
-                return fail(res, 403, 'Diese Stufe entscheidet die Buchhaltung.');
+            if (!(await isPurserEmployee(req.user.id))) {
+                return fail(res, 403, 'Diese Stufe entscheidet der Purser.');
             }
             const updated = await prisma_client_1.default.staffLeaveRequest.update({
                 where: { id: request.id },
@@ -942,6 +1070,8 @@ router.patch('/leaves/:id/decision', AuthMiddleware_1.requireAuth, async (req, r
                 },
                 select: LEAVE_SELECT,
             });
+            // Endstand — die antragstellende Person erfährt es.
+            (0, leaveRequestMailService_1.queueLeaveRequestNotice)(updated.id, 'DECIDED');
             return res.status(200).json(updated);
         }
         return fail(res, 400, 'Dieser Antrag ist bereits abgeschlossen.');
@@ -951,25 +1081,32 @@ router.patch('/leaves/:id/decision', AuthMiddleware_1.requireAuth, async (req, r
     }
 });
 /**
- * Offene Anzahl je Postfach — die Zähler auf den Reitern.
- * Der Buchhaltungszähler steht NUR der Buchhaltung offen: sonst verriete er
- * jeder Person, wie viele Urlaubsanträge gerade in Prüfung sind.
+ * Offene Anzahl je Stufe — die Zähler auf den Reitern UND der farbige Punkt
+ * am Anträge-Zeichen im Kopf (Vorgabe 26.08.2026).
+ *
+ * `incoming` ist die Summe dessen, was auf MICH wartet: die Freigaben plus —
+ * wenn ich die Rolle trage — die Buchhaltungsstufe. Genau diese Zahl färbt den
+ * Punkt. Der Buchhaltungszähler steht NUR der Buchhaltung offen: sonst
+ * verriete er jeder Person, wie viele Urlaubsanträge gerade in Prüfung sind.
+ *
+ * `mine` sind die eigenen Anträge, über die noch niemand entschieden hat —
+ * der Reiter «Meine Anträge» trägt sie als Plakette.
  */
 router.get('/leaves/counts', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const tenantIds = await treeOf(req);
         const scope = { employee: { tenantId: { in: tenantIds.length ? tenantIds : [req.user.tenantId] } } };
-        const me = await prisma_client_1.default.employee.findUnique({
-            where: { id: req.user.id },
-            select: { staffRole: true },
-        });
-        const [approver, accounting] = await Promise.all([
+        const amPurser = await isPurserEmployee(req.user.id);
+        const [approver, accounting, mine] = await Promise.all([
             prisma_client_1.default.staffLeaveRequest.count({ where: { ...scope, approverId: req.user.id, status: 'PENDING_MANAGER' } }),
-            me?.staffRole === 'ACCOUNTANT'
+            amPurser
                 ? prisma_client_1.default.staffLeaveRequest.count({ where: { ...scope, kind: 'LEAVE', status: 'PENDING_ACCOUNTING' } })
                 : Promise.resolve(0),
+            prisma_client_1.default.staffLeaveRequest.count({
+                where: { ...scope, employeeId: req.user.id, status: { in: ['PENDING_MANAGER', 'PENDING_ACCOUNTING'] } },
+            }),
         ]);
-        res.status(200).json({ approver, accounting });
+        res.status(200).json({ approver, accounting, mine, incoming: approver + accounting });
     }
     catch (error) {
         fail(res, 400, error.message);

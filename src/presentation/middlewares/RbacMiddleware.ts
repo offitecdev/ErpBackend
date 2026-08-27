@@ -5,11 +5,31 @@ import { RoleRepository } from '../../infrastructure/repositories/RoleRepository
 const roleRepo = new RoleRepository();
 const getPermissionsUseCase = new GetUserPermissionsUseCase(roleRepo);
 
+/* ── Was eine abgewiesene Person LIEST ───────────────────────────────────────
+ *
+ * Bisher stand hier eine Aufzählung von Rechtenamen ("Erisim Engellendi: Bu
+ * islem icin projects.view, projects.report, maintenance.tasks.manage
+ * yetkilerinden biri gereklidir"). Das ist zweierlei zugleich falsch: es steht
+ * in einer Sprache, die die Anwendung gar nicht führt, und es nennt interne
+ * Namen, mit denen die Monteurin am Tablet nichts anfangen kann — sie las das
+ * beim Öffnen ihrer Montage-Rapporte.
+ *
+ * Der SATZ sagt darum, was zu tun ist; die Rechtenamen reisen daneben in
+ * `requiredPermissions` mit, damit Entwicklung und Protokoll sie weiterhin
+ * haben, ohne dass sie jemand auf dem Bildschirm liest.
+ */
+const DENIED_MESSAGE = 'Zugriff verweigert: Ihrer Rolle fehlt die Berechtigung für diesen Vorgang. '
+    + 'Bitte wenden Sie sich an die Administration.';
+/** Eine Rolle, die GAR NICHTS vergibt, ist keine Entscheidung, sondern eine
+    unfertige Rolle — dann steht auch dran, wo sie fertig gebaut wird. */
+const NO_ROLE_MESSAGE = 'Ihrer Rolle sind noch keine Rechte zugewiesen. '
+    + 'Die Administration vergibt sie unter Einstellungen → Berechtigungen.';
+
 export const requirePermission = (requiredPermission: string) => {
     return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
             if (!req.user) {
-                res.status(401).json({ error: 'Kimlik doğrulanmamış kullanıcı.' });
+                res.status(401).json({ error: 'Anmeldung erforderlich.' });
                 return;
             }
 
@@ -24,8 +44,9 @@ export const requirePermission = (requiredPermission: string) => {
             // tenant/system flag (e.g. a "needsBootstrap" tenant flag), never by
             // an empty permission set.
             if (userPermissions.length === 0 || !userPermissions.includes(requiredPermission)) {
-                res.status(403).json({ 
-                    error: `Erişim Engellendi: Bu işlem için '${requiredPermission}' yetkisine sahip değilsiniz.` 
+                res.status(403).json({
+                    error: userPermissions.length === 0 ? NO_ROLE_MESSAGE : DENIED_MESSAGE,
+                    requiredPermissions: [requiredPermission],
                 });
                 return;
             }
@@ -34,7 +55,7 @@ export const requirePermission = (requiredPermission: string) => {
         } catch (error: any) {
             console.error('[RbacMiddleware] error while checking permission:', requiredPermission, error);
             res.status(500).json({
-                error: 'Yetki kontrolü sırasında bir hata oluştu.',
+                error: 'Bei der Berechtigungsprüfung ist ein Fehler aufgetreten.',
             });
         }
     };
@@ -44,7 +65,7 @@ export const requireAnyPermission = (requiredPermissions: string[]) => {
     return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
             if (!req.user) {
-                res.status(401).json({ error: 'Kimlik dogrulanmamis kullanici.' });
+                res.status(401).json({ error: 'Anmeldung erforderlich.' });
                 return;
             }
 
@@ -56,7 +77,8 @@ export const requireAnyPermission = (requiredPermissions: string[]) => {
             // TODO: gate bootstrap access behind an explicit tenant/system flag.
             if (userPermissions.length === 0 || !requiredPermissions.some((permission) => userPermissions.includes(permission))) {
                 res.status(403).json({
-                    error: `Erisim Engellendi: Bu islem icin ${requiredPermissions.join(', ')} yetkilerinden biri gereklidir.`
+                    error: userPermissions.length === 0 ? NO_ROLE_MESSAGE : DENIED_MESSAGE,
+                    requiredPermissions,
                 });
                 return;
             }
@@ -65,7 +87,7 @@ export const requireAnyPermission = (requiredPermissions: string[]) => {
         } catch (error: any) {
             console.error('[RbacMiddleware] error while checking any permission:', requiredPermissions, error);
             res.status(500).json({
-                error: 'Yetki kontrolu sirasinda bir hata olustu.',
+                error: 'Bei der Berechtigungsprüfung ist ein Fehler aufgetreten.',
             });
         }
     };

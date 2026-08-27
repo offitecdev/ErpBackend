@@ -75,6 +75,14 @@ export interface InviteCardInput {
     audience?: InviteAudience;
     start: Date;
     end: Date;
+    /**
+     * DER EINSATZPLAN (24.08.2026, Vorgabe Samet: «diese Angaben sollen in der
+     * automatischen Mail an die Technikerin stehen — Ihr Terminplan sieht wie
+     * folgt aus»). Ein Eintrag je Tag, mit den Zeiten DIESES Tages. Fehlt die
+     * Angabe oder steht nur ein Tag darin, bleibt die Karte, wie sie war: ein
+     * Datum, eine Zeitspanne.
+     */
+    schedule?: Array<{ start: Date; end: Date }>;
     summary: string;
     location?: string | null;
     /** Zeilen der Karte: Projekt, Kunde, Team … in dieser Reihenfolge. */
@@ -151,6 +159,12 @@ interface InviteWords {
     time: string;
     /** Anhaengsel der Zeitspanne; nur das Deutsche sagt "Uhr". */
     clockSuffix: string;
+    /** Ueberschrift des mehrtaegigen Einsatzplans und die Nummer eines Tages. */
+    schedule: string;
+    day: string;
+    /** Der Satz vor dem Plan — je nachdem, wer ihn liest. */
+    scheduleLeadTeam: string;
+    scheduleLeadCustomer: string;
     attachments: string;
     autoNotice: string;
     /** Die Aufgabe ist keine Einladung — sie bekommt den nuechternen Satz. */
@@ -198,6 +212,10 @@ const WORDS: Record<InviteLanguage, InviteWords> = {
         due: "Fällig",
         time: "Zeit",
         clockSuffix: " Uhr",
+        schedule: "Einsatzplan",
+        day: "Tag",
+        scheduleLeadTeam: "Ihr Einsatzplan sieht wie folgt aus:",
+        scheduleLeadCustomer: "wir haben folgende Termine für Sie eingetragen:",
         attachments: "Checklisten im Anhang",
         autoNotice: "Diese Einladung wurde automatisch vom Offitec ERP erstellt.",
         autoNoticeTask: "Diese Nachricht wurde automatisch vom Offitec ERP erstellt.",
@@ -237,6 +255,10 @@ const WORDS: Record<InviteLanguage, InviteWords> = {
         due: "Due",
         time: "Time",
         clockSuffix: "",
+        schedule: "Schedule",
+        day: "Day",
+        scheduleLeadTeam: "your assignment schedule is as follows:",
+        scheduleLeadCustomer: "we have scheduled the following appointments for you:",
         attachments: "Checklists attached",
         autoNotice: "This invitation was created automatically by Offitec ERP.",
         autoNoticeTask: "This message was created automatically by Offitec ERP.",
@@ -276,6 +298,10 @@ const WORDS: Record<InviteLanguage, InviteWords> = {
         due: "Son tarih",
         time: "Saat",
         clockSuffix: "",
+        schedule: "Görev planı",
+        day: "Gün",
+        scheduleLeadTeam: "görev planınız şu şekildedir:",
+        scheduleLeadCustomer: "sizin için aşağıdaki randevuları planladık:",
         attachments: "Ekteki kontrol listeleri",
         autoNotice: "Bu davet Offitec ERP tarafından otomatik olarak oluşturuldu.",
         autoNoticeTask: "Bu mesaj Offitec ERP tarafından otomatik olarak oluşturuldu.",
@@ -385,17 +411,51 @@ const toneOf = (
     return of(team ? words.tone.inviteTeam : words.tone.invite, BRAND_NAVY, words.calendar);
 };
 
+/**
+ * Die Tage eines mehrtägigen Einsatzes — oder nichts, wenn es nur einer ist.
+ * An dieser einen Stelle wird entschieden, ob die Karte vom „Termin“ oder vom
+ * „Einsatzplan“ spricht; Klartext und HTML fragen beide hier.
+ */
+const scheduleDays = (input: InviteCardInput) =>
+    (input.schedule && input.schedule.length > 1 ? input.schedule : null);
+
+/**
+ * Die Zeiten EINES Einsatztages: „08:00 – 17:00 Uhr“ — und bei einer
+ * Nachtschicht „20:00 – 02:00 Uhr (+1)“ statt des zweimal ausgeschriebenen
+ * Datums. Der Tag steht schon in der Zeile davor; ihn in der Uhrzeit zu
+ * wiederholen macht die Zeile lang und die Schicht nicht klarer.
+ */
+const formatScheduleTime = (start: Date, end: Date, language: InviteLanguage): string => {
+    const words = WORDS[language];
+    const from = fmt(start, { hour: "2-digit", minute: "2-digit" }, language);
+    const to = fmt(end, { hour: "2-digit", minute: "2-digit" }, language);
+    return `${from} – ${to}${words.clockSuffix}${sameDay(start, end) ? "" : " (+1)"}`;
+};
+
+/** „Tag 2 · Dienstag, 25. August 2026 · 08:00 – 17:00 Uhr“. */
+const scheduleLine = (
+    day: { start: Date; end: Date },
+    index: number,
+    language: InviteLanguage,
+): string => {
+    const words = WORDS[language];
+    return `(${index + 1}) · ${formatInviteDate(day.start, language)} · ${formatScheduleTime(day.start, day.end, language)}`;
+};
+
 /** Klartext-Fassung (text/plain-Teil) — dieselben Angaben, ohne Gestaltung. */
 export const buildInviteText = (input: InviteCardInput): string => {
     const kind = input.kind ?? "APPOINTMENT";
     const language = input.language ?? "de";
     const words = WORDS[language];
     const tone = toneOf(input.method, input.sequence, input.audience, kind, language);
+    const days = scheduleDays(input);
     // Eine Aufgabe hat einen Tag, keine Zeitspanne — eine Zeile „09:00–10:00“
     // würde eine Genauigkeit vorgeben, die es nicht gibt.
     const rows = [
-        input.hideDate ? null : `${kind === "TASK" ? words.due : words.date}: ${formatInviteDate(input.start, language)}`,
-        kind === "TASK" || input.hideDate ? null : `${words.time}: ${formatInviteTime(input.start, input.end, language)}`,
+        // Beim mehrtägigen Einsatz stünde hier der erste Tag allein — der ganze
+        // Plan folgt stattdessen als eigener Block unter der Anrede.
+        input.hideDate || days ? null : `${kind === "TASK" ? words.due : words.date}: ${formatInviteDate(input.start, language)}`,
+        kind === "TASK" || input.hideDate || days ? null : `${words.time}: ${formatInviteTime(input.start, input.end, language)}`,
         input.location ? `${words.place}: ${input.location}` : null,
         ...input.details.map((row) => `${row.label}: ${row.value}`),
     ].filter((line): line is string => line !== null);
@@ -403,12 +463,17 @@ export const buildInviteText = (input: InviteCardInput): string => {
     const message = input.message?.trim();
     // Leerzeilen sind hier Absicht (Absätze) — nur `null` fällt weg.
     const greeting = input.greetingName?.trim() ? `${words.greeting} ${input.greetingName.trim()}` : words.greeting;
+    const lead = message
+        || (days ? (input.audience === "TEAM" ? words.scheduleLeadTeam : words.scheduleLeadCustomer) : tone.lead);
     return [
         greeting,
         "",
-        message || tone.lead,
+        lead,
         "",
         input.summary,
+        ...(days
+            ? [`${words.schedule}:`, ...days.map((day, index) => `  ${scheduleLine(day, index, language)}`), ""]
+            : []),
         ...rows,
         ...(notes ? ["", notes] : []),
         ...(input.attachmentNames?.length
@@ -478,6 +543,7 @@ export const buildInviteHtml = (input: InviteCardInput): string => {
     const words = WORDS[language];
     const tone = toneOf(input.method, input.sequence, input.audience, kind, language);
     const cancelled = input.method === "CANCEL";
+    const days = scheduleDays(input);
     const weekday = fmt(input.start, { weekday: "long" }, language);
     const dateLong = fmt(input.start, { day: "numeric", month: "long", year: "numeric" }, language);
     const time = formatInviteTime(input.start, input.end, language);
@@ -493,6 +559,33 @@ export const buildInviteHtml = (input: InviteCardInput): string => {
     /** Notiz- und Checklistenblock teilen sich dieselbe Form, nur die Farbe trennt sie. */
     const softBox = (accent: string, background: string, inner: string) =>
         `<div style="margin-top:14px;padding:11px 14px;background:${background};border-left:3px solid ${accent};border-radius:10px;">${inner}</div>`;
+
+    /* DER EINSATZPLAN (24.08.2026). Beim mehrtägigen Einsatz steht an der
+       Stelle des einen Datumsblocks eine ZEILE JE TAG: links die Nummer des
+       Tages ("Tag 2"), rechts Wochentag, Datum und die Zeiten DIESES Tages.
+       Eine Tabelle, keine Liste — Outlooks Word-Renderer setzt Listen und
+       Abstände unzuverlässig, Tabellenzeilen überall gleich. */
+    const scheduleBlock = days
+        ? `
+    <tr><td align="center" style="padding:16px 26px 0;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6fb;border:1px solid #e6eaf4;border-radius:14px;">
+        <tr><td style="${FONT}padding:11px 16px 4px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8b93a7;">${escapeHtml(words.schedule)}</td></tr>
+        ${days.map((day, index) => `
+        <tr><td style="${FONT}padding:0 16px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+                <td style="${FONT}padding:8px 12px 8px 0;width:52px;white-space:nowrap;vertical-align:top;font-size:12px;font-weight:700;color:${tone.accent};${index === days.length - 1 ? "" : "border-bottom:1px solid #e2e7f3;"}">(${index + 1})</td>
+                <td style="${FONT}padding:8px 0;vertical-align:top;font-size:14px;line-height:1.45;color:#0f172a;${index === days.length - 1 ? "" : "border-bottom:1px solid #e2e7f3;"}">
+                    ${escapeHtml(fmt(day.start, { weekday: "long" }, language))}, ${escapeHtml(fmt(day.start, { day: "numeric", month: "long", year: "numeric" }, language))}
+                    <span style="display:block;font-weight:700;color:#0f172a;">${escapeHtml(formatScheduleTime(day.start, day.end, language))}</span>
+                </td>
+            </tr>
+            </table>
+        </td></tr>`).join("")}
+        <tr><td style="height:8px;line-height:8px;font-size:0;">&nbsp;</td></tr>
+        </table>
+    </td></tr>`
+        : "";
 
     return `<!DOCTYPE html>
 <html lang="${language}">
@@ -559,7 +652,8 @@ export const buildInviteHtml = (input: InviteCardInput): string => {
     <!-- Termin: EIN kompakter, mittiger Block. Die Aufgabe zeigt darin ihren
          Fälligkeitstag — sie hat keine Zeitspanne. Ohne Fälligkeit fällt der
          Block ganz weg. -->
-    ${input.hideDate ? "" : `
+    ${scheduleBlock}
+    ${input.hideDate || days ? "" : `
     <tr><td align="center" style="padding:16px 26px 0;">
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;background:#f4f6fb;border:1px solid #e6eaf4;border-radius:14px;">
         <tr><td align="center" style="${FONT}padding:12px 26px;">
@@ -577,7 +671,11 @@ export const buildInviteHtml = (input: InviteCardInput): string => {
     <!-- Anrede: Fliesstext bleibt linksbuendig. -->
     <tr><td style="padding:20px 26px 0;">
         <div style="${FONT}font-size:14.5px;line-height:1.6;color:#475569;">${escapeHtml(words.greeting)}${input.greetingName?.trim() ? ` ${escapeHtml(input.greetingName.trim())}` : ""}</div>
-        <div style="${FONT}font-size:14.5px;line-height:1.6;color:#475569;margin-top:2px;">${message ? nl2br(message) : escapeHtml(tone.lead)}</div>
+        <div style="${FONT}font-size:14.5px;line-height:1.6;color:#475569;margin-top:2px;">${message
+            ? nl2br(message)
+            : escapeHtml(days
+                ? (input.audience === "TEAM" ? words.scheduleLeadTeam : words.scheduleLeadCustomer)
+                : tone.lead)}</div>
     </td></tr>
 
     <!-- Die Angaben zum Termin. -->

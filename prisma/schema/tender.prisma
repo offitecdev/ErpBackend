@@ -60,6 +60,14 @@ model Tender {
   // Stages must sum to 100. Null = no schedule (free-form invoicing).
   paymentStages        String?
   salespersonName      String?
+  // ── Manuell erfasster Kunde (OSP-Import, 04.09.2026) ──
+  // Eine Offerte KANN ohne CRM-Kunden leben: Name/Adresse/E-Mail stehen dann
+  // direkt hier (nichts wird im Kundenstamm angelegt). Ist customerId gesetzt,
+  // haben diese Felder Vorrang NICHT — der CRM-Kunde gewinnt.
+  manualCustomerName    String?
+  manualCustomerEmail   String?
+  // Mehrzeilig (Strasse / PLZ Ort / Land) — wie die übrigen Adressfelder.
+  manualCustomerAddress String?             @db.Text
   sourceStatus         String?
   sourceCompany        String?
   shippingTerms        String?

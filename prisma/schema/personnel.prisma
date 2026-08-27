@@ -64,9 +64,13 @@ model StaffLeaveRequest {
   employeeId           String
   /// LEAVE | REMOTE
   kind                 String    @default("LEAVE") @db.VarChar(16)
-  /// OTHER | EXCUSE | SICK_SHORT | SICK_LONG | REMOTE_WORK
-  /// (ANNUAL_PAID steht nur noch in Altanträgen — der Jahresurlaub läuft seit
-  /// dem 16.08.2026 als OTHER mit Freitext.)
+  /// ANNUAL_PAID | OTHER | EXCUSE | SICK_SHORT | SICK_LONG | REMOTE_WORK
+  /// ANNUAL_PAID ist seit dem 26.08.2026 WIEDER die tragende Art: der
+  /// Jahresurlaub wird gegen den erworbenen Anspruch (StaffLeavePolicy)
+  /// gebucht, und dafür muss er als solcher erkennbar sein. Zwischen dem
+  /// 16. und dem 26.08.2026 angelegte Jahresurlaube stehen als OTHER mit
+  /// Freitext in der Tabelle und bleiben dort — sie zählen nicht gegen den
+  /// Anspruch, weil niemand nachträglich entscheiden kann, ob sie es sollten.
   leaveType            String    @db.VarChar(24)
   /// Freitext zu `leaveType = 'OTHER'`: die selbst benannte Urlaubsart
   /// ("Jahresurlaub", "unbezahlter Urlaub", …). Bei den festen Arten null.
@@ -95,4 +99,88 @@ model StaffLeaveRequest {
   @@index([employeeId, startDate])
   @@index([approverId, status])
   @@index([accountantId], map: "StaffLeaveRequest_accountantId_fkey")
+}
+
+/// ── PERSONALAKTE: UNTERLAGEN (26.08.2026, Vorgabe Samet) ─────────────────────
+/// Zwei Sorten in EINER Tabelle, unterschieden durch `kind`:
+///   CONTRACT  der Arbeitsvertrag — genau EINE Datei je Person. Ein zweiter
+///             Vertrag ersetzt den ersten (die alte Datei wird gelöscht).
+///   DOCUMENT  alles Weitere zur Anstellung: Zeugnisse, Bescheinigungen,
+///             Nachweise. Beliebig viele.
+///
+/// DIE BYTES LIEGEN AUF DER PLATTE, nicht in der Zeile (`fileRef`, siehe
+/// LocalFileStorage) — dieselbe Regel wie bei Angebots- und Terminunterlagen.
+model StaffDocument {
+  id           String   @id
+  tenantId     String
+  employeeId   String
+  /// CONTRACT | DOCUMENT
+  kind         String   @default("DOCUMENT") @db.VarChar(16)
+  /// Die Beschriftung in der Liste; leer = der Dateiname.
+  title        String   @db.VarChar(200)
+  fileName     String
+  contentType  String
+  sizeBytes    Int
+  fileRef      String   @db.VarChar(512)
+  uploadedById String?
+  createdAt    DateTime @default(now())
+  employee     Employee @relation("StaffDocuments", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, kind])
+  @@index([tenantId])
+}
+
+/// ── FEIERTAGE ────────────────────────────────────────────────────────────────
+/// Die vom Haus GEWÄHLTEN Feiertage. Der Katalog der amtlichen türkischen
+/// Feiertage steht im Code (shared/publicHolidays.ts); hier steht nur, was
+/// tatsächlich übernommen wurde — samt der Möglichkeit, das Datum zu
+/// korrigieren (die religiösen Feste wandern im Sonnenjahr) oder einen
+/// eigenen Tag zu erfassen.
+///
+/// Ein Feiertag ist KEIN Arbeitstag: er zählt weder gegen das Sollpensum noch
+/// als Fehltag, und ein Urlaubsantrag verbraucht ihn nicht.
+model PublicHoliday {
+  id          String   @id
+  tenantId    String
+  /// Kalendertag (lokale Mitternacht).
+  date        DateTime
+  name        String   @db.VarChar(120)
+  /// Schlüssel aus dem Katalog ('tr.newYear', 'tr.ramazan.d1', …) — null bei
+  /// selbst erfassten Tagen.
+  catalogKey  String?  @db.VarChar(64)
+  countryCode String   @default("TR") @db.VarChar(2)
+  /// true = religiöses Fest (Ramazan-/Kurban-Bayram), false = staatlicher Tag.
+  religious   Boolean  @default(false)
+  /// Arife: ein halber Tag. Zählt mit 0.5 statt 1.
+  halfDay     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([tenantId, date, name])
+  @@index([tenantId, date])
+}
+
+/// ── URLAUBSANSPRUCH ──────────────────────────────────────────────────────────
+/// Die Regel, nach der der Jahresurlaub entsteht (Vorgabe 26.08.2026):
+/// «eine Einstellung nach der Zahl der Arbeitstage im Jahr — das System
+/// rechnet den Anspruch danach aus, wie viele Tage die Person bis dahin
+/// gearbeitet hat, und schreibt ihn fort, während weitere Daten anfallen.»
+///
+///   anteiliger Anspruch = annualLeaveDays × (geleistete Arbeitstage / annualWorkdays)
+///
+/// Ein Plan je MANDANTENBAUM (wie StaffShiftPlan): Personal ist baumweit
+/// geteilt, also muss auch seine Urlaubsregel baumweit dieselbe sein.
+model StaffLeavePolicy {
+  id               String   @id
+  tenantId         String   @unique
+  /// Arbeitstage, auf die sich der VOLLE Jahresanspruch bezieht.
+  annualWorkdays   Int      @default(250)
+  /// Voller Jahresanspruch in Tagen (die gesetzliche Grundlage der Firma).
+  annualLeaveDays  Int      @default(14)
+  /// true = anteilig nach geleisteten Arbeitstagen (Vorgabe).
+  /// false = der volle Anspruch steht ab dem 1. Januar zur Verfügung.
+  accrueByWorkdays Boolean  @default(true)
+  /// Resttage, die aus dem Vorjahr mitgenommen werden dürfen.
+  carryOverDays    Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
 }

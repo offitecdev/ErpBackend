@@ -118,7 +118,9 @@ const requireAuth = async (req, res, next) => {
             id: decoded.id,
             tenantId,
             homeTenantId,
-            email: decoded.email
+            email: decoded.email,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
         };
         // Yanıtların Server-Timing başlığında görünsün: uç noktadaki yavaşlık
         // handler'da mı, kimlik katmanında mı — tarayıcıdan ayırt edilebilir.

@@ -147,8 +147,12 @@ router.get('/mine', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(400).json({ error: error.message });
     }
 });
-/** GET /password-requests?status=PENDING — die Freigabeliste (Verwaltung). */
-router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('roles.manage'), async (req, res) => {
+/** GET /password-requests?status=PENDING — die Freigabeliste.
+    SEIT DEM 27.08.2026 auch für die Projektleitung (Vorgabe: «Kennwörter
+    ändern dürfen nur Projektleitung und Administrator»): `employees.update`
+    genügt — das Recht trägt, wer die Personalliste auf Stufe «bearbeiten»
+    führt. */
+router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['roles.manage', 'employees.update']), async (req, res) => {
     try {
         const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
         const status = String(req.query.status || 'PENDING').toUpperCase();
@@ -167,8 +171,10 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermis
         res.status(400).json({ error: error.message });
     }
 });
-/** POST /password-requests/:id/decide — { approve: boolean, note? } (Verwaltung). */
-router.post('/:id/decide', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('roles.manage'), async (req, res) => {
+/** POST /password-requests/:id/decide — { approve, note? }. Entscheiden darf,
+    wer Kennwörter führen darf: Administrator (roles.manage) und Projektleitung
+    (employees.update). */
+router.post('/:id/decide', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['roles.manage', 'employees.update']), async (req, res) => {
     try {
         const user = req.user;
         const id = String(req.params.id || '');

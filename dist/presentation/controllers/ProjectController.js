@@ -11,8 +11,11 @@ const articleStock_1 = require("../../shared/articleStock");
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const MailDispatchService_1 = require("../../infrastructure/services/outlook/MailDispatchService");
 const calendarMailService_1 = require("../../infrastructure/services/calendarMailService");
+const LocalFileStorage_1 = require("../../infrastructure/services/LocalFileStorage");
 const serviceTenantScope_1 = require("./serviceTenantScope");
+const calendarLabelCatalog_1 = require("../../application/services/calendarLabelCatalog");
 const technicianSchedule_1 = require("./technicianSchedule");
+const appointmentSeries_1 = require("./appointmentSeries");
 const nanoid_1 = require("nanoid");
 const documentNumber_1 = require("../../shared/documentNumber");
 const smtp = new SmtpMailService_1.SmtpMailService();
@@ -3136,12 +3139,10 @@ class ProjectController {
             res.status(400).json({ error: error.message });
         }
     }
-    parseAppointmentBody(body) {
-        const startTime = new Date(body.startTime);
-        const endTime = new Date(body.endTime);
-        if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime()) || endTime <= startTime) {
-            throw new Error("Geçerli bir başlangıç ve bitiş saati girin.");
-        }
+    /* Alles am Termin ausser der Uhrzeit. Steht getrennt, weil ein mehrtägiger
+       Einsatz seine Zeiten je TAG mitbringt (parseAppointmentDays), Notiz und
+       CC-Liste aber EINMAL für den ganzen Einsatz gelten. */
+    parseAppointmentMeta(body) {
         // CC listesi gönderilmediyse undefined kalır (update mevcut değeri korur).
         const ccEmails = body.ccEmails === undefined
             ? undefined
@@ -3149,11 +3150,21 @@ class ProjectController {
                 .map((value) => String(value ?? "").trim())
                 .filter((email, index, list) => email.includes("@") && list.indexOf(email) === index);
         return {
-            startTime,
-            endTime,
             notes: body.notes === undefined ? undefined : String(body.notes || "").trim() || null,
-            ccEmails
+            ccEmails,
+            /* KALENDER-ETIKETT (25.08.2026). Roh durchgereicht: geprueft wird
+               es erst gegen den Mandanten (calendarLabelCatalog), und das
+               braucht eine Abfrage -- hier wird nur gelesen, was ankam. */
+            labelId: body.labelId,
         };
+    }
+    parseAppointmentBody(body) {
+        const startTime = new Date(body.startTime);
+        const endTime = new Date(body.endTime);
+        if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime()) || endTime <= startTime) {
+            throw new Error("Geçerli bir başlangıç ve bitiş saati girin.");
+        }
+        return { startTime, endTime, ...this.parseAppointmentMeta(body) };
     }
     // A customer may receive at most one field appointment per calendar day, regardless of project/order.
     async findCustomerSameDayAppointment(customerId, day, excludeAppointmentId) {
@@ -3206,72 +3217,120 @@ class ProjectController {
             }
         });
     }
+    /**
+     * POST /projects/:id/appointments
+     *
+     * EIN Einsatz, EIN oder MEHRERE Tage (24.08.2026). Im Körper stehen
+     * entweder `startTime`/`endTime` (der einzelne Tag, wie bisher) oder
+     * `days: [{ startTime, endTime }, …]` — dann entsteht je Tag eine Zeile,
+     * alle unter derselben `seriesId`. Warum je Tag eine Zeile und nicht ein
+     * Balken über die Woche: siehe appointmentSeries.ts.
+     *
+     * Geprüft wird ALLES VORHER: ein halb angelegter Einsatz (Montag steht,
+     * Mittwoch ist besetzt) wäre schlimmer als eine klare Absage.
+     */
     async createAppointment(req, res) {
         try {
             const project = await this.projectRepository.findById(req.params.id);
             if (!project || project.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Proje bulunamadı." });
             }
-            const parsed = this.parseAppointmentBody(req.body);
+            const meta = this.parseAppointmentMeta(req.body);
+            /* Ohne mitgeschicktes Etikett greift der Vorschlag der Rolle
+               «geplanter Termin» -- ein neu gesetzter Termin steht bevor. Ist
+               dieses Etikett ausgeblendet, bleibt der Termin ohne Etikett. */
+            const labelId = await (0, calendarLabelCatalog_1.resolveNewLabelId)(project.tenantId, meta.labelId, 'PLANNED');
+            const days = (0, appointmentSeries_1.parseAppointmentDays)(req.body);
             const salesOrderId = await this.resolveProjectSalesOrderId(project.id, req.user.tenantId, req.body.salesOrderId);
-            const sameDayForCustomer = await this.findCustomerSameDayAppointment(project.customerId, parsed.startTime);
-            if (sameDayForCustomer)
-                return res.status(409).json({ error: "Bu müşteri için aynı güne ait başka bir randevu var. Bir günde tek randevu verilebilir." });
-            const conflict = await this.findProjectAppointmentConflict(project.id, parsed.startTime, parsed.endTime, undefined, salesOrderId);
-            if (conflict)
-                return res.status(409).json({ error: "Bu proje için saat planı çakışıyor." });
             const technicians = await this.validateProjectTechnicians(this.appointmentTechnicianIdsFromBody(req.body), req.user.tenantId);
             const technicianIds = technicians.map((technician) => technician.id);
             const responsibleTechnician = technicians[0] || null;
-            const techConflict = await this.findTechnicianScheduleConflict(technicianIds, parsed.startTime, parsed.endTime, req.user.tenantId);
-            if (techConflict)
-                return res.status(409).json({ error: techConflict.message });
-            const appointment = await prisma_client_1.default.appointment.create({
-                data: {
-                    id: (0, nanoid_1.nanoid)(10),
-                    tenantId: project.tenantId,
-                    projectId: project.id,
-                    salesOrderId,
-                    assignedTechId: responsibleTechnician?.id || null,
-                    customerId: project.customerId,
-                    startTime: parsed.startTime,
-                    endTime: parsed.endTime,
-                    notes: parsed.notes ?? null,
-                    ccEmails: parsed.ccEmails ?? [],
-                    // Wer den Termin setzt, bekommt die automatische Teammail mit.
-                    createdByEmployeeId: req.user.id,
-                    status: "BOOKED",
-                    isLocked: true
-                },
+            await (0, appointmentSeries_1.assertDaysAvailable)({
+                tenantId: req.user.tenantId,
+                projectId: project.id,
+                customerId: project.customerId,
+                salesOrderId,
+                technicianIds,
+                days,
+            });
+            /* Alle Tage in EINEM Durchgang: `createMany` statt einer Anlage je
+               Tag — bei vier Tagen wären das sonst acht Wartezeiten auf einer
+               entfernten Datenbank, und der Transaktionsdeckel (5 s) rückt
+               näher, je länger der Einsatz ist. */
+            const appointmentIds = days.map(() => (0, nanoid_1.nanoid)(10));
+            const seriesId = await prisma_client_1.default.$transaction(async (tx) => {
+                const id = await (0, appointmentSeries_1.createSeries)(tx, project.tenantId, req.body?.coverNote);
+                await tx.appointment.createMany({
+                    data: days.map((day, index) => ({
+                        id: appointmentIds[index],
+                        tenantId: project.tenantId,
+                        projectId: project.id,
+                        salesOrderId,
+                        assignedTechId: responsibleTechnician?.id || null,
+                        customerId: project.customerId,
+                        startTime: day.startTime,
+                        endTime: day.endTime,
+                        notes: meta.notes ?? null,
+                        ccEmails: meta.ccEmails ?? [],
+                        labelId,
+                        // Wer den Termin setzt, bekommt die automatische Teammail mit.
+                        createdByEmployeeId: req.user.id,
+                        status: "BOOKED",
+                        isLocked: true,
+                        seriesId: id,
+                        dayIndex: index,
+                    })),
+                });
+                if (technicianIds.length) {
+                    await tx.projectAppointmentAssignment.createMany({
+                        data: appointmentIds.flatMap((appointmentId) => technicianIds.map((technicianId) => ({
+                            id: (0, nanoid_1.nanoid)(10),
+                            appointmentId,
+                            technicianId,
+                        }))),
+                        skipDuplicates: true,
+                    });
+                }
+                return id;
+            });
+            const appointments = await prisma_client_1.default.appointment.findMany({
+                where: { id: { in: appointmentIds } },
+                orderBy: { startTime: "asc" },
                 include: {
                     assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
                     technicianAssignments: { include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } } },
-                }
+                },
             });
-            await this.replaceProjectAppointmentAssignments(appointment.id, technicianIds);
             /* DIE INTERNE AUFBIETUNG GEHT SOFORT RAUS (Vorgabe 19.08.2026): an das
                zugeteilte Team, die CC-Liste und die Person, die den Termin angelegt
                hat. Feuern und vergessen — ein stummer Mailserver darf das Anlegen
                nicht scheitern lassen; die Antwort wartet nicht darauf.
 
+               EINE Mail für den GANZEN Einsatz, nicht eine je Tag (Vorgabe
+               24.08.2026): sie trägt den Einsatzplan — «Tag 1, Montag …, 08:00
+               bis 17:00» — und die Kalendereinträge aller Tage.
+
                An den KUNDEN geht weiterhin nichts von selbst: seine Einladung
                verlässt das Haus erst mit «Termin senden» (POST
                …/appointments/:id/send-invite), und nur dort reisen auch die
                Checklisten mit (die PDFs entstehen im Browser). */
-            (0, calendarMailService_1.queueAppointmentTeamInvite)(appointment.id, req.user.id);
+            (0, calendarMailService_1.queueAppointmentTeamInvite)(appointmentIds[0], req.user.id);
             if (technicianIds.length) {
                 await this.notifyMany(project.tenantId, technicianIds, {
                     type: "PROJECT_INSTALLATION_ASSIGNED",
                     title: "Yeni montaj randevusu",
                     message: `${project.projectName} montajı size atandı.`,
                     linkUrl: "/projects/installation/calendar",
-                    metadata: { projectId: project.id, appointmentId: appointment.id, salesOrderId },
+                    metadata: { projectId: project.id, appointmentId: appointmentIds[0], seriesId, salesOrderId },
                 });
             }
-            res.status(201).json(appointment);
+            /* Die Antwort ist der ERSTE Tag (daran hängen die Aufrufer, die
+               einen einzelnen Termin erwarten) — plus die Serie und ihre Tage
+               für alles, was den ganzen Einsatz meint. */
+            res.status(201).json({ ...appointments[0], seriesId, days: appointments });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message });
         }
     }
     async updateAppointment(req, res) {
@@ -3284,6 +3343,8 @@ class ProjectController {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
             const parsed = this.parseAppointmentBody(req.body);
+            // Nicht mitgeschickt = unveraendert; ausdruecklich leer = ohne Etikett.
+            const labelId = await (0, calendarLabelCatalog_1.sanitizeLabelId)(req.user.tenantId, parsed.labelId);
             const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user.tenantId, req.body.salesOrderId || appointment.salesOrderId);
             const sameDayForCustomer = await this.findCustomerSameDayAppointment(appointment.customerId || appointment.project.customerId, parsed.startTime, appointment.id);
             if (sameDayForCustomer)
@@ -3310,6 +3371,7 @@ class ProjectController {
                     assignedTechId: responsibleTechnician?.id || null,
                     notes: parsed.notes ?? appointment.notes,
                     ...(parsed.ccEmails !== undefined ? { ccEmails: parsed.ccEmails } : {}),
+                    ...(labelId !== undefined ? { labelId } : {}),
                     status: "BOOKED",
                     isLocked: true
                 },
@@ -3319,6 +3381,12 @@ class ProjectController {
                 }
             });
             await this.replaceProjectAppointmentAssignments(appointment.id, technicianIds);
+            /* Ein Tag eines mehrtägigen Einsatzes kann durch das Verschieben vor
+               oder hinter seine Geschwister rutschen — dann stimmt «Tag 2 von 4»
+               nicht mehr. Die Nummerierung folgt immer dem Datum. */
+            if (appointment.seriesId) {
+                await (0, appointmentSeries_1.renumberSeries)(prisma_client_1.default, appointment.seriesId);
+            }
             const previousIds = new Set(fallbackTechnicianIds);
             const addedIds = technicianIds.filter((id) => !previousIds.has(id));
             if (addedIds.length) {
@@ -3329,16 +3397,89 @@ class ProjectController {
                     linkUrl: "/projects/installation/calendar",
                     metadata: { projectId: appointment.projectId, appointmentId: appointment.id, salesOrderId },
                 });
+                /* WER NEU AUFGEBOTEN WIRD, ERFÄHRT ES AUCH PER MAIL (25.08.2026,
+                   Vorgabe Samet: «nur wenn ein Termin zugeteilt wird — an die
+                   Monteurin oder den CC»). Bisher bekam sie nur die Meldung im
+                   Programm; wer den ganzen Tag draußen ist, sieht die nicht. */
+                (0, calendarMailService_1.queueAppointmentTeamInvite)(appointment.id, req.user.id);
             }
-            // Auch die Änderung geht NICHT von selbst raus: wer den Kunden
-            // informieren will, sendet die Einladung erneut (gleiche UID,
-            // höherer Zählstand — Outlook ersetzt dann den Eintrag).
+            // Eine reine ZEITÄNDERUNG geht weiterhin NICHT von selbst raus: wer
+            // den Kunden informieren will, sendet die Einladung erneut (gleiche
+            // UID, höherer Zählstand — Outlook ersetzt dann den Eintrag). Und
+            // das Team hört nur, wenn sich die Aufbietung wirklich ändert.
             res.status(200).json(updated);
         }
         catch (error) {
             res.status(400).json({ error: error.message });
         }
     }
+    /**
+     * EINEN Tag samt allem, was an ihm hängt. Läuft INNERHALB der Transaktion
+     * der Löschung — bei einem mehrtägigen Einsatz nacheinander für jeden Tag,
+     * damit entweder der ganze Einsatz verschwindet oder gar nichts.
+     */
+    async purgeAppointmentDay(tx, appointment, employeeId, tenantId) {
+        const dayStart = startOfDay(new Date(appointment.startTime));
+        const dayEnd = endOfDay(new Date(appointment.startTime));
+        const fallbackScope = {
+            projectId: appointment.projectId,
+            salesOrderId: appointment.salesOrderId || null,
+            appointmentId: null,
+        };
+        const reports = await tx.projectReport.findMany({
+            where: {
+                OR: [
+                    { appointmentId: appointment.id },
+                    { ...fallbackScope, workDate: { gte: dayStart, lte: dayEnd } },
+                ],
+            },
+            select: { id: true },
+        });
+        const reportIds = reports.map((report) => report.id);
+        if (reportIds.length) {
+            await tx.reportMaterial.deleteMany({ where: { reportId: { in: reportIds } } });
+            await tx.projectReport.deleteMany({ where: { id: { in: reportIds } } });
+        }
+        await tx.projectExpense.deleteMany({
+            where: {
+                OR: [
+                    { appointmentId: appointment.id },
+                    { ...fallbackScope, expenseDate: { gte: dayStart, lte: dayEnd } },
+                ],
+            },
+        });
+        const extraMaterials = await tx.projectExtraMaterial.findMany({
+            where: {
+                OR: [
+                    { appointmentId: appointment.id },
+                    { ...fallbackScope, addedAt: { gte: dayStart, lte: dayEnd } },
+                ],
+            },
+            select: { id: true, articleId: true, quantity: true },
+        });
+        for (const row of extraMaterials) {
+            await (0, articleStock_1.adjustArticleStock)(tx, {
+                tenantId,
+                articleId: row.articleId,
+                employeeId,
+                quantity: Number(row.quantity || 0),
+                direction: 'IN',
+                referenceId: appointment.projectId,
+                description: 'Zusatzmaterial iadesi',
+            });
+        }
+        if (extraMaterials.length) {
+            await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((row) => row.id) } } });
+        }
+        await tx.appointment.delete({ where: { id: appointment.id } });
+    }
+    /**
+     * DELETE /projects/appointments/:appointmentId[?scope=series]
+     *
+     * `scope=series` löscht den GANZEN mehrtägigen Einsatz, sonst nur diesen
+     * einen Tag. Bleiben bei einem einzelnen Tag Geschwister übrig, wird der
+     * Rest neu durchnummeriert («Tag 2 von 4» heisst danach «Tag 2 von 3»).
+     */
     async deleteAppointment(req, res) {
         try {
             const appointment = await prisma_client_1.default.appointment.findUnique({
@@ -3348,73 +3489,511 @@ class ProjectController {
             if (!appointment?.project || appointment.project.tenantId !== req.user.tenantId) {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
-            // Die Absage EINSAMMELN, solange die Zeile noch da ist — verschickt
-            // wird sie erst, wenn das Löschen wirklich durchgelaufen ist. Nur
+            const wholeSeries = String(req.query.scope || "") === "series" && Boolean(appointment.seriesId);
+            const targets = wholeSeries
+                ? await prisma_client_1.default.appointment.findMany({
+                    where: { seriesId: appointment.seriesId, tenantId: req.user.tenantId },
+                    orderBy: { startTime: "asc" },
+                    select: { id: true, projectId: true, salesOrderId: true, startTime: true },
+                })
+                : [appointment];
+            // Die Absagen EINSAMMELN, solange die Zeilen noch da sind — verschickt
+            // werden sie erst, wenn das Löschen wirklich durchgelaufen ist. Nur
             // für Termine, die je verschickt wurden (sonst null).
-            const cancellation = await (0, calendarMailService_1.buildAppointmentCancellation)(appointment.id);
-            const dayStart = startOfDay(new Date(appointment.startTime));
-            const dayEnd = endOfDay(new Date(appointment.startTime));
-            const fallbackScope = {
-                projectId: appointment.projectId,
-                salesOrderId: appointment.salesOrderId || null,
-                appointmentId: null,
-            };
+            const cancellations = await Promise.all(targets.map((target) => (0, calendarMailService_1.buildAppointmentCancellation)(target.id)));
             await prisma_client_1.default.$transaction(async (tx) => {
-                const reports = await tx.projectReport.findMany({
-                    where: {
-                        OR: [
-                            { appointmentId: appointment.id },
-                            { ...fallbackScope, workDate: { gte: dayStart, lte: dayEnd } },
-                        ],
-                    },
-                    select: { id: true },
-                });
-                const reportIds = reports.map((report) => report.id);
-                if (reportIds.length) {
-                    await tx.reportMaterial.deleteMany({ where: { reportId: { in: reportIds } } });
-                    await tx.projectReport.deleteMany({ where: { id: { in: reportIds } } });
+                for (const target of targets) {
+                    await this.purgeAppointmentDay(tx, target, req.user.id, req.user.tenantId);
                 }
-                await tx.projectExpense.deleteMany({
-                    where: {
-                        OR: [
-                            { appointmentId: appointment.id },
-                            { ...fallbackScope, expenseDate: { gte: dayStart, lte: dayEnd } },
-                        ],
-                    },
-                });
-                const extraMaterials = await tx.projectExtraMaterial.findMany({
-                    where: {
-                        OR: [
-                            { appointmentId: appointment.id },
-                            { ...fallbackScope, addedAt: { gte: dayStart, lte: dayEnd } },
-                        ],
-                    },
-                    select: { id: true, articleId: true, quantity: true },
-                });
-                for (const row of extraMaterials) {
-                    await (0, articleStock_1.adjustArticleStock)(tx, {
-                        tenantId: req.user.tenantId,
-                        articleId: row.articleId,
-                        employeeId: req.user.id,
-                        quantity: Number(row.quantity || 0),
-                        direction: 'IN',
-                        referenceId: appointment.projectId,
-                        description: 'Zusatzmaterial iadesi',
-                    });
+                if (appointment.seriesId) {
+                    // War es der letzte Tag, geht die Klammer mit — und mit ihr
+                    // (per Fremdschlüssel) die Unterlagen des Einsatzes.
+                    const left = wholeSeries ? 0 : await tx.appointment.count({ where: { seriesId: appointment.seriesId } });
+                    if (left === 0)
+                        await tx.appointmentSeries.delete({ where: { id: appointment.seriesId } }).catch(() => null);
+                    else
+                        await (0, appointmentSeries_1.renumberSeries)(tx, appointment.seriesId);
                 }
-                if (extraMaterials.length) {
-                    await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((row) => row.id) } } });
-                }
-                await tx.appointment.delete({ where: { id: appointment.id } });
             });
             // Absage an alle Beteiligten: der Termin verschwindet damit auch aus
             // deren Outlook. Erst NACH der erfolgreichen Löschung — und mit den
             // Daten, die vorher geladen wurden, denn die Zeile ist nun fort.
-            (0, calendarMailService_1.queueAppointmentCancellation)(cancellation, req.user.id);
+            for (const cancellation of cancellations) {
+                (0, calendarMailService_1.queueAppointmentCancellation)(cancellation, req.user.id);
+            }
             res.status(204).send();
         }
         catch (error) {
             res.status(400).json({ error: error.message });
+        }
+    }
+    /* ── Mehrtägige Einsätze und Terminunterlagen (24.08.2026) ─────────── */
+    /**
+     * Der Termin, auf den ein Aufruf zeigt — im Rahmen dessen, was die
+     * aufrufende Person sehen darf. Projektleitung sieht jeden Termin ihres
+     * Mandanten, die Monteurin nur die, auf die sie eingeteilt ist.
+     */
+    async findScopedAppointment(req, opts = {}) {
+        const where = {
+            id: String(req.params.appointmentId || ""),
+            tenantId: req.user.tenantId,
+        };
+        if (opts.technicianScope) {
+            where.OR = [
+                { assignedTechId: req.user.id },
+                { technicianAssignments: { some: { technicianId: req.user.id } } },
+            ];
+        }
+        return await prisma_client_1.default.appointment.findFirst({
+            where,
+            select: {
+                id: true, tenantId: true, seriesId: true, dayIndex: true,
+                projectId: true, salesOrderId: true, customerId: true,
+                startTime: true, endTime: true, status: true, notes: true,
+            },
+        });
+    }
+    /** Darf diese Person die Unterlagen dieses Einsatzes sehen? */
+    async assertSeriesReadable(seriesId, req, opts = {}) {
+        const where = { seriesId, tenantId: req.user.tenantId };
+        if (opts.technicianScope) {
+            where.OR = [
+                { assignedTechId: req.user.id },
+                { technicianAssignments: { some: { technicianId: req.user.id } } },
+            ];
+        }
+        const hit = await prisma_client_1.default.appointment.findFirst({ where, select: { id: true } });
+        if (!hit)
+            throw Object.assign(new Error("Termin nicht gefunden."), { status: 404 });
+    }
+    /**
+     * GET /projects/appointments/:appointmentId/series
+     *     /projects/technician/installations/:appointmentId/series
+     *
+     * Der ganze Einsatz: seine Tage mit den Zeiten je Tag, das Begleitwort und
+     * die Unterlagen (nur die Angaben — der Inhalt kommt erst beim Öffnen).
+     *
+     * Ein Termin von vor dem 24.08.2026 hat noch keine Serie. Er bekommt hier
+     * KEINE — ein Lesezugriff schreibt nicht; er wird als das ausgeliefert, was
+     * er ist: ein Einsatz mit einem Tag und ohne Unterlagen.
+     */
+    async getAppointmentSeries(req, res, opts = {}) {
+        try {
+            const appointment = await this.findScopedAppointment(req, opts);
+            if (!appointment)
+                return res.status(404).json({ error: "Termin nicht gefunden." });
+            if (!appointment.seriesId) {
+                return res.status(200).json({
+                    seriesId: null,
+                    coverNote: null,
+                    days: [{
+                            id: appointment.id,
+                            dayIndex: 0,
+                            startTime: appointment.startTime,
+                            endTime: appointment.endTime,
+                            status: appointment.status,
+                        }],
+                    documents: [],
+                });
+            }
+            const [series, days, documents] = await Promise.all([
+                prisma_client_1.default.appointmentSeries.findUnique({
+                    where: { id: appointment.seriesId },
+                    select: { id: true, coverNote: true },
+                }),
+                prisma_client_1.default.appointment.findMany({
+                    where: { seriesId: appointment.seriesId, tenantId: req.user.tenantId },
+                    orderBy: { startTime: "asc" },
+                    select: { id: true, dayIndex: true, startTime: true, endTime: true, status: true },
+                }),
+                prisma_client_1.default.appointmentDocument.findMany({
+                    where: { seriesId: appointment.seriesId },
+                    orderBy: { createdAt: "asc" },
+                    select: appointmentSeries_1.documentListSelect,
+                }),
+            ]);
+            res.status(200).json({
+                seriesId: appointment.seriesId,
+                coverNote: series?.coverNote ?? null,
+                days,
+                documents,
+            });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /**
+     * PUT /projects/appointments/:appointmentId/series/days
+     *
+     * Der Einsatzplan, wie er sein SOLL: `days: [{ appointmentId?, startTime,
+     * endTime }, …]`. Tage mit `appointmentId` werden fortgeschrieben, Tage
+     * ohne kommen dazu, fehlende fallen weg — damit deckt EIN Aufruf beides ab,
+     * «auf weitere Tage ausdehnen» und «die Zeiten eines Tages ändern».
+     *
+     * Geprüft wird wieder ALLES VORHER; geschrieben wird in EINER Transaktion.
+     */
+    async saveAppointmentSeriesDays(req, res) {
+        try {
+            const appointment = await prisma_client_1.default.appointment.findFirst({
+                where: { id: String(req.params.appointmentId || ""), tenantId: req.user.tenantId },
+                include: { project: { select: { id: true, tenantId: true, projectName: true, customerId: true } }, technicianAssignments: true },
+            });
+            if (!appointment?.project)
+                return res.status(404).json({ error: "Termin nicht gefunden." });
+            const seriesId = await (0, appointmentSeries_1.ensureSeriesId)(appointment);
+            const existing = await prisma_client_1.default.appointment.findMany({
+                where: { seriesId, tenantId: req.user.tenantId },
+                orderBy: { startTime: "asc" },
+                select: { id: true, projectId: true, salesOrderId: true, startTime: true, endTime: true, status: true },
+            });
+            const existingById = new Map(existing.map((row) => [row.id, row]));
+            const days = (0, appointmentSeries_1.parseAppointmentDays)(req.body);
+            if (!days.length)
+                return res.status(400).json({ error: "Ein Einsatz braucht mindestens einen Tag." });
+            for (const day of days) {
+                if (day.appointmentId && !existingById.has(day.appointmentId)) {
+                    return res.status(400).json({ error: "Ein Tag gehört nicht zu diesem Einsatz." });
+                }
+            }
+            const keptIds = new Set(days.map((day) => day.appointmentId).filter(Boolean));
+            const removed = existing.filter((row) => !keptIds.has(row.id));
+            /* Ein Tag, an dem schon gearbeitet wurde, verschwindet nicht
+               nebenbei: an ihm hängen Rapport, Spesen und Material. Wer ihn
+               wirklich streichen will, löscht ihn ausdrücklich. */
+            const finished = removed.find((row) => row.status === "COMPLETED");
+            if (finished) {
+                return res.status(409).json({ error: "Ein bereits abgeschlossener Tag kann nicht aus dem Einsatz entfernt werden." });
+            }
+            const fallbackTechnicianIds = [
+                appointment.assignedTechId,
+                ...((appointment.technicianAssignments || []).map((assignment) => assignment.technicianId)),
+            ].filter(Boolean);
+            const technicians = await this.validateProjectTechnicians(this.appointmentTechnicianIdsFromBody(req.body, fallbackTechnicianIds), req.user.tenantId);
+            const technicianIds = technicians.map((technician) => technician.id);
+            const responsibleTechnician = technicians[0] || null;
+            await (0, appointmentSeries_1.assertDaysAvailable)({
+                tenantId: req.user.tenantId,
+                projectId: appointment.projectId,
+                customerId: appointment.customerId || appointment.project.customerId,
+                salesOrderId: appointment.salesOrderId ?? null,
+                technicianIds,
+                days,
+                excludeAppointmentIds: existing.map((row) => row.id),
+            });
+            const cancellations = await Promise.all(removed.map((row) => (0, calendarMailService_1.buildAppointmentCancellation)(row.id)));
+            const addedIds = [];
+            await prisma_client_1.default.$transaction(async (tx) => {
+                for (const day of days) {
+                    if (day.appointmentId) {
+                        const current = existingById.get(day.appointmentId);
+                        if (new Date(current.startTime).getTime() === day.startTime.getTime()
+                            && new Date(current.endTime).getTime() === day.endTime.getTime())
+                            continue;
+                        await tx.appointment.update({
+                            where: { id: day.appointmentId },
+                            data: { startTime: day.startTime, endTime: day.endTime },
+                        });
+                        continue;
+                    }
+                    const id = (0, nanoid_1.nanoid)(10);
+                    addedIds.push(id);
+                    await tx.appointment.create({
+                        data: {
+                            id,
+                            tenantId: appointment.tenantId,
+                            projectId: appointment.projectId,
+                            salesOrderId: appointment.salesOrderId ?? null,
+                            assignedTechId: responsibleTechnician?.id || null,
+                            customerId: appointment.customerId || appointment.project.customerId,
+                            startTime: day.startTime,
+                            endTime: day.endTime,
+                            notes: appointment.notes ?? null,
+                            ccEmails: appointment.ccEmails ?? [],
+                            createdByEmployeeId: appointment.createdByEmployeeId || req.user.id,
+                            status: "BOOKED",
+                            isLocked: true,
+                            seriesId,
+                        },
+                    });
+                    if (technicianIds.length) {
+                        await tx.projectAppointmentAssignment.createMany({
+                            data: technicianIds.map((technicianId) => ({ id: (0, nanoid_1.nanoid)(10), appointmentId: id, technicianId })),
+                            skipDuplicates: true,
+                        });
+                    }
+                }
+                for (const row of removed) {
+                    await this.purgeAppointmentDay(tx, row, req.user.id, req.user.tenantId);
+                }
+                await (0, appointmentSeries_1.renumberSeries)(tx, seriesId);
+            });
+            for (const cancellation of cancellations) {
+                (0, calendarMailService_1.queueAppointmentCancellation)(cancellation, req.user.id);
+            }
+            /* GEMELDET WIRD DIE AUFBIETUNG, NICHT DIE PLANUNG (25.08.2026,
+               Vorgabe Samet: «nicht bei jedem Speichern eine Mail — nur wenn
+               ein Termin zugeteilt wird, an die Monteurin oder den CC»).
+
+               Bis dahin ging bei JEDEM angehängten Tag eine Mail raus. Wer
+               einen Einsatz zusammenstellt — Tag dazu, Unterlage dazu, Bild
+               dazu, speichern — löste damit eine Mail nach der anderen aus,
+               obwohl sich an der Aufbietung nichts geändert hatte.
+
+               Jetzt zählt allein, ob jemand NEU aufgeboten wird. Tage, Zeiten,
+               Begleitwort, Unterlagen und Bilder bleiben still. */
+            const newlyAssigned = technicianIds.filter((id) => !fallbackTechnicianIds.includes(id));
+            if (newlyAssigned.length)
+                (0, calendarMailService_1.queueAppointmentTeamInvite)(appointment.id, req.user.id);
+            const updated = await prisma_client_1.default.appointment.findMany({
+                where: { seriesId, tenantId: req.user.tenantId },
+                orderBy: { startTime: "asc" },
+                select: { id: true, dayIndex: true, startTime: true, endTime: true, status: true },
+            });
+            res.status(200).json({ seriesId, days: updated, added: addedIds.length, removed: removed.length });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /**
+     * PATCH /projects/appointments/:appointmentId/series
+     * Das Begleitwort an die Monteurin — der Zettel, der sonst am Auftrag
+     * hinge. Es geht NICHT an den Kunden.
+     */
+    async saveAppointmentSeriesNote(req, res) {
+        try {
+            const appointment = await this.findScopedAppointment(req);
+            if (!appointment)
+                return res.status(404).json({ error: "Termin nicht gefunden." });
+            const seriesId = await (0, appointmentSeries_1.ensureSeriesId)(appointment);
+            const coverNote = req.body?.coverNote === undefined
+                ? undefined
+                : String(req.body.coverNote || "").trim().slice(0, 5000) || null;
+            const series = await prisma_client_1.default.appointmentSeries.update({
+                where: { id: seriesId },
+                data: { ...(coverNote === undefined ? {} : { coverNote }) },
+                select: { id: true, coverNote: true },
+            });
+            res.status(200).json({ seriesId: series.id, coverNote: series.coverNote });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /**
+     * POST /projects/appointments/:appointmentId/documents
+     *
+     * TERMINUNTERLAGEN (Vorgabe 24.08.2026): Begleitzettel, Bilder und PDF,
+     * die die Monteurin am Termin braucht. Sie gehen an KEINEN Kunden und an
+     * keine Einladung — sie stehen nur im Programm.
+     */
+    async addAppointmentDocument(req, res) {
+        /* Die Datei liegt schon auf der Platte, wenn die Zeile scheitert —
+           dann muss sie wieder weg, sonst bleibt eine Waise liegen. */
+        let storedRef = null;
+        try {
+            const appointment = await this.findScopedAppointment(req);
+            if (!appointment)
+                return res.status(404).json({ error: "Termin nicht gefunden." });
+            const upload = (0, appointmentSeries_1.sanitizeDocumentUpload)(req.body, req.file);
+            /* DIE SCHNELLE REIHENFOLGE (24.08.2026): erst die Datei auf die
+               Platte (das ist ein Schreibvorgang vor Ort), dann EINE kurze
+               Zeile in die Datenbank. Die Serie wird nur angelegt, wenn es
+               noch keine gibt — bei jedem weiteren Anhang entfällt auch das. */
+            const [seriesId, stored] = await Promise.all([
+                (0, appointmentSeries_1.ensureSeriesId)(appointment),
+                LocalFileStorage_1.appointmentDocumentStorage.store(req.user.tenantId, upload.body, upload.contentType),
+            ]);
+            storedRef = stored;
+            const total = await prisma_client_1.default.appointmentDocument.aggregate({
+                where: { seriesId },
+                _sum: { sizeBytes: true },
+            });
+            if (Number(total?._sum?.sizeBytes || 0) + upload.sizeBytes > appointmentSeries_1.SERIES_DOCUMENT_LIMIT_BYTES) {
+                // Geworfen, nicht zurückgegeben: nur so räumt der Fangzweig die
+                // eben geschriebene Datei wieder weg.
+                throw Object.assign(new Error(`Die Unterlagen eines Einsatzes dürfen zusammen höchstens ${Math.round(appointmentSeries_1.SERIES_DOCUMENT_LIMIT_BYTES / (1024 * 1024))} MB gross sein.`), { status: 400 });
+            }
+            const document = await prisma_client_1.default.appointmentDocument.create({
+                data: {
+                    id: (0, nanoid_1.nanoid)(12),
+                    tenantId: req.user.tenantId,
+                    seriesId,
+                    fileName: upload.fileName,
+                    contentType: upload.contentType,
+                    sizeBytes: upload.sizeBytes,
+                    fileRef: stored,
+                    uploadedById: req.user.id,
+                },
+                select: appointmentSeries_1.documentListSelect,
+            });
+            storedRef = null;
+            res.status(201).json({ seriesId, document });
+        }
+        catch (error) {
+            if (storedRef)
+                await LocalFileStorage_1.appointmentDocumentStorage.remove(storedRef).catch(() => undefined);
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /**
+     * POST /projects/appointments/:appointmentId/documents/batch
+     *
+     * Alle in der Oberflaeche gemeinsam ausgewaehlten Dateien werden auch als
+     * ein Paket gespeichert. Der alte Einzel-Endpunkt bleibt fuer Skripte und
+     * andere Aufrufer bestehen; die Kalenderoberflaeche spart hier jedoch pro
+     * weiterer Datei einen kompletten HTTP-/Auth-/DB-Durchlauf.
+     */
+    async addAppointmentDocuments(req, res) {
+        const requestStartedAt = Date.now();
+        const storedRefs = [];
+        try {
+            const files = Array.isArray(req.files) ? req.files : [];
+            if (!files.length)
+                return res.status(400).json({ error: "Mindestens eine Unterlage ist erforderlich." });
+            // Erst das gesamte Paket pruefen. Eine ungueltige Datei darf nicht
+            // dazu fuehren, dass die Dateien davor bereits sichtbar sind.
+            const uploads = files.map((file) => (0, appointmentSeries_1.sanitizeDocumentUpload)({}, file));
+            const incomingBytes = uploads.reduce((sum, upload) => sum + upload.sizeBytes, 0);
+            if (incomingBytes > appointmentSeries_1.SERIES_DOCUMENT_LIMIT_BYTES) {
+                return res.status(400).json({
+                    error: `Die Unterlagen eines Einsatzes dürfen zusammen höchstens ${Math.round(appointmentSeries_1.SERIES_DOCUMENT_LIMIT_BYTES / (1024 * 1024))} MB gross sein.`,
+                });
+            }
+            // Terminpruefung UND bisherige Gesamtgroesse in EINEM DB-Rundgang.
+            // Bei der entfernten MariaDB kostet jeder zusaetzliche Rundgang
+            // messbar Zeit; der Join benutzt den bestehenden seriesId-Index.
+            const appointments = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                SELECT a.id AS id,
+                       a.tenantId AS tenantId,
+                       a.seriesId AS seriesId,
+                       COALESCE(SUM(d.sizeBytes), 0) AS documentBytes
+                FROM Appointment a
+                LEFT JOIN AppointmentDocument d ON d.seriesId = a.seriesId
+                WHERE a.id = ${String(req.params.appointmentId || "")}
+                  AND a.tenantId = ${req.user.tenantId}
+                GROUP BY a.id, a.tenantId, a.seriesId
+            `);
+            const appointment = appointments[0];
+            if (!appointment)
+                return res.status(404).json({ error: "Termin nicht gefunden." });
+            const seriesId = await (0, appointmentSeries_1.ensureSeriesId)(appointment);
+            if (Number(appointment.documentBytes || 0) + incomingBytes > appointmentSeries_1.SERIES_DOCUMENT_LIMIT_BYTES) {
+                return res.status(400).json({
+                    error: `Die Unterlagen eines Einsatzes dürfen zusammen höchstens ${Math.round(appointmentSeries_1.SERIES_DOCUMENT_LIMIT_BYTES / (1024 * 1024))} MB gross sein.`,
+                });
+            }
+            const validationFinishedAt = Date.now();
+            // Plattenschreibvorgaenge sind unabhaengig und duerfen parallel
+            // laufen. Die Referenzen werden sofort festgehalten, damit bei
+            // einem Teilfehler alle schon geschriebenen Dateien wegkommen.
+            const stored = await Promise.allSettled(uploads.map(async (upload, index) => {
+                storedRefs[index] = await LocalFileStorage_1.appointmentDocumentStorage.store(req.user.tenantId, upload.body, upload.contentType);
+            }));
+            const storeFailure = stored.find((result) => result.status === "rejected");
+            if (storeFailure?.status === "rejected")
+                throw storeFailure.reason;
+            const storageFinishedAt = Date.now();
+            const createdAt = new Date();
+            const rows = uploads.map((upload, index) => ({
+                id: (0, nanoid_1.nanoid)(12),
+                tenantId: req.user.tenantId,
+                seriesId,
+                fileName: upload.fileName,
+                contentType: upload.contentType,
+                sizeBytes: upload.sizeBytes,
+                fileRef: storedRefs[index],
+                uploadedById: req.user.id,
+                createdAt,
+            }));
+            // `createMany` ist selbst EINE atomare INSERT-Anweisung. Eine
+            // interaktive Transaktion plus anschliessendes SELECT wuerden nur
+            // BEGIN/SELECT/COMMIT-Netzrundgaenge addieren. Alle Felder fuer die
+            // schlanke Antwort liegen bereits sicher im Speicher.
+            await prisma_client_1.default.appointmentDocument.createMany({ data: rows });
+            const documents = rows.map((row) => ({
+                id: row.id,
+                fileName: row.fileName,
+                contentType: row.contentType,
+                sizeBytes: row.sizeBytes,
+                createdAt: row.createdAt,
+                uploadedBy: {
+                    id: req.user.id,
+                    firstName: req.user.firstName || "",
+                    lastName: req.user.lastName || "",
+                },
+            }));
+            storedRefs.length = 0;
+            const databaseFinishedAt = Date.now();
+            res.setHeader("Server-Timing", `auth;dur=${Number(req.authDurMs ?? 0)}, rbac;dur=${Number(req.rbacDurMs ?? 0)}, validation;dur=${validationFinishedAt - requestStartedAt}, storage;dur=${storageFinishedAt - validationFinishedAt}, db-write;dur=${databaseFinishedAt - storageFinishedAt}, handler-total;dur=${databaseFinishedAt - requestStartedAt}`);
+            res.status(201).json({ seriesId, documents });
+        }
+        catch (error) {
+            await Promise.all(storedRefs.filter(Boolean).map((reference) => (LocalFileStorage_1.appointmentDocumentStorage.remove(reference).catch(() => undefined))));
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /**
+     * GET /projects/appointment-documents/:documentId
+     *     /projects/technician/appointment-documents/:documentId
+     * Der Inhalt einer Unterlage — als Daten-URI, wie er abgelegt wurde. Erst
+     * hier reist der Anhang über die Leitung, nicht schon in der Liste.
+     */
+    async getAppointmentDocument(req, res, opts = {}) {
+        try {
+            const document = await prisma_client_1.default.appointmentDocument.findFirst({
+                where: { id: String(req.params.documentId || ""), tenantId: req.user.tenantId },
+            });
+            if (!document)
+                return res.status(404).json({ error: "Unterlage nicht gefunden." });
+            await this.assertSeriesReadable(document.seriesId, req, opts);
+            // Die Bytes liegen auf der Platte; erst hier werden sie gelesen und
+            // als Daten-URI ausgeliefert (die Liste selbst bleibt federleicht).
+            const body = await LocalFileStorage_1.appointmentDocumentStorage.read(document.fileRef);
+            res.status(200).json({
+                id: document.id,
+                fileName: document.fileName,
+                contentType: document.contentType,
+                sizeBytes: document.sizeBytes,
+                createdAt: document.createdAt,
+                data: `data:${document.contentType};base64,${body.toString("base64")}`,
+            });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /** DELETE /projects/appointment-documents/:documentId */
+    async deleteAppointmentDocument(req, res) {
+        try {
+            const document = await prisma_client_1.default.appointmentDocument.findFirst({
+                where: { id: String(req.params.documentId || ""), tenantId: req.user.tenantId },
+                select: { id: true, seriesId: true, fileRef: true },
+            });
+            if (!document)
+                return res.status(404).json({ error: "Unterlage nicht gefunden." });
+            await this.assertSeriesReadable(document.seriesId, req);
+            /* `deleteMany`, NICHT `delete` (25.08.2026). Zwischen dem Finden und
+               dem Löschen liegt ein Netzweg: ein zweiter Klick auf denselben
+               Papierkorb — oder dasselbe Fenster zweimal offen — findet die
+               Zeile ebenfalls und löscht sie als Zweiter noch einmal. `delete`
+               wirft dann P2025 ("Record to delete does not exist"), und der
+               ganze Prisma-Fehler samt Codeausschnitt landete als 400 beim
+               Browser. `deleteMany` zählt stattdessen: null getroffene Zeilen
+               heißt, jemand war schneller — und das Ziel ist erreicht.
+               Die Mandantengrenze steht mit in der Bedingung, damit sie auch
+               für diesen Schreibvorgang gilt und nicht nur für den Fund. */
+            await prisma_client_1.default.appointmentDocument.deleteMany({
+                where: { id: document.id, tenantId: req.user.tenantId },
+            });
+            // Die Zeile ist weg — die Datei darf nicht liegen bleiben. Scheitert
+            // das Löschen auf der Platte, ist die Unterlage trotzdem fort.
+            await LocalFileStorage_1.appointmentDocumentStorage.remove(document.fileRef).catch(() => undefined);
+            res.status(204).send();
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
         }
     }
     /**

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
+import { resolveNewLabelId, sanitizeLabelId } from '../../application/services/calendarLabelCatalog';
 import {
     buildMeetingCancellation,
     queueMeetingCancellation,
@@ -95,12 +96,20 @@ router.post('/', requireAuth, async (req, res) => {
         if (endTime <= startTime) return res.status(400).json({ error: 'Bitiş zamanı başlangıçtan sonra olmalıdır.' });
         const kind = req.body?.kind === 'TASK' ? 'TASK' : 'MEETING';
         const participants = sanitizeParticipants(req.body?.participants);
+        /* KALENDER-ETIKETT (25.08.2026). Ohne Auswahl greift der Vorschlag der
+           Rolle «Besprechung»; ist die Liste leer, bleibt der Eintrag ohne
+           Etikett. Eine Aufgabe bekommt gar keinen Vorschlag -- sie steht
+           nicht mehr im Raster. */
+        const labelId = kind === 'TASK'
+            ? (await sanitizeLabelId(user.tenantId, req.body?.labelId)) ?? null
+            : await resolveNewLabelId(user.tenantId, req.body?.labelId, 'MEETING');
 
         const meeting = await (prisma as any).meetingActivity.create({
             data: {
                 id: nanoid(12),
                 tenantId: user.tenantId,
                 kind,
+                labelId,
                 title: String(title).trim(),
                 notes: notes ? String(notes) : null,
                 startTime,
@@ -134,12 +143,24 @@ router.patch('/:id', requireAuth, async (req, res) => {
             where: { id: String(req.params.id || ''), tenantId: user.tenantId },
         });
         if (!existing) return res.status(404).json({ error: 'Aktivite bulunamadı.' });
+        /* AUS DER MAIL ⇒ NICHT VON HAND (21.08.2026). Ein Termin mit
+           `externalOrigin` gehört dem Organisator in Outlook/Teams: er wird bei
+           jeder neuen Fassung der Einladung nachgeführt. Eine Änderung hier
+           wäre beim nächsten Abruf spurlos verschwunden — dann lieber gleich
+           sagen, dass sie nicht zählt. */
+        if (existing.externalOrigin) {
+            return res.status(409).json({
+                code: 'EXTERNAL_MEETING',
+                error: 'Dieser Termin kommt aus Outlook/Teams und wird von dort aktualisiert.',
+            });
+        }
 
         const data: Record<string, unknown> = {};
         if (req.body?.title !== undefined) data.title = String(req.body.title).trim();
         if (req.body?.notes !== undefined) data.notes = req.body.notes ? String(req.body.notes) : null;
         if (req.body?.kind !== undefined) data.kind = req.body.kind === 'TASK' ? 'TASK' : 'MEETING';
         if (req.body?.customerId !== undefined) data.customerId = req.body.customerId ? String(req.body.customerId) : null;
+        if (req.body?.labelId !== undefined) data.labelId = await sanitizeLabelId(user.tenantId, req.body.labelId) ?? null;
         if (req.body?.ccEmails !== undefined) data.ccEmails = sanitizeCcEmails(req.body.ccEmails);
         if (req.body?.startTime !== undefined) {
             const startTime = new Date(String(req.body.startTime));

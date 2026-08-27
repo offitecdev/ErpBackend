@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TOTAL_PAGE_COUNT = exports.ensureSystemAdminRole = exports.resolvePageLevels = void 0;
+exports.TOTAL_PAGE_COUNT = exports.ensurePurserRole = exports.ensureSystemAdminRole = exports.resolvePageLevels = void 0;
 const express_1 = require("express");
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
@@ -35,6 +35,17 @@ const pageCatalog_1 = require("../../shared/pageCatalog");
  */
 const router = (0, express_1.Router)();
 const ADMIN_ROLE_NAME = 'Administrator';
+const PURSER_ROLE_NAME = 'Purser';
+/**
+ * Startstufen der festen Purser-Rolle: das Antragspostfach zum Entscheiden,
+ * die eigenen Anträge und die Gesamtübersicht. Nur der ERSTE Wurf — die
+ * Stufenkarte bleibt (anders als beim Administrator) bearbeitbar.
+ */
+const PURSER_DEFAULT_PAGE_LEVELS = {
+    'personnel.requests': 1,
+    'personnel.requestsIncoming': 2,
+    'personnel.requestsAll': 1,
+};
 const setsEqual = (a, b) => a.size === b.size && [...a].every((value) => b.has(value));
 /**
  * Rechtenamen → ids. Fehlende Namen werden ANGELEGT statt still verworfen:
@@ -181,6 +192,52 @@ const ensureSystemAdminRole = async (rootTenantId, treeTenantIds) => {
 };
 exports.ensureSystemAdminRole = ensureSystemAdminRole;
 /**
+ * ── DIE FESTE PURSER-ROLLE (27.08.2026, Vorgabe) ─────────────────────────────
+ *
+ * Der Purser führt die ZWEITE Stufe des Antragswegs: erst entscheidet die
+ * Verwaltung (Administrator oder z. B. Projektleitung), dann geht der Antrag
+ * direkt an ihn — seine Freigabe schliesst ihn ab. Er löst die alte
+ * Personalrolle ACCOUNTANT ab, die auf einer eigenen Spalte lebte und in den
+ * Einstellungen unsichtbar war.
+ *
+ * Anders als die Administratorrolle bleibt seine STUFENKARTE bearbeitbar —
+ * Name und Flagge nicht: die Antragslogik erkennt die Rolle an `isPurser`,
+ * nicht am Namen.
+ */
+const ensurePurserRole = async (rootTenantId, treeTenantIds) => {
+    let role = await prisma_client_1.default.role.findFirst({
+        where: { tenantId: { in: treeTenantIds }, isPurser: true },
+        select: { id: true, roleName: true },
+    });
+    if (!role) {
+        // Übernahme statt Zweitrolle — wie beim Administrator.
+        const legacy = await prisma_client_1.default.role.findFirst({
+            where: { tenantId: rootTenantId, roleName: PURSER_ROLE_NAME },
+            select: { id: true, roleName: true },
+        });
+        if (legacy) {
+            await prisma_client_1.default.role.update({ where: { id: legacy.id }, data: { isPurser: true } });
+            role = legacy;
+        }
+        else {
+            role = await prisma_client_1.default.role.create({
+                data: {
+                    id: (0, nanoid_1.nanoid)(8),
+                    tenantId: rootTenantId,
+                    roleName: PURSER_ROLE_NAME,
+                    isPurser: true,
+                    pageLevels: PURSER_DEFAULT_PAGE_LEVELS,
+                },
+                select: { id: true, roleName: true },
+            });
+            await syncRolePermissions(role.id, (0, pageCatalog_1.permissionsForPageLevels)(PURSER_DEFAULT_PAGE_LEVELS));
+            await syncRoleModuleConfigs(role.id, treeTenantIds, (0, pageCatalog_1.moduleKeysForPageLevels)(PURSER_DEFAULT_PAGE_LEVELS));
+        }
+    }
+    return role;
+};
+exports.ensurePurserRole = ensurePurserRole;
+/**
  * GET /role-templates — die Rollenliste der Berechtigungsseite: Name, Anzahl
  * zugewiesener Personen und die Stufenkarte je Rolle. Die Administratorrolle
  * steht immer zuoberst.
@@ -191,6 +248,7 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermis
         const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
         const rootTenantId = (await (0, tenantTree_1.findTenantRootIdCached)(tenantId)) ?? tenantId;
         await (0, exports.ensureSystemAdminRole)(rootTenantId, treeTenantIds);
+        await (0, exports.ensurePurserRole)(rootTenantId, treeTenantIds);
         const roles = await prisma_client_1.default.role.findMany({
             where: { tenantId: { in: treeTenantIds } },
             orderBy: { roleName: 'asc' },
@@ -199,6 +257,7 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermis
                 roleName: true,
                 pageLevels: true,
                 isSystemAdmin: true,
+                isPurser: true,
                 permissions: { select: { permission: { select: { permissionName: true } } } },
                 _count: { select: { employees: true } },
             },
@@ -207,6 +266,7 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermis
             id: role.id,
             roleName: role.roleName,
             isSystemAdmin: Boolean(role.isSystemAdmin),
+            isPurser: Boolean(role.isPurser),
             userCount: role._count?.employees ?? 0,
             pageLevels: (0, exports.resolvePageLevels)(role, role.permissions.map((entry) => entry.permission.permissionName)),
         }));
@@ -243,6 +303,9 @@ router.post('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermi
             return res.status(400).json({ error: 'Rollenname fehlt.' });
         if (roleName.toLowerCase() === ADMIN_ROLE_NAME.toLowerCase()) {
             return res.status(400).json({ error: 'Der Name "Administrator" ist für die feste Rolle reserviert.' });
+        }
+        if (roleName.toLowerCase() === PURSER_ROLE_NAME.toLowerCase()) {
+            return res.status(400).json({ error: 'Der Name "Purser" ist für die feste Rolle reserviert.' });
         }
         const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(user.tenantId);
         const rootTenantId = (await (0, tenantTree_1.findTenantRootIdCached)(user.tenantId)) ?? user.tenantId;
@@ -282,12 +345,17 @@ router.put('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePer
         const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(user.tenantId);
         const existing = await prisma_client_1.default.role.findFirst({
             where: { id, tenantId: { in: treeTenantIds } },
-            select: { id: true, roleName: true, isSystemAdmin: true },
+            select: { id: true, roleName: true, isSystemAdmin: true, isPurser: true },
         });
         if (!existing)
             return res.status(404).json({ error: 'Rolle nicht gefunden.' });
         if (existing.isSystemAdmin) {
             return res.status(403).json({ error: 'Die Administratorrolle ist fest und kann nicht geändert werden.' });
+        }
+        // Die Purser-Rolle: Stufen ja, Name nein — die Antragslogik hängt an ihr.
+        if (existing.isPurser && req.body?.roleName !== undefined
+            && String(req.body.roleName).trim() !== existing.roleName) {
+            return res.status(403).json({ error: 'Die Purser-Rolle behält ihren Namen; ihre Seitenstufen bleiben änderbar.' });
         }
         /* Selbstaussperrung verhindern (Vorfall 14.08.2026): wer die Rolle
            bearbeitet, die er selbst trägt, darf sich die Verwaltung nicht
@@ -312,6 +380,9 @@ router.put('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePer
                 return res.status(400).json({ error: 'Rollenname fehlt.' });
             if (roleName.toLowerCase() === ADMIN_ROLE_NAME.toLowerCase()) {
                 return res.status(400).json({ error: 'Der Name "Administrator" ist für die feste Rolle reserviert.' });
+            }
+            if (!existing.isPurser && roleName.toLowerCase() === PURSER_ROLE_NAME.toLowerCase()) {
+                return res.status(400).json({ error: 'Der Name "Purser" ist für die feste Rolle reserviert.' });
             }
             if (roleName !== existing.roleName) {
                 const duplicate = await prisma_client_1.default.role.findFirst({
@@ -363,12 +434,15 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
         const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(user.tenantId);
         const existing = await prisma_client_1.default.role.findFirst({
             where: { id, tenantId: { in: treeTenantIds } },
-            select: { id: true, isSystemAdmin: true, _count: { select: { employees: true } } },
+            select: { id: true, isSystemAdmin: true, isPurser: true, _count: { select: { employees: true } } },
         });
         if (!existing)
             return res.status(404).json({ error: 'Rolle nicht gefunden.' });
         if (existing.isSystemAdmin) {
             return res.status(403).json({ error: 'Die Administratorrolle kann nicht gelöscht werden.' });
+        }
+        if (existing.isPurser) {
+            return res.status(403).json({ error: 'Die Purser-Rolle ist fest und kann nicht gelöscht werden.' });
         }
         if ((existing._count?.employees ?? 0) > 0) {
             return res.status(400).json({

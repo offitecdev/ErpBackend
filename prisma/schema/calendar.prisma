@@ -1,0 +1,49 @@
+/// KALENDER-ETIKETT (25.08.2026, Vorgabe Samet).
+///
+/// Die Farbe einer Kalenderkarte wird GEWÄHLT und nicht mehr aus der Uhr
+/// abgeleitet. Ein Etikett ist ein Name, eine Farbe und eine ROLLE — alles in
+/// EINER flachen Reihe, keine Unterpunkte eines Termins.
+///
+/// Die Liste steht von Anfang an RICHTIG da: jeder Mandant bekommt je Rolle
+/// ein Etikett mit eigener Farbe (src/shared/calendarLabels.ts). Umbenennen,
+/// umfärben und weitere anlegen bleibt jedem überlassen.
+///
+/// Die Liste gehört dem MANDANTEN, nicht der einzelnen Person: eine Karte
+/// muss für alle, die auf denselben Kalender schauen, dieselbe Farbe haben.
+/// Was ein:e Einzelne:r im Raster wegklickt, ist dagegen eine Ansichtssache
+/// und bleibt im Browser liegen — nicht zu verwechseln mit `hidden` hier.
+///
+/// `role` sagt, WOFÜR das Etikett gedacht ist: PLANNED (geplanter Termin),
+/// ONGOING (laufender Termin), DONE (abgeschlossener Termin) oder MEETING
+/// (Besprechung). Sie sperrt nichts — jedes Etikett lässt sich an jeden
+/// Eintrag hängen —, sie bestimmt nur, was beim Anlegen vorgeschlagen wird
+/// und welche Rolle im «+» noch FREI ist. Ohne Rolle ist ein Etikett ein
+/// reines Farbetikett. Aufgaben haben bewusst keine Rolle: sie stehen nicht
+/// mehr im Raster (Vorgabe 25.08.2026).
+///
+/// `hidden` ist das Wegräumen, das NICHTS wegwirft (Vorgabe 25.08.2026:
+/// «lieber unsichtbar machen als endgültig löschen»). Ein ausgeblendetes
+/// Etikett verschwindet aus der Leiste und aus dem Auswahlfeld, die Einträge
+/// behalten es aber — und über das «+» kommt es zurück, weil seine Rolle dann
+/// wieder frei ist.
+model CalendarLabel {
+  id        String   @id
+  tenantId  String
+  name      String   @db.VarChar(60)
+  /// #rrggbb, klein geschrieben.
+  color     String   @db.VarChar(9)
+  sortOrder Int      @default(0)
+  /// PLANNED | ONGOING | DONE | MEETING | null
+  role      String?  @db.VarChar(24)
+  /// Weggeräumt, aber nicht weggeworfen.
+  hidden    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointments Appointment[]
+  meetings     MeetingActivity[]
+  tasks        CrmTask[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, hidden, role])
+}

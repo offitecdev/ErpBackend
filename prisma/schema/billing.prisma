@@ -1,5 +1,5 @@
 model Invoice {
-  id                 String   @id
+  id                 String    @id
   tenantId           String
   customerId         String?
   projectId          String?
@@ -9,30 +9,44 @@ model Invoice {
   invoiceNumber      String
   // Yeni numaralandırmadan önceki kod (INV-2026-0001).
   legacyNumber       String?
-  billingType        String   @default("FULL") // FULL | PARTIAL
+  billingType        String    @default("FULL") // FULL | PARTIAL
   // Fatura türü — RECHNUNG (tam fatura, tüm pozisyonlar) | AKONTO (avans) |
   // ZWISCHEN (ara fatura) | SCHLUSS (kalan yüzdeyi kapatan son fatura).
   // billingType geriye dönük uyum için kalır: RECHNUNG/SCHLUSS → FULL,
   // AKONTO/ZWISCHEN → PARTIAL.
-  kind               String   @default("RECHNUNG")
+  kind               String    @default("RECHNUNG")
   // Rechnungsdatum / Fälligkeit — PDF üzerinde gösterilen iş tarihleri.
   invoiceDate        DateTime?
   dueDate            DateTime?
   // Tekliften kopyalanan meta (fatura kesildiği andaki değer dondurulur).
   salespersonName    String?
   commissionNumber   String?
-  billedPercent      Float    @default(100)
-  baseAmount         Float    @default(0) // order/project total this invoice was computed from
+  billedPercent      Float     @default(100)
+  baseAmount         Float     @default(0) // order/project total this invoice was computed from
   // baseAmount * billedPercent / 100 — HARIC: hedefi %100'e tamamlayan
   // fatura (RECHNUNG/SCHLUSS) kalan FRANKI alir, boylece faturalarin
   // toplami sozlesme tutarina kurusu kurusuna oturur ve geriye 0.01 bile
   // kalmaz (bkz. CreateInvoiceUseCase).
-  amount             Float    @default(0)
-  status             String   @default("ISSUED") // ISSUED | PAID | CANCELLED
-  notes              String?  @db.Text
+  amount             Float     @default(0)
+  status             String    @default("ISSUED") // ISSUED | PAID | CANCELLED
+  notes              String?   @db.Text
+  // ── DIREKTRECHNUNG (30.08.2026) ────────────────────────────────────────
+  // Eine Rechnung OHNE Auftrag und ohne Projekt: der Benutzer fuellt die
+  // Vorlage selbst aus. Empfaenger und Steuersatz stehen darum auf der
+  // Rechnung selbst — es gibt keine Offerte, aus der sie nachgeladen werden
+  // koennten. Bei Auftragsrechnungen bleiben die Felder leer und der PDF-Bau
+  // liest weiter aus der Offerte.
+  recipientName      String?
+  recipientAddress   String?   @db.Text
+  // Einleitungstext ueber der Positionstabelle ("Fuer die ausgefuehrten
+  // Arbeiten erlauben wir uns zu berechnen:").
+  introText          String?   @db.Text
+  // Angewandter MWST-Satz. Eingefroren, damit ein spaeter geaenderter
+  // Firmenwert eine bereits gestellte Rechnung nicht rueckwirkend verschiebt.
+  vatRate            Float?
   issuedByEmployeeId String
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   tenant     Tenant            @relation(fields: [tenantId], references: [id])
   customer   Customer?         @relation(fields: [customerId], references: [id])
@@ -46,6 +60,8 @@ model Invoice {
   @@index([projectId])
   @@index([salesOrderId])
   @@index([issuedByEmployeeId])
+  // Die Rechnungsliste sortiert nach Rechnungsdatum (neueste zuoberst).
+  @@index([tenantId, invoiceDate])
   @@index([tenantId, invoiceNumber])
   @@index([tenantId, legacyNumber])
 }
@@ -59,6 +75,12 @@ model InvoiceLineItem {
   quantity    Float   @default(1)
   unitAmount  Float   @default(0)
   lineTotal   Float   @default(0)
+  // Mengeneinheit der Zeile (Stk., Std., Pau. …) — nur die Direktrechnung
+  // fuellt sie; Auftragszeilen sind Pauschalen.
+  unit        String?
+  // Reihenfolge auf dem Beleg. Ohne sie kaeme die Positionsliste in der
+  // Reihenfolge zurueck, die der Server gerade liefert.
+  sortOrder   Int     @default(0)
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 

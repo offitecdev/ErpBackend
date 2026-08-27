@@ -93,13 +93,13 @@ model ProjectReport {
   operationsDone       String    @db.Text
   technicalNotes       String?   @db.Text
 
-  customerSignature String?   @db.LongText
+  customerSignature   String?   @db.LongText
   /// Unterschrift des Technikers auf dem Montage-Rapport (neben der
   /// Kundensignatur; beide erscheinen im PDF).
   technicianSignature String?   @db.LongText
   technicianSignedAt  DateTime?
-  isSigned          Boolean   @default(false)
-  signedAt          DateTime?
+  isSigned            Boolean   @default(false)
+  signedAt            DateTime?
 
   // Manager approval of the worked-hours / overtime. Set when an administrator
   // finishes the montaj, or automatically (autoApproved) by the end-of-day pass.
@@ -215,6 +215,22 @@ model Appointment {
   // gesetzt und muss die Bestaetigung im eigenen Posteingang haben.
   // Optional, weil Termine aus der Zeit davor niemanden hinterlegt haben.
   createdByEmployeeId        String?
+  // MEHRTÄGIGER EINSATZ (24.08.2026). Ein Einsatz über drei oder vier Tage ist
+  // KEINE Zeile mit einem Anfang am Montag und einem Ende am Donnerstag: jeder
+  // Tag hat eigene Arbeitszeiten, einen eigenen Tagesrapport und eine eigene
+  // Überstundenrechnung. Er ist deshalb EINE ZEILE JE TAG — und `seriesId` ist
+  // das Band, das die Tage zusammenhält (Fenster, Mail, Unterlagen sprechen
+  // von der Serie, Raster, Rapport und Abrechnung vom einzelnen Tag).
+  // `dayIndex` ist die Nummer des Tages IM Einsatz ("Tag 2 von 4"), nicht sein
+  // Datum — sie bleibt richtig, wenn ein Tag dazwischen herausfällt.
+  seriesId                   String?
+  dayIndex                   Int                            @default(0)
+  // KALENDER-ETIKETT (25.08.2026). Die Farbe der Karte im Kalender wird
+  // GEWAEHLT und nicht mehr aus der Uhr abgeleitet (CalendarLabel). Leer =
+  // ohne Etikett: die Karte bleibt neutral.
+  labelId                    String?
+  series                     AppointmentSeries?             @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  label                      CalendarLabel?                 @relation(fields: [labelId], references: [id], onDelete: SetNull)
   tenant                     Tenant                         @relation(fields: [tenantId], references: [id])
   project                    Project?                       @relation(fields: [projectId], references: [id])
   salesOrder                 SalesOrder?                    @relation(fields: [salesOrderId], references: [id])
@@ -234,8 +250,71 @@ model Appointment {
   @@index([startTime, endTime])
   @@index([tenantId, status, startTime])
   @@index([tenantId, assignedTechId, status, startTime])
+  // Kommt eine Einladung herein, wird an der UID geprüft, ob sie zu einem
+  // EIGENEN Projekttermin gehört (dann ist sie unsere eigene Kopie und wird
+  // übersprungen). Ohne diesen Index läuft das auf einen Tabellenscan hinaus.
+  @@index([tenantId, icalUid])
   // Saha raporunun günlük planlanan süresini hesaplayan sorgu.
   @@index([projectId, salesOrderId, status, startTime, endTime])
+  // Die Tage eines Einsatzes in ihrer Reihenfolge — jede Ansicht, die von
+  // "Tag 2 von 4" spricht, liest genau darüber.
+  @@index([seriesId, startTime])
+  @@index([labelId])
+}
+
+/// MEHRTÄGIGER EINSATZ — DIE KLAMMER UM DIE TAGE (24.08.2026).
+///
+/// Vorgabe: ein Einsatz soll über mehrere aufeinanderfolgende Tage gehen
+/// können, jeder Tag mit EIGENEN Arbeitszeiten. Die Tage bleiben einzelne
+/// Termine (siehe Appointment.seriesId) — hier steht nur, was dem GANZEN
+/// Einsatz gehört und in jedem einzelnen Tag doppelt stünde:
+///   · das Begleitwort an die Monteurin (`coverNote`),
+///   · die Unterlagen (Pläne, Fotos, PDF) — sie gelten für den ganzen Einsatz
+///     und gehen den Kunden NICHTS an (sie verlassen das Haus nie per Mail).
+///
+/// Auch ein EINTÄGIGER Termin bekommt eine Serie. Damit hängt "Unterlagen" an
+/// jedem Termin gleich, und ein Tag lässt sich später anhängen, ohne dass
+/// vorher etwas umgebaut werden müsste.
+model AppointmentSeries {
+  id        String   @id
+  tenantId  String
+  coverNote String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointments Appointment[]
+  documents    AppointmentDocument[]
+
+  @@index([tenantId])
+}
+
+/// TERMINUNTERLAGEN (24.08.2026). Begleitzettel, Fotos und PDF, die die
+/// Monteurin auf dem Bildschirm braucht — NICHT für den Kunden: sie hängen an
+/// keiner Einladung und an keiner Kundenmail, sie stehen nur im Programm unter
+/// «Terminunterlagen».
+///
+/// DIE BYTES LIEGEN AUF DER PLATTE, nicht in der Zeile: `fileRef` ist ein
+/// kurzer Verweis (LocalFileStorage), genau wie bei den Angebotsanhängen. Das
+/// ist der Grund, warum das Anhängen SOFORT geht — die Datei reist roh
+/// (multipart) statt als Base64 in einem JSON-Körper, der ein Drittel grösser
+/// wäre und zweimal umkodiert werden müsste.
+model AppointmentDocument {
+  id           String   @id
+  tenantId     String
+  seriesId     String
+  fileName     String
+  contentType  String
+  sizeBytes    Int
+  fileRef      String   @db.VarChar(512)
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  series     AppointmentSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  uploadedBy Employee?         @relation("AppointmentDocumentUploader", fields: [uploadedById], references: [id])
+
+  @@index([seriesId, createdAt])
+  @@index([tenantId])
+  @@index([uploadedById])
 }
 
 model ProjectAppointmentAssignment {
@@ -459,46 +538,46 @@ model SignatureRequest {
 }
 
 model MailSetting {
-  id           String   @id
-  tenantId     String   @unique
-  fromName     String?
-  fromEmail    String?
-  replyTo      String?
-  smtpHost     String?
-  smtpPort     Int      @default(587)
-  smtpSecure   Boolean  @default(false)
-  smtpUser     String?
-  smtpPassword String?  @db.Text
+  id                     String    @id
+  tenantId               String    @unique
+  fromName               String?
+  fromEmail              String?
+  replyTo                String?
+  smtpHost               String?
+  smtpPort               Int       @default(587)
+  smtpSecure             Boolean   @default(false)
+  smtpUser               String?
+  smtpPassword           String?   @db.Text
   // GÖNDERİLENLER KOPYASI (2026-08-04): SMTP yalnızca teslim protokolüdür,
   // gönderenin kutusunda iz bırakmaz. Mailin Outlook'un "Gönderilmiş Öğeler"
   // klasöründe görünmesi için gönderim sonrası IMAP APPEND yapılır.
   // imapHost boşsa özellik kapalıdır. Kullanıcı/şifre boş bırakılırsa
   // SMTP'ninkiler kullanılır (çoğu sunucuda aynı hesap).
-  imapHost     String?
-  imapPort     Int      @default(993)
-  imapSecure   Boolean  @default(true)
-  imapUser     String?
-  imapPassword String?  @db.Text
+  imapHost               String?
+  imapPort               Int       @default(993)
+  imapSecure             Boolean   @default(true)
+  imapUser               String?
+  imapPassword           String?   @db.Text
   // Boşsa klasör sunucudan bulunur (RFC 6154 `\Sent`, sonra bilinen adlar).
-  sentFolder   String?
+  sentFolder             String?
   // Exchange gibi kopyayı sunucu tarafında dosyalayan kurulumlarda kapatılır
   // (MessageCopyForSMTPClientSubmissionEnabled) — yoksa mail iki kez görünür.
-  saveToSent   Boolean  @default(true)
+  saveToSent             Boolean   @default(true)
   // Tenant e-posta imzası: Outlook/Word'den yapıştırılabilen zengin HTML
   // (satır içi data URI görseller dâhil — bu yüzden LongText) + eski kayıtlar
   // için ayrı görsel alanı. Görseller gönderimde CID'li inline eke çevrilir —
   // data URI çoğu mail istemcisinde engellendiği için gövdede bırakılmaz.
-  signatureHtml  String? @db.LongText
-  signatureImage String? @db.LongText
+  signatureHtml          String?   @db.LongText
+  signatureImage         String?   @db.LongText
   // MICROSOFT-365-APP-REGISTRIERUNG (17.08.2026): Client-Id/-Secret/Azure-
   // Mandant der Entra-App, über die Mitarbeitende ihr Outlook-Postfach
   // verbinden. Secret verschlüsselt (mailCrypto.ts). Leer = Umgebung
   // (OFFITEC_MS_CLIENT_ID/_SECRET/_TENANT) gilt, sonst gar nichts.
-  msClientId     String? @db.VarChar(128)
-  msClientSecret String? @db.Text
-  msTenantId     String? @db.VarChar(128)
+  msClientId             String?   @db.VarChar(128)
+  msClientSecret         String?   @db.Text
+  msTenantId             String?   @db.VarChar(128)
   // Rückwärtiges Fenster der Erstsynchronisation in Tagen (Vorgabe 30).
-  msSyncDays     Int     @default(30)
+  msSyncDays             Int       @default(30)
   // ── POSTEINGANG DES EIGENEN SERVERS (18.08.2026) ──────────────────────────
   // Eingehende Mail wird per IMAP vom EIGENEN Mailserver geholt (dieselben
   // Zugangsdaten wie die Gesendet-Kopie oben), nicht von Microsoft. Es wird
@@ -530,8 +609,8 @@ model MailSetting {
   imapLastSyncAt         DateTime?
   imapLastError          String?   @db.Text
   imapLastSummary        String?   @db.VarChar(255)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 

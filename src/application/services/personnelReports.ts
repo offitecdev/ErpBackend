@@ -345,8 +345,18 @@ export const buildDetailedReport = async (
     tenantIds: string[],
     filters: ReportFilters,
     plan: ShiftPlan,
+    /**
+     * Die Personen, über die gerechnet wird — schon bekannt.
+     *
+     * Die Arbeitszeiterfassung (26.08.2026) sucht ihre Leute vorher selbst
+     * (Freitext über Name und Adresse) und weiss danach genau, wer gemeint
+     * ist. Ohne diesen Weg würde hier die GANZE Belegschaft noch einmal
+     * geladen und für jede Person die Stempelungen geholt — nur um sie
+     * hinterher wegzuwerfen.
+     */
+    staffOverride?: StaffRow[],
 ): Promise<DetailedReport> => {
-    const staff = await loadStaffForReport(tenantIds, filters);
+    const staff = staffOverride ?? await loadStaffForReport(tenantIds, filters);
     if (staff.length === 0) return { days: [], flags: [], plan };
 
     const [stamped, flags] = await Promise.all([

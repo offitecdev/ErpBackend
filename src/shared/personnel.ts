@@ -316,21 +316,29 @@ export const summariseDay = (spans: DaySpan[]): DaySummary => {
 /**
  * Wählbare Urlaubsarten. „Sonstiger Urlaub" (OTHER) ist die offene Art: sie
  * verlangt einen FREITEXT, in dem die antragstellende Person die Art selbst
- * benennt — der Jahresurlaub läuft seit dem 16.08.2026 darüber (Vorgabe) und
- * ist deshalb keine eigene Auswahl mehr.
+ * benennt.
  *
- * OTHER steht ABSICHTLICH vorn: es ist der häufigste Fall und damit die
- * Vorauswahl des Formulars.
+ * ANNUAL_PAID steht vorn: der Jahresurlaub ist der häufigste Antrag und der
+ * einzige, der gegen den erworbenen Anspruch verrechnet wird.
  */
-export const LEAVE_TYPES = ['OTHER', 'EXCUSE', 'SICK_SHORT', 'SICK_LONG'] as const;
+export const LEAVE_TYPES = ['ANNUAL_PAID', 'OTHER', 'EXCUSE', 'SICK_SHORT', 'SICK_LONG'] as const;
 export type LeaveType = (typeof LEAVE_TYPES)[number];
 
 /**
- * Arten, die nicht mehr gewählt werden können, aber in Altanträgen stehen.
- * Sie müssen weiterhin eine Beschriftung finden, sonst zeigte ein Rapport über
- * einen vergangenen Zeitraum plötzlich einen rohen Schlüssel.
+ * ANNUAL_PAID IST SEIT DEM 26.08.2026 WIEDER WÄHLBAR (Vorgabe Samet).
+ *
+ * Zwischen dem 16. und dem 26.08.2026 lief der Jahresurlaub als OTHER mit
+ * Freitext. Das ging, solange der Urlaub nur ein Antrag war. Jetzt hat er
+ * einen ANSPRUCH gegen sich (StaffLeavePolicy: anteilig nach geleisteten
+ * Arbeitstagen), und ein Anspruch lässt sich nur gegen etwas verrechnen, das
+ * als Jahresurlaub ERKENNBAR ist — nicht gegen einen Freitext, in dem
+ * „Jahresurlaub", „Jahres-Urlaub" und „Ferien" dasselbe meinen sollen.
+ *
+ * Die dazwischen angelegten Anträge bleiben, wie sie sind: sie stehen als
+ * OTHER da und zählen NICHT gegen den Anspruch. Nachträglich umzudeuten hiesse
+ * raten, was gemeint war.
  */
-export const LEGACY_LEAVE_TYPES = ['ANNUAL_PAID'] as const;
+export const LEGACY_LEAVE_TYPES = [] as const;
 
 /** Die Art, die einen Freitext verlangt. */
 export const LEAVE_TYPE_WITH_LABEL = 'OTHER';
@@ -463,3 +471,172 @@ export const buildAccountingBalance = (totalSeconds: number, basis: AccountingBa
     };
 };
 
+
+// ── ANTRAGSARTEN (26.08.2026, Vorgabe Samet) ─────────────────────────────────
+
+/**
+ * DIE VIER ARTEN, nach denen die Antragsseite filtert: «Urlaub, Homeoffice,
+ * Krankheit, Sonstiges».
+ *
+ * Sie sind eine SICHT auf `kind` + `leaveType`, keine fünfte Spalte. Eine
+ * eigene Spalte hiesse, dieselbe Tatsache zweimal zu speichern — und beim
+ * ersten Widerspruch wüsste niemand, welche der beiden recht hat.
+ *
+ *   VACATION  kind=LEAVE  · leaveType=ANNUAL_PAID   (zählt gegen den Anspruch)
+ *   REMOTE    kind=REMOTE · leaveType=REMOTE_WORK
+ *   SICK      kind=LEAVE  · leaveType=SICK_SHORT|SICK_LONG
+ *   OTHER     kind=LEAVE  · leaveType=OTHER|EXCUSE  (Freitext benennt die Art)
+ */
+export const REQUEST_TYPES = ['VACATION', 'REMOTE', 'SICK', 'OTHER'] as const;
+export type RequestType = (typeof REQUEST_TYPES)[number];
+
+export const isRequestType = (value: unknown): value is RequestType =>
+    REQUEST_TYPES.includes(String(value) as RequestType);
+
+/** Die Art eines bestehenden Antrags. */
+export const requestTypeOf = (kind: unknown, leaveType: unknown): RequestType => {
+    if (String(kind) === 'REMOTE') return 'REMOTE';
+    const type = String(leaveType);
+    if (type === 'ANNUAL_PAID') return 'VACATION';
+    if (type === 'SICK_SHORT' || type === 'SICK_LONG') return 'SICK';
+    return 'OTHER';
+};
+
+/**
+ * Der umgekehrte Weg: aus der gewählten Art wird das Paar, das in der Zeile
+ * steht. Krankheit und Sonstiges lassen die genaue Art offen — dort entscheidet
+ * die Auswahl im Formular (kurz/lang bzw. Freitext), darum reicht der Aufrufer
+ * sie als `leaveType` herein und bekommt sie geprüft zurück.
+ */
+export const requestTypeToLeave = (
+    requestType: RequestType,
+    leaveType: unknown,
+): { kind: LeaveKind; leaveType: LeaveType | typeof REMOTE_LEAVE_TYPE } => {
+    switch (requestType) {
+        case 'REMOTE':
+            return { kind: 'REMOTE', leaveType: REMOTE_LEAVE_TYPE };
+        case 'VACATION':
+            return { kind: 'LEAVE', leaveType: 'ANNUAL_PAID' };
+        case 'SICK':
+            return { kind: 'LEAVE', leaveType: String(leaveType) === 'SICK_LONG' ? 'SICK_LONG' : 'SICK_SHORT' };
+        default:
+            return { kind: 'LEAVE', leaveType: String(leaveType) === 'EXCUSE' ? 'EXCUSE' : 'OTHER' };
+    }
+};
+
+/** Nur der Jahresurlaub zehrt am Anspruch — Krankheit und Homeoffice nicht. */
+export const consumesEntitlement = (kind: unknown, leaveType: unknown): boolean =>
+    requestTypeOf(kind, leaveType) === 'VACATION';
+
+// ── URLAUBSANSPRUCH ──────────────────────────────────────────────────────────
+
+export interface LeavePolicy {
+    /** Arbeitstage, auf die sich der VOLLE Jahresanspruch bezieht. */
+    annualWorkdays: number;
+    /** Voller Jahresanspruch in Tagen. */
+    annualLeaveDays: number;
+    /** true = anteilig nach geleisteten Arbeitstagen. */
+    accrueByWorkdays: boolean;
+    /** Resttage aus dem Vorjahr. */
+    carryOverDays: number;
+}
+
+export const DEFAULT_LEAVE_POLICY: LeavePolicy = {
+    annualWorkdays: 250,
+    annualLeaveDays: 14,
+    accrueByWorkdays: true,
+    carryOverDays: 0,
+};
+
+export const parseLeavePolicy = (raw: unknown): LeavePolicy => {
+    const row = (raw ?? {}) as Partial<Record<keyof LeavePolicy, unknown>>;
+    const positiveInt = (value: unknown, fallback: number, max: number) => {
+        const parsed = Math.trunc(Number(value));
+        return Number.isFinite(parsed) && parsed >= 0 && parsed <= max ? parsed : fallback;
+    };
+    return {
+        // Null Arbeitstage im Jahr wären eine Division durch null — der
+        // Rückfall ist deshalb hart, nicht bloss hübsch.
+        annualWorkdays: Math.max(1, positiveInt(row.annualWorkdays, DEFAULT_LEAVE_POLICY.annualWorkdays, 366)),
+        annualLeaveDays: positiveInt(row.annualLeaveDays, DEFAULT_LEAVE_POLICY.annualLeaveDays, 365),
+        accrueByWorkdays: row.accrueByWorkdays == null ? true : Boolean(row.accrueByWorkdays),
+        carryOverDays: positiveInt(row.carryOverDays, 0, 365),
+    };
+};
+
+/** Auf halbe Tage runden — ein Anspruch von 7.3 Tagen ist keine Auskunft. */
+export const roundHalf = (value: number): number => Math.round(value * 2) / 2;
+
+export interface LeaveEntitlement {
+    /** Das Jahr, für das gerechnet wurde. */
+    year: number;
+    /** Arbeitstage, an denen die Person tatsächlich gestempelt hat. */
+    workedDays: number;
+    /** Arbeitstage des Jahres bis heute (Nenner der Vorgabe). */
+    referenceWorkdays: number;
+    /** Erworbener Anspruch in Tagen (inkl. Übertrag). */
+    earnedDays: number;
+    /** Bereits bewilligter und beantragter Jahresurlaub. */
+    usedDays: number;
+    pendingDays: number;
+    /** Was noch zur Verfügung steht — nie negativ. */
+    remainingDays: number;
+    /** Der volle Jahresanspruch, zum Vergleich. */
+    fullYearDays: number;
+    carryOverDays: number;
+}
+
+/**
+ * DER ERWORBENE ANSPRUCH (Vorgabe 26.08.2026).
+ *
+ *   «Eine Einstellung nach der Zahl der Arbeitstage im Jahr: das System rechnet
+ *    den Anspruch danach aus, wie viele Tage die Person bis dahin gearbeitet
+ *    hat, und schreibt ihn fort, während weitere Daten anfallen.»
+ *
+ *      anteilig = Jahresanspruch × geleistete Arbeitstage / Arbeitstage im Jahr
+ *
+ * Der Anteil wird bei 1 GEKAPPT: wer mehr Tage stempelt als der Jahresnenner
+ * kennt (Wochenenddienste, Doppelschichten), erarbeitet sich damit keinen
+ * zweiten Jahresurlaub — er hat Mehrstunden, und die stehen im Arbeitszeit-
+ * rapport, nicht im Urlaubskonto.
+ *
+ * `accrueByWorkdays = false` heisst: der volle Anspruch steht ab dem 1. Januar.
+ */
+export const buildLeaveEntitlement = (input: {
+    year: number;
+    policy: LeavePolicy;
+    /** Arbeitstage mit mindestens einer Stempelung. */
+    workedDays: number;
+    /** Arbeitstage des Jahres bis zum Stichtag (Schichtplan, ohne Feiertage). */
+    referenceWorkdays: number;
+    /** Bewilligter Jahresurlaub in Tagen. */
+    usedDays: number;
+    /** Beantragter, noch nicht entschiedener Jahresurlaub in Tagen. */
+    pendingDays: number;
+}): LeaveEntitlement => {
+    const { policy } = input;
+    const fullYearDays = policy.annualLeaveDays;
+    const reference = Math.max(1, input.referenceWorkdays || 0);
+
+    const accrued = policy.accrueByWorkdays
+        ? fullYearDays * Math.min(1, Math.max(0, input.workedDays) / reference)
+        : fullYearDays;
+
+    const earnedDays = roundHalf(accrued + policy.carryOverDays);
+    const usedDays = roundHalf(Math.max(0, input.usedDays));
+    const pendingDays = roundHalf(Math.max(0, input.pendingDays));
+
+    return {
+        year: input.year,
+        workedDays: input.workedDays,
+        referenceWorkdays: input.referenceWorkdays,
+        earnedDays,
+        usedDays,
+        pendingDays,
+        // Offene Anträge sind mitgezählt: sonst verspräche das Konto Tage, die
+        // schon jemand anders reserviert hat.
+        remainingDays: Math.max(0, roundHalf(earnedDays - usedDays - pendingDays)),
+        fullYearDays,
+        carryOverDays: policy.carryOverDays,
+    };
+};

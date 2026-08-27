@@ -13,6 +13,9 @@ import employeeRoutes from './presentation/routes/employee.routes';
 // Personalmodul (Neubau 16.08.2026): ersetzt die früheren Router
 // attendance.routes.ts und leave.routes.ts vollständig.
 import personnelRoutes from './presentation/routes/personnel.routes';
+// Personalakte, Feiertage, Urlaubsanspruch und die Arbeitszeiterfassung
+// (26.08.2026) - zweiter Router auf demselben Pfad, siehe dort.
+import personnelHrRoutes from './presentation/routes/personnelHr.routes';
 import tenantRoutes  from './presentation/routes/tenant.routes';
 import customerRoutes from './presentation/routes/customer.routes';
 import roleRoutes from './presentation/routes/role.routes';
@@ -41,12 +44,17 @@ import settingsGateRoutes from './presentation/routes/settingsGate.routes';
 import reminderSettingsRoutes from './presentation/routes/reminderSettings.routes';
 // Mengeneinheiten des Lagers (Einstellungen -> Module -> Lager -> Einheiten).
 import measurementUnitRoutes from './presentation/routes/measurementUnit.routes';
+// Kalender-Etiketten (Kalender -> Leiste "Etiketten").
+import calendarLabelRoutes from './presentation/routes/calendarLabel.routes';
 import authorizationRoutes from './presentation/routes/authorization.routes';
 // Rollenvorlagen (Einstellungen → Berechtigungen) und der Kennwortwunsch aus
 // dem eigenen Profil — beide neu am 17.08.2026.
 import roleTemplateRoutes from './presentation/routes/roleTemplate.routes';
 import passwordRequestRoutes from './presentation/routes/passwordRequest.routes';
 import fxRoutes from './presentation/routes/fx.routes';
+// OSP-Integration (Offitec Selection Platform): Webhook, Belegliste der
+// OSP-Seite, Statusmeldung zurück und der Offerten-Import (04.09.2026).
+import ospRoutes from './presentation/routes/osp.routes';
 import filesRoutes from './presentation/routes/files.routes';
 import dashboardRoutes from './presentation/routes/dashboard.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
@@ -141,6 +149,10 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/employees`, authorizationRoutes);
     // Personalmodul: Liste, Stempeluhr, Schichtplan, Berichte, Anträge.
     app.use(`${prefix}/personnel`, personnelRoutes);
+    // Personalakte (Profil, Unterlagen, Urlaubskonto), Feiertage und die
+    // Arbeitszeiterfassung. Eigener Router, dieselbe Adresse: seine Wege sind
+    // anders benannt und kollidieren nicht mit denen davor.
+    app.use(`${prefix}/personnel`, personnelHrRoutes);
     app.use(`${prefix}/tenants`, tenantRoutes);
     app.use(`${prefix}/customers`, customerRoutes);
     app.use(`${prefix}/sales-orders`, salesOrderRoutes);
@@ -174,7 +186,9 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/settings`, settingsGateRoutes);
     app.use(`${prefix}/settings/reminder-settings`, reminderSettingsRoutes);
     app.use(`${prefix}/settings/units`, measurementUnitRoutes);
+    app.use(`${prefix}/calendar/labels`, calendarLabelRoutes);
     app.use(`${prefix}/fx`, fxRoutes);
+    app.use(`${prefix}/osp`, ospRoutes);
     app.use(`${prefix}/files`, filesRoutes);
     app.use(`${prefix}/dashboard`, dashboardRoutes);
 }

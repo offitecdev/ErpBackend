@@ -9,6 +9,7 @@ const nanoid_1 = require("nanoid");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const calendarLabelCatalog_1 = require("../../application/services/calendarLabelCatalog");
 const taskMailService_1 = require("../../infrastructure/services/taskMailService");
 const crmTaskMaintenance_1 = require("../../infrastructure/services/crmTaskMaintenance");
 const GetUserPermissionsUseCase_1 = require("../../application/use-cases/auth/GetUserPermissionsUseCase");
@@ -392,7 +393,7 @@ router.get('/tasks', AuthMiddleware_1.requireAuth, async (req, res) => {
             await (0, crmTaskMaintenance_1.flipOverdueTasks)(user.tenantId);
         const [rows, countRows] = await Promise.all([
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
-                SELECT tk.id, tk.kind, tk.title, tk.customerId, tk.contactId, tk.assigneeEmployeeId,
+                SELECT tk.id, tk.kind, tk.title, tk.labelId, tk.customerId, tk.contactId, tk.assigneeEmployeeId,
                        tk.dueDate, tk.status, tk.completedAt,
                        tk.createdByEmployeeId, tk.createdAt,
                        tk.linkUrl, tk.meta, tk.entityType, tk.entityId,
@@ -421,6 +422,7 @@ router.get('/tasks', AuthMiddleware_1.requireAuth, async (req, res) => {
             id: row.id,
             kind: row.kind,
             title: row.title,
+            labelId: row.labelId ?? null,
             customerId: row.customerId ?? null,
             contactId: row.contactId ?? null,
             assigneeEmployeeId: row.assigneeEmployeeId ?? null,
@@ -511,11 +513,18 @@ router.post('/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
             return res.status(400).json({ error: 'Ansprechpartner gehört nicht zu diesem Kunden.' });
         if (assigneeIds.length !== wantedAssignees.length)
             return res.status(400).json({ error: 'Verantwortliche Person nicht gefunden.' });
+        /* KALENDER-ETIKETT (25.08.2026). Eine Aufgabe steht NICHT mehr im
+           Raster des Kalenders (Vorgabe: «Aufgaben raus, sie machen den
+           Kalender voll»), sie bekommt darum auch keinen Vorschlag. Die
+           Spalte bleibt, damit ein ausdrücklich gesetztes Etikett -- etwa aus
+           dem Aufgabenbrett -- nicht verloren geht. */
+        const labelId = (await (0, calendarLabelCatalog_1.sanitizeLabelId)(user.tenantId, req.body?.labelId)) ?? null;
         const created = await prisma_client_1.default.crmTask.create({
             data: {
                 id: (0, nanoid_1.nanoid)(12),
                 tenantId: user.tenantId,
                 kind,
+                labelId,
                 title,
                 customerId: customer ? customerId : null,
                 contactId: contact ? contactId : null,
@@ -668,6 +677,8 @@ router.patch('/tasks/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
             data.kind = req.body.kind === 'REMINDER' ? 'REMINDER' : 'TASK';
         if (req.body?.dueDate !== undefined)
             data.dueDate = parseDate(req.body.dueDate);
+        if (req.body?.labelId !== undefined)
+            data.labelId = await (0, calendarLabelCatalog_1.sanitizeLabelId)(user.tenantId, req.body.labelId) ?? null;
         if (req.body?.customerId !== undefined) {
             const customerId = String(req.body.customerId || '').trim();
             if (customerId) {

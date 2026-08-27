@@ -3,14 +3,34 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.InvoiceRepository = void 0;
+exports.InvoiceRepository = exports.deriveInvoiceCategory = void 0;
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+/**
+ * Rechnungstyp aus dem Beleg ABLEITEN, an dem die Rechnung hängt — sie trägt
+ * keine eigene Spalte dafür (siehe `InvoiceCategory`):
+ *  - ein Projekt am Beleg          → Projektauftrag
+ *  - ein Auftrag ohne Projekt      → Lieferauftrag (Auftragsart INVOICE/REGIE)
+ *  - weder Auftrag noch Projekt    → Direktrechnung (selbst ausgefüllt)
+ *
+ * Wandert ein Auftrag später in ein Projekt, wandern seine Rechnungen mit,
+ * ohne dass irgendwo nachgetragen werden müsste.
+ */
+const deriveInvoiceCategory = (row) => {
+    if (row.projectId)
+        return "PROJECT";
+    if (row.salesOrderId)
+        return String(row.orderType || "").startsWith("PROJECT") ? "PROJECT" : "DELIVERY";
+    return "DIRECT";
+};
+exports.deriveInvoiceCategory = deriveInvoiceCategory;
 const invoiceInclude = {
-    lineItems: true,
+    // Positionsreihenfolge ist eine Angabe des Belegs, keine Zufälligkeit der
+    // Abfrage — die Direktrechnung setzt sie beim Speichern.
+    lineItems: { orderBy: { sortOrder: 'asc' } },
     customer: { select: { id: true, companyName: true } },
-    project: { select: { id: true, projectName: true } },
-    salesOrder: { select: { id: true, orderNumber: true } },
+    project: { select: { id: true, projectNumber: true, projectName: true } },
+    salesOrder: { select: { id: true, orderNumber: true, orderType: true } },
     issuedBy: { select: { id: true, firstName: true, lastName: true } },
 };
 class InvoiceRepository {
@@ -75,7 +95,27 @@ class InvoiceRepository {
             conditions.push(client_1.Prisma.sql `i.customerId = ${filter.customerId}`);
         if (filter.status)
             conditions.push(client_1.Prisma.sql `i.status = ${filter.status}`);
+        // Der Typ steckt nicht in einer Spalte, sondern in der Kombination
+        // Projekt/Auftrag/Auftragsart — die Bedingung wird darum GENAUSO
+        // formuliert wie die Ableitung selbst (`deriveInvoiceCategory`), damit
+        // Filter und angezeigter Typ nie auseinanderlaufen.
+        if (filter.category === 'PROJECT') {
+            conditions.push(client_1.Prisma.sql `(i.projectId IS NOT NULL OR so.orderType LIKE 'PROJECT%')`);
+        }
+        else if (filter.category === 'DELIVERY') {
+            conditions.push(client_1.Prisma.sql `(i.projectId IS NULL AND i.salesOrderId IS NOT NULL AND (so.orderType IS NULL OR so.orderType NOT LIKE 'PROJECT%'))`);
+        }
+        else if (filter.category === 'DIRECT') {
+            conditions.push(client_1.Prisma.sql `(i.projectId IS NULL AND i.salesOrderId IS NULL)`);
+        }
         const whereSql = client_1.Prisma.join(conditions, ' AND ');
+        // Die Unterabfrage der Positionen braucht denselben Auftrags-JOIN, sonst
+        // stünde `so.orderType` dort ohne Tabelle.
+        const scopeSql = client_1.Prisma.sql `
+            FROM Invoice i
+            LEFT JOIN SalesOrder so ON so.id = i.salesOrderId
+            WHERE ${whereSql}
+        `;
         const [rows, lineItems] = await Promise.all([
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT
@@ -83,10 +123,18 @@ class InvoiceRepository {
                     i.invoiceNumber, i.billingType, i.kind, i.invoiceDate, i.dueDate,
                     i.salespersonName, i.commissionNumber, i.billedPercent, i.baseAmount,
                     i.amount, i.status, i.notes, i.issuedByEmployeeId,
+                    i.recipientName, i.recipientAddress, i.introText, i.vatRate,
                     i.createdAt, i.updatedAt,
                     c.companyName AS customerCompanyName,
                     pr.projectName AS projectName,
+                    pr.projectNumber AS projectNumber,
                     so.orderNumber AS orderNumber,
+                    so.orderType AS orderType,
+                    -- Die Offerte hinter dem Auftrag: OHNE sie druckt die
+                    -- Gesamtrechnung aus der Liste nur eine Sammelzeile statt
+                    -- der Positionen (siehe utils/pdf/invoicePdf.ts).
+                    so.tenderId AS orderTenderId,
+                    so.paymentStages AS orderPaymentStages,
                     e.firstName AS issuerFirstName,
                     e.lastName AS issuerLastName
                 FROM Invoice i
@@ -95,13 +143,16 @@ class InvoiceRepository {
                 LEFT JOIN SalesOrder so ON so.id = i.salesOrderId
                 LEFT JOIN Employee e ON e.id = i.issuedByEmployeeId
                 WHERE ${whereSql}
-                ORDER BY i.createdAt DESC
+                -- Neueste zuoberst. Alte Zeilen haben kein Rechnungsdatum, für
+                -- sie zählt der Anlagezeitpunkt — sonst fielen sie ans Ende.
+                ORDER BY COALESCE(i.invoiceDate, i.createdAt) DESC, i.invoiceNumber DESC
             `),
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT li.id, li.invoiceId, li.description, li.sourceType, li.sourceId,
-                       li.quantity, li.unitAmount, li.lineTotal
+                       li.quantity, li.unitAmount, li.lineTotal, li.unit, li.sortOrder
                 FROM InvoiceLineItem li
-                WHERE li.invoiceId IN (SELECT i.id FROM Invoice i WHERE ${whereSql})
+                WHERE li.invoiceId IN (SELECT i.id ${scopeSql})
+                ORDER BY li.sortOrder ASC
             `),
         ]);
         const itemsByInvoice = new Map();
@@ -121,6 +172,10 @@ class InvoiceRepository {
             invoiceNumber: row.invoiceNumber,
             billingType: row.billingType,
             kind: row.kind ?? 'RECHNUNG',
+            // Der Typ ist ABGELEITET (keine Spalte) — hier einmal berechnet,
+            // damit Liste, Filter und PDF dieselbe Antwort sehen.
+            category: (0, exports.deriveInvoiceCategory)(row),
+            orderType: row.orderType ?? null,
             invoiceDate: row.invoiceDate ?? null,
             dueDate: row.dueDate ?? null,
             salespersonName: row.salespersonName ?? null,
@@ -130,6 +185,12 @@ class InvoiceRepository {
             amount: Number(row.amount ?? 0),
             status: row.status,
             notes: row.notes ?? null,
+            // Direktrechnung: Empfänger, Einleitung und Steuersatz stehen auf
+            // der Rechnung selbst; bei Auftragsrechnungen sind sie leer.
+            recipientName: row.recipientName ?? null,
+            recipientAddress: row.recipientAddress ?? null,
+            introText: row.introText ?? null,
+            vatRate: row.vatRate == null ? null : Number(row.vatRate),
             issuedByEmployeeId: row.issuedByEmployeeId,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -138,10 +199,16 @@ class InvoiceRepository {
                 ? { id: row.customerId, companyName: row.customerCompanyName }
                 : null,
             project: row.projectId
-                ? { id: row.projectId, projectName: row.projectName }
+                ? { id: row.projectId, projectNumber: row.projectNumber ?? null, projectName: row.projectName }
                 : null,
             salesOrder: row.salesOrderId
-                ? { id: row.salesOrderId, orderNumber: row.orderNumber }
+                ? {
+                    id: row.salesOrderId,
+                    orderNumber: row.orderNumber,
+                    orderType: row.orderType ?? null,
+                    tenderId: row.orderTenderId ?? null,
+                    paymentStages: row.orderPaymentStages ?? null,
+                }
                 : null,
             issuedBy: row.issuedByEmployeeId
                 ? { id: row.issuedByEmployeeId, firstName: row.issuerFirstName, lastName: row.issuerLastName }

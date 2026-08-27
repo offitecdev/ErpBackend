@@ -9,6 +9,7 @@ const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const moduleCatalog_1 = require("../../shared/moduleCatalog");
+const tenantModules_1 = require("../../shared/tenantModules");
 /**
  * Company categories ("Numara" profiles). Admin-only: every route requires
  * roles.manage. Profiles are scoped to the caller's company tree (root
@@ -63,6 +64,7 @@ router.post('/', async (req, res) => {
             },
             include: { tenants: { select: { id: true } } },
         });
+        (0, tenantModules_1.clearTenantModuleCache)();
         res.status(201).json(serializeProfile(profile));
     }
     catch (error) {
@@ -102,6 +104,7 @@ router.patch('/:id', async (req, res) => {
             data,
             include: { tenants: { select: { id: true } } },
         });
+        (0, tenantModules_1.clearTenantModuleCache)();
         res.status(200).json(serializeProfile(profile));
     }
     catch (error) {
@@ -126,6 +129,7 @@ router.delete('/:id', async (req, res) => {
             }),
             prisma_client_1.default.moduleProfile.delete({ where: { id: existing.id } }),
         ]);
+        (0, tenantModules_1.clearTenantModuleCache)();
         res.status(200).json({ message: 'Kategori silindi.' });
     }
     catch (error) {
@@ -151,6 +155,7 @@ router.patch('/assign/tenant', async (req, res) => {
             where: { id: tenantId },
             data: { moduleProfileId: profileId },
         });
+        (0, tenantModules_1.clearTenantModuleCache)(tenantId);
         res.status(200).json({ message: 'Şirket kategorisi güncellendi.' });
     }
     catch (error) {

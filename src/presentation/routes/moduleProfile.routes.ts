@@ -4,6 +4,7 @@ import { requireAuth, findTenantRootId } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
 import { sanitizeModuleKeys } from '../../shared/moduleCatalog';
+import { clearTenantModuleCache } from '../../shared/tenantModules';
 
 /**
  * Company categories ("Numara" profiles). Admin-only: every route requires
@@ -62,6 +63,7 @@ router.post('/', async (req, res) => {
             },
             include: { tenants: { select: { id: true } } },
         });
+        clearTenantModuleCache();
         res.status(201).json(serializeProfile(profile));
     } catch (error: any) {
         if (error?.code === 'P2002') {
@@ -101,6 +103,7 @@ router.patch('/:id', async (req, res) => {
             data,
             include: { tenants: { select: { id: true } } },
         });
+        clearTenantModuleCache();
         res.status(200).json(serializeProfile(profile));
     } catch (error: any) {
         if (error?.code === 'P2002') {
@@ -125,6 +128,7 @@ router.delete('/:id', async (req, res) => {
             }),
             (prisma as any).moduleProfile.delete({ where: { id: existing.id } }),
         ]);
+        clearTenantModuleCache();
         res.status(200).json({ message: 'Kategori silindi.' });
     } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -151,6 +155,7 @@ router.patch('/assign/tenant', async (req, res) => {
             where: { id: tenantId },
             data: { moduleProfileId: profileId },
         });
+        clearTenantModuleCache(tenantId);
         res.status(200).json({ message: 'Şirket kategorisi güncellendi.' });
     } catch (error: any) {
         res.status(400).json({ error: error.message });

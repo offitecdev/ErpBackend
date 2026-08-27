@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.adminModuleKeys = exports.adminPermissionNames = exports.ADMIN_PAGE_LEVELS = exports.pageLevelsFromPermissions = exports.moduleKeysForPageLevels = exports.permissionsForPageLevels = exports.CATALOG_GRANTED_PERMISSION_NAMES = exports.permissionsForPage = exports.sanitizePageLevels = exports.clampPageLevel = exports.getPage = exports.ALL_PAGES = exports.PAGE_MODULES = exports.ALWAYS_ON_MODULE_KEYS = void 0;
+exports.adminModuleKeys = exports.adminPermissionNames = exports.ADMIN_PAGE_LEVELS = exports.pageLevelsFromPermissions = exports.moduleKeysForPageLevels = exports.permissionsForPageLevels = exports.CATALOG_GRANTED_PERMISSION_NAMES = exports.permissionsForPage = exports.sanitizePageLevels = exports.RETIRED_PAGE_KEYS = exports.clampPageLevel = exports.getPage = exports.ALL_PAGES = exports.PAGE_MODULES = exports.ALWAYS_ON_MODULE_KEYS = void 0;
 const moduleCatalog_1 = require("./moduleCatalog");
 /** Immer im Paket — der Kalender steht allen offen (wie bisher). */
 exports.ALWAYS_ON_MODULE_KEYS = ['calendar'];
@@ -31,46 +31,53 @@ exports.PAGE_MODULES = [
                 grants: {},
             },
             {
-                key: 'personnel.shiftPlan',
-                path: '/personnel/shift-plan',
-                labelKey: 'nav.personnelShiftPlan',
-                maxLevel: 2,
-                grants: { read: ['attendance.read'], write: ['attendance.update'] },
-            },
-            {
-                key: 'personnel.reports',
-                path: '/personnel/reports',
-                labelKey: 'nav.personnelDetailedReport',
+                /* ARBEITSZEITERFASSUNG (26.08.2026). Sie hat den Detail- und
+                   den Buchhaltungsrapport abgelöst und trägt deren Rechte:
+                   ansehen = attendance.read, ändern = eine Stempelung
+                   korrigieren. Die Schichtplanung ist eine Einstellung
+                   geworden und steht nicht mehr im Seitenkatalog. */
+                key: 'personnel.timeRecords',
+                path: '/personnel/time-records',
+                labelKey: 'nav.personnelTimeRecords',
                 maxLevel: 2,
                 grants: { read: ['attendance.read'], write: ['attendance.create', 'attendance.update'] },
             },
             {
-                key: 'personnel.accounting',
-                path: '/personnel/accounting',
-                labelKey: 'nav.personnelAccounting',
+                /* DIE ANTRAGSSEITE, IN DREI ZEILEN (27.08.2026, Vorgabe):
+                   «Meine Anträge», «Eingehende Anträge» und «Alle Anträge»
+                   sind in der Rollentabelle EINZELN wählbar. Die Seite selbst
+                   bleibt eine Adresse mit Reitern; die beiden Zusatzzeilen
+                   tragen Unteradressen, die nie aufgerufen werden — sie sind
+                   die Schalter, nicht die Wege.
+
+                   «Meine Anträge» ist reine Sichtbarkeit: einen eigenen
+                   Antrag stellen darf jede angemeldete Person, der Server
+                   verlangt dafür kein Recht. */
+                key: 'personnel.requests',
+                path: '/personnel/requests',
+                labelKey: 'nav.personnelRequestsMine',
                 maxLevel: 1,
-                grants: { read: ['attendance.read'] },
+                grants: {},
             },
             {
-                key: 'personnel.leaves',
-                path: '/personnel/leaves',
-                labelKey: 'nav.personnelLeaves',
-                maxLevel: 3,
-                grants: { read: ['leaves.read'], write: ['leaves.create'], delete: ['leaves.delete'] },
-            },
-            {
-                key: 'personnel.approvals',
-                path: '/personnel/approvals',
-                labelKey: 'nav.personnelApprovals',
+                /* Das Postfach der freigebenden Personen. Stufe 2 trägt
+                   `leaves.approve` — und genau daran hängt seit dem 27.08.2026
+                   auch, WER als freigebende Person wählbar ist (Administrator-
+                   oder z. B. Projektleiter-Rolle): die Personalrolle ADMIN ist
+                   abgelöst. */
+                key: 'personnel.requestsIncoming',
+                path: '/personnel/requests/incoming',
+                labelKey: 'nav.personnelRequestsIncoming',
                 maxLevel: 2,
-                grants: { read: ['leaves.read'], write: ['leaves.approve'] },
+                grants: { write: ['leaves.approve'] },
             },
             {
-                key: 'personnel.incoming',
-                path: '/personnel/incoming',
-                labelKey: 'nav.personnelIncoming',
-                maxLevel: 2,
-                grants: { read: ['leaves.read'], write: ['leaves.approve'] },
+                // Die Gesamtübersicht der Personalverwaltung.
+                key: 'personnel.requestsAll',
+                path: '/personnel/requests/all',
+                labelKey: 'nav.personnelRequestsAll',
+                maxLevel: 1,
+                grants: { read: ['leaves.read'] },
             },
         ],
     },
@@ -170,6 +177,34 @@ exports.PAGE_MODULES = [
                 grants: {
                     read: ['tenders.view', 'crm.customers.view', 'billing.view'],
                     write: ['tenders.manage', 'billing.create', 'billing.manage'],
+                },
+            },
+            {
+                // OSP (04.09.2026): Offertanfragen der Offitec Selection
+                // Platform — Liste, Zuständigkeit, Import in eine Offerte.
+                key: 'sales.osp',
+                path: '/sales/osp',
+                labelKey: 'nav.salesOsp',
+                maxLevel: 2,
+                grants: {
+                    read: ['tenders.view'],
+                    write: ['tenders.manage'],
+                },
+            },
+            {
+                // Rechnungsliste (30.08.2026): ALLE Rechnungen des Mandanten an
+                // einer Stelle — Projektauftrag, Lieferauftrag und die selbst
+                // ausgefüllte Direktrechnung. Löschen ist hier eine eigene Stufe:
+                // eine stornierte Rechnung endgültig zu entfernen ist mehr, als
+                // eine neue auszustellen.
+                key: 'sales.invoices',
+                path: '/sales/invoices',
+                labelKey: 'nav.salesInvoices',
+                maxLevel: 3,
+                grants: {
+                    read: ['billing.view', 'crm.customers.view'],
+                    write: ['billing.create'],
+                    delete: ['billing.manage'],
                 },
             },
         ],
@@ -281,11 +316,55 @@ const clampPageLevel = (raw, maxLevel = 3) => {
 };
 exports.clampPageLevel = clampPageLevel;
 /** Eingehende Stufen bereinigen: nur bekannte Seiten, nie über `maxLevel`. */
+/**
+ * ── ABGELÖSTE SEITENSCHLÜSSEL (26.08.2026) ──────────────────────────────────
+ *
+ * Wird eine Seite durch eine andere ersetzt, steht in den GESPEICHERTEN Rollen
+ * weiterhin der alte Schlüssel. Ohne diese Karte fiele er beim Einlesen weg
+ * (`sanitizePageLevels` kennt nur den Katalog) — und jede bestehende Rolle
+ * verlöre die Seite, obwohl niemand ihr etwas weggenommen hat.
+ *
+ * Die Karte ist deshalb kein Notbehelf, sondern der Migrationsweg: der alte
+ * Schlüssel gilt für den NEUEN weiter, bis die Rolle das nächste Mal
+ * gespeichert wird — dann steht der neue drin und der alte verschwindet von
+ * selbst. Mehrere alte Schlüssel auf denselben neuen: die HÖCHSTE Stufe
+ * gewinnt, wie überall beim Zusammenlegen.
+ */
+exports.RETIRED_PAGE_KEYS = {
+    // Detail- und Buchhaltungsrapport → Arbeitszeiterfassung.
+    'personnel.reports': 'personnel.timeRecords',
+    'personnel.accounting': 'personnel.timeRecords',
+    // Anträge / Urlaubsanträge / Eingehende Anträge → die Antragsseite. Seit
+    // dem 27.08.2026 ist sie in drei wählbare Zeilen geteilt: die eigenen
+    // Anträge erben vom alten «Urlaubsanträge», das Postfach von den beiden
+    // Eingangs-Seiten.
+    'personnel.leaves': 'personnel.requests',
+    'personnel.approvals': 'personnel.requestsIncoming',
+    'personnel.incoming': 'personnel.requestsIncoming',
+};
+/** Die Stufe, die ein abgelöster Schlüssel dem neuen vererbt (0 = keine). */
+const inheritedLevel = (input, pageKey, maxLevel) => {
+    let best = 0;
+    for (const [retired, successor] of Object.entries(exports.RETIRED_PAGE_KEYS)) {
+        if (successor !== pageKey)
+            continue;
+        const level = (0, exports.clampPageLevel)(input[retired], maxLevel);
+        if (level > best)
+            best = level;
+    }
+    return best;
+};
 const sanitizePageLevels = (raw) => {
     const input = (raw && typeof raw === 'object' ? raw : {});
     const levels = {};
     for (const page of exports.ALL_PAGES) {
-        const level = (0, exports.clampPageLevel)(input[page.key], page.maxLevel);
+        // Der eigene Schlüssel zuerst; fehlt er, erbt die Seite von ihren
+        // Vorgängern. Steht beides drin, gewinnt der eigene — er ist der
+        // jüngere Wille.
+        const own = (0, exports.clampPageLevel)(input[page.key], page.maxLevel);
+        const level = own > 0 || Object.prototype.hasOwnProperty.call(input, page.key)
+            ? own
+            : inheritedLevel(input, page.key, page.maxLevel);
         if (level > 0)
             levels[page.key] = level;
     }

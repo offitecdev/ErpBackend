@@ -218,8 +218,18 @@ const buildRemoteEntries = (staff, entries, flags, plan, start, end) => {
     return derived;
 };
 exports.buildRemoteEntries = buildRemoteEntries;
-const buildDetailedReport = async (tenantIds, filters, plan) => {
-    const staff = await (0, exports.loadStaffForReport)(tenantIds, filters);
+const buildDetailedReport = async (tenantIds, filters, plan, 
+/**
+ * Die Personen, über die gerechnet wird — schon bekannt.
+ *
+ * Die Arbeitszeiterfassung (26.08.2026) sucht ihre Leute vorher selbst
+ * (Freitext über Name und Adresse) und weiss danach genau, wer gemeint
+ * ist. Ohne diesen Weg würde hier die GANZE Belegschaft noch einmal
+ * geladen und für jede Person die Stempelungen geholt — nur um sie
+ * hinterher wegzuwerfen.
+ */
+staffOverride) => {
+    const staff = staffOverride ?? await (0, exports.loadStaffForReport)(tenantIds, filters);
     if (staff.length === 0)
         return { days: [], flags: [], plan };
     const [stamped, flags] = await Promise.all([

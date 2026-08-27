@@ -43,6 +43,8 @@ const getAuthIdentity = async (employeeId) => {
         .findUnique({
         where: { id: employeeId },
         select: {
+            firstName: true,
+            lastName: true,
             isActive: true,
             deletedAt: true,
             bannedAt: true,

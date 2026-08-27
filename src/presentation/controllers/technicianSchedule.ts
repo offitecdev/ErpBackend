@@ -111,18 +111,24 @@ export async function listTechnicianOptions(tenantId: string) {
  *   3. un-converted proposal schedule slots (tenders that have no project yet).
  *
  * `exclude.appointmentId` skips a project appointment being edited; `exclude.slotId`
- * skips an offer slot being edited. Returns null when there is no conflict.
+ * skips an offer slot being edited. `exclude.appointmentIds` skips a whole set —
+ * the days of ONE multi-day assignment must not report each other as conflicts
+ * while that assignment is being re-planned. Returns null when there is no conflict.
  */
 export async function findTechnicianScheduleConflict(
     technicianIds: string[],
     startTime: Date,
     endTime: Date,
     tenantId: string,
-    exclude: { appointmentId?: string | undefined; slotId?: string | undefined } = {}
+    exclude: { appointmentId?: string | undefined; appointmentIds?: string[] | undefined; slotId?: string | undefined } = {}
 ): Promise<TechnicianConflict | null> {
     const ids = [...new Set(technicianIds.filter(Boolean))];
     if (!ids.length) return null;
     const tenantIds = await getServiceTenantScope(tenantId);
+    const skipAppointmentIds = [...new Set([
+        ...(exclude.appointmentId ? [exclude.appointmentId] : []),
+        ...(exclude.appointmentIds || []),
+    ].filter(Boolean))];
 
     const projectConflict = await (prisma as any).appointment.findFirst({
         where: {
@@ -130,7 +136,7 @@ export async function findTechnicianScheduleConflict(
             // Only an active (still BOOKED) install reserves the technician; a
             // COMPLETED one means they finished, so it no longer blocks assignment.
             status: "BOOKED",
-            ...(exclude.appointmentId ? { id: { not: exclude.appointmentId } } : {}),
+            ...(skipAppointmentIds.length ? { id: { notIn: skipAppointmentIds } } : {}),
             startTime: { lt: endTime },
             endTime: { gt: startTime },
             OR: [

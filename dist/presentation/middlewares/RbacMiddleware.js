@@ -5,11 +5,30 @@ const GetUserPermissionsUseCase_1 = require("../../application/use-cases/auth/Ge
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
 const roleRepo = new RoleRepository_1.RoleRepository();
 const getPermissionsUseCase = new GetUserPermissionsUseCase_1.GetUserPermissionsUseCase(roleRepo);
+/* ── Was eine abgewiesene Person LIEST ───────────────────────────────────────
+ *
+ * Bisher stand hier eine Aufzählung von Rechtenamen ("Erisim Engellendi: Bu
+ * islem icin projects.view, projects.report, maintenance.tasks.manage
+ * yetkilerinden biri gereklidir"). Das ist zweierlei zugleich falsch: es steht
+ * in einer Sprache, die die Anwendung gar nicht führt, und es nennt interne
+ * Namen, mit denen die Monteurin am Tablet nichts anfangen kann — sie las das
+ * beim Öffnen ihrer Montage-Rapporte.
+ *
+ * Der SATZ sagt darum, was zu tun ist; die Rechtenamen reisen daneben in
+ * `requiredPermissions` mit, damit Entwicklung und Protokoll sie weiterhin
+ * haben, ohne dass sie jemand auf dem Bildschirm liest.
+ */
+const DENIED_MESSAGE = 'Zugriff verweigert: Ihrer Rolle fehlt die Berechtigung für diesen Vorgang. '
+    + 'Bitte wenden Sie sich an die Administration.';
+/** Eine Rolle, die GAR NICHTS vergibt, ist keine Entscheidung, sondern eine
+    unfertige Rolle — dann steht auch dran, wo sie fertig gebaut wird. */
+const NO_ROLE_MESSAGE = 'Ihrer Rolle sind noch keine Rechte zugewiesen. '
+    + 'Die Administration vergibt sie unter Einstellungen → Berechtigungen.';
 const requirePermission = (requiredPermission) => {
     return async (req, res, next) => {
         try {
             if (!req.user) {
-                res.status(401).json({ error: 'Kimlik doğrulanmamış kullanıcı.' });
+                res.status(401).json({ error: 'Anmeldung erforderlich.' });
                 return;
             }
             const rbacStartedAt = Date.now();
@@ -23,7 +42,8 @@ const requirePermission = (requiredPermission) => {
             // an empty permission set.
             if (userPermissions.length === 0 || !userPermissions.includes(requiredPermission)) {
                 res.status(403).json({
-                    error: `Erişim Engellendi: Bu işlem için '${requiredPermission}' yetkisine sahip değilsiniz.`
+                    error: userPermissions.length === 0 ? NO_ROLE_MESSAGE : DENIED_MESSAGE,
+                    requiredPermissions: [requiredPermission],
                 });
                 return;
             }
@@ -32,7 +52,7 @@ const requirePermission = (requiredPermission) => {
         catch (error) {
             console.error('[RbacMiddleware] error while checking permission:', requiredPermission, error);
             res.status(500).json({
-                error: 'Yetki kontrolü sırasında bir hata oluştu.',
+                error: 'Bei der Berechtigungsprüfung ist ein Fehler aufgetreten.',
             });
         }
     };
@@ -42,7 +62,7 @@ const requireAnyPermission = (requiredPermissions) => {
     return async (req, res, next) => {
         try {
             if (!req.user) {
-                res.status(401).json({ error: 'Kimlik dogrulanmamis kullanici.' });
+                res.status(401).json({ error: 'Anmeldung erforderlich.' });
                 return;
             }
             const userPermissions = await getPermissionsUseCase.execute(req.user.id);
@@ -52,7 +72,8 @@ const requireAnyPermission = (requiredPermissions) => {
             // TODO: gate bootstrap access behind an explicit tenant/system flag.
             if (userPermissions.length === 0 || !requiredPermissions.some((permission) => userPermissions.includes(permission))) {
                 res.status(403).json({
-                    error: `Erisim Engellendi: Bu islem icin ${requiredPermissions.join(', ')} yetkilerinden biri gereklidir.`
+                    error: userPermissions.length === 0 ? NO_ROLE_MESSAGE : DENIED_MESSAGE,
+                    requiredPermissions,
                 });
                 return;
             }
@@ -61,7 +82,7 @@ const requireAnyPermission = (requiredPermissions) => {
         catch (error) {
             console.error('[RbacMiddleware] error while checking any permission:', requiredPermissions, error);
             res.status(500).json({
-                error: 'Yetki kontrolu sirasinda bir hata olustu.',
+                error: 'Bei der Berechtigungsprüfung ist ein Fehler aufgetreten.',
             });
         }
     };

@@ -15,6 +15,8 @@
 import prisma from '../infrastructure/database/prisma.client';
 
 export type AuthIdentity = {
+    firstName: string;
+    lastName: string;
     isActive: boolean;
     deletedAt: Date | null;
     bannedAt: Date | null;
@@ -48,6 +50,8 @@ export const getAuthIdentity = async (employeeId: string): Promise<AuthIdentity 
         .findUnique({
             where: { id: employeeId },
             select: {
+                firstName: true,
+                lastName: true,
                 isActive: true,
                 deletedAt: true,
                 bannedAt: true,

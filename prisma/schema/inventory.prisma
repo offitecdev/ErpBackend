@@ -189,17 +189,17 @@ model SupplyRequest {
 ///   TO_BE_STOCKED         → mal kabul bekleniyor (goods receipt); satırlar tek tek/toplu stoğa gönderilebilir
 ///   COMPLETED             → stoğa aktarıldı (mal kabul tamamlandı / mark-stocked)
 model PurchaseOrder {
-  id              String    @id
+  id              String  @id
   tenantId        String
   referenceNumber String // "Bestellung" BE-2026-001 (arada üretilen AU-2026-001 ve eski BE-2026-0001 kayıtları da geçerlidir) — tenant başına benzersiz, kullanıcı düzenleyebilir
   quoteNumber     String? // opsiyonel teklif numarası (PDF'te görünür)
   orderedByName   String? // "Besteller" — siparişi veren kişi (varsayılan: oturumdaki kullanıcı)
   projectName     String? // tedarik edilen projenin adı (PDF kapak kartında)
-  status          String    @default("PENDING")
+  status          String  @default("PENDING")
   supplierId      String?
   supplierName    String // snapshot
   supplierEmail   String?
-  supplierAddress String?   @db.Text // snapshot — bileşenlerden kurulmuş, satır başına \n (PDF alıcı bloğu)
+  supplierAddress String? @db.Text // snapshot — bileşenlerden kurulmuş, satır başına \n (PDF alıcı bloğu)
   // ALICI ADI ("Empfänger" / z.Hd.) — OPSİYONEL. Sipariş detaylarından girilir;
   // doluysa PDF'in alıcı bloğunda firma adının ALTINDA tek küçük satır olarak
   // basılır. Tedarikçi kaydından bağımsızdır: siparişe özgü kişi/departmandır.

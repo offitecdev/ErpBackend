@@ -144,6 +144,8 @@ const sendInvite = async (context) => {
         organizer: { email: fromEmail, name: fromName },
         attendees: dedupe(context.attendees ?? context.recipients, [fromEmail]),
         cancelled: context.method === "CANCEL",
+        // Mehrtägiger Einsatz: ein VEVENT je Tag, jedes mit eigener UID.
+        ...(context.occurrences?.length ? { occurrences: context.occurrences } : {}),
     });
     const prefix = context.method === "CANCEL" ? words.cancelledPrefix : context.sequence > 0 ? words.changedPrefix : "";
     const subject = clean(context.subject) || `${prefix}${context.summary}`;
@@ -158,6 +160,8 @@ const sendInvite = async (context) => {
         language: context.language ?? "de",
         start: context.start,
         end: context.end,
+        // Aus den Tagen des Einsatzes wird auf der Karte der Einsatzplan.
+        ...(context.occurrences?.length ? { schedule: context.occurrences.map((day) => ({ start: day.start, end: day.end })) } : {}),
         summary: context.summary,
         location: context.location ?? null,
         details: context.details,
@@ -275,6 +279,29 @@ const employeeRecipient = async (employeeId) => {
     return { email: employee.email, name: `${employee.firstName} ${employee.lastName}` };
 };
 /**
+ * UID UND ZÄHLSTAND FESTHALTEN — je Tag des Einsatzes einer. Erst NACH
+ * erfolgreichem Versand: sonst zählte eine gescheiterte Sendung die SEQUENCE
+ * hoch und die nächste echte käme bei Outlook als veraltet an.
+ *
+ * `inviteSentAt` beantwortet die Frage «wurde der Kunde schon eingeladen?» und
+ * wird deshalb nur bei der ausdrücklichen Sendung gesetzt, nicht bei der
+ * automatischen Aufbietung des Teams. Beim mehrtägigen Einsatz gilt die Antwort
+ * für ALLE Tage — verschickt wurde der ganze Plan.
+ */
+const stampAppointmentInvite = async (appointmentId, collected, options = {}) => {
+    const rows = collected.days?.length
+        ? collected.days.map((day) => ({ id: day.id, uid: day.uid, sequence: day.sequence }))
+        : [{ id: appointmentId, uid: collected.uid, sequence: collected.sequence }];
+    await Promise.all(rows.map((row) => prisma_client_1.default.appointment.update({
+        where: { id: row.id },
+        data: {
+            icalUid: row.uid,
+            icalSequence: row.sequence,
+            ...(options.inviteSentAt ? { inviteSentAt: options.inviteSentAt } : {}),
+        },
+    }).catch(() => undefined)));
+};
+/**
  * Einladung zu einem Projekttermin. `method` REQUEST beim Anlegen und Ändern,
  * CANCEL beim Löschen. Vergibt beim ersten Mal die UID und zählt bei jeder
  * weiteren Sendung `icalSequence` hoch.
@@ -310,10 +337,35 @@ const collectAppointmentInvite = async (appointmentId, method) => {
         where: { tenantId: appointment.tenantId },
         select: { fromEmail: true },
     });
-    const uid = appointment.icalUid || (0, calendarInvite_1.newIcalUid)(appointment.id, appointmentDomain(settings?.fromEmail));
+    const domain = appointmentDomain(settings?.fromEmail);
+    const uid = appointment.icalUid || (0, calendarInvite_1.newIcalUid)(appointment.id, domain);
     // Beim ersten Versand 0, danach immer eine höher — Outlook verwirft eine
     // Aktualisierung mit gleicher oder kleinerer SEQUENCE.
     const sequence = appointment.icalUid ? (appointment.icalSequence ?? 0) + 1 : 0;
+    /* MEHRTÄGIGER EINSATZ (24.08.2026): eine EINLADUNG für alle Tage, nicht
+       eine je Tag. Die Karte trägt den Einsatzplan, das Kalenderobjekt je Tag
+       ein VEVENT mit EIGENER UID — nur so lässt sich ein einzelner Tag später
+       verschieben oder absagen.
+       Bei der ABSAGE gilt das ausdrücklich NICHT: `buildAppointmentCancellation`
+       wird je gelöschtem Tag aufgerufen, und dann darf genau dieser eine Tag
+       zurückgezogen werden — sonst verschwände beim Streichen des Dienstags
+       auch der Mittwoch aus fremden Kalendern. */
+    const siblings = appointment.seriesId && method === "REQUEST"
+        ? await prisma_client_1.default.appointment.findMany({
+            where: { seriesId: appointment.seriesId, tenantId: appointment.tenantId },
+            orderBy: { startTime: "asc" },
+            select: { id: true, startTime: true, endTime: true, icalUid: true, icalSequence: true },
+        })
+        : [];
+    const days = (siblings.length > 1 ? siblings : []).map((day) => ({
+        id: day.id,
+        uid: day.icalUid || (0, calendarInvite_1.newIcalUid)(day.id, domain),
+        sequence: day.icalUid ? (day.icalSequence ?? 0) + 1 : 0,
+        start: new Date(day.startTime),
+        end: new Date(day.endTime),
+    }));
+    // Die Karte spricht vom ganzen Einsatz: ihr Kopfdatum ist der ERSTE Tag.
+    const firstDay = days[0] ?? { start: new Date(appointment.startTime), end: new Date(appointment.endTime) };
     // Der Haupttechniker steht meist AUCH in den Zuteilungen — ohne Dedupe
     // stünde er zweimal im Team ("Muster, Muster, Meier").
     const technicians = Array.from(new Map([
@@ -363,14 +415,16 @@ const collectAppointmentInvite = async (appointmentId, method) => {
         technicians: teamRecipients,
         storedCc,
         creator,
+        days,
         context: {
             tenantId: appointment.tenantId,
             language,
             uid,
             sequence,
             method,
-            start: new Date(appointment.startTime),
-            end: new Date(appointment.endTime),
+            start: firstDay.start,
+            end: firstDay.end,
+            ...(days.length ? { occurrences: days.map(({ uid: dayUid, sequence: daySequence, start, end }) => ({ uid: dayUid, sequence: daySequence, start, end })) } : {}),
             summary,
             description,
             location,
@@ -469,10 +523,7 @@ const sendAppointmentInvite = async (appointmentId, employeeId, options) => {
     // Sendung die SEQUENCE hoch und die nächste echte käme zu niedrig an. Beide
     // Nachrichten teilen sich diesen einen Zählstand: für Outlook sind sie
     // derselbe Termin in derselben Fassung.
-    await prisma_client_1.default.appointment.update({
-        where: { id: appointmentId },
-        data: { icalUid: collected.uid, icalSequence: collected.sequence, inviteSentAt: new Date() },
-    }).catch(() => undefined);
+    await stampAppointmentInvite(appointmentId, collected, { inviteSentAt: new Date() });
     return {
         sentAt: new Date().toISOString(),
         customer,
@@ -508,8 +559,17 @@ const queueAppointmentTeamInvite = (appointmentId, employeeId) => {
         const collected = await collectAppointmentInvite(appointmentId, "REQUEST");
         if (!collected)
             return;
-        const creator = collected.creator ?? await employeeRecipient(employeeId);
-        const recipients = teamAudience(collected, collected.storedCc, creator);
+        /* NUR DIE AUFGEBOTENEN UND DER CC (25.08.2026, Vorgabe Samet: «nur wenn
+           ein Termin zugeteilt wird — an die betreffende Monteurin oder den
+           CC»). Die Person, die den Termin anlegt, steht NICHT mehr darin: sie
+           hat ihn gerade selbst geschrieben und bekam bis dahin bei jedem
+           Speichern eine Mail über die eigene Eingabe.
+
+           Steht niemand darin — kein Team, kein CC —, geht auch nichts raus:
+           ohne Aufbietung gibt es nichts zu melden. Der Versand VON HAND
+           («Termin senden») führt die Erstellerin unverändert mit; dort ist
+           die Mail ja gewollt und die Liste im Fenster sichtbar. */
+        const recipients = dedupe([...collected.technicians, ...collected.storedCc]);
         if (!recipients.length)
             return;
         // Die Teammail spricht Deutsch: die Hausssprache. Fuer Mitarbeitende
@@ -527,10 +587,7 @@ const queueAppointmentTeamInvite = (appointmentId, employeeId) => {
         });
         if (!result.sent)
             return;
-        await prisma_client_1.default.appointment.update({
-            where: { id: appointmentId },
-            data: { icalUid: collected.uid, icalSequence: collected.sequence },
-        }).catch(() => undefined);
+        await stampAppointmentInvite(appointmentId, collected);
     })());
 };
 exports.queueAppointmentTeamInvite = queueAppointmentTeamInvite;

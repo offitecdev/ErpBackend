@@ -45,6 +45,11 @@ const TENDER_FULL_SELECT = {
     customerReference: true,
     currency: true,
     salespersonName: true,
+    // Manuell erfasster Kunde (OSP-Import) — Name/Adresse/E-Mail direkt am
+    // Beleg, ohne CRM-Kunden.
+    manualCustomerName: true,
+    manualCustomerEmail: true,
+    manualCustomerAddress: true,
     sourceStatus: true,
     sourceCompany: true,
     shippingTerms: true,
@@ -175,7 +180,7 @@ export class TenderRepository implements ITenderRepository {
                     t.id, t.tenderNumber, t.version, t.projectId, t.sourceStatus,
                     t.createdByEmployeeId, t.currency, t.createdAt, t.offerMailSentAt,
                     t.validUntil, t.offerAcceptedAt, t.commissionNumber,
-                    c.companyName AS customerName,
+                    COALESCE(c.companyName, t.manualCustomerName) AS customerName,
                     e.firstName AS creatorFirstName,
                     e.lastName AS creatorLastName,
                     e.email AS creatorEmail,
@@ -355,11 +360,14 @@ export class TenderRepository implements ITenderRepository {
         // das Feld nicht — es wird, wie die Kundenfelder unten, nach dem Mappen
         // angehängt und ist für die Oberfläche IMMER ein Array.
         entity.ccEmails = Array.isArray((data as any).ccEmails) ? (data as any).ccEmails : [];
-        entity.customerName = customer?.companyName ?? null;
+        // Manuell erfasster Kunde (OSP-Import): ohne CRM-Kunden liefern die
+        // manualCustomer*-Spalten Name/Adresse/E-Mail — die Oberfläche und das
+        // Angebots-PDF lesen weiter dieselben Felder.
+        entity.customerName = customer?.companyName ?? (data as any).manualCustomerName ?? null;
         // The customer's primary address (street / postal + city / country) formatted
         // as a single multi-line string — the default for the tender's address slot.
-        entity.customerAddress = formatCustomerAddress(customer);
-        entity.customerEmail = customer?.mainEmail ?? null;
+        entity.customerAddress = formatCustomerAddress(customer) || (data as any).manualCustomerAddress || null;
+        entity.customerEmail = customer?.mainEmail ?? (data as any).manualCustomerEmail ?? null;
         entity.customerPhone = customer?.mainPhone ?? null;
         entity.customerTaxNumber = customer?.taxNumber ?? null;
         entity.createdByName = createdBy
@@ -501,7 +509,7 @@ export class TenderRepository implements ITenderRepository {
 
         const items = data.map((d: any) => {
             const totals = positionTotals.get(d.id);
-            const customerName = d.customer?.companyName ?? null;
+            const customerName = d.customer?.companyName ?? d.manualCustomerName ?? null;
             const createdByName = d.createdBy
                 ? `${d.createdBy.firstName} ${d.createdBy.lastName}`.trim()
                 : null;

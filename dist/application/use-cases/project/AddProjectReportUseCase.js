@@ -84,8 +84,12 @@ class AddProjectReportUseCase {
                         : { salesOrderId: input.salesOrderId }
                     : {}),
                 status: { in: ["BOOKED", "COMPLETED"] },
-                startTime: { gte: dayStart },
-                endTime: { lte: dayEnd }
+                /* Der Termin gehört dem Tag, an dem er BEGINNT. Bis 24.08.2026
+                   musste er auch am selben Tag enden — eine Nachtmontage von
+                   20:00 bis 02:00 (seither EIN Termin, kein zweiter Tag) wäre
+                   damit aus der Rechnung gefallen und ihr Tag hätte als
+                   ungeplant gegolten. */
+                startTime: { gte: dayStart, lte: dayEnd },
             },
             select: { id: true, startTime: true, endTime: true },
         });

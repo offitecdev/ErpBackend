@@ -1,0 +1,92 @@
+/// ── OSP-INTEGRATION (Offitec Selection Platform, 04.09.2026) ────────────────
+/// Die OSP schickt Offertanfragen ("Get Offer") als Webhook zu uns; wir melden
+/// den Bearbeitungsstand zurück (created / under review / offer has been sent
+/// — siehe offer-integration-api.md). Beides ist Server-zu-Server über einen
+/// gemeinsamen Schlüssel, NIE über das Benutzer-JWT.
+///
+/// Die Einstellungen hängen am WURZEL-Mandanten des Firmenbaums: EIN Feed je
+/// Firma, und `tenantIds` sagt, welche Mandanten des Baums die OSP-Seite sehen
+/// und bearbeiten dürfen (Einstellungen → Module → Verkauf → OSP).
+
+model OspSetting {
+  id         String   @id
+  /// Wurzel-Mandant des Firmenbaums — eine Zeile je Firma.
+  tenantId   String   @unique
+  /// Erwarteter X-OSP-Integration-Key des EINGEHENDEN Webhooks. Leer = der
+  /// Webhook nimmt für diese Firma nichts an (niemals offen durchfallen).
+  webhookKey String?  @db.VarChar(191)
+  /// Basisadresse des OSP-Backends für AUSGEHENDE Statusmeldungen,
+  /// z. B. https://api.osp.offitec.ch — leer = nichts melden.
+  ospBaseUrl String?  @db.VarChar(255)
+  /// Schlüssel, den WIR bei /integration/** mitschicken.
+  ospApiKey  String?  @db.Text
+  /// JSON-Liste der Mandanten-Ids, die am OSP-Modul teilnehmen (Auswahl im
+  /// Einstellungsreiter). Leer/null = nur der Wurzel-Mandant selbst.
+  tenantIds  Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+/// EIN Dokument der OSP = eine Einheit mit eigener Berechnung und eigenem
+/// Datenblatt ("<projectNumber>-<documentId>", z. B. 4820193-57). Der Status
+/// lebt je Dokument; die Referenz ist über die Lebensdauer stabil.
+///
+/// ⚠ OSP-Zeilen legen NIE Artikel oder Bestand an: der Import erzeugt eine
+/// Offerte mit reinen Textpositionen (rowType CUSTOM) — nur für diese Offerte.
+model OspDocument {
+  id                 String    @id
+  /// Wurzel-Mandant (Eigentümer des Feeds) — siehe OspSetting.
+  tenantId           String
+  /// Volle Belegreferenz "4820193-57" — Schlüssel jeder Statusmeldung.
+  reference          String
+  /// Die 7-stellige Projektnummer (linke Hälfte der Referenz).
+  projectNumber      String
+  /// Dokument-Id (rechte Hälfte) — OSP-weit eindeutig.
+  documentId         String?
+  projectName        String    @default("")
+  /// Anfragende Person (OSP-Konto) — wird beim Import als manueller Kunde
+  /// vorgeschlagen, aber NIE als CRM-Kunde gespeichert.
+  requesterFirstName String?
+  requesterLastName  String?
+  requesterEmail     String?
+  /// Adressblock der anfragenden Person, sofern die OSP ihn mitschickt.
+  country            String?
+  city               String?
+  address            String?   @db.Text
+  postalCode         String?
+  /// OSP-Kontotyp ("user" | "admin").
+  userType           String?
+  /// "chiller" | "heat pump" | "dry cooler".
+  category           String?
+  /// "air to water" | "water to water".
+  unitType           String?
+  model              String?
+  /// created_at aus der OSP (Projektanlage drüben).
+  ospCreatedAt       DateTime?
+  /// Unser Bearbeitungsstand: LISTED → IN_OFFER → SENT → APPROVED.
+  /// IN_OFFER meldet der OSP "under review", SENT "offer has been sent";
+  /// LISTED und APPROVED bleiben intern.
+  status             String    @default("LISTED")
+  /// Zuständige Person — aus dem Personalverzeichnis gewählt; die E-Mail ist
+  /// das, was die OSP als salesmanEmail sieht.
+  salespersonId      String?
+  salespersonEmail   String?
+  salespersonName    String?
+  /// Rolle der zuständigen Person an dieser Zeile: SALES | PROJECT_MANAGER.
+  salespersonRole    String    @default("SALES")
+  /// Die aus dem Import entstandene Offerte (Belegspalte der Liste).
+  tenderId           String?
+  tenderNumber       String?
+  /// Letzte erfolgreich an die OSP gemeldete Statusform (created/under
+  /// review/offer has been sent) + Zeitpunkt/Fehler der letzten Meldung.
+  lastReportedStatus String?
+  lastReportAt       DateTime?
+  lastReportError    String?   @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, projectNumber])
+  @@index([tenderId])
+}

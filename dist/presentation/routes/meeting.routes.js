@@ -7,6 +7,7 @@ const express_1 = require("express");
 const nanoid_1 = require("nanoid");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const calendarLabelCatalog_1 = require("../../application/services/calendarLabelCatalog");
 const calendarMailService_1 = require("../../infrastructure/services/calendarMailService");
 /* Workspace "meeting activities" (meetings & lightweight tasks) shown on the CRM
    overview and the unified calendar. Participants mix staff and customers. */
@@ -94,11 +95,19 @@ router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'Bitiş zamanı başlangıçtan sonra olmalıdır.' });
         const kind = req.body?.kind === 'TASK' ? 'TASK' : 'MEETING';
         const participants = sanitizeParticipants(req.body?.participants);
+        /* KALENDER-ETIKETT (25.08.2026). Ohne Auswahl greift der Vorschlag der
+           Rolle «Besprechung»; ist die Liste leer, bleibt der Eintrag ohne
+           Etikett. Eine Aufgabe bekommt gar keinen Vorschlag -- sie steht
+           nicht mehr im Raster. */
+        const labelId = kind === 'TASK'
+            ? (await (0, calendarLabelCatalog_1.sanitizeLabelId)(user.tenantId, req.body?.labelId)) ?? null
+            : await (0, calendarLabelCatalog_1.resolveNewLabelId)(user.tenantId, req.body?.labelId, 'MEETING');
         const meeting = await prisma_client_1.default.meetingActivity.create({
             data: {
                 id: (0, nanoid_1.nanoid)(12),
                 tenantId: user.tenantId,
                 kind,
+                labelId,
                 title: String(title).trim(),
                 notes: notes ? String(notes) : null,
                 startTime,
@@ -134,6 +143,17 @@ router.patch('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
         });
         if (!existing)
             return res.status(404).json({ error: 'Aktivite bulunamadı.' });
+        /* AUS DER MAIL ⇒ NICHT VON HAND (21.08.2026). Ein Termin mit
+           `externalOrigin` gehört dem Organisator in Outlook/Teams: er wird bei
+           jeder neuen Fassung der Einladung nachgeführt. Eine Änderung hier
+           wäre beim nächsten Abruf spurlos verschwunden — dann lieber gleich
+           sagen, dass sie nicht zählt. */
+        if (existing.externalOrigin) {
+            return res.status(409).json({
+                code: 'EXTERNAL_MEETING',
+                error: 'Dieser Termin kommt aus Outlook/Teams und wird von dort aktualisiert.',
+            });
+        }
         const data = {};
         if (req.body?.title !== undefined)
             data.title = String(req.body.title).trim();
@@ -143,6 +163,8 @@ router.patch('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
             data.kind = req.body.kind === 'TASK' ? 'TASK' : 'MEETING';
         if (req.body?.customerId !== undefined)
             data.customerId = req.body.customerId ? String(req.body.customerId) : null;
+        if (req.body?.labelId !== undefined)
+            data.labelId = await (0, calendarLabelCatalog_1.sanitizeLabelId)(user.tenantId, req.body.labelId) ?? null;
         if (req.body?.ccEmails !== undefined)
             data.ccEmails = sanitizeCcEmails(req.body.ccEmails);
         if (req.body?.startTime !== undefined) {
