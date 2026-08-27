@@ -49,6 +49,9 @@ model OspDocument {
   requesterFirstName String?
   requesterLastName  String?
   requesterEmail     String?
+  /// Firma des anfragenden OSP-Kontos. Bei user-Konten ist dies der
+  /// vorgeschlagene Kundenname der Offerte, nicht der Personenname.
+  company            String?
   /// Adressblock der anfragenden Person, sofern die OSP ihn mitschickt.
   country            String?
   city               String?

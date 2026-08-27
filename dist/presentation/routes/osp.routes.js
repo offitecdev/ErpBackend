@@ -139,6 +139,7 @@ router.post('/webhook', async (req, res) => {
                 requesterFirstName: asTrimmed(entry.username),
                 requesterLastName: asTrimmed(entry.surname),
                 requesterEmail: asTrimmed(entry.email),
+                company: asTrimmed(entry.company),
                 country: asTrimmed(entry.country),
                 city: asTrimmed(entry.city),
                 address: asTrimmed(entry.address),
@@ -200,6 +201,7 @@ router.get('/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
                 { requesterFirstName: { contains: q } },
                 { requesterLastName: { contains: q } },
                 { requesterEmail: { contains: q } },
+                { company: { contains: q } },
                 { country: { contains: q } },
             ];
         }
@@ -417,7 +419,9 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
                 manualCustomerName: customerId ? null : manualName,
                 manualCustomerEmail: customerId ? null : (manual ? asTrimmed(manual.email) : null),
                 manualCustomerAddress: customerId ? null : manualAddress,
-                billingAddress: customerId ? null : manualAddress,
+                // Popup'ta düzenlenen adres yalnız bu teklifin adresidir.
+                // Bir CRM müşterisi seçilmiş olsa da müşteri kartına yazılmaz.
+                billingAddress: manualAddress,
                 createdByEmployeeId: user.id,
             },
         });

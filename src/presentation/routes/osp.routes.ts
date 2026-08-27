@@ -162,6 +162,7 @@ router.post('/webhook', async (req, res) => {
                 requesterFirstName: asTrimmed((entry as any).username),
                 requesterLastName: asTrimmed((entry as any).surname),
                 requesterEmail: asTrimmed((entry as any).email),
+                company: asTrimmed((entry as any).company),
                 country: asTrimmed((entry as any).country),
                 city: asTrimmed((entry as any).city),
                 address: asTrimmed((entry as any).address),
@@ -224,6 +225,7 @@ router.get('/documents', requireAuth, requirePermission('tenders.view'), async (
                 { requesterFirstName: { contains: q } },
                 { requesterLastName: { contains: q } },
                 { requesterEmail: { contains: q } },
+                { company: { contains: q } },
                 { country: { contains: q } },
             ];
         }
@@ -452,7 +454,9 @@ router.post('/documents/:id/import', requireAuth, requirePermission('tenders.man
                 manualCustomerName: customerId ? null : manualName,
                 manualCustomerEmail: customerId ? null : (manual ? asTrimmed(manual.email) : null),
                 manualCustomerAddress: customerId ? null : manualAddress,
-                billingAddress: customerId ? null : manualAddress,
+                // Popup'ta düzenlenen adres yalnız bu teklifin adresidir.
+                // Bir CRM müşterisi seçilmiş olsa da müşteri kartına yazılmaz.
+                billingAddress: manualAddress,
                 createdByEmployeeId: user.id,
             } as any,
         });
