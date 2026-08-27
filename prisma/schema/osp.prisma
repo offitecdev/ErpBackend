@@ -70,16 +70,44 @@ model OspDocument {
   /// IN_OFFER meldet der OSP "under review", SENT "offer has been sent";
   /// LISTED und APPROVED bleiben intern.
   status             String    @default("LISTED")
-  /// Zuständige Person — aus dem Personalverzeichnis gewählt; die E-Mail ist
-  /// das, was die OSP als salesmanEmail sieht.
+  /// Verkäufer:in — aus dem Personalverzeichnis gewählt; die E-Mail ist das,
+  /// was die OSP als salesmanEmail sieht.
   salespersonId      String?
   salespersonEmail   String?
   salespersonName    String?
-  /// Rolle der zuständigen Person an dieser Zeile: SALES | PROJECT_MANAGER.
+  /// Projektleiter:in — dieselbe Auswahl, aber eine EIGENE Zuständigkeit:
+  /// beide werden direkt gewählt (früher eine Person mit umschaltbarer Rolle).
+  /// Rein intern; an die OSP geht ausschliesslich die Verkäufer-E-Mail.
+  projectManagerId    String?
+  projectManagerEmail String?
+  projectManagerName  String?
+  /// VERALTET (05.09.2026): Rolle der einen zuständigen Person. Wird nicht mehr
+  /// geschrieben und nicht mehr gelesen — die Spalte bleibt nur stehen, damit
+  /// alte Zeilen ihren Ursprung behalten (die Migration hat PROJECT_MANAGER-
+  /// Zeilen bereits nach projectManager* umgehängt).
   salespersonRole    String    @default("SALES")
   /// Die aus dem Import entstandene Offerte (Belegspalte der Liste).
   tenderId           String?
   tenderNumber       String?
+  /// ── DATENBLATT (07.09.2026) ───────────────────────────────────────────
+  /// Die OSP schickt im Webhook die Adresse des ECHTEN Datenblatt-PDF der
+  /// Einheit — nicht den Link auf die Offerte drüben. Die Datei wird einmal
+  /// geholt und liegt danach bei uns (LocalFileStorage-Verweis), damit sie
+  /// auch dann noch da ist, wenn die OSP-Adresse abläuft.
+  datasheetUrl       String?   @db.Text
+  datasheetFile      String?
+  datasheetFetchedAt DateTime?
+  /// Warum das Holen bzw. Auslesen scheiterte — steht an der Zeile, wie bei
+  /// den Statusmeldungen auch.
+  datasheetError     String?   @db.Text
+  /// Die aus dem PDF gelesenen Angaben (Leistung, COP, Medium, Technologie,
+  /// Schalldruck, Abmessungen, Gewicht). Sie füllen das Import-Fenster vor —
+  /// getippt wird nur noch, was das Datenblatt nicht hergibt.
+  datasheetSpecs     Json?
+  /// Der unveränderte Webhook-Eintrag. Die OSP schickt mehr Felder, als der
+  /// Vertrag beschreibt (company, city, userType …); ohne diese Kopie ist
+  /// hinterher nicht mehr feststellbar, was tatsächlich geliefert wurde.
+  rawPayload         Json?
   /// Letzte erfolgreich an die OSP gemeldete Statusform (created/under
   /// review/offer has been sent) + Zeitpunkt/Fehler der letzten Meldung.
   lastReportedStatus String?

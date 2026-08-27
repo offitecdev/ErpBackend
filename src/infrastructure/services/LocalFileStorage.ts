@@ -108,6 +108,17 @@ export const appointmentDocumentStorage = new LocalFileStorage({
 });
 
 /**
+ * OSP-DATENBLATT (07.09.2026): das PDF der angefragten Einheit, wie es die OSP
+ * ausliefert. Es wird EINMAL geholt und liegt danach bei uns — die Adresse
+ * drüben kann ablaufen, das Datenblatt der Offerte darf das nicht.
+ */
+export const ospDatasheetStorage = new LocalFileStorage({
+    prefix: 'local:osp-datasheet/',
+    directory: process.env.OFFITEC_OSP_DATASHEET_DIR
+        || path.join(process.cwd(), 'storage', 'osp-datasheets'),
+});
+
+/**
  * PERSONALAKTE (26.08.2026): der Arbeitsvertrag und die übrigen Unterlagen
  * einer angestellten Person. Sie verlassen das Haus nie — sie werden nur auf
  * der Personenseite geöffnet, und nur von der Person selbst bzw. der

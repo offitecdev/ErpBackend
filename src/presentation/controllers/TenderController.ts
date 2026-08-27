@@ -770,6 +770,13 @@ export class TenderController {
             if (rawMeta.installationAddress !== undefined) metaData.installationAddress = rawMeta.installationAddress ? String(rawMeta.installationAddress) : null;
             if (rawMeta.deliveryAddress !== undefined) metaData.deliveryAddress = rawMeta.deliveryAddress ? String(rawMeta.deliveryAddress) : null;
             if (rawMeta.commissionNumber !== undefined) metaData.commissionNumber = rawMeta.commissionNumber ? String(rawMeta.commissionNumber) : null;
+            // Von Hand erfasster Kunde (05.09.2026): Name / E-Mail / Adresse
+            // gelten NUR für diese Offerte und gehen NIE in den Kundenstamm.
+            // Ohne CRM-Kunden tragen sie die Offerte allein; mit CRM-Kunden sind
+            // sie die hier geltende Abweichung (siehe TenderRepository).
+            if (rawMeta.manualCustomerName !== undefined) metaData.manualCustomerName = rawMeta.manualCustomerName ? String(rawMeta.manualCustomerName).trim().slice(0, 190) : null;
+            if (rawMeta.manualCustomerEmail !== undefined) metaData.manualCustomerEmail = rawMeta.manualCustomerEmail ? String(rawMeta.manualCustomerEmail).trim().slice(0, 190) : null;
+            if (rawMeta.manualCustomerAddress !== undefined) metaData.manualCustomerAddress = rawMeta.manualCustomerAddress ? String(rawMeta.manualCustomerAddress) : null;
             if (rawMeta.customerReference !== undefined) metaData.customerReference = rawMeta.customerReference ? String(rawMeta.customerReference) : null;
             if (rawMeta.priceList !== undefined) metaData.priceList = rawMeta.priceList ? String(rawMeta.priceList) : null;
             // CC-Empfänger der Offerte (Speichern-Knopf läuft über DIESEN Endpunkt).
@@ -1882,6 +1889,14 @@ export class TenderController {
                             customerTaxNumber: metaCustomer?.taxNumber ?? null,
                         }
                         : {}),
+                    // Eine gesetzte manuelle Angabe gilt vor dem Kundenstamm und
+                    // wird deshalb sofort zurückgemeldet (dieselbe Reihenfolge
+                    // wie in TenderRepository). Ein LÖSCHEN kann hier nicht
+                    // aufgelöst werden — das übernimmt der optimistische Wert
+                    // der Oberfläche bzw. das nächste Laden.
+                    ...(metaData.manualCustomerName ? { customerName: metaData.manualCustomerName } : {}),
+                    ...(metaData.manualCustomerAddress ? { customerAddress: metaData.manualCustomerAddress } : {}),
+                    ...(metaData.manualCustomerEmail ? { customerEmail: metaData.manualCustomerEmail } : {}),
                 }
                 : null;
 
@@ -1921,7 +1936,7 @@ export class TenderController {
             const tenderId = req.params.id as string;
             const tenantId = (req as any).user!.tenantId;
             const employeeId = (req as any).user!.id;
-            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, customerReference, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, totalDiscounts, paymentStages, coverLetter, closingNote, closingImages, ccEmails } = req.body;
+            const { customerId, format, validUntil, billingAddress, installationAddress, deliveryAddress, billingSameAsInstallation, internalDeliveryDate, commissionNumber, customerReference, priceList, currency, directDiscount, directDiscountLabel, extraDiscount, extraDiscountLabel, totalDiscounts, paymentStages, coverLetter, closingNote, closingImages, ccEmails, manualCustomerName, manualCustomerEmail, manualCustomerAddress } = req.body;
 
             const tender = await this.getAccessibleTender(tenderId, (req as any).user!);
             if (!tender) {
@@ -1955,6 +1970,17 @@ export class TenderController {
             }
             if (priceList !== undefined) {
                 data.priceList = priceList ? String(priceList) : null;
+            }
+            // Von Hand erfasster Kunde (05.09.2026) — gilt nur für DIESE Offerte
+            // und wird nie in den Kundenstamm geschrieben; siehe addPositionsBatch.
+            if (manualCustomerName !== undefined) {
+                data.manualCustomerName = manualCustomerName ? String(manualCustomerName).trim().slice(0, 190) : null;
+            }
+            if (manualCustomerEmail !== undefined) {
+                data.manualCustomerEmail = manualCustomerEmail ? String(manualCustomerEmail).trim().slice(0, 190) : null;
+            }
+            if (manualCustomerAddress !== undefined) {
+                data.manualCustomerAddress = manualCustomerAddress ? String(manualCustomerAddress) : null;
             }
             // Teklifin CC listesi — müşteriye giden her mail (teklif maili ve
             // sipariş bildirimi) bu adresleri kopyalar. Boş liste = CC yok.
