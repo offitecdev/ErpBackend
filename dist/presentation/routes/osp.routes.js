@@ -11,7 +11,10 @@ const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const tenantTree_1 = require("../../shared/tenantTree");
 const documentNumber_1 = require("../../shared/documentNumber");
+const customerAddress_1 = require("../../application/utils/customerAddress");
 const OspClient_1 = require("../../infrastructure/services/OspClient");
+const ospDatasheet_1 = require("../../infrastructure/services/ospDatasheet");
+const LocalFileStorage_1 = require("../../infrastructure/services/LocalFileStorage");
 /**
  * ── OSP-MODUL (Offitec Selection Platform, 04.09.2026) ──────────────────────
  * Eingehender Webhook der OSP-Offertanfragen, die Belegliste der OSP-Seite
@@ -97,6 +100,37 @@ const reportDocumentStatus = async (setting, doc, internalStatus, salesmanEmail)
             },
     }).catch(() => undefined);
 };
+/**
+ * Das Datenblatt einer Zeile holen, ablegen und auslesen — Best-Effort, wirft
+ * nie. Erfolg wie Misserfolg stehen danach an der Zeile (datasheet*), genau
+ * wie bei den Statusmeldungen: die Verkaufsseite sieht, WARUM nichts da ist.
+ */
+const storeDatasheet = async (setting, documentId, url) => {
+    if (!setting)
+        return;
+    const previous = await prisma_client_1.default.ospDocument.findUnique({
+        where: { id: documentId },
+        select: { datasheetFile: true },
+    }).catch(() => null);
+    const result = await (0, ospDatasheet_1.fetchOspDatasheet)(setting, setting.tenantId, url);
+    await prisma_client_1.default.ospDocument.update({
+        where: { id: documentId },
+        data: result.ok
+            ? {
+                datasheetFile: result.file ?? null,
+                datasheetSpecs: (result.specs ?? null),
+                datasheetFetchedAt: new Date(),
+                // Ein unlesbares, aber abgelegtes PDF behält seinen Hinweis.
+                datasheetError: result.error ?? null,
+            }
+            : { datasheetError: result.error || 'Datenblatt konnte nicht geholt werden.' },
+    }).catch(() => undefined);
+    // Die alte Datei erst entfernen, wenn die neue sicher an der Zeile steht.
+    const old = previous?.datasheetFile;
+    if (result.ok && old && old !== result.file) {
+        await LocalFileStorage_1.ospDatasheetStorage.remove(old).catch(() => undefined);
+    }
+};
 const employeeDisplayName = (employee) => [employee.firstName, employee.lastName].filter(Boolean).join(' ').trim() || employee.email || '';
 /* ── 1) Eingehender Webhook (OHNE JWT — gemeinsamer Schlüssel) ───────────── */
 router.post('/webhook', async (req, res) => {
@@ -119,6 +153,8 @@ router.post('/webhook', async (req, res) => {
         if (!entries.length)
             return res.status(400).json({ message: 'Empty payload.' });
         const created = [];
+        /** Datenblätter, die nach der Quittung geholt werden (siehe unten). */
+        const datasheetJobs = [];
         let updated = 0;
         for (const entry of entries) {
             const reference = asTrimmed(entry.projectNumber);
@@ -149,14 +185,26 @@ router.post('/webhook', async (req, res) => {
                 unitType: asTrimmed(entry.type),
                 model: asTrimmed(entry.model),
                 ospCreatedAt,
+                // Die Adresse des ECHTEN Datenblatt-PDF (nicht der Link auf die
+                // Offerte drüben) — und der unveränderte Eintrag dazu, damit
+                // später nachvollziehbar bleibt, was tatsächlich geliefert wurde.
+                datasheetUrl: (0, ospDatasheet_1.pickDatasheetUrl)(entry),
+                rawPayload: entry,
             };
             const existing = await prisma_client_1.default.ospDocument.findUnique({
                 where: { tenantId_reference: { tenantId: setting.tenantId, reference } },
-                select: { id: true },
+                select: { id: true, datasheetUrl: true, datasheetFile: true },
             });
             if (existing) {
                 await prisma_client_1.default.ospDocument.update({ where: { id: existing.id }, data: descriptive });
                 updated += 1;
+                // Erneut geholt wird nur, wenn das Datenblatt fehlt oder die OSP
+                // auf eine ANDERE Datei zeigt — sonst bliebe es bei jeder
+                // Wiederholung derselben Anfrage beim Herunterladen.
+                if (descriptive.datasheetUrl
+                    && (!existing.datasheetFile || existing.datasheetUrl !== descriptive.datasheetUrl)) {
+                    datasheetJobs.push({ id: existing.id, url: descriptive.datasheetUrl });
+                }
             }
             else {
                 const row = await prisma_client_1.default.ospDocument.create({
@@ -164,13 +212,25 @@ router.post('/webhook', async (req, res) => {
                     select: { id: true, reference: true },
                 });
                 created.push(row);
+                if (descriptive.datasheetUrl)
+                    datasheetJobs.push({ id: row.id, url: descriptive.datasheetUrl });
             }
         }
         // Antwort sofort — die "created"-Bestätigung an die OSP ist Kür und
         // läuft im Hintergrund (Best-Effort, §3: salesman dabei optional).
-        res.status(200).json({ received: entries.length, created: created.length, updated });
+        res.status(200).json({
+            received: entries.length,
+            created: created.length,
+            updated,
+            datasheets: datasheetJobs.length,
+        });
         for (const row of created) {
             void reportDocumentStatus(setting, row, 'LISTED').catch(() => undefined);
+        }
+        // Das Datenblatt wird ebenfalls im Hintergrund geholt: die OSP wartet
+        // auf eine schnelle Quittung, nicht auf unseren Dateidownload.
+        for (const job of datasheetJobs) {
+            void storeDatasheet(setting, job.id, job.url).catch(() => undefined);
         }
     }
     catch (error) {
@@ -279,40 +339,47 @@ router.patch('/documents/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
             }
             data.status = status;
         }
-        if (body.salespersonRole !== undefined) {
-            const role = String(body.salespersonRole || '').toUpperCase();
-            if (role !== 'SALES' && role !== 'PROJECT_MANAGER') {
-                return res.status(400).json({ error: 'Unbekannte Rolle.' });
+        // Verkäufer:in und Projektleiter:in sind ZWEI eigene Zuständigkeiten,
+        // die je direkt gewählt werden (bis 05.09.2026 war es eine Person mit
+        // umschaltbarer Rolle). Beide werden gleich aufgelöst.
+        for (const role of [
+            { field: 'salespersonId', columns: ['salespersonId', 'salespersonEmail', 'salespersonName'] },
+            { field: 'projectManagerId', columns: ['projectManagerId', 'projectManagerEmail', 'projectManagerName'] },
+        ]) {
+            const requested = body[role.field];
+            if (requested === undefined)
+                continue;
+            const [idColumn, emailColumn, nameColumn] = role.columns;
+            if (!requested) {
+                data[idColumn] = null;
+                data[emailColumn] = null;
+                data[nameColumn] = null;
+                continue;
             }
-            data.salespersonRole = role;
-        }
-        if (body.salespersonId !== undefined) {
-            if (!body.salespersonId) {
-                data.salespersonId = null;
-                data.salespersonEmail = null;
-                data.salespersonName = null;
-            }
-            else {
-                // Person kommt aus dem Personalverzeichnis — Name und E-Mail
-                // werden hier aufgelöst, nie vom Client übernommen.
-                const treeIds = (0, tenantTree_1.collectDescendantIds)(await (0, tenantTree_1.getAllTenants)(), feed.rootId);
-                const employee = await prisma_client_1.default.employee.findFirst({
-                    where: { id: String(body.salespersonId), tenantId: { in: treeIds } },
-                    select: { id: true, firstName: true, lastName: true, email: true },
-                });
-                if (!employee)
-                    return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
-                data.salespersonId = employee.id;
-                data.salespersonEmail = employee.email || null;
-                data.salespersonName = employeeDisplayName(employee);
-            }
+            // Person kommt aus dem Personalverzeichnis — Name und E-Mail
+            // werden hier aufgelöst, nie vom Client übernommen.
+            const treeIds = (0, tenantTree_1.collectDescendantIds)(await (0, tenantTree_1.getAllTenants)(), feed.rootId);
+            const employee = await prisma_client_1.default.employee.findFirst({
+                where: { id: String(requested), tenantId: { in: treeIds } },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            });
+            if (!employee)
+                return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
+            data[idColumn] = employee.id;
+            data[emailColumn] = employee.email || null;
+            data[nameColumn] = employeeDisplayName(employee);
         }
         const nextStatus = data.status ?? doc.status;
         const nextEmail = data.salespersonEmail !== undefined ? data.salespersonEmail : doc.salespersonEmail;
-        // "under review" und "offer has been sent" sind ohne zuständige Person
+        // "under review" und "offer has been sent" sind ohne Verkäufer:in
         // bedeutungslos — die OSP lehnt sie ab (400), also lehnen wir zuerst ab.
-        if ((nextStatus === 'IN_OFFER' || nextStatus === 'SENT') && !nextEmail) {
-            return res.status(400).json({ error: 'Für diesen Status muss zuerst eine zuständige Person gewählt werden.' });
+        // (Die Projektleitung ist intern und wird nie gemeldet.) Geprüft wird
+        // nur, wenn die Änderung Status oder Verkauf ANFASST: sonst könnte an
+        // einer alten Zeile ohne Verkäufer-E-Mail nicht einmal mehr die
+        // Projektleitung eingetragen werden.
+        const touchesReported = body.status !== undefined || body.salespersonId !== undefined;
+        if (touchesReported && (nextStatus === 'IN_OFFER' || nextStatus === 'SENT') && !nextEmail) {
+            return res.status(400).json({ error: 'Für diesen Status muss zuerst eine Verkäuferin oder ein Verkäufer gewählt werden.' });
         }
         const updatedDoc = await prisma_client_1.default.ospDocument.update({ where: { id: doc.id }, data });
         // Nur eine ECHTE Änderung meldet an die OSP (erneute Zustellung wäre
@@ -326,6 +393,65 @@ router.patch('/documents/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
     }
     catch (error) {
         res.status(500).json({ error: error?.message || 'OSP-Beleg konnte nicht gespeichert werden.' });
+    }
+});
+/* ── 3b) Das Datenblatt: öffnen und (bei Bedarf) erneut holen ────────────── */
+/**
+ * Das abgelegte PDF ausliefern. Es geht durch UNSER Programm, nicht als Link
+ * auf die OSP: die Adresse drüben ist zeitlich begrenzt, und die Datei soll
+ * auch dann noch aufgehen, wenn die Anfrage längst erledigt ist.
+ */
+router.get('/documents/:id/datasheet', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext(req.user.tenantId);
+        if (!feed?.visible)
+            return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+        const doc = await prisma_client_1.default.ospDocument.findFirst({
+            where: { id: req.params.id, tenantId: feed.rootId },
+            select: { reference: true, datasheetFile: true },
+        });
+        if (!doc)
+            return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
+        if (!doc.datasheetFile)
+            return res.status(404).json({ error: 'Zu diesem Beleg liegt kein Datenblatt.' });
+        const body = await LocalFileStorage_1.ospDatasheetStorage.read(doc.datasheetFile);
+        res.setHeader('Content-Type', 'application/pdf');
+        // `inline`: das Datenblatt gehört angeschaut, nicht heruntergeladen.
+        res.setHeader('Content-Disposition', `inline; filename="Datenblatt-${doc.reference}.pdf"`);
+        res.setHeader('Content-Length', String(body.length));
+        res.end(body);
+    }
+    catch (error) {
+        res.status(500).json({ error: error?.message || 'Datenblatt konnte nicht geladen werden.' });
+    }
+});
+/** Erneut holen — für den Fall, dass die OSP beim ersten Versuch schwieg. */
+router.post('/documents/:id/datasheet', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext(req.user.tenantId);
+        if (!feed?.visible)
+            return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+        if (!feed.setting)
+            return res.status(400).json({ error: 'OSP ist noch nicht konfiguriert.' });
+        const doc = await prisma_client_1.default.ospDocument.findFirst({
+            where: { id: req.params.id, tenantId: feed.rootId },
+            select: { id: true, datasheetUrl: true },
+        });
+        if (!doc)
+            return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
+        // Die Adresse darf auch von Hand kommen — dann steht sie danach an der
+        // Zeile und gilt als das Datenblatt dieses Belegs.
+        const url = asTrimmed(req.body?.datasheetUrl) || doc.datasheetUrl;
+        if (!url)
+            return res.status(400).json({ error: 'Die OSP hat zu diesem Beleg keine Datenblatt-Adresse geliefert.' });
+        if (url !== doc.datasheetUrl) {
+            await prisma_client_1.default.ospDocument.update({ where: { id: doc.id }, data: { datasheetUrl: url } });
+        }
+        await storeDatasheet(feed.setting, doc.id, url);
+        res.json(await prisma_client_1.default.ospDocument.findUnique({ where: { id: doc.id } }));
+    }
+    catch (error) {
+        res.status(500).json({ error: error?.message || 'Datenblatt konnte nicht geholt werden.' });
     }
 });
 /* ── 4) Import: Offerte aus einem OSP-Beleg erzeugen ─────────────────────── */
@@ -352,12 +478,16 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         if (!customerId && !manualName) {
             return res.status(400).json({ error: 'Kunde wählen oder von Hand erfassen.' });
         }
+        let crmCustomer = null;
         if (customerId) {
-            const customer = await prisma_client_1.default.customer.findFirst({
+            crmCustomer = await prisma_client_1.default.customer.findFirst({
                 where: { id: customerId, tenantId: user.tenantId },
-                select: { id: true },
+                select: {
+                    id: true, companyName: true, mainEmail: true,
+                    address: true, postalCode: true, city: true, country: true,
+                },
             });
-            if (!customer)
+            if (!crmCustomer)
                 return res.status(404).json({ error: 'Kunde nicht gefunden.' });
         }
         const rawPositions = Array.isArray(body.positions) ? body.positions : [];
@@ -373,23 +503,39 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             .filter((row) => row.title);
         if (!positions.length)
             return res.status(400).json({ error: 'Mindestens eine Position angeben.' });
-        // Zuständige Person: gewählt oder die anlegende Person selbst.
+        // Zuständige Personen: gewählt oder (bei der Verkaufsseite) die
+        // anlegende Person selbst. Die Projektleitung bleibt leer, wenn sie
+        // niemand gewählt hat — sie wird nie stillschweigend gesetzt.
+        const findEmployee = async (employeeId) => {
+            const treeIds = (0, tenantTree_1.collectDescendantIds)(await (0, tenantTree_1.getAllTenants)(), feed.rootId);
+            const employee = await prisma_client_1.default.employee.findFirst({
+                where: { id: employeeId, tenantId: { in: treeIds } },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            });
+            return employee
+                ? { id: employee.id, email: employee.email || null, name: employeeDisplayName(employee) }
+                : null;
+        };
         let salesperson = doc.salespersonId
             ? { id: doc.salespersonId, email: doc.salespersonEmail, name: doc.salespersonName }
             : null;
         const requestedSalespersonId = asTrimmed(body.salespersonId);
         if (requestedSalespersonId) {
-            const treeIds = (0, tenantTree_1.collectDescendantIds)(await (0, tenantTree_1.getAllTenants)(), feed.rootId);
-            const employee = await prisma_client_1.default.employee.findFirst({
-                where: { id: requestedSalespersonId, tenantId: { in: treeIds } },
-                select: { id: true, firstName: true, lastName: true, email: true },
-            });
-            if (!employee)
+            salesperson = await findEmployee(requestedSalespersonId);
+            if (!salesperson)
                 return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
-            salesperson = { id: employee.id, email: employee.email || null, name: employeeDisplayName(employee) };
         }
         if (!salesperson) {
             salesperson = { id: user.id, email: user.email || null, name: employeeDisplayName(user) };
+        }
+        let projectManager = doc.projectManagerId
+            ? { id: doc.projectManagerId, email: doc.projectManagerEmail, name: doc.projectManagerName }
+            : null;
+        const requestedProjectManagerId = asTrimmed(body.projectManagerId);
+        if (requestedProjectManagerId) {
+            projectManager = await findEmployee(requestedProjectManagerId);
+            if (!projectManager)
+                return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
         }
         // Mehrzeilige manuelle Adresse: Strasse / PLZ Ort / Land.
         const manualAddress = manual
@@ -399,6 +545,20 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
                 asTrimmed(manual.country),
             ].filter(Boolean).join('\n') || null
             : null;
+        const manualEmail = manual ? asTrimmed(manual.email) : null;
+        // Die manuellen Felder sind die OFFERTEN-EIGENEN Angaben und gelten vor
+        // dem Kundenstamm (siehe TenderRepository). Bei einem CRM-Kunden wird
+        // deshalb nur festgehalten, was von seiner Karte ABWEICHT — sonst fröre
+        // die Offerte eine Kopie ein, die spätere Korrekturen am Kunden nicht
+        // mehr mitbekäme. Geschrieben wird in KEINEM Fall zurück in den Stamm.
+        const deviating = (value, ofCustomer) => {
+            if (!value)
+                return null;
+            if (!crmCustomer)
+                return value;
+            return value.trim() === String(ofCustomer ?? '').trim() ? null : value;
+        };
+        const crmAddress = crmCustomer ? (0, customerAddress_1.formatCustomerAddress)(crmCustomer) : null;
         const tenderNumber = await (0, documentNumber_1.nextDocumentNumber)(user.tenantId, 'QUOTE');
         const validUntil = new Date();
         validUntil.setDate(validUntil.getDate() + 30);
@@ -416,9 +576,9 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
                 // man den Beleg auf dem PDF und in der OSP wieder.
                 customerReference: doc.reference,
                 salespersonName: salesperson.name || null,
-                manualCustomerName: customerId ? null : manualName,
-                manualCustomerEmail: customerId ? null : (manual ? asTrimmed(manual.email) : null),
-                manualCustomerAddress: customerId ? null : manualAddress,
+                manualCustomerName: deviating(manualName, crmCustomer?.companyName),
+                manualCustomerEmail: deviating(manualEmail, crmCustomer?.mainEmail),
+                manualCustomerAddress: deviating(manualAddress, crmAddress),
                 // Popup'ta düzenlenen adres yalnız bu teklifin adresidir.
                 // Bir CRM müşterisi seçilmiş olsa da müşteri kartına yazılmaz.
                 billingAddress: manualAddress,
@@ -464,6 +624,13 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
                 salespersonId: salesperson.id,
                 salespersonEmail: salesperson.email,
                 salespersonName: salesperson.name,
+                ...(projectManager
+                    ? {
+                        projectManagerId: projectManager.id,
+                        projectManagerEmail: projectManager.email,
+                        projectManagerName: projectManager.name,
+                    }
+                    : {}),
             },
         });
         // "under review" braucht die zuständige Person — ohne E-Mail-Adresse

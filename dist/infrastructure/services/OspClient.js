@@ -35,6 +35,27 @@ const OSP_TIMEOUT_MS = 8000;
 const endpointReady = (endpoint) => Boolean((endpoint.ospBaseUrl || '').trim() && (endpoint.ospApiKey || '').trim());
 const baseUrl = (endpoint) => (endpoint.ospBaseUrl || '').trim().replace(/\/+$/, '');
 /**
+ * `fetch` wirft bei JEDEM Netzfehler dasselbe nackte "fetch failed" — der
+ * eigentliche Grund (falscher Rechnername, Zeitüberschreitung, Zertifikat)
+ * steckt in `cause`. Ohne diesen Zusatz steht an der Zeile ein Fehler, mit dem
+ * niemand etwas anfangen kann; deshalb wird die Ursache mit ausgewiesen — samt
+ * der Adresse, die versucht wurde.
+ */
+const describeFetchFailure = (error, url) => {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        return `OSP antwortet nicht (${OSP_TIMEOUT_MS} ms überschritten): ${url}`;
+    }
+    const cause = error?.cause;
+    const code = cause?.code || error?.code;
+    const detail = [code, cause?.message].filter(Boolean).join(' — ');
+    const reason = code === 'ENOTFOUND'
+        ? 'Basisadresse unbekannt (DNS)'
+        : code === 'ECONNREFUSED'
+            ? 'Verbindung abgewiesen'
+            : detail || error?.message || 'OSP nicht erreichbar.';
+    return `${reason}: ${url}`;
+};
+/**
  * Einen Bearbeitungsstand an die OSP melden. `salesmanEmail` ist bei
  * "under review" und "offer has been sent" Pflicht (OSP antwortet sonst 400) —
  * die Prüfung dazu macht der Aufrufer, hier wird nur übertragen.
@@ -42,8 +63,9 @@ const baseUrl = (endpoint) => (endpoint.ospBaseUrl || '').trim().replace(/\/+$/,
 const reportOspOfferStatus = async (endpoint, reference, wireStatus, salesmanEmail) => {
     if (!endpointReady(endpoint))
         return { ok: false, skipped: true };
+    const url = `${baseUrl(endpoint)}/integration/offer-status`;
     try {
-        const response = await fetch(`${baseUrl(endpoint)}/integration/offer-status`, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -64,7 +86,7 @@ const reportOspOfferStatus = async (endpoint, reference, wireStatus, salesmanEma
         return { ok: true, rows: Array.isArray(rows) ? rows : [] };
     }
     catch (error) {
-        return { ok: false, error: error?.message || 'OSP nicht erreichbar.' };
+        return { ok: false, error: describeFetchFailure(error, url) };
     }
 };
 exports.reportOspOfferStatus = reportOspOfferStatus;
@@ -75,8 +97,9 @@ exports.reportOspOfferStatus = reportOspOfferStatus;
 const fetchOspOfferStatus = async (endpoint, reference) => {
     if (!endpointReady(endpoint))
         return { ok: false, skipped: true };
+    const url = `${baseUrl(endpoint)}/integration/offer-status/${encodeURIComponent(reference)}`;
     try {
-        const response = await fetch(`${baseUrl(endpoint)}/integration/offer-status/${encodeURIComponent(reference)}`, {
+        const response = await fetch(url, {
             headers: { 'X-OSP-Integration-Key': (endpoint.ospApiKey || '').trim() },
             signal: AbortSignal.timeout(OSP_TIMEOUT_MS),
         });
@@ -88,7 +111,7 @@ const fetchOspOfferStatus = async (endpoint, reference) => {
         return { ok: true, rows: Array.isArray(rows) ? rows : [] };
     }
     catch (error) {
-        return { ok: false, error: error?.message || 'OSP nicht erreichbar.' };
+        return { ok: false, error: describeFetchFailure(error, url) };
     }
 };
 exports.fetchOspOfferStatus = fetchOspOfferStatus;

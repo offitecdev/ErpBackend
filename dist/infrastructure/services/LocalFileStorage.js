@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.staffDocumentStorage = exports.appointmentDocumentStorage = exports.LocalFileStorage = void 0;
+exports.staffDocumentStorage = exports.ospDatasheetStorage = exports.appointmentDocumentStorage = exports.LocalFileStorage = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const fs_1 = require("fs");
 const path_1 = __importDefault(require("path"));
@@ -102,6 +102,16 @@ exports.appointmentDocumentStorage = new LocalFileStorage({
     prefix: 'local:appointment-document/',
     directory: process.env.OFFITEC_APPOINTMENT_UPLOAD_DIR
         || path_1.default.join(process.cwd(), 'storage', 'appointment-documents'),
+});
+/**
+ * OSP-DATENBLATT (07.09.2026): das PDF der angefragten Einheit, wie es die OSP
+ * ausliefert. Es wird EINMAL geholt und liegt danach bei uns — die Adresse
+ * drüben kann ablaufen, das Datenblatt der Offerte darf das nicht.
+ */
+exports.ospDatasheetStorage = new LocalFileStorage({
+    prefix: 'local:osp-datasheet/',
+    directory: process.env.OFFITEC_OSP_DATASHEET_DIR
+        || path_1.default.join(process.cwd(), 'storage', 'osp-datasheets'),
 });
 /**
  * PERSONALAKTE (26.08.2026): der Arbeitsvertrag und die übrigen Unterlagen

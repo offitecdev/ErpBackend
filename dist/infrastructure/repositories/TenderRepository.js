@@ -163,7 +163,7 @@ class TenderRepository {
                     t.id, t.tenderNumber, t.version, t.projectId, t.sourceStatus,
                     t.createdByEmployeeId, t.currency, t.createdAt, t.offerMailSentAt,
                     t.validUntil, t.offerAcceptedAt, t.commissionNumber,
-                    COALESCE(c.companyName, t.manualCustomerName) AS customerName,
+                    COALESCE(NULLIF(TRIM(t.manualCustomerName), ''), c.companyName) AS customerName,
                     e.firstName AS creatorFirstName,
                     e.lastName AS creatorLastName,
                     e.email AS creatorEmail,
@@ -304,14 +304,24 @@ class TenderRepository {
         // das Feld nicht — es wird, wie die Kundenfelder unten, nach dem Mappen
         // angehängt und ist für die Oberfläche IMMER ein Array.
         entity.ccEmails = Array.isArray(data.ccEmails) ? data.ccEmails : [];
-        // Manuell erfasster Kunde (OSP-Import): ohne CRM-Kunden liefern die
-        // manualCustomer*-Spalten Name/Adresse/E-Mail — die Oberfläche und das
-        // Angebots-PDF lesen weiter dieselben Felder.
-        entity.customerName = customer?.companyName ?? data.manualCustomerName ?? null;
+        // Von Hand erfasster Kunde: die manualCustomer*-Spalten sind die
+        // OFFERTEN-EIGENEN Angaben und gelten VOR dem Kundenstamm (05.09.2026).
+        // Ohne CRM-Kunden tragen sie die Offerte allein; mit CRM-Kunden sind sie
+        // die nur hier geltende Abweichung — der Kundenstamm bleibt unberührt.
+        // Die Oberfläche und das Angebots-PDF lesen weiter dieselben Felder.
+        const manualName = String(data.manualCustomerName ?? '').trim();
+        const manualAddress = String(data.manualCustomerAddress ?? '').trim();
+        const manualEmail = String(data.manualCustomerEmail ?? '').trim();
+        // Die Rohwerte gehen mit (der Entity-Konstruktor kennt sie nicht): die
+        // Offertmaske zeigt daran, welche Angabe von Hand erfasst wurde.
+        entity.manualCustomerName = manualName || null;
+        entity.manualCustomerEmail = manualEmail || null;
+        entity.manualCustomerAddress = manualAddress || null;
+        entity.customerName = manualName || customer?.companyName || null;
         // The customer's primary address (street / postal + city / country) formatted
         // as a single multi-line string — the default for the tender's address slot.
-        entity.customerAddress = (0, customerAddress_1.formatCustomerAddress)(customer) || data.manualCustomerAddress || null;
-        entity.customerEmail = customer?.mainEmail ?? data.manualCustomerEmail ?? null;
+        entity.customerAddress = manualAddress || (0, customerAddress_1.formatCustomerAddress)(customer) || null;
+        entity.customerEmail = manualEmail || customer?.mainEmail || null;
         entity.customerPhone = customer?.mainPhone ?? null;
         entity.customerTaxNumber = customer?.taxNumber ?? null;
         entity.createdByName = createdBy
@@ -448,7 +458,8 @@ class TenderRepository {
         const positionTotals = await this.loadPositionTotals(data.map((d) => d.id));
         const items = data.map((d) => {
             const totals = positionTotals.get(d.id);
-            const customerName = d.customer?.companyName ?? d.manualCustomerName ?? null;
+            // Wie in findById: die offerteneigene Angabe gilt vor dem Stamm.
+            const customerName = String(d.manualCustomerName ?? '').trim() || d.customer?.companyName || null;
             const createdByName = d.createdBy
                 ? `${d.createdBy.firstName} ${d.createdBy.lastName}`.trim()
                 : null;
