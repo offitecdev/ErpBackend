@@ -1,0 +1,372 @@
+
+> offitec-frontend@0.0.0 dev
+> npm run dev:prod
+
+
+> offitec-frontend@0.0.0 dev:prod
+> npm run build && npm run preview:perf
+
+
+> offitec-frontend@0.0.0 build
+> tsc -b && vite build
+
+[36mvite v8.2.2 [32mbuilding client environment for production...[36m[39m
+transforming...
+✓ 3907 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/assets/offitec-1x-CKi5Wku2.webp                           4.60 kB
+dist/assets/darkmode-2x-Mi5UsgAV.webp                          7.68 kB
+dist/assets/offitec-2x-OMqS5psN.webp                          10.65 kB
+dist/assets/OpenSans-Light-subset-9WIunVtA.woff2              11.39 kB
+dist/assets/OpenSans-Bold-subset-mt4zifD3.woff2               11.58 kB
+dist/assets/OpenSans-Regular-subset-CMkg81Kw.woff2            11.80 kB
+dist/assets/offitec-Bsjed7Db.png                              11.96 kB
+dist/assets/OpenSans-BoldItalic-subset-vytrimvq.woff2         12.11 kB
+dist/assets/OpenSans-Semibold-subset-DaZzLxLm.woff2           12.36 kB
+dist/assets/OpenSans-LightItalic-subset-SY2xWrwi.woff2        12.42 kB
+dist/assets/OpenSans-Italic-subset-C1dufoIn.woff2             12.54 kB
+dist/assets/OpenSans-SemiboldItalic-subset-CRe-HjS-.woff2     12.54 kB
+dist/index.html                                               23.78 kB │ gzip:   7.42 kB
+dist/assets/header-wave-b8svDx4k.svg                         108.16 kB │ gzip:  31.09 kB
+dist/assets/ARIALI-CP0ONpi0.ttf                              717.42 kB
+dist/assets/ARIALBD-FEHhJQl7.ttf                             980.75 kB
+dist/assets/ARIAL-D6EXhACG.ttf                             1,036.58 kB
+dist/assets/PersonAbsencesTab-BDf0ilqx.css                     4.13 kB │ gzip:   1.29 kB
+dist/assets/Login-C0b5lIso.css                                19.65 kB │ gzip:   4.44 kB
+dist/assets/dark-Ck_kAfni.css                                 41.44 kB │ gzip:   6.41 kB
+dist/assets/index-D6jm96TM.css                               674.89 kB │ gzip:  95.58 kB
+dist/assets/TenderPopupShell-DMJjVhNl.js                       0.03 kB │ gzip:   0.05 kB
+dist/assets/primitives-BcRQSiP7.js                             0.03 kB │ gzip:   0.05 kB
+dist/assets/TenderRichText-C67IXSth.js                         0.04 kB │ gzip:   0.06 kB
+dist/assets/montageFormat-CAbrjoJO.js                          0.10 kB │ gzip:   0.11 kB
+dist/assets/crm.types-CPUma7MU.js                              0.11 kB │ gzip:   0.10 kB
+dist/assets/translate-Djy48qqS.js                              0.13 kB │ gzip:   0.13 kB
+dist/assets/formatters-BJS2K-jY.js                             0.14 kB │ gzip:   0.15 kB
+dist/assets/SlidingTopTabs-DA3gVv4r.js                         0.22 kB │ gzip:   0.19 kB
+dist/assets/useDebouncedValue-BDJkZmPS.js                      0.26 kB │ gzip:   0.20 kB
+dist/assets/useDebouncedValue-Dw6tcvvV.js                      0.27 kB │ gzip:   0.21 kB
+dist/assets/useLanguageTick-UjMgOyWV.js                        0.31 kB │ gzip:   0.23 kB
+dist/assets/useLanguageRefresh-DgCbdmKy.js                     0.33 kB │ gzip:   0.24 kB
+dist/assets/currency-DCa-AlIg.js                               0.34 kB │ gzip:   0.28 kB
+dist/assets/clsx-DB0hHKMi.js                                   0.36 kB │ gzip:   0.23 kB
+dist/assets/deliveryReportUtils-FOGO3kLa.js                    0.37 kB │ gzip:   0.26 kB
+dist/assets/directory-gS0SPrNT.js                              0.37 kB │ gzip:   0.26 kB
+dist/assets/InventoryListHeader--vvEZy9W.js                    0.38 kB │ gzip:   0.27 kB
+dist/assets/useStaffDirectory-DbLgp3FV.js                      0.38 kB │ gzip:   0.28 kB
+dist/assets/useLocale-BbuaAUwe.js                              0.40 kB │ gzip:   0.28 kB
+dist/assets/itGate-Bqcq_lpl.js                                 0.40 kB │ gzip:   0.25 kB
+dist/assets/image-B78AdN9G.js                                  0.43 kB │ gzip:   0.30 kB
+dist/assets/InlineDescriptionEditor-sRe8nqha.js                0.44 kB │ gzip:   0.31 kB
+dist/assets/addressForm-Bgi5MMJc.js                            0.48 kB │ gzip:   0.23 kB
+dist/assets/defineProperty-CEiS9mAp.js                         0.50 kB │ gzip:   0.33 kB
+dist/assets/appointmentPeople-DeCdpk2S.js                      0.51 kB │ gzip:   0.30 kB
+dist/assets/cameraError-BK3GrKyO.js                            0.53 kB │ gzip:   0.27 kB
+dist/assets/Switch-iXgmE6xW.js                                 0.53 kB │ gzip:   0.36 kB
+dist/assets/meetings-BDW0MDzG.js                               0.56 kB │ gzip:   0.33 kB
+dist/assets/DevelopmentNotice-CTCpRbtN.js                      0.58 kB │ gzip:   0.38 kB
+dist/assets/loadResources-DeeRjQtc.js                          0.62 kB │ gzip:   0.38 kB
+dist/assets/logistics-fkK_CmV9.js                              0.63 kB │ gzip:   0.32 kB
+dist/assets/EmptyState-9eGFtCZN.js                             0.64 kB │ gzip:   0.39 kB
+dist/assets/tenderStatus.utils-knC7tuyK.js                     0.65 kB │ gzip:   0.41 kB
+dist/assets/address-CAZSlSgD.js                                0.66 kB │ gzip:   0.39 kB
+dist/assets/ProjectCreatedPopup-BFiFHT8_.js                    0.68 kB │ gzip:   0.39 kB
+dist/assets/pageAccess-BMwyVuoU.js                             0.68 kB │ gzip:   0.36 kB
+dist/assets/DeleteOfferPopup-2Uz1HHhx.js                       0.70 kB │ gzip:   0.42 kB
+dist/assets/i18nInstance-DuAUdJZQ.js                           0.70 kB │ gzip:   0.45 kB
+dist/assets/MontageFormPage-Ch2FaVSt.js                        0.71 kB │ gzip:   0.45 kB
+dist/assets/osp-CLK74Kl0.js                                    0.72 kB │ gzip:   0.32 kB
+dist/assets/header-wave-BbecfD3N.js                            0.73 kB │ gzip:   0.44 kB
+dist/assets/StatusBadge-B6C1c473.js                            0.74 kB │ gzip:   0.37 kB
+dist/assets/ProjectDeleteOrderModal-DclxB8XV.js                0.80 kB │ gzip:   0.45 kB
+dist/assets/useCustomerLookup-Bv31g-Uk.js                      0.80 kB │ gzip:   0.51 kB
+dist/assets/PageHeader-GrV_madH.js                             0.80 kB │ gzip:   0.43 kB
+dist/assets/authorization-CDmCCGlp.js                          0.84 kB │ gzip:   0.35 kB
+dist/assets/useInlineLookup-BzsQfm85.js                        0.84 kB │ gzip:   0.45 kB
+dist/assets/orderBillingTotals-BMwNXYYh.js                     0.85 kB │ gzip:   0.43 kB
+dist/assets/installationFormatters-D4RuIft4.js                 0.87 kB │ gzip:   0.48 kB
+dist/assets/rolldown-runtime-B0Z9INg1.js                       0.90 kB │ gzip:   0.51 kB
+dist/assets/TenderPaymentTab-DlQp6nB5.js                       0.93 kB │ gzip:   0.54 kB
+dist/assets/UnsavedChangesPopup-bSYenvRa.js                    0.95 kB │ gzip:   0.54 kB
+dist/assets/CrmFilterBar-D341tt7u.js                           0.96 kB │ gzip:   0.52 kB
+dist/assets/InvoicePdfPopup-DROpkRtZ.js                        0.99 kB │ gzip:   0.54 kB
+dist/assets/Button-ttVNSkhb.js                                 1.01 kB │ gzip:   0.58 kB
+dist/assets/FormSubmissionPage-ny2cgm98.js                     1.01 kB │ gzip:   0.56 kB
+dist/assets/tenderPdfImages.utils-ASc4xCi-.js                  1.03 kB │ gzip:   0.52 kB
+dist/assets/useCrmPagedList-DGepzqPq.js                        1.03 kB │ gzip:   0.57 kB
+dist/assets/excel-DpISuTWb.js                                  1.04 kB │ gzip:   0.65 kB
+dist/assets/CustomerComboCell-DnnoknXH.js                      1.05 kB │ gzip:   0.61 kB
+dist/assets/CostList-BzzelpfH.js                               1.08 kB │ gzip:   0.41 kB
+dist/assets/invoiceShared-CJIh8c5_.js                          1.12 kB │ gzip:   0.70 kB
+dist/assets/installationScope-vgMEKpx5.js                      1.15 kB │ gzip:   0.62 kB
+dist/assets/SupplierComboCell-DWIAhcHi.js                      1.16 kB │ gzip:   0.64 kB
+dist/assets/MontageLayout-C30hL8wy.js                          1.19 kB │ gzip:   0.57 kB
+dist/assets/InvoicePopup-BPowEKzO.js                           1.22 kB │ gzip:   0.65 kB
+dist/assets/format-DVKrEKOs.js                                 1.22 kB │ gzip:   0.43 kB
+dist/assets/paymentSchedule-D_AyYfpv.js                        1.24 kB │ gzip:   0.65 kB
+dist/assets/useMovementsList-zTZb9vm4.js                       1.28 kB │ gzip:   0.66 kB
+dist/assets/customerType-D2bmY5dX.js                           1.29 kB │ gzip:   0.56 kB
+dist/assets/slicedToArray-CJym0LHi.js                          1.31 kB │ gzip:   0.70 kB
+dist/assets/enquiryShared-4W5v63Zp.js                          1.32 kB │ gzip:   0.65 kB
+dist/assets/forms-B54QW7PI.js                                  1.33 kB │ gzip:   0.43 kB
+dist/assets/billing-CSTvQUG-.js                                1.34 kB │ gzip:   0.49 kB
+dist/assets/BulkDeletePopup-B1UucH9m.js                        1.37 kB │ gzip:   0.67 kB
+dist/assets/unitStore-DHdCLZ0M.js                              1.42 kB │ gzip:   0.68 kB
+dist/assets/CustomerCreatePopup-Cfbfr2vN.js                    1.42 kB │ gzip:   0.64 kB
+dist/assets/tenderProduct.utils-C3lmxQdp.js                    1.43 kB │ gzip:   0.73 kB
+dist/assets/CustomerContactPopup-DhbpOydt.js                   1.44 kB │ gzip:   0.64 kB
+dist/assets/customer-t9BK-W9R.js                               1.44 kB │ gzip:   0.38 kB
+dist/assets/LoginWave-B92FOcBh.js                              1.46 kB │ gzip:   0.79 kB
+dist/assets/BulkDiscountPopup-Mvpqq8wi.js                      1.48 kB │ gzip:   0.76 kB
+dist/assets/PdfPreviewSheet-ZV3lNLtW.js                        1.49 kB │ gzip:   0.74 kB
+dist/assets/DocumentPreviewPopup-BXhtBN5c.js                   1.55 kB │ gzip:   0.83 kB
+dist/assets/BigButton-XHzl1nNk.js                              1.55 kB │ gzip:   0.62 kB
+dist/assets/ChecklistTabs-CXBpssTl.js                          1.55 kB │ gzip:   0.81 kB
+dist/assets/AddressCreatePopup-qWGCF6aU.js                     1.62 kB │ gzip:   0.79 kB
+dist/assets/MontageHeader-Cb_wEf8o.js                          1.63 kB │ gzip:   0.60 kB
+dist/assets/CustomerPicker-BUeWpFTm.js                         1.67 kB │ gzip:   0.84 kB
+dist/assets/shells-BMccxf2X.js                                 1.69 kB │ gzip:   0.83 kB
+dist/assets/projectFormatters-DpG9WFxp.js                      1.71 kB │ gzip:   0.85 kB
+dist/assets/projectFlow-Cp1-wclH.js                            1.73 kB │ gzip:   0.67 kB
+dist/assets/crm-CAFBE3Lj.js                                    1.78 kB │ gzip:   0.61 kB
+dist/assets/access-RZg67YuE.js                                 1.83 kB │ gzip:   0.82 kB
+dist/assets/BottomSheet-D5i4FRf-.js                            1.85 kB │ gzip:   0.78 kB
+dist/assets/useColumnWidths-zilzCeQ5.js                        1.95 kB │ gzip:   1.04 kB
+dist/assets/ItGate-DrN9qqck.js                                 1.96 kB │ gzip:   0.93 kB
+dist/assets/AnchoredPicker-Jv2RZrkq.js                         1.96 kB │ gzip:   0.87 kB
+dist/assets/ProjectSettingsMenu-D-1L6p9n.js                    2.00 kB │ gzip:   0.98 kB
+dist/assets/projectAppointments-C75SEeTx.js                    2.05 kB │ gzip:   0.87 kB
+dist/assets/AddressFields-ELdxWYNF.js                          2.07 kB │ gzip:   0.88 kB
+dist/assets/exportExcel-B4Mg3Aib.js                            2.07 kB │ gzip:   1.02 kB
+dist/assets/personnelRequestsPdf-DlFuWfDk.js                   2.09 kB │ gzip:   0.97 kB
+dist/assets/quotePdf-CW3qwXty.js                               2.09 kB │ gzip:   1.02 kB
+dist/assets/BillingTab-D6XKmOoV.js                             2.13 kB │ gzip:   1.05 kB
+dist/assets/ManualProductPopup-BFQQ3BEL.js                     2.14 kB │ gzip:   0.80 kB
+dist/assets/CustomerContactCombo-D5oZ7Eal.js                   2.31 kB │ gzip:   1.07 kB
+dist/assets/markdown.utils-BiLdC33b.js                         2.31 kB │ gzip:   1.17 kB
+dist/assets/ReportImageUploader-DMEF8e91.js                    2.33 kB │ gzip:   1.22 kB
+dist/assets/MontagePager-B_H0Ezap.js                           2.40 kB │ gzip:   0.81 kB
+dist/assets/ConfirmDialog-DGS9Iq74.js                          2.53 kB │ gzip:   1.16 kB
+dist/assets/BottomSheet-B2SihXBh.js                            2.54 kB │ gzip:   1.19 kB
+dist/assets/de-Bil7d7Cc.js                                     2.59 kB │ gzip:   1.13 kB
+dist/assets/ManualCustomerPopup-BDB6QFiW.js                    2.61 kB │ gzip:   1.19 kB
+dist/assets/ReportsSheet-B9Kx5dXN.js                           2.64 kB │ gzip:   1.01 kB
+dist/assets/PersonnelSheet-DU1CJwvg.js                         2.67 kB │ gzip:   1.23 kB
+dist/assets/primitives-DCZRWA2n.js                             2.67 kB │ gzip:   0.99 kB
+dist/assets/SnapshotView-Mf1leouc.js                           2.70 kB │ gzip:   0.92 kB
+dist/assets/exportTimeRecordsExcel-B-gm5Pfj.js                 2.72 kB │ gzip:   1.12 kB
+dist/assets/CustomerCommunicationTable-2S_wbv-o.js             2.75 kB │ gzip:   1.19 kB
+dist/assets/TenderCreate-vWKmI4lf.js                           2.79 kB │ gzip:   1.31 kB
+dist/assets/pageCatalog-DySa0uun.js                            2.83 kB │ gzip:   0.77 kB
+dist/assets/AuthorizationPage-D0jUeJqe.js                      2.92 kB │ gzip:   1.15 kB
+dist/assets/SelectMenu-d7_MD61O.js                             2.96 kB │ gzip:   1.42 kB
+dist/assets/PurePanel-BJ_yhM7o.js                              3.05 kB │ gzip:   1.66 kB
+dist/assets/snapshotPdf-WItAAyNv.js                            3.07 kB │ gzip:   1.37 kB
+dist/assets/deliveryReportPdf-CORY3c4A.js                      3.11 kB │ gzip:   1.37 kB
+dist/assets/formFields-BX5h6zGO.js                             3.16 kB │ gzip:   1.34 kB
+dist/assets/ProductPickerPopup-BoOXP1Mc.js                     3.17 kB │ gzip:   1.30 kB
+dist/assets/SectionSplash-BSqJ_fel.js                          3.19 kB │ gzip:   1.19 kB
+dist/assets/ComboCell-BjZ9LGIX.js                              3.24 kB │ gzip:   1.46 kB
+dist/assets/SignatureSheet-Bh4xMdZO.js                         3.28 kB │ gzip:   1.49 kB
+dist/assets/orderRowMode-BhVXirsi.js                           3.32 kB │ gzip:   1.19 kB
+dist/assets/InteractionRows-cDXB4dbj.js                        3.33 kB │ gzip:   1.18 kB
+dist/assets/installationSnapshots-DSQWVLuj.js                  3.61 kB │ gzip:   1.27 kB
+dist/assets/OrderDecisionPopup-DDVmr1N_.js                     3.69 kB │ gzip:   1.35 kB
+dist/assets/tenderDetailUtils-CsqECqvF.js                      3.73 kB │ gzip:   1.51 kB
+dist/assets/maintenance-BmgJI7qS.js                            3.77 kB │ gzip:   0.97 kB
+dist/assets/DangerConfirmDialog-oQ0XUM5z.js                    3.89 kB │ gzip:   1.55 kB
+dist/assets/PopupKit-Br9t_YdS.js                               4.01 kB │ gzip:   1.48 kB
+dist/assets/pdfSettingsStore-Cy_zHqwN.js                       4.02 kB │ gzip:   1.96 kB
+dist/assets/moduleCatalog-B1fv0s5e.js                          4.02 kB │ gzip:   1.27 kB
+dist/assets/orderStatus-BbR6qn35.js                            4.10 kB │ gzip:   1.67 kB
+dist/assets/ExportPopup-C1Y30e5c.js                            4.22 kB │ gzip:   1.93 kB
+dist/assets/AddonOrderOverview-C3wQvoWR.js                     4.27 kB │ gzip:   1.57 kB
+dist/assets/NewRequestPopup-DRif3x1t.js                        4.31 kB │ gzip:   1.76 kB
+dist/assets/PublicEnquiryPage-CumwThO5.js                      4.32 kB │ gzip:   1.29 kB
+dist/assets/ContactsPage-MLXBp1e6.js                           4.42 kB │ gzip:   1.56 kB
+dist/assets/StaffMultiCombo-BgZulF06.js                        4.43 kB │ gzip:   1.94 kB
+dist/assets/invoicePdf-DcxSj0GG.js                             4.47 kB │ gzip:   2.06 kB
+dist/assets/ui-C7e4Kazf.js                                     4.48 kB │ gzip:   1.41 kB
+dist/assets/tenderStore-CnEGWIw1.js                            4.49 kB │ gzip:   1.42 kB
+dist/assets/ranges-DMtV3oBc.js                                 4.54 kB │ gzip:   1.75 kB
+dist/assets/OverviewPieCharts-BFJSVRMm.js                      4.60 kB │ gzip:   1.88 kB
+dist/assets/MontageImageUpload-4sq_PA3J.js                     4.63 kB │ gzip:   2.02 kB
+dist/assets/InvoiceFormBits-DqcrGGib.js                        4.67 kB │ gzip:   1.74 kB
+dist/assets/ReminderToasts-9BkLo3_A.js                         4.68 kB │ gzip:   1.85 kB
+dist/assets/CustomerPickerModal-CcMXNoO1.js                    4.72 kB │ gzip:   1.78 kB
+dist/assets/tenderPricing.utils-CmmptWYy.js                    4.85 kB │ gzip:   2.11 kB
+dist/assets/ArticlePickerModal-D5qaUfdS.js                     4.91 kB │ gzip:   2.09 kB
+dist/assets/empty-BXLwMcE6.js                                  4.91 kB │ gzip:   2.14 kB
+dist/assets/useTranslation-DzvEhjit.js                         5.06 kB │ gzip:   2.40 kB
+dist/assets/TenderProductSearchDropdown-CBJkvgKI.js            5.12 kB │ gzip:   2.07 kB
+dist/assets/MaintenanceBookingPage-B5ZA0Sy0.js                 5.16 kB │ gzip:   1.93 kB
+dist/assets/CommunicationPage-C-SAOQmC.js                      5.18 kB │ gzip:   2.04 kB
+dist/assets/ProductCreatePage-CJiXMTXp.js                      5.19 kB │ gzip:   2.07 kB
+dist/assets/TasksPage-Css_2E3Y.js                              5.25 kB │ gzip:   2.18 kB
+dist/assets/PaymentScheduleEditor-BtBZj8RQ.js                  5.52 kB │ gzip:   1.93 kB
+dist/assets/ActivitiesPage-DC1T6uJu.js                         5.68 kB │ gzip:   1.89 kB
+dist/assets/DateField-BP7y_eo9.js                              5.68 kB │ gzip:   1.94 kB
+dist/assets/QuoteDatePicker-DNlSOTJR.js                        5.73 kB │ gzip:   2.21 kB
+dist/assets/TableKit-yrK6LPvo.js                               5.75 kB │ gzip:   1.92 kB
+dist/assets/CustomerContactsTable-DlD7mQs2.js                  5.85 kB │ gzip:   2.16 kB
+dist/assets/tender-Bo_B1bgw.js                                 5.92 kB │ gzip:   1.70 kB
+dist/assets/formSubmissionPdf-CdsA9G1K.js                      5.96 kB │ gzip:   2.59 kB
+dist/assets/MontageHome-Bnjs8-EV.js                            6.04 kB │ gzip:   2.09 kB
+dist/assets/CustomerNotesTable-D5oMMq9M.js                     6.06 kB │ gzip:   2.33 kB
+dist/assets/ProjectPositionsTab-DlWguQXU.js                    6.08 kB │ gzip:   1.99 kB
+dist/assets/FloatingCard-DWjfk-bG.js                           6.08 kB │ gzip:   2.16 kB
+dist/assets/TenderReport-xuJQ_6iF.js                           6.12 kB │ gzip:   2.09 kB
+dist/assets/CustomerActivitiesTable-aFvJF7GR.js                6.25 kB │ gzip:   2.37 kB
+dist/assets/personnelTimeRecordsPdf-CKXCmnik.js                6.31 kB │ gzip:   1.97 kB
+dist/assets/QuickEntrySheet-DxOtLGWC.js                        6.40 kB │ gzip:   2.34 kB
+dist/assets/MaintenanceShared-D-gShpqG.js                      6.45 kB │ gzip:   2.62 kB
+dist/assets/TotalDiscountPopup-gJyPpSLg.js                     6.48 kB │ gzip:   2.24 kB
+dist/assets/BookingSection-B53668nP.js                         6.50 kB │ gzip:   2.36 kB
+dist/assets/CustomerAddressesTable-CP6az8XJ.js                 6.50 kB │ gzip:   2.41 kB
+dist/assets/ArticleImagePanel-Cu0xBsZh.js                      6.64 kB │ gzip:   2.52 kB
+dist/assets/CreateAddonOrderTab-DlmRI064.js                    6.68 kB │ gzip:   2.12 kB
+dist/assets/fieldReportPdf-KW6j9f2S.js                         6.72 kB │ gzip:   2.73 kB
+dist/assets/MontageOrders-BmT4QIxP.js                          6.72 kB │ gzip:   2.47 kB
+dist/assets/RemindersPage-CaBmCqBc.js                          6.72 kB │ gzip:   2.44 kB
+dist/assets/calendarShared-pu4CrlQf.js                         6.74 kB │ gzip:   3.08 kB
+dist/assets/ReportSigningPage-DShCkFD8.js                      6.75 kB │ gzip:   2.28 kB
+dist/assets/FormTemplatesPage-DpvHgoy4.js                      6.78 kB │ gzip:   2.20 kB
+dist/assets/ChecklistSettings-HMIWfktw.js                      6.82 kB │ gzip:   2.37 kB
+dist/assets/ProjectDetailsModal-7--meesC.js                    6.87 kB │ gzip:   2.46 kB
+dist/assets/StatusPill-CdsZxlNB.js                             7.09 kB │ gzip:   2.46 kB
+dist/assets/dayjs.min-BcJkixEx.js                              7.18 kB │ gzip:   3.09 kB
+dist/assets/CostsTab-6nmP6orh.js                               7.29 kB │ gzip:   2.62 kB
+dist/assets/format-XJVCljn0.js                                 7.29 kB │ gzip:   2.26 kB
+dist/assets/StockMovementsPage-Ch3CH1fF.js                     7.34 kB │ gzip:   2.16 kB
+dist/assets/SuppliersPage-D9NOeJmZ.js                          7.35 kB │ gzip:   2.72 kB
+dist/assets/inventory-CZAir8Wy.js                              7.53 kB │ gzip:   1.91 kB
+dist/assets/PdfSettings-BCV_11hS.js                            7.63 kB │ gzip:   2.38 kB
+dist/assets/MaintenanceDashboard-CoF9ad02.js                   7.91 kB │ gzip:   2.32 kB
+dist/assets/CustomerOffersTable-DJf4DN7E.js                    8.02 kB │ gzip:   2.87 kB
+dist/assets/SizeContext-BykUhL6p.js                            8.04 kB │ gzip:   3.48 kB
+dist/assets/Roles-BIkuEL4H.js                                  8.12 kB │ gzip:   3.01 kB
+dist/assets/MontageOrderDetail-pW9XYEn3.js                     8.14 kB │ gzip:   3.03 kB
+dist/assets/BookingPage-CxcZmJqr.js                            8.23 kB │ gzip:   2.65 kB
+dist/assets/project-sJ5V0203.js                                8.28 kB │ gzip:   2.03 kB
+dist/assets/PeoplePickerModal-RQtGaUNk.js                      8.38 kB │ gzip:   2.65 kB
+dist/assets/Checkbox-BklM7ext.js                               8.40 kB │ gzip:   3.50 kB
+dist/assets/CountrySelect-ck5D0Djz.js                          8.47 kB │ gzip:   4.81 kB
+dist/assets/TaskDetailPage-DE-jmWg9.js                         8.75 kB │ gzip:   2.81 kB
+dist/assets/projectReportPdf-BkKZ2__D.js                       8.78 kB │ gzip:   3.42 kB
+dist/assets/es-DUi-Yiug.js                                     8.96 kB │ gzip:   3.91 kB
+dist/assets/ShipmentCreate-BUiEzpd1.js                         8.99 kB │ gzip:   2.67 kB
+dist/assets/ServiceReportAdd-CtNEdPpN.js                       9.09 kB │ gzip:   2.67 kB
+dist/assets/InvoiceFromOrderPage-pEgb85K0.js                   9.31 kB │ gzip:   3.38 kB
+dist/assets/RoleEditorPage-DzaOgxLZ.js                         9.51 kB │ gzip:   3.21 kB
+dist/assets/skeleton-BG5WYMNl.js                               9.62 kB │ gzip:   3.33 kB
+dist/assets/QuickEntryPage-D50iH1XD.js                         9.81 kB │ gzip:   3.25 kB
+dist/assets/MontageHandover-BV4GYOPB.js                        9.82 kB │ gzip:   3.17 kB
+dist/assets/CustomerProductDiscounts-DjYGtzDN.js               9.83 kB │ gzip:   3.16 kB
+dist/assets/TenderPdfContentPanel-Cswv1yzD.js                  9.93 kB │ gzip:   3.37 kB
+dist/assets/FormsPage-BnNRhNig.js                             10.10 kB │ gzip:   3.39 kB
+dist/assets/ProductsPage-C2qBKQrz.js                          10.16 kB │ gzip:   3.58 kB
+dist/assets/MontageGeneralReport-BYKOY6u8.js                  10.31 kB │ gzip:   3.81 kB
+dist/assets/MyOrders-DBej2jLT.js                              10.67 kB │ gzip:   3.39 kB
+dist/assets/TenderLogsPanel-CBYU6eiL.js                       10.80 kB │ gzip:   3.02 kB
+dist/assets/priceRequestPdf-D5i7Ieww.js                       10.84 kB │ gzip:   4.70 kB
+dist/assets/ProductBulkCreatePage-BXf0F2is.js                 11.21 kB │ gzip:   3.41 kB
+dist/assets/TimeClockPage-CB3Xzxh_.js                         11.28 kB │ gzip:   3.89 kB
+dist/assets/Projects-B86W0caw.js                              11.32 kB │ gzip:   3.72 kB
+dist/assets/AppointmentDocuments-6HZnlPTV.js                  11.36 kB │ gzip:   3.86 kB
+dist/assets/CompanyCategories-CPh2ZAJP.js                     11.37 kB │ gzip:   3.33 kB
+dist/assets/vendor-react-CpQgum5S.js                          11.40 kB │ gzip:   4.35 kB
+dist/assets/MailComposeCard-49JcdkXa.js                       11.68 kB │ gzip:   4.12 kB
+dist/assets/useMergeSemantic-CEZwPaIR.js                      12.11 kB │ gzip:   4.31 kB
+dist/assets/RequestsPage-ZbqVG0BU.js                          12.20 kB │ gzip:   4.13 kB
+dist/assets/MontageReportDetail-CF9tceQc.js                   12.46 kB │ gzip:   3.89 kB
+dist/assets/CustomerOrdersTable-DXI2ZZTp.js                   12.80 kB │ gzip:   4.23 kB
+dist/assets/ExcelImportSheet-BhRDOfSf.js                      13.04 kB │ gzip:   4.46 kB
+dist/assets/MontageReports-mUNX8HNA.js                        13.25 kB │ gzip:   3.69 kB
+dist/assets/OspPage-CEbPJfaT.js                               13.26 kB │ gzip:   4.42 kB
+dist/assets/modernReportKit-uqS-BNuP.js                       13.73 kB │ gzip:   5.19 kB
+dist/assets/InvoiceListPage-DIg3DOfO.js                       13.94 kB │ gzip:   4.44 kB
+dist/assets/StockPage-CUoP4FP6.js                             13.99 kB │ gzip:   4.43 kB
+dist/assets/RichTextMarkdownEditor-D56D7gnE.js                14.84 kB │ gzip:   5.07 kB
+dist/assets/CustomerList-CyyMUnKO.js                          14.85 kB │ gzip:   4.37 kB
+dist/assets/ProjectProcessModal-BffcQWHy.js                   15.12 kB │ gzip:   4.24 kB
+dist/assets/CustomerReports-CmIRpe5l.js                       15.22 kB │ gzip:   4.05 kB
+dist/assets/PersonAbsencesTab-CbQ9EpZH.js                     15.38 kB │ gzip:   5.43 kB
+dist/assets/InvoiceDirectPage-B2Hgh0Yh.js                     15.90 kB │ gzip:   4.64 kB
+dist/assets/MaintenanceContracts-i4TyysIC.js                  16.03 kB │ gzip:   4.70 kB
+dist/assets/Modal-BEl2XzPZ.js                                 16.23 kB │ gzip:   6.18 kB
+dist/assets/RegieOperations-DCVb4NZO.js                       16.30 kB │ gzip:   4.63 kB
+dist/assets/MailSettings-DCDDNUSr.js                          16.58 kB │ gzip:   5.18 kB
+dist/assets/ProductDetailPage-Dqf9kDbI.js                     16.83 kB │ gzip:   4.82 kB
+dist/assets/FormsContextPanel-B8fB0OJQ.js                     16.95 kB │ gzip:   4.68 kB
+dist/assets/orderPdf-DKOpJAlR.js                              17.06 kB │ gzip:   7.27 kB
+dist/assets/ServiceReports-B9Zo19x7.js                        18.40 kB │ gzip:   4.53 kB
+dist/assets/ProfilePage-BKZ_ybw7.js                           18.40 kB │ gzip:   4.97 kB
+dist/assets/Shipments-Xj0rPk05.js                             18.44 kB │ gzip:   5.04 kB
+dist/assets/TenderList-Dt3m1qUq.js                            20.00 kB │ gzip:   6.94 kB
+dist/assets/EnquiriesPage-BG2jiX1G.js                         20.21 kB │ gzip:   4.86 kB
+dist/assets/FieldReportEditorView-CkyEq66e.js                 21.03 kB │ gzip:   6.45 kB
+dist/assets/lu-C2oMatiq.js                                    21.42 kB │ gzip:   3.96 kB
+dist/assets/FormFillView-7Q7cAk7d.js                          21.74 kB │ gzip:   6.36 kB
+dist/assets/OrderBillingSection-DpGlcpYC.js                   22.14 kB │ gzip:   6.08 kB
+dist/assets/useTaskBoard-C4WmCEML.js                          22.17 kB │ gzip:   7.17 kB
+dist/assets/TenderSettingsModal-DB8cTUY2.js                   23.10 kB │ gzip:   7.07 kB
+dist/assets/TimeRecordsPage-CMmGbBZj.js                       23.56 kB │ gzip:   5.89 kB
+dist/assets/CustomerDashboard-DzbSZbja.js                     23.98 kB │ gzip:   7.32 kB
+dist/assets/FormRenderer-1SwX0YwB.js                          24.15 kB │ gzip:   5.52 kB
+dist/assets/OrderReceivePage-CMSQfva_.js                      24.16 kB │ gzip:   6.47 kB
+dist/assets/Login-CW-Y-SD7.js                                 24.69 kB │ gzip:  11.17 kB
+dist/assets/es-BOA0WIXU.js                                    25.68 kB │ gzip:  10.06 kB
+dist/assets/FormTemplateBuilderPage-DkCKfsXU.js               26.09 kB │ gzip:   6.65 kB
+dist/assets/UploadSettingsPage-DQF1Votc.js                    26.25 kB │ gzip:   7.76 kB
+dist/assets/purify.es-ChwZkWde.js                             26.81 kB │ gzip:  10.65 kB
+dist/assets/cx-C1GqzyEi.js                                    27.92 kB │ gzip:   8.86 kB
+dist/assets/PersonnelListPage-B__89fdw.js                     29.09 kB │ gzip:   9.69 kB
+dist/assets/MyOrderDetail-izy9sZ0f.js                         29.80 kB │ gzip:   8.32 kB
+dist/assets/OrdersPage-CuRAc0r5.js                            30.17 kB │ gzip:   7.80 kB
+dist/assets/PersonPage-BVFbSjBn.js                            32.65 kB │ gzip:   8.13 kB
+dist/assets/Button-CBA5IX9k.js                                34.43 kB │ gzip:  11.65 kB
+dist/assets/ModuleSettingsPage-C6LufNhD.js                    35.38 kB │ gzip:   8.53 kB
+dist/assets/modal-CH5cdvL9.js                                 35.41 kB │ gzip:  11.61 kB
+dist/assets/MailPage-CmIb3kAP.js                              36.38 kB │ gzip:  10.63 kB
+dist/assets/vendor-ui-CiXrRUQn.js                             36.68 kB │ gzip:  10.62 kB
+dist/assets/vendor-router-Wy1q0-S1.js                         40.36 kB │ gzip:  14.35 kB
+dist/assets/Home-CwUS0HYJ.js                                  40.80 kB │ gzip:  11.05 kB
+dist/assets/motion-CPwvRl-H.js                                43.09 kB │ gzip:  14.11 kB
+dist/assets/ReportsTab-CRXplcSr.js                            44.50 kB │ gzip:  11.77 kB
+dist/assets/ProjectDetail-CBkqvu0k.js                         46.07 kB │ gzip:  13.71 kB
+dist/assets/OrderCreatePage-C8T6vTLK.js                       48.48 kB │ gzip:  10.87 kB
+dist/assets/authStore-BxAQ6oBT.js                             55.19 kB │ gzip:  20.49 kB
+dist/assets/tenderPdfModern-DWgUu05I.js                       56.58 kB │ gzip:  21.04 kB
+dist/assets/style-C9AdOcyt.js                                 59.25 kB │ gzip:  23.84 kB
+dist/assets/i18n-DmndONWg.js                                  63.63 kB │ gzip:  21.13 kB
+dist/assets/Card-Bo71NdQR.js                                  69.29 kB │ gzip:  21.54 kB
+dist/assets/en-uNkfjvtH.js                                    85.14 kB │ gzip:  27.90 kB
+dist/assets/tr-CaiRAi6g.js                                    87.21 kB │ gzip:  28.49 kB
+dist/assets/de-Bcd2eQci.js                                    92.07 kB │ gzip:  30.02 kB
+dist/assets/CalendarPage-DE8-PN5F.js                         103.97 kB │ gzip:  28.72 kB
+dist/assets/TenderDetail-DtOulyyD.js                         110.07 kB │ gzip:  32.92 kB
+dist/assets/CrmOverview-BEePMhkt.js                          122.18 kB │ gzip:  39.83 kB
+dist/assets/Field-crv31ZFD.js                                124.89 kB │ gzip:  40.01 kB
+dist/assets/MaintenanceTasks-KCsXvT6-.js                     145.40 kB │ gzip:  42.86 kB
+dist/assets/index.es-NWmxX-4Q.js                             151.00 kB │ gzip:  48.78 kB
+dist/assets/manual.en-lnwtH78I.js                            170.17 kB │ gzip:  55.42 kB
+dist/assets/manual.tr-BndlV_ii.js                            175.60 kB │ gzip:  57.69 kB
+dist/assets/vendor-react-dom-C7DwEK32.js                     178.22 kB │ gzip:  55.92 kB
+dist/assets/manual.de-DsXRh4eB.js                            186.84 kB │ gzip:  60.08 kB
+dist/assets/html2canvas-XpPErLxs.js                          199.50 kB │ gzip:  46.77 kB
+dist/assets/index-CYnsjmpU.js                                204.31 kB │ gzip:  54.53 kB
+dist/assets/vendor-scanner-CRlSNZEn.js                       368.79 kB │ gzip: 108.31 kB
+dist/assets/ARIAL-DGeWkvdN.js                                398.08 kB │ gzip: 129.20 kB
+dist/assets/xlsx-B6LBHFmH.js                                 423.99 kB │ gzip: 141.33 kB
+
+[32m✓ built in 2.27s[39m
+
+> offitec-frontend@0.0.0 preview:perf
+> vite preview --host 0.0.0.0 --port 5173 --strictPort
+
+[31merror when starting preview server:
+Error: Port 5173 is already in use
+    at httpServerStart (file:///C:/ERP/ErpFront/offitec-frontend/node_modules/vite/dist/node/chunks/node.js:11681:10)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async preview (file:///C:/ERP/ErpFront/offitec-frontend/node_modules/vite/dist/node/chunks/node.js:35870:2)
+    at async CAC.<anonymous> (file:///C:/ERP/ErpFront/offitec-frontend/node_modules/vite/dist/node/cli.js:807:18)[39m

@@ -161,11 +161,31 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 grants: { read: ['crm.customers.view'], write: ['crm.customers.create'] },
             },
             {
+                // ANFRAGEN (10.09.2026): der Kontakt VOR dem Kunden. Lesen ist
+                // das CRM-Recht, Schreiben das Erfassungsrecht — und «zum
+                // Kunden machen» verlangt zusaetzlich crm.customers.create
+                // (der Endpunkt prueft das selbst).
+                key: 'crm.enquiries',
+                path: '/crm/enquiries',
+                labelKey: 'nav.crmEnquiries',
+                maxLevel: 2,
+                grants: { read: ['crm.customers.view'], write: ['crm.activities.create'] },
+            },
+            {
                 key: 'crm.communication',
                 path: '/crm/communication',
                 labelKey: 'nav.crmCommunication',
                 maxLevel: 2,
                 grants: { read: ['crm.customers.view'], write: ['crm.activities.create'] },
+            },
+            {
+                // AKTIVITAETEN (10.09.2026): die Zeitleiste des Hauses. Reine
+                // Lese-Seite — geaendert wird an der Quelle, darum Stufe 1.
+                key: 'crm.activities',
+                path: '/crm/activities',
+                labelKey: 'nav.crmActivities',
+                maxLevel: 1,
+                grants: { read: ['crm.customers.view'] },
             },
             {
                 // E-Mail / Outlook-Postfach (17.08.2026): lesen = CRM-Recht,
@@ -404,12 +424,47 @@ export const RETIRED_PAGE_KEYS: Readonly<Record<string, string>> = {
     'personnel.incoming': 'personnel.requestsIncoming',
 };
 
-/** Die Stufe, die ein abgelöster Schlüssel dem neuen vererbt (0 = keine). */
+/**
+ * ── NEUE SEITEN ERBEN VON EINER BESTEHENDEN (10.09.2026) ────────────────────
+ *
+ * Das Gegenstück zu RETIRED_PAGE_KEYS, und ein genauso stiller Fallstrick:
+ * kommt eine NEUE Zeile in den Katalog, steht sie in JEDER schon gespeicherten
+ * Rolle auf Stufe 0 — die Seite wäre für alle gesperrt, bis jemand von Hand
+ * jede einzelne Rolle wieder aufmacht. Auf einer Anlage mit zwanzig Rollen
+ * merkt das niemand rechtzeitig; man sieht nur, dass der neue Menüpunkt fehlt.
+ *
+ * Deshalb nennt eine neue Seite hier ihre VERWANDTE bestehende Seite und
+ * übernimmt deren Stufe, solange die Rolle keinen eigenen Wert für sie trägt.
+ * Sobald die Rolle einmal gespeichert wurde, gewinnt ihr eigener Wert — auch
+ * die Null: «hier ausdrücklich gesperrt» ist eine Aussage und kein Loch.
+ *
+ *   NEU                → ERBT VON
+ *   crm.enquiries        crm.customers      (dieselbe Kundenwelt, ein Schritt davor)
+ *   crm.activities       crm.communication  (die Lesefassung desselben Verlaufs)
+ *
+ * WORTGLEICH im Frontend (src/lib/pageAccess.ts). Beide Kopien müssen im
+ * Gleichschritt bleiben.
+ */
+export const PAGE_LEVEL_FALLBACKS: Readonly<Record<string, string>> = {
+    'crm.enquiries': 'crm.customers',
+    'crm.activities': 'crm.communication',
+};
+
+/**
+ * Die Stufe, die eine Seite von anderen übernimmt (0 = keine): von ihren
+ * abgelösten Vorgängern (RETIRED_PAGE_KEYS) oder — bei einer neu hinzu-
+ * gekommenen Seite — von ihrer verwandten Seite (PAGE_LEVEL_FALLBACKS).
+ */
 const inheritedLevel = (input: Record<string, unknown>, pageKey: string, maxLevel: PageLevel): PageLevel => {
     let best: PageLevel = 0 as PageLevel;
     for (const [retired, successor] of Object.entries(RETIRED_PAGE_KEYS)) {
         if (successor !== pageKey) continue;
         const level = clampPageLevel(input[retired], maxLevel);
+        if (level > best) best = level;
+    }
+    const relative = PAGE_LEVEL_FALLBACKS[pageKey];
+    if (relative) {
+        const level = clampPageLevel(input[relative], maxLevel);
         if (level > best) best = level;
     }
     return best;

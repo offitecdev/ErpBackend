@@ -58,6 +58,7 @@ model Customer {
   formSubmissionLinks   FormSubmissionLink[]
   fieldNotes            FieldNote[]
   mailMessages          MailMessage[]
+  enquiries             Enquiry[]                    @relation("CustomerEnquiries")
 
   @@index([tenantId], map: "Customer_tenantId_fkey")
   // Liste sıralamaları tenant içinde yapılır. Tek başına tenantId indeksi
@@ -158,12 +159,14 @@ model SalesOrder {
   projectId           String?
   parentSalesOrderId  String?
   revisionNumber      Int?
-  // Sipariş kodu — ana sipariş AU-2026-10001, ek sipariş (Nachtrag/Zusatzauftrag)
-  // NT-2026-10001. Sunucuda DocumentCounter'dan üretilir, her dilde aynıdır.
+  // Sipariş kodu — ana sipariş AB-2026-10001 (AUFTRAGSBESTÄTIGUNG; 29.08.2026'ya
+  // kadar AU-), ek sipariş (Nachtrag/Zusatzauftrag) NT-2026-10001. Sunucuda
+  // DocumentCounter'dan üretilir, her dilde aynıdır.
   // Ek siparişin kodu artık üst siparişten TÜRETİLMEZ (eskiden "…-N1"), kendi
   // NT- serisinden gelir; üst siparişe bağ `parentSalesOrderId` ile kurulur.
   orderNumber         String
-  // Yeni numaralandırmadan önceki kod (AUF-A-2026-4474, SO-…, …-N1).
+  // Yeni numaralandırmadan önceki kod (AUF-A-2026-4474, SO-…, …-N1 ve
+  // AB- geçişinden önceki AU-2026-10001 kodları).
   legacyNumber        String?
   orderType           String
   status              String    @default("ORDERED")
@@ -171,6 +174,24 @@ model SalesOrder {
   // Payment schedule copied from the tender at conversion (JSON percent array,
   // e.g. "[30,20,10,40]"); drives "bill next stage" suggestions. Null = free-form.
   paymentStages       String?
+  // ⚠ STILLGELEGT (29.08.2026) — der Text des roten Verkaufsausdrucks.
+  // Dieser zweite Beleg wurde abgeschafft: der Auftrag hat nur noch die
+  // Auftragsbestätigung (`confirmationNote` unten), und NICHTS liest oder
+  // schreibt diese Spalte mehr. Sie steht nur noch da, weil Texte darin
+  // stehen — wer sie entfernt, löscht die.
+  salesPdfNote        String?   @db.Text
+  // ── AUFTRAGSBESTÄTIGUNG (29.08.2026) ──────────────────────────────────────
+  // Der Beleg, den der Auftrag dem Kunden schickt: dasselbe Dokument wie das
+  // Angebot (gleiche Zahlen, gleiches Gesicht), nur mit der AB-Nummer, dem
+  // Auftragsdatum und dem Verkäufer, der den Auftrag erteilt hat.
+  //
+  // Einleitungstext der Titelseite. NULL heisst "noch nicht bearbeitet" — das
+  // Dokument druckt dann den Einleitungstext der OFFERTE (Tender.coverLetter),
+  // denn genau von dort startet der Text, bevor jemand ihn ändert.
+  confirmationNote    String?   @db.LongText
+  // "Gültig bis" der Bestätigung. NULL = Auftragsdatum + 1 Monat (Standard);
+  // ein gesetzter Wert stammt aus dem Bearbeiten-Fenster und schlägt ihn.
+  confirmationValidUntil DateTime?
   createdByEmployeeId String
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
@@ -221,6 +242,7 @@ model CustomerContact {
   communications   CrmCommunication[]
   crmTasks         CrmTask[]
   mailMessages     MailMessage[]
+  enquiries        Enquiry[]          @relation("ContactEnquiries")
 
   @@index([customerId], map: "CustomerContact_customerId_fkey")
   @@index([tenantId, lastName, firstName])
@@ -304,7 +326,25 @@ model CrmTask {
   customerId          String?
   // Ansprechpartner des Kunden (Kundenwahl samt Ansprechpartner, 15.08.2026).
   contactId           String?
+  /// VERKNUEPFTE OFFERTE (11.09.2026) — genauso freiwillig wie der Kunde. Eine
+  /// Aufgabe darf an einem Angebot haengen ("Nachfassen AN-2026-10012"), muss
+  /// aber nicht; die Erfassung fragt erst danach, wenn man das Zeichen dafuer
+  /// anklickt.
+  tenderId            String?
   assigneeEmployeeId  String?
+  /// ANFANG UND ENDE (11.09.2026, Vorgabe Samet: «die Aufgabe braucht eine
+  /// Startzeit und eine Endzeit; sie darf sich ueber mehrere Tage ziehen»).
+  ///
+  /// `dueDate` BLEIBT DAS ENDE. Jede bestehende Zeile, der Verfalldienst
+  /// (crmTaskMaintenance.flipOverdueTasks), das Erinnerungslaeuten und die
+  /// Listenabfrage rechnen damit — eine zweite Endspalte waere ein Paar, das
+  /// auseinanderlaeuft. `startAt` kommt daneben; fehlt es, ist die Aufgabe
+  /// eintaegig und beginnt mit ihrem Ende.
+  startAt             DateTime?
+  /// Ganztaegig: dann stehen in `startAt`/`dueDate` 00:00 bzw. 23:59 des
+  /// jeweiligen Tages und die Oberflaeche zeigt keine Uhrzeitfelder. Sonst
+  /// gelten die Uhrzeiten so, wie sie darin stehen.
+  allDay              Boolean   @default(true)
   dueDate             DateTime?
   // OPEN | DONE | INCOMPLETE. INCOMPLETE = "Nicht erledigt": entweder per Hand
   // (X-Knopf) oder automatisch, sobald der Termin einer offenen Aufgabe
@@ -339,8 +379,11 @@ model CrmTask {
   // Erste/„Haupt“-Verantwortliche — Altspalte, wird aus `assignees` gespiegelt.
   assignee  Employee?         @relation("CrmTaskAssignee", fields: [assigneeEmployeeId], references: [id], onDelete: SetNull)
   createdBy Employee          @relation("CrmTaskCreator", fields: [createdByEmployeeId], references: [id])
+  tender    Tender?           @relation("CrmTaskTender", fields: [tenderId], references: [id], onDelete: SetNull)
   assignees CrmTaskAssignee[]
   notes     CrmTaskNote[]
+  steps     CrmTaskStep[]
+  documents CrmTaskDocument[]
 
   @@index([tenantId, status, dueDate])
   // Fällige, noch nicht gezeigte Erinnerungen — die Abfrage läuft im Takt von
@@ -352,6 +395,10 @@ model CrmTask {
   @@index([createdByEmployeeId])
   @@index([entityType, entityId])
   @@index([labelId])
+  @@index([tenderId])
+  // Zeitraumabfrage: die Liste sucht seit dem 11.09.2026 UEBERSCHNEIDUNGEN
+  // ([startAt, dueDate] gegen das Fenster), nicht mehr nur den Endtermin.
+  @@index([tenantId, startAt])
 }
 
 model CustomerNote {
@@ -447,6 +494,54 @@ model CrmTaskAssignee {
 
   @@unique([taskId, employeeId])
   @@index([employeeId, notifiedAt])
+}
+
+/// SCHRITT-FUER-SCHRITT-ANLEITUNG einer Aufgabe (11.09.2026, Vorgabe Samet:
+/// «es soll eine Anleitung Schritt fuer Schritt geben — freiwillig»).
+///
+/// Es ist bewusst KEINE Unteraufgabe: ein Schritt hat keine Verantwortliche,
+/// keinen Termin und keine eigene Zeile im Brett. Er ist eine Zeile in der
+/// Anleitung, die man beim Abarbeiten abhakt.
+model CrmTaskStep {
+  id        String   @id
+  taskId    String
+  /// Reihenfolge in der Anleitung — die Oberflaeche vergibt sie beim Speichern
+  /// neu, damit Einfuegen und Loeschen keine Luecken hinterlassen.
+  position  Int      @default(0)
+  text      String   @db.VarChar(500)
+  done      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  task CrmTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, position])
+}
+
+/// ANHAENGE einer Aufgabe (11.09.2026, Vorgabe Samet: «nicht nur PNG, auch
+/// PDF»). Bilder UND Dokumente, beim Anlegen wie beim Nachtragen.
+///
+/// DIE BYTES LIEGEN AUF DER PLATTE, nicht in der Zeile: `fileRef` ist ein
+/// kurzer Verweis (LocalFileStorage), wie bei Termin- und Angebotsunterlagen.
+/// Die Notizbilder (CrmTaskNote.images) bleiben Daten-URLs — sie sind kleine
+/// nachtraeglich geknipste Belege; ein PDF als Base64 in einer JSON-Spalte
+/// waere ein Drittel groesser und muesste zweimal umkodiert werden.
+model CrmTaskDocument {
+  id           String   @id
+  tenantId     String
+  taskId       String
+  fileName     String
+  contentType  String
+  sizeBytes    Int
+  fileRef      String   @db.VarChar(512)
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  task       CrmTask   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploadedBy Employee? @relation("CrmTaskDocumentUploader", fields: [uploadedById], references: [id])
+
+  @@index([taskId, createdAt])
+  @@index([tenantId])
+  @@index([uploadedById])
 }
 
 /// Notizen (mit Bildern als Daten-URLs, wie die Rapport-Bilder) an einer

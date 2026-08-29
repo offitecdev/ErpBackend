@@ -16,7 +16,7 @@ export const escapeHtml = (value: string) =>
 
 export const looksLikeHtml = (value: string) => /<([a-z][a-z0-9]*)\b[^>]*>/i.test(value);
 
-const ALLOWED_TAGS = /^(b|strong|i|em|u|s|strike|ul|ol|li|br|p|div|span|font|h2|h3|a|blockquote)$/i;
+const ALLOWED_TAGS = /^(b|strong|i|em|u|s|strike|ul|ol|li|br|p|div|span|font|h[1-6]|a|blockquote|table|thead|tbody|tfoot|tr|td|th|hr|pre|code|sub|sup|small)$/i;
 
 /** Nur Formatierung überlebt (wie sanitizeMailHtml der Offerten-Mail, plus <a href> mit http(s)/mailto). */
 export const sanitizeMailHtml = (html: string): string =>
@@ -70,6 +70,15 @@ export const MAX_BODY_CHARS = 60_000;
 export const clampBody = (text: string | null | undefined): string | null => {
     if (!text) return null;
     return text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}\n…` : text;
+};
+
+/** Das bereinigte HTML darf mehr wiegen als der Text (Tags), bleibt aber
+    gedeckelt — ein Schnitt mitten im Tag ist egal, der Browser verzeiht das. */
+export const MAX_HTML_CHARS = 300_000;
+export const clampHtml = (html: string | null | undefined): string | null => {
+    const clean = String(html || "").trim();
+    if (!clean) return null;
+    return clean.length > MAX_HTML_CHARS ? clean.slice(0, MAX_HTML_CHARS) : clean;
 };
 
 export const previewOf = (text: string | null | undefined, max = 500): string | null => {

@@ -39,6 +39,8 @@ import notificationRoutes from './presentation/routes/notification.routes';
 import meetingRoutes from './presentation/routes/meeting.routes';
 import crmRoutes from './presentation/routes/crm.routes';
 import crmTaskRoutes from './presentation/routes/crmTask.routes';
+import enquiryRoutes, { publicEnquiryRouter } from './presentation/routes/enquiry.routes';
+import crmActivityRoutes from './presentation/routes/crmActivity.routes';
 import formsRoutes from './presentation/routes/forms.routes';
 import settingsGateRoutes from './presentation/routes/settingsGate.routes';
 import reminderSettingsRoutes from './presentation/routes/reminderSettings.routes';
@@ -181,6 +183,13 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/meetings`, meetingRoutes);
     app.use(`${prefix}/crm`, crmRoutes);
     app.use(`${prefix}/crm`, crmTaskRoutes);
+    // Aktivitaeten: die Zeitleiste des Hauses (eigener Router, /crm-Pfad).
+    app.use(`${prefix}/crm`, crmActivityRoutes);
+    // Anfragen (10.09.2026): der Kontakt VOR dem Kunden. Das oeffentliche
+    // Formular haengt bewusst woanders — /public/enquiry ist der EINZIGE
+    // unangemeldete Weg des Moduls und steht darum sichtbar fuer sich.
+    app.use(`${prefix}/enquiries`, enquiryRoutes);
+    app.use(`${prefix}/public/enquiry`, publicEnquiryRouter);
     // Checklisten / Formulare / Vorlagen (CRM-Modul, siehe forms.routes.ts).
     app.use(`${prefix}/forms`, formsRoutes);
     app.use(`${prefix}/settings`, settingsGateRoutes);

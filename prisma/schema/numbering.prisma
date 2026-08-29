@@ -4,7 +4,7 @@
 ///
 ///   QUOTE   → AN-2026-10001  (Angebot / Quote / Teklif)
 ///   PROJECT → PR-2026-10001  (Projekt / Project / Proje)
-///   ORDER   → AU-2026-10001  (Auftrag / Order / Sipariş)
+///   ORDER   → AB-2026-10001  (Auftragsbestätigung / Order confirmation)
 ///   ADDON   → NT-2026-10001  (Nachtrag / Additional order / Ek sipariş)
 ///   INVOICE → RE-2026-10001  (Rechnung / Invoice / Fatura)
 ///

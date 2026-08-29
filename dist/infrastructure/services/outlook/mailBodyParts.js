@@ -28,7 +28,7 @@
  * gehören in beide.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.mainBodyOf = exports.splitMailBody = exports.stripImagePlaceholders = void 0;
+exports.mainBodyOf = exports.splitMailBody = exports.stripImagePlaceholders = exports.CONTACT_MARKERS = exports.GREETINGS = void 0;
 /* Woran eine zitierte Vorgängernachricht beginnt. Jede Sprache der Häuser, mit
    denen gearbeitet wird, plus die Trennlinie, die Outlook selbst setzt. */
 const QUOTE_STARTERS = [
@@ -54,7 +54,7 @@ const SIGNATURE_LINE = /^--\s?$/;
    erst, wenn hinter der Formel eine Visitenkarte steht — gemessen an harten
    Merkmalen (Telefonnummer, Postleitzahl, Web, Adresse, Rechtsform). Das
    trennt die getippte Verabschiedung vom angehängten Briefkopf. */
-const GREETINGS = [
+exports.GREETINGS = [
     /^\s*(mit\s+)?(freundliche[nrm]?\s+)?gr(ü|ue|u)(ss|ß)e?n?\b/i,
     /^\s*(beste|viele|liebe|herzliche|schöne)\s+gr(ü|ue|u)(ss|ß)e?n?\b/i,
     /^\s*(best|kind|warm)\s+regards\b/i,
@@ -62,7 +62,7 @@ const GREETINGS = [
     /^\s*sayg(ı|i)lar(ı|i)m(ı|i)zla\b/i,
     /^\s*iyi\s+(çal(ı|i)şmalar|günler|gunler|akşamlar)\b/i,
 ];
-const CONTACT_MARKERS = [
+exports.CONTACT_MARKERS = [
     /\b(tel|fon|phone|mobil|mobile|fax|gsm|direkt)\b\s*[.:+]/i,
     /\+\d{2,3}[\s\d/().-]{6,}/,
     /\b[A-Z]{2}-\d{4,5}\b/,
@@ -81,13 +81,13 @@ const MIN_CONTACT_MARKERS = 2;
  */
 const signatureStart = (lines) => {
     for (let index = lines.length - 1; index > 0; index -= 1) {
-        if (!GREETINGS.some((pattern) => pattern.test(lines[index])))
+        if (!exports.GREETINGS.some((pattern) => pattern.test(lines[index])))
             continue;
         const trailing = lines.slice(index + 1);
         if (!trailing.length || trailing.length > MAX_SIGNATURE_LINES)
             continue;
         const block = trailing.join("\n");
-        const markers = CONTACT_MARKERS.filter((pattern) => pattern.test(block)).length;
+        const markers = exports.CONTACT_MARKERS.filter((pattern) => pattern.test(block)).length;
         if (markers < MIN_CONTACT_MARKERS)
             continue;
         // Vor der Formel muss noch eine Nachricht stehen; sonst wäre alles Signatur.

@@ -119,6 +119,23 @@ export const ospDatasheetStorage = new LocalFileStorage({
 });
 
 /**
+ * AUFGABEN-ANHÄNGE (11.09.2026, Vorgabe Samet: «beim Anlegen dieser kleinen
+ * Zeichen-Knöpfe und ebenso beim Ändern soll man nicht nur PNG, sondern auch
+ * PDF anhängen können»).
+ *
+ * Bild ODER Dokument, an der Aufgabe selbst — nicht an einer Notiz. Die
+ * Notizbilder bleiben Daten-URLs: das sind kleine, nachträglich geknipste
+ * Belege. Ein Datenblatt oder ein Plan ist keiner, und ein PDF als Base64 in
+ * einer JSON-Spalte wäre ein Drittel grösser und müsste zweimal umkodiert
+ * werden.
+ */
+export const taskDocumentStorage = new LocalFileStorage({
+    prefix: 'local:crm-task-document/',
+    directory: process.env.OFFITEC_TASK_UPLOAD_DIR
+        || path.join(process.cwd(), 'storage', 'task-documents'),
+});
+
+/**
  * PERSONALAKTE (26.08.2026): der Arbeitsvertrag und die übrigen Unterlagen
  * einer angestellten Person. Sie verlassen das Haus nie — sie werden nur auf
  * der Personenseite geöffnet, und nur von der Person selbst bzw. der

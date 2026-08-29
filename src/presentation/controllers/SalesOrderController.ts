@@ -50,6 +50,11 @@ const listBillingFigures = (summary: { baseAmount: number; billedAmount: number;
         ? { baseAmount: summary.baseAmount, billedAmount: summary.billedAmount, billedPercent: summary.billedPercent }
         : null;
 
+// Auftragsbestätigung: der Einleitungstext der Titelseite ist derselbe
+// Rich-Text wie das Anschreiben der Offerte, aus dem er startet — also
+// dieselbe Obergrenze.
+const CONFIRMATION_NOTE_MAX = 40000;
+
 type OrderMode = 'PROJECT_NEW' | 'PROJECT_EXISTING' | 'INVOICE';
 
 const allowedOrderModes = new Set<OrderMode>(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
@@ -72,8 +77,12 @@ export class SalesOrderController {
             }
             if (req.query.search) {
                 const pattern = `%${String(req.query.search)}%`;
+                // legacyNumber gehört dazu: die AB-Umstellung (29.08.2026) hat
+                // jeden alten AU-Code dorthin gelegt, und ein Kunde, der eine
+                // schon verschickte Bestätigung sucht, tippt genau diesen Code.
                 conditions.push(Prisma.sql`(
                     so.orderNumber LIKE ${pattern}
+                    OR so.legacyNumber LIKE ${pattern}
                     OR t.tenderNumber LIKE ${pattern}
                     OR c.companyName LIKE ${pattern}
                     OR p.projectName LIKE ${pattern}
@@ -392,6 +401,69 @@ export class SalesOrderController {
         }
     }
 
+    /**
+     * AUFTRAGSBESTÄTIGUNG — Einleitungstext und «Gültig bis» des Auftrags.
+     *
+     * Beide gehören zusammen: EIN Fenster bearbeitet sie, also schreibt sie EIN
+     * Endpunkt. Ein weggelassenes Feld bleibt unangetastet (das Fenster kann
+     * auch nur den Text ändern); ein leeres Feld setzt auf NULL zurück, und
+     * dann greift wieder die Vorgabe — der Text der Offerte und Auftragsdatum
+     * plus einen Monat. Deshalb wird der Standard hier NICHT eingesetzt: er
+     * wäre danach nicht mehr von einer bewussten Eingabe zu unterscheiden.
+     */
+    async updateOrderConfirmation(req: Request, res: Response) {
+        try {
+            const tenantId = req.user!.tenantId;
+            const id = String(req.params.id);
+            const body = req.body ?? {};
+            const data: Record<string, any> = {};
+
+            if ('confirmationNote' in body) {
+                const raw = body.confirmationNote;
+                if (raw !== null && raw !== undefined && typeof raw !== 'string') {
+                    return res.status(400).json({ error: 'Einleitungstext ungültig.' });
+                }
+                const text = typeof raw === 'string' ? raw.trim() : '';
+                if (text.length > CONFIRMATION_NOTE_MAX) {
+                    return res.status(400).json({ error: `Einleitungstext darf höchstens ${CONFIRMATION_NOTE_MAX} Zeichen lang sein.` });
+                }
+                data.confirmationNote = text.length > 0 ? text : null;
+            }
+
+            if ('confirmationValidUntil' in body) {
+                const raw = body.confirmationValidUntil;
+                if (raw === null || raw === undefined || raw === '') {
+                    data.confirmationValidUntil = null;
+                } else {
+                    const parsed = new Date(String(raw));
+                    if (Number.isNaN(parsed.getTime())) {
+                        return res.status(400).json({ error: 'Gültigkeitsdatum ungültig.' });
+                    }
+                    data.confirmationValidUntil = parsed;
+                }
+            }
+
+            if (Object.keys(data).length === 0) {
+                return res.status(400).json({ error: 'Keine Änderung übermittelt.' });
+            }
+
+            const result = await (prisma as any).salesOrder.updateMany({ where: { id, tenantId }, data });
+            if (result.count === 0) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+
+            const saved = await (prisma as any).salesOrder.findFirst({
+                where: { id, tenantId },
+                select: { confirmationNote: true, confirmationValidUntil: true },
+            });
+            res.status(200).json({
+                message: 'Auftragsbestätigung gespeichert.',
+                confirmationNote: saved?.confirmationNote ?? null,
+                confirmationValidUntil: saved?.confirmationValidUntil ?? null,
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
     async createFromTender(req: Request, res: Response) {
         try {
             const tenantId = req.user!.tenantId;
@@ -420,7 +492,10 @@ export class SalesOrderController {
                     where: { id: tenderId },
                     include: {
                         positions: { include: { calculation: true } },
-                        salesOrder: true,
+                        // Der Ersteller reist mit: die Auftragsbestätigung nennt ihn
+                        // als Verkäufer, und auf diesem Zweig (Auftrag bestand schon)
+                        // ist das nicht zwingend die Person, die gerade klickt.
+                        salesOrder: { include: { createdBy: { select: { id: true, firstName: true, lastName: true, email: true } } } },
                     },
                 });
                 if (!tender || tender.tenantId !== tenantId) throw new Error('Teklif bulunamadi.');
@@ -501,11 +576,11 @@ export class SalesOrderController {
                 }
 
                 // Sipariş kodu teklifin kodunu AYNEN izler (kullanıcı isteği):
-                // AN-2026-10007 → AU-2026-10007. Yıl ve sıra tekliften kopyalanır,
+                // AN-2026-10007 → AB-2026-10007. Yıl ve sıra tekliften kopyalanır,
                 // yalnızca önek değişir — teklifle siparişin kod sonu hep eşittir.
                 // Aynı kodu paylaşan İKİNCİ teklif sürümü siparişe çevrilirse
                 // FARKLI bir numara VERİLMEZ: aynı kod "-2" ("-3", …) ekini alır
-                // (kullanıcı isteği: AU-2026-10046 → AU-2026-10046-2). Sayaç
+                // (kullanıcı isteği: AB-2026-10046 → AB-2026-10046-2). Sayaç
                 // yalnızca çözümlenemeyen (çok eski/dış) teklif kodları için
                 // devreye girer.
                 const parsedTenderNumber = parseDocumentNumber(tender.tenderNumber, 'QUOTE');
@@ -549,6 +624,7 @@ export class SalesOrderController {
                         paymentStages: tender.paymentStages ?? null,
                         createdByEmployeeId: employeeId,
                     },
+                    include: { createdBy: { select: { id: true, firstName: true, lastName: true, email: true } } },
                 });
 
                 if (project?.id && scheduleSlots.length > 0) {

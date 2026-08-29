@@ -69,7 +69,7 @@ const SIGNATURE_LINE = /^--\s?$/;
    erst, wenn hinter der Formel eine Visitenkarte steht — gemessen an harten
    Merkmalen (Telefonnummer, Postleitzahl, Web, Adresse, Rechtsform). Das
    trennt die getippte Verabschiedung vom angehängten Briefkopf. */
-const GREETINGS: RegExp[] = [
+export const GREETINGS: RegExp[] = [
     /^\s*(mit\s+)?(freundliche[nrm]?\s+)?gr(ü|ue|u)(ss|ß)e?n?\b/i,
     /^\s*(beste|viele|liebe|herzliche|schöne)\s+gr(ü|ue|u)(ss|ß)e?n?\b/i,
     /^\s*(best|kind|warm)\s+regards\b/i,
@@ -77,7 +77,7 @@ const GREETINGS: RegExp[] = [
     /^\s*sayg(ı|i)lar(ı|i)m(ı|i)zla\b/i,
     /^\s*iyi\s+(çal(ı|i)şmalar|günler|gunler|akşamlar)\b/i,
 ];
-const CONTACT_MARKERS: RegExp[] = [
+export const CONTACT_MARKERS: RegExp[] = [
     /\b(tel|fon|phone|mobil|mobile|fax|gsm|direkt)\b\s*[.:+]/i,
     /\+\d{2,3}[\s\d/().-]{6,}/,
     /\b[A-Z]{2}-\d{4,5}\b/,

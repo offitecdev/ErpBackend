@@ -1,0 +1,141 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// ANFRAGEN (10.09.2026, Vorgabe Samet)
+//
+//   «Es wird Kunden geben und es wird Anfragen geben. Die Anfragen kann man von
+//    Hand anlegen. Es gibt ein Anfrageformular mit einem Link — den Link findet
+//    man auf der Seite, man kann ihn kopieren und per Mail verschicken. Und im
+//    Postfach gibt es den Bereich Anfragen; was ich dort hineinlege, ist die
+//    Mail eines Kunden, der meistens NOCH NICHT im System steht.»
+//
+// DER KERN: eine Anfrage steht VOR dem Kunden. Sie trägt ihre eigenen Kontakt-
+// daten (Firma, Name, Mail, Telefon) und braucht KEINEN Customer-Datensatz —
+// `customerId` ist die Verbindung, die erst entsteht, wenn wir die Person
+// kennen oder sie zum Kunden machen. Genau darum sind die Felder hier doppelt
+// und nicht "einfach der Kunde": wer eine Anfrage schickt, ist noch niemand.
+//
+// DREI HERKÜNFTE, EIN DATENSATZ (`source`):
+//   FORM   — jemand hat das öffentliche Formular ausgefüllt (EnquiryForm.token)
+//   MAIL   — eine Nachricht wurde im Postfach der Kategorie «Anfragen»
+//            zugeordnet; Betreff/Text/Absender wandern hierher (mailMessageId)
+//   MANUAL — von Hand erfasst (Telefon, Messe, Empfehlung …)
+//
+// Eine Anfrage bekommt bewusst KEINE Belegnummer (AN/PR/AU/…): sie ist kein
+// Beleg, sondern ein Kontakt, aus dem erst ein Beleg entstehen kann.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Enquiry {
+  id       String @id
+  tenantId String
+
+  // FORM | MAIL | MANUAL
+  source String @default("MANUAL") @db.VarChar(8)
+  // NEW | IN_PROGRESS | ANSWERED | CONVERTED | CLOSED | SPAM
+  //   NEW         — noch niemand hat sie angefasst (der Punkt im Menü zählt diese)
+  //   IN_PROGRESS — jemand hat sie übernommen
+  //   ANSWERED    — beantwortet, aber noch nicht abgeschlossen
+  //   CONVERTED   — daraus wurde ein Kunde und/oder ein Angebot
+  //   CLOSED      — erledigt / kein Interesse
+  //   SPAM        — Müll aus dem öffentlichen Formular
+  status String @default("NEW") @db.VarChar(12)
+  // LOW | NORMAL | HIGH — von Hand gesetzt, nicht abgeleitet.
+  priority String @default("NORMAL") @db.VarChar(8)
+
+  // ── Wer fragt an. Diese Felder stehen für sich: sie gelten auch dann, wenn
+  //    `customerId` gesetzt wird — die Anfrage bleibt das, was hereinkam.
+  companyName String? @db.VarChar(200)
+  contactName String? @db.VarChar(160)
+  email       String? @db.VarChar(255)
+  phone       String? @db.VarChar(64)
+
+  // Postanschrift in EINZELTEILEN (wie Customer; siehe address components) —
+  // beim Umwandeln in einen Kunden werden sie 1:1 übernommen.
+  address           String? @db.VarChar(255)
+  addressSupplement String? @db.VarChar(255)
+  postalCode        String? @db.VarChar(32)
+  city              String? @db.VarChar(120)
+  state             String? @db.VarChar(120)
+  country           String? @db.VarChar(120)
+
+  // ── Was gefragt wird.
+  subject String  @db.VarChar(300)
+  message String? @db.Text
+  // Freie Felder des Formulars ([{ label, value }]) — was über die festen
+  // Felder hinaus gefragt wurde, ohne dafür Spalten anzulegen.
+  extraFields Json?
+
+  // ── Verbindungen. Alle optional: eine Anfrage lebt ohne sie.
+  //    `customerId` wird gesetzt, sobald die Adresse einem Kunden zugeordnet
+  //    ist (beim Erfassen automatisch, beim Umwandeln von Hand).
+  customerId    String?
+  contactId     String?
+  // Die Nachricht im Firmenpostfach, aus der die Anfrage entstand (source MAIL).
+  mailMessageId String?
+  // Das Angebot, das aus der Anfrage wurde.
+  tenderId      String?
+
+  // Wer sie bearbeitet und wer sie angelegt hat. Beim Formular gibt es keine
+  // erfassende Person — deshalb ist `createdByEmployeeId` optional.
+  assignedEmployeeId  String?
+  createdByEmployeeId String?
+
+  // Interne Notiz — die Antwort selbst läuft über das Postfach, nicht hier.
+  internalNote String? @db.Text
+
+  // Herkunftsspuren des öffentlichen Formulars (Missbrauch nachvollziehen).
+  submittedIp String? @db.VarChar(64)
+
+  answeredAt DateTime?
+  closedAt   DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  customer    Customer?        @relation("CustomerEnquiries", fields: [customerId], references: [id], onDelete: SetNull)
+  contact     CustomerContact? @relation("ContactEnquiries", fields: [contactId], references: [id], onDelete: SetNull)
+  mailMessage MailMessage?     @relation("MailMessageEnquiries", fields: [mailMessageId], references: [id], onDelete: SetNull)
+  assignee    Employee?        @relation("EnquiryAssignee", fields: [assignedEmployeeId], references: [id], onDelete: SetNull)
+  createdBy   Employee?        @relation("EnquiryCreator", fields: [createdByEmployeeId], references: [id], onDelete: SetNull)
+
+  // Die Liste ist «neueste zuerst, gefiltert nach Stand» — beides aus dem Index.
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, assignedEmployeeId, createdAt])
+  @@index([tenantId, email])
+  @@index([customerId])
+  @@index([contactId])
+  // Eine Mail wird nur EINMAL zur Anfrage: wird sie erneut der Kategorie
+  // «Anfragen» zugeordnet, findet der Server die vorhandene Zeile hierüber.
+  @@unique([tenantId, mailMessageId])
+  @@index([tenderId])
+}
+
+// Das ÖFFENTLICHE ANFRAGEFORMULAR — je Mandant genau eines. Der Link, der auf
+// der Anfragenseite steht und den man kopiert bzw. verschickt, ist
+// `/anfrage/<token>`; er braucht keine Anmeldung. `token` ist deshalb lang und
+// zufällig und kann erneuert werden (dann ist der alte Link tot).
+model EnquiryForm {
+  id       String @id
+  tenantId String
+
+  token  String  @unique @db.VarChar(64)
+  active Boolean @default(true)
+
+  // Was die öffentliche Seite über dem Formular zeigt. Leer = die eingebauten
+  // Texte in der Sprache der Besucherin.
+  title    String? @db.VarChar(200)
+  intro    String? @db.Text
+  // Text nach dem Absenden ("Danke, wir melden uns").
+  thanks   String? @db.Text
+  // Welche der optionalen Felder überhaupt erscheinen und welche Pflicht sind:
+  // { phone: 'off'|'optional'|'required', company: …, address: … }
+  fieldRules Json?
+  // Wer eine Meldung bekommt, wenn eine Anfrage eintrifft (Mailadressen).
+  notifyEmails Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId])
+}

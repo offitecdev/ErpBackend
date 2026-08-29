@@ -111,6 +111,7 @@ model Tender {
   salesOrder           SalesOrder?
   project              Project?
   offerScheduleSlots   OfferScheduleSlot[]
+  crmTasks             CrmTask[]             @relation("CrmTaskTender")
 
   @@index([tenantId])
   @@index([customerId])

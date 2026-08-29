@@ -13,50 +13,64 @@ const mailText_1 = require("./outlook/mailText");
 const mailBodyParts_1 = require("./outlook/mailBodyParts");
 const calendarImportService_1 = require("./calendarImportService");
 /**
- * POSTEINGANG DES EIGENEN MAILSERVERS → ERP (Vorgabe 18.08.2026).
+ * POSTEINGANG DES EIGENEN MAILSERVERS → ERP (18.08.2026; umgebaut 08.09.2026).
  *
- * Ein Dienst liest per IMAP (imapflow) den Posteingang des Firmenpostfachs und
- * legt NUR Nachrichten BEKANNTER Absender als `MailMessage` ab.
- *
- * DIE HARTE REGEL (Vorgabe 18.08.2026): "wir übernehmen niemals die Adresse
- * von jemandem, der nicht im System steht". Der Absender MUSS sich also im
- * Adressbuch auflösen lassen —
+ * Ein Dienst liest per IMAP (imapflow) den Posteingang und den Gesendet-Ordner
+ * des Firmenpostfachs und legt JEDE Nachricht als `MailMessage` ab (Vorgabe
+ * 08.09.2026: "alles, wirklich alles, die letzten zwei Monate"). Die frühere
+ * Schranke «nur Post bekannter Adressen» ist aufgehoben — das Adressbuch dient
+ * nur noch der ZUORDNUNG, nicht mehr der Auswahl:
  *
  *   • Adresse eines Kunden oder Ansprechpartners  → AUTO_ADDRESS
  *   • eindeutige Firmendomain eines Kunden        → AUTO_DOMAIN
  *   • Adresse einer registrierten Person          → AUTO_EMPLOYEE
+ *   • Antwort auf eine ERP-Mail (In-Reply-To)     → REPLY (erbt Kunde + Beleg)
+ *   • sonst                                        → ohne Zuordnung gespeichert
  *
- * Löst sie sich nicht auf, wird die Nachricht gelesen, verworfen und NIE
- * gespeichert — auch dann nicht, wenn sie eine Antwort auf eine ERP-Mail zu
- * sein scheint oder eine Kalender-Einladung enthält.
+ * Enthält eine Nachricht eine KALENDER-EINLADUNG (`text/calendar`), wandert
+ * der Termin zusätzlich in den ERP-Kalender (calendarImportService) — so
+ * kommen auch die in Outlook angesetzten Besprechungen ins System.
  *
- * Über dieser Schranke steht nur noch die GENAUIGKEIT der Zuordnung:
- *   – Ist die Nachricht eine ANTWORT auf eine ERP-Mail (`In-Reply-To` /
- *     `References` nennen eine von uns vergebene Message-ID), erbt sie Kunde,
- *     Ansprechpartner und Beleg direkt vom Original — sicher statt geraten.
- *   – Enthält sie eine KALENDER-EINLADUNG (`text/calendar`), wandert der Termin
- *     zusätzlich in den ERP-Kalender (calendarImportService).
- *   – `imapCaptureRepliesOnly` verengt weiter auf reine Antworten.
+ * Gespeichert werden die Grunddaten (Absender, Empfänger, Betreff, Zeitpunkt,
+ * Text) plus das BEREINIGTE HTML des Rumpfs (nur Formatierung — fett, Listen,
+ * Tabellen), damit die Post im ERP wie im Mailprogramm liest. Anhänge bleiben
+ * auf dem Mailserver; abgelegt werden nur ihre Namen/Grössen.
  *
- * Alles andere (Newsletter, Rechnungen von Lieferanten, private Post) wird
- * gelesen, verworfen und NIE gespeichert. Gespeichert werden ohnehin nur die
- * Grunddaten: Absender, Empfänger, Betreff, Zeitpunkt, Textkörper. Anhänge
- * bleiben auf dem Mailserver; abgelegt werden nur ihre Namen/Grössen.
- *
- * ABLAUF PRO DURCHGANG (billig gehalten, weil er alle zwei Minuten läuft):
- *   UID-Fenster bestimmen → NUR KOPFZEILEN der neuen Nachrichten holen →
- *   Relevanz entscheiden → nur für die Treffer den Textkörper nachladen.
+ * ABLAUF PRO DURCHGANG: UID-Fenster bestimmen → Kopfzeilen holen → Rumpf
+ * nachladen → speichern; in Schüben von 200, so lange das Zeitbudget reicht —
+ * der ERSTABRUF (die letzten zwei Monate, komplett) soll in wenigen
+ * Durchgängen stehen, danach liest der Lesestand nur noch das Neue.
  *
  * Der Lesestand steht in `MailSetting.imapLastUid` (+ `imapUidValidity`, damit
  * ein neu aufgebauter Ordner nicht mit alten UIDs verwechselt wird). Nichts
  * wird auf dem Server verändert: keine Flags, keine Verschiebungen, kein
  * Löschen — das Postfach bleibt so, wie der Benutzer es in Outlook sieht.
+ * Im ERP GELÖSCHTE Nachrichten (Papierkorb/endgültig) kommen nicht wieder:
+ * endgültig Gelöschtes wäre zwar erneut übernehmbar, liegt aber hinter dem
+ * Lesestand und wird darum nie mehr angesehen.
  */
 /* Alle drei Minuten (Vorgabe 19.08.2026). Der Durchgang ist billig gehalten —
    er holt nur die Kopfzeilen der Nachrichten hinter dem Lesestand. */
 const TICK_MS = 3 * 60_000;
-/** Höchstens so viele Nachrichten pro Durchgang (Rest im nächsten Lauf). */
+/** Schubgrösse: so viele Nachrichten je Schub; Schübe laufen, bis das
+    Zeitbudget des Durchgangs erschöpft ist (Rest im nächsten Lauf). */
 const MAX_PER_RUN = 200;
+/**
+ * ZEITBUDGET EINES DURCHGANGS — knapp unter dem Takt (drei Minuten), damit
+ * sich zwei Durchgänge nicht überholen; `running` würde den zweiten ohnehin
+ * abweisen, aber dann stünde der Abruf still, statt weiterzuarbeiten.
+ *
+ * Es war einmal 20 s, "knapp unter den 25 s, die die HTTP-Schicht wartet" —
+ * das war ein Trugschluss: EIN Schub von 200 Nachrichten dauert mit dem
+ * Nachladen der Rümpfe 40–60 s, die 25 s der HTTP-Antwort sind also nie
+ * einzuhalten (der Abruf läuft nach der Antwort im Hintergrund weiter, genau
+ * dafür ist er gebaut). Gebracht hat das Budget nur, dass je Durchgang EIN
+ * Schub lief: der Erstabruf über zwei Monate — gut 4000 Nachrichten in beiden
+ * Ordnern — hätte so zwanzig Takte, also eine Stunde gedauert. Im
+ * eingeschwungenen Zustand kostet das grössere Budget nichts: liegt nichts
+ * an, ist der Durchgang nach einer Sekunde vorbei.
+ */
+const RUN_TIME_BUDGET_MS = 150_000;
 /**
  * DAS FENSTER DES POSTFACHS: die letzten ZWEI Monate (Vorgabe 19.08.2026).
  *
@@ -129,35 +143,30 @@ const attachmentsOf = (node, out = []) => {
     }
     return out;
 };
-/**
- * Findet den Textabschnitt über die BODYSTRUCTURE, die der Server liefert —
- * NICHT durch Zerlegen der Rohnachricht. Mehrteilige Mails sind verschachtelt
- * (mixed › related › alternative › text/plain + text/html); wer die Rohbytes
- * am äussersten Grenzstring zerschneidet, erwischt den nächsten Grenzstring
- * statt des Textes und schreibt "------=_NextPart_001…" in die Vorschau.
- * Bevorzugt wird text/plain, sonst text/html.
- */
-const findTextPart = (node) => {
+const collectBodyParts = (node, out = []) => {
     if (!node)
-        return null;
+        return out;
     const children = node.childNodes || node.children || [];
     if (children.length) {
-        const nested = children.map(findTextPart).filter(Boolean);
-        return nested.find((item) => !item.isHtml) || nested[0] || null;
+        for (const child of children)
+            collectBodyParts(child, out);
+        return out;
     }
     const type = String(node.type || "").toLowerCase();
-    if (!type.startsWith("text/"))
-        return null;
+    // Nur die beiden Rumpf-Typen — text/calendar u. Ä. sind kein Nachrichtentext.
+    if (type !== "text/plain" && type !== "text/html")
+        return out;
     // Angehängte .txt/.html-Dateien sind kein Nachrichtentext.
     const disposition = String(node.disposition || "").toLowerCase();
     if (disposition === "attachment")
-        return null;
-    return {
+        return out;
+    out.push({
         part: String(node.part || "1"),
         encoding: String(node.encoding || "").toLowerCase(),
         charset: String(node.parameters?.charset || "utf-8").toLowerCase(),
         isHtml: type === "text/html",
-    };
+    });
+    return out;
 };
 /** Der `text/calendar`-Abschnitt einer Einladung, falls vorhanden. */
 const findCalendarPart = (node) => {
@@ -311,10 +320,31 @@ const captureInbox = async (tenantId, options = {}) => {
                     uids = uids || [];
                 }
                 uids.sort((a, b) => a - b);
-                const batch = uids.slice(0, MAX_PER_RUN);
-                if (batch.length) {
-                    const own = (0, mailCustomerMatcher_1.normalizeAddress)(settings.fromEmail);
-                    const book = await (0, mailCustomerMatcher_1.getAddressBook)(tenantId);
+                /* WAS DER DURCHGANG VOR SICH HAT — ins Protokoll, sobald etwas
+                   anliegt. Ohne diese Zeile ist eine Lücke im Postfach nicht
+                   nachvollziehbar: die Zusammenfassung sagt nur, WIE VIELE
+                   Nachrichten angesehen wurden, nicht WELCHE. Erst Lesestand und
+                   UID-Bereich zeigen, ob der Abruf lückenlos weiterrückt. */
+                if (!dryRun && uids.length) {
+                    console.log(`[MAIL-IN] ${job.folder}: Lesestand ${lastUid}, ${uids.length} UIDs zu prüfen`
+                        + ` (${uids[0]} … ${uids[uids.length - 1]})`);
+                }
+                if (!uids.length && !dryRun && (resetCursor || job.uidValidity === null)) {
+                    await prisma_client_1.default.mailSetting.update({
+                        where: { tenantId },
+                        data: job.cursorFields(uidValidity, 0n),
+                    });
+                }
+                const own = (0, mailCustomerMatcher_1.normalizeAddress)(settings.fromEmail);
+                const book = await (0, mailCustomerMatcher_1.getAddressBook)(tenantId);
+                /* In SCHÜBEN durcharbeiten, bis das Zeitbudget erschöpft ist: der
+                   ERSTABRUF liest zwei volle Monate, und mit einem Schub je
+                   Durchgang stünde das Postfach erst nach Stunden. Der Lesestand
+                   rückt nach JEDEM Schub nach — ein Abbruch verliert nichts. */
+                let offset = 0;
+                while (offset < uids.length) {
+                    const batch = uids.slice(offset, offset + MAX_PER_RUN);
+                    offset += batch.length;
                     const candidates = [];
                     for await (const message of client.fetch(batch.map(String).join(","), { uid: true, envelope: true, bodyStructure: true, internalDate: true, headers: ["in-reply-to", "references", "message-id"] }, { uid: true })) {
                         summary.examined += 1;
@@ -359,24 +389,19 @@ const captureInbox = async (tenantId, options = {}) => {
                     const known = new Set(existing.map((row) => row.internetMessageId));
                     const parentById = new Map(parents.map((row) => [row.internetMessageId, row]));
                     const keepers = [];
-                    /* NUR im Probelauf: Nachrichten, die einzig am Schalter «nur
-                       Antworten übernehmen» scheitern. Der Absender steht im System,
-                       die Nachricht ist bloss keine Antwort auf eine ERP-Mail. Ohne
-                       diese Liste meldet «Testen» nur «1 geprüft, 0 übernommen» und
-                       verschweigt, dass eine EINSTELLUNG das war. */
-                    const blockedByRepliesOnly = [];
-                    /* Ebenfalls nur im Probelauf: wer an der Schranke scheitert,
-                       nach Adresse gezählt. */
+                    /* Nur im Probelauf: Absender, deren Adresse nicht im System
+                       steht — sie werden zwar TROTZDEM übernommen (Vorgabe
+                       08.09.2026: alles), aber die Liste zeigt beim Testen, was
+                       ohne Kundenzuordnung ankommen wird. */
                     const unknown = new Map();
                     for (const candidate of candidates) {
                         if (candidate.messageId && known.has(candidate.messageId)) {
                             summary.skipped += 1;
                             continue;
                         }
-                        // ── SCHRANKE: die GEGENSTELLE muss im System stehen ─────────────
-                        // Zuerst und für JEDE Nachricht. Ohne Treffer wird nichts
-                        // gespeichert — auch keine Antwort und keine Einladung.
-                        /* Im Posteingang ist die Gegenstelle der ABSENDER, im
+                        /* Die GEGENSTELLE — nur noch für die ZUORDNUNG, keine
+                           Schranke mehr: gespeichert wird jede Nachricht.
+                           Im Posteingang ist die Gegenstelle der ABSENDER, im
                            Gesendet-Ordner sind es die EMPFÄNGER: dort sind WIR der
                            Absender, und «schreibt uns jemand Bekanntes» hiesse dort
                            «schreiben wir uns selbst». */
@@ -384,13 +409,9 @@ const captureInbox = async (tenantId, options = {}) => {
                             ? [...partiesOf(candidate.envelope?.to), ...partiesOf(candidate.envelope?.cc)]
                             : [...partiesOf(candidate.envelope?.from), ...partiesOf(candidate.envelope?.replyTo)]).map((p) => p.address).filter((address) => address && address !== own);
                         const hit = (0, mailCustomerMatcher_1.matchAddresses)(book, counterparts);
-                        if (!hit) {
-                            summary.skipped += 1;
-                            if (dryRun) {
-                                const address = counterparts[0] || "(ohne Absender)";
-                                unknown.set(address, (unknown.get(address) || 0) + 1);
-                            }
-                            continue;
+                        if (!hit && dryRun) {
+                            const address = counterparts[0] || "(ohne Absender)";
+                            unknown.set(address, (unknown.get(address) || 0) + 1);
                         }
                         const calendarPart = findCalendarPart(candidate.bodyStructure)?.part ?? null;
                         // (1) Antwort auf eine ERP-Mail? Dann erbt sie deren
@@ -411,49 +432,31 @@ const captureInbox = async (tenantId, options = {}) => {
                             summary.replies += 1;
                             continue;
                         }
-                        // (2) Sonst zählt der Adresstreffer selbst. Der strenge
-                        // Modus lässt nur Antworten durch und endet hier.
-                        // «Nur Antworten» ist eine Regel gegen fremde Post im
-                        // Posteingang. Was WIR verschickt haben, ist nie fremd.
-                        if (job.direction === "IN" && settings.imapCaptureRepliesOnly) {
-                            summary.skipped += 1;
-                            summary.skippedRepliesOnly += 1;
-                            if (dryRun)
-                                blockedByRepliesOnly.push(candidate);
-                            continue;
-                        }
+                        // (2) Sonst zählt der Adresstreffer für die Zuordnung —
+                        // ohne Treffer wird ohne Kunde/Person gespeichert.
                         keepers.push({
                             ...candidate,
-                            customerId: hit.customerId,
-                            contactId: hit.contactId,
-                            matchSource: hit.source,
+                            customerId: hit?.customerId ?? null,
+                            contactId: hit?.contactId ?? null,
+                            matchSource: hit?.source ?? null,
                             entityType: null,
                             entityId: null,
                             entityLabel: null,
                             // Post einer registrierten Person: sie "gehört" ihr, damit
                             // sie im Postfach als eigene Zeile erkennbar ist.
-                            employeeId: hit.employeeId,
+                            employeeId: hit?.employeeId ?? null,
                             calendarPart,
                         });
-                        summary.byAddress += 1;
+                        if (hit)
+                            summary.byAddress += 1;
                     }
                     if (dryRun) {
-                        summary.preview = [
-                            ...keepers.map((keeper) => ({
-                                subject: String(keeper.envelope?.subject || "(kein Betreff)").slice(0, 120),
-                                from: partiesOf(keeper.envelope?.from)[0]?.address || "",
-                                reason: keeper.matchSource,
-                                customerId: keeper.customerId,
-                            })),
-                            ...blockedByRepliesOnly.map((candidate) => ({
-                                subject: String(candidate.envelope?.subject || "(kein Betreff)").slice(0, 120),
-                                from: partiesOf(candidate.envelope?.from)[0]?.address || "",
-                                // Absender bekannt, Schalter im Weg — genau der Fall,
-                                // den man beim Testen sucht.
-                                reason: "BLOCKED_REPLIES_ONLY",
-                                customerId: null,
-                            })),
-                        ].slice(0, 25);
+                        summary.preview = keepers.map((keeper) => ({
+                            subject: String(keeper.envelope?.subject || "(kein Betreff)").slice(0, 120),
+                            from: partiesOf(keeper.envelope?.from)[0]?.address || "",
+                            reason: keeper.matchSource || "OHNE_ZUORDNUNG",
+                            customerId: keeper.customerId,
+                        })).slice(0, 25);
                         summary.unknownSenders = Array.from(unknown.entries())
                             .map(([address, count]) => ({ address, count }))
                             .sort((a, b) => b.count - a.count)
@@ -462,11 +465,14 @@ const captureInbox = async (tenantId, options = {}) => {
                         summary.durationMs = Date.now() - startedAt;
                         return summary;
                     }
-                    // ── 2. NUR für die Treffer den Textkörper holen ───────────────
+                    // ── 2. Für jede Nachricht den Rumpf holen ─────────────────────
                     const inserts = [];
                     for (const keeper of keepers) {
                         let bodyText = null;
-                        const textPart = findTextPart(keeper.bodyStructure);
+                        let bodyHtml = null;
+                        const bodyParts = collectBodyParts(keeper.bodyStructure);
+                        const textPart = bodyParts.find((item) => !item.isHtml) || bodyParts[0] || null;
+                        const htmlPart = bodyParts.find((item) => item.isHtml) || null;
                         try {
                             // Nur DIESEN Abschnitt holen — nicht die ganze Nachricht:
                             // ein 20-MB-Anhang muss für eine Textvorschau nicht über
@@ -481,9 +487,27 @@ const captureInbox = async (tenantId, options = {}) => {
                             // Bildplatzhalter ("[cid:…]", "[image: …]") sind Reste der
                             // Umwandlung und sagen nichts — sie stünden sonst mitten im Satz.
                             bodyText = (0, mailText_1.clampBody)((0, mailBodyParts_1.stripImagePlaceholders)(textPart?.isHtml ? (0, mailText_1.htmlToText)(decoded) : decoded.trim()));
+                            if (textPart?.isHtml)
+                                bodyHtml = (0, mailText_1.clampHtml)((0, mailText_1.sanitizeMailHtml)(decoded));
                         }
                         catch (error) {
                             console.error(`[MAIL-IN] Rumpf ${keeper.uid} nicht lesbar:`, error?.message || error);
+                        }
+                        /* Die HTML-Fassung zusätzlich, wenn es sie gibt: fette Stellen,
+                           Absätze und Tabellen sollen im Lesebereich stehen wie im
+                           Mailprogramm. Bereinigt wird SOFORT (sanitizeMailHtml lässt
+                           nur Formatierung durch) — gespeichert wird nie rohes HTML. */
+                        if (htmlPart && !bodyHtml) {
+                            try {
+                                const download = await client.download(String(keeper.uid), htmlPart.part, { uid: true, maxBytes: 512 * 1024 });
+                                const chunks = [];
+                                for await (const chunk of download.content)
+                                    chunks.push(chunk);
+                                bodyHtml = (0, mailText_1.clampHtml)((0, mailText_1.sanitizeMailHtml)(Buffer.concat(chunks).toString("utf8")));
+                            }
+                            catch (error) {
+                                console.error(`[MAIL-IN] HTML-Rumpf ${keeper.uid} nicht lesbar:`, error?.message || error);
+                            }
                         }
                         const from = partiesOf(keeper.envelope?.from)[0] || null;
                         const to = partiesOf(keeper.envelope?.to);
@@ -517,6 +541,7 @@ const captureInbox = async (tenantId, options = {}) => {
                                zerlegt ihn beim Anzeigen. */
                             bodyPreview: (0, mailText_1.previewOf)((0, mailBodyParts_1.mainBodyOf)(bodyText) || bodyText, 500),
                             bodyText,
+                            bodyHtml,
                             sentAt: Number.isNaN(sentAt.getTime()) ? new Date() : sentAt,
                             hasAttachments: attachments.length > 0,
                             attachments: attachments.length ? attachments : client_1.Prisma.JsonNull,
@@ -573,18 +598,61 @@ const captureInbox = async (tenantId, options = {}) => {
                             console.error(`[MAIL-IN] Termin aus ${keeper.uid} nicht übernommen:`, error?.message || error);
                         }
                     }
-                    const highestUid = batch[batch.length - 1];
+                    /* Je Schub eine Zeile: angefragt / geholt / neu / geschrieben.
+                       Weichen die Zahlen voneinander ab, ist genau hier zu sehen,
+                       wo Post verloren geht — der Lesestand rückt gleich hinter
+                       diesen Schub und sieht ihn nie wieder an. */
+                    console.log(`[MAIL-IN] ${job.folder} Schub ${batch[0]}…${batch[batch.length - 1]}: ${batch.length} angefragt,`
+                        + ` ${candidates.length} geholt, ${keepers.length} neu, ${inserts.length} geschrieben`);
+                    /* DER LESESTAND DARF NUR ÜBER TATSÄCHLICH ANGESEHENE POST
+                       HINWEGRÜCKEN. Liefert der Server auf ein FETCH weniger
+                       Nachrichten als angefragt (abgebrochener Strom, während des
+                       Durchgangs verschobene Post), stünde der Lesestand sonst
+                       hinter Nachrichten, die nie jemand gelesen hat — und da der
+                       Abruf nur noch nach vorn schaut, wären sie für immer weg.
+                       Darum: bis zur letzten LÜCKENLOS gelieferten UID vorrücken,
+                       den Rest im nächsten Durchgang erneut anfragen.
+    
+                       Kommt aus dem Kopf des Schubs gar nichts (die Nachricht ist
+                       auf dem Server verschwunden, seit die Suche lief), rückt der
+                       Lesestand trotzdem über den ganzen Schub: sonst fragte der
+                       Abruf denselben Schub bis in alle Ewigkeit erneut an und
+                       käme nie mehr voran. */
+                    const delivered = new Set(candidates.map((item) => item.uid));
+                    let highestUid = batch[batch.length - 1];
+                    let incomplete = false;
+                    if (delivered.size < batch.length) {
+                        let contiguous = 0;
+                        for (const uid of batch) {
+                            if (!delivered.has(uid))
+                                break;
+                            contiguous = uid;
+                        }
+                        if (contiguous) {
+                            highestUid = contiguous;
+                            incomplete = true;
+                            console.warn(`[MAIL-IN] ${job.folder}: nur ${candidates.length}/${batch.length} geliefert —`
+                                + ` Lesestand bleibt bei ${highestUid}, der Rest wird erneut angefragt.`);
+                        }
+                        else {
+                            console.warn(`[MAIL-IN] ${job.folder}: Schub ${batch[0]}…${highestUid} lieferte nichts —`
+                                + ` übersprungen, damit der Abruf weiterläuft.`);
+                        }
+                    }
                     lastUid = BigInt(highestUid);
                     await prisma_client_1.default.mailSetting.update({
                         where: { tenantId },
                         data: job.cursorFields(uidValidity, lastUid),
                     });
-                }
-                else if (!dryRun && (resetCursor || job.uidValidity === null)) {
-                    await prisma_client_1.default.mailSetting.update({
-                        where: { tenantId },
-                        data: job.cursorFields(BigInt(client.mailbox?.uidValidity ?? 0), 0n),
-                    });
+                    // Der Schub blieb unvollständig: hier abbrechen, sonst liefe
+                    // der nächste Schub aus der ALTEN Trefferliste weiter und
+                    // schöbe den Lesestand über die Lücke, die gerade offen blieb.
+                    if (incomplete)
+                        break;
+                    // Zeitbudget erschöpft: der Rest kommt im nächsten Durchgang —
+                    // der Lesestand steht schon hinter diesem Schub.
+                    if (Date.now() - startedAt > RUN_TIME_BUDGET_MS)
+                        break;
                 }
             }
             finally {

@@ -395,6 +395,11 @@ export class ProjectRepository {
                         createdAt: true,
                         updatedAt: true,
                         orderDate: true,
+                        // Auftragsbestätigung: Einleitungstext und «Gültig bis»
+                        // reisen mit, damit das Fenster der Auftragskarte ohne
+                        // zweiten Abruf aufgeht (wie beim Verkäufertext).
+                        confirmationNote: true,
+                        confirmationValidUntil: true,
                         customer: {
                             select: {
                                 id: true,

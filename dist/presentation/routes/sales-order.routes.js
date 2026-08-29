@@ -12,5 +12,9 @@ router.get('/my-orders', (0, RbacMiddleware_1.requirePermission)('crm.customers.
 router.post('/from-tender', (0, RbacMiddleware_1.requirePermission)('tenders.approve'), (req, res) => controller.createFromTender(req, res));
 router.get('/:id', (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => controller.getById(req, res));
 router.patch('/:id/payment-stages', (0, RbacMiddleware_1.requirePermission)('billing.manage'), (req, res) => controller.updatePaymentStages(req, res));
+// Auftragsbestätigung: Einleitungstext + «Gültig bis». Sie wird von der
+// Auftragskarte aus geschrieben — auf der Projektübersicht wie in der
+// Auftragsansicht — also gilt dieselbe Berechtigung wie für den Verkäufertext.
+router.patch('/:id/order-confirmation', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.updateOrderConfirmation(req, res));
 exports.default = router;
 //# sourceMappingURL=sales-order.routes.js.map

@@ -19,6 +19,60 @@ const appointmentSeries_1 = require("./appointmentSeries");
 const nanoid_1 = require("nanoid");
 const documentNumber_1 = require("../../shared/documentNumber");
 const smtp = new SmtpMailService_1.SmtpMailService();
+/**
+ * DER AUFTRAG IST WEG → DIE OFFERTE IST WIEDER EIN ENTWURF (Benutzerregel
+ * 29.08.2026: «wird das Projekt gelöscht, verschwindet es aus den Aufträgen und
+ * wird wieder ein Entwurf»).
+ *
+ * `createFromTender` stempelt beim Eröffnen DREI Dinge auf die Offerte —
+ * `status: 'Approved'`, `sourceStatus: 'Verkaufsauftrag'` und `projectId` —,
+ * und genau diese drei werden hier zurückgenommen. Alle drei müssen weg:
+ *
+ *  • `status` sperrt die Offerte gegen jede Bearbeitung (überall im
+ *    TenderController steht `if (tender.status !== 'Draft')`), sie wäre also
+ *    unbrauchbar und trotzdem auftragslos.
+ *  • `projectId` UND `sourceStatus` entscheiden zusammen, in welchem Topf die
+ *    Offertliste die Zeile zeigt (`TenderRepository.buildLeanWhere`:
+ *    `orderState = 'draft'` verlangt `projectId IS NULL` UND einen
+ *    sourceStatus ausserhalb von ORDER_SOURCE_VALUES). Bliebe eines von
+ *    beiden stehen, stünde die Offerte weiter unter «Auftrag» — bei einem
+ *    Auftrag, den es nicht mehr gibt.
+ *
+ * `Tender.projectId` ist übrigens KEIN Fremdschlüssel (die Beziehung hängt an
+ * `Project.tenderId`), das Löschen des Projekts räumt die Spalte also NICHT
+ * von selbst auf — sie zeigt danach auf eine Zeile, die es nicht mehr gibt.
+ */
+const revertTendersToDraft = async (tx, tenantId, employeeId, tenderIds, description) => {
+    const ids = [...new Set(tenderIds.filter(Boolean))];
+    if (!ids.length)
+        return;
+    // Die alten Zustände für das Protokoll — vor dem Überschreiben gelesen.
+    const before = await tx.tender.findMany({
+        where: { id: { in: ids }, tenantId },
+        select: { id: true, status: true },
+    });
+    if (!before.length)
+        return;
+    await tx.tender.updateMany({
+        where: { id: { in: before.map((row) => row.id) }, tenantId },
+        data: { status: 'Draft', sourceStatus: null, projectId: null },
+    });
+    // Die Offerte darf nicht stillschweigend zurückfallen: ihr Verlauf trägt
+    // die Eröffnung des Auftrags, also auch dessen Rücknahme.
+    await tx.tenderActivityLog.createMany({
+        data: before.map((row) => ({
+            id: (0, nanoid_1.nanoid)(12),
+            tenantId,
+            tenderId: row.id,
+            employeeId,
+            actionType: 'SALES_ORDER_DELETED',
+            fieldName: 'status',
+            oldValue: row.status,
+            newValue: 'Draft',
+            description,
+        })),
+    });
+};
 const startOfDay = (date) => {
     const d = new Date(date);
     d.setHours(0, 0, 0, 0);
@@ -2089,9 +2143,9 @@ class ProjectController {
                 extraMaterials: Array.isArray(req.body.extraMaterials) ? req.body.extraMaterials : undefined,
                 usedMaterials: Array.isArray(req.body.usedMaterials) ? req.body.usedMaterials : undefined,
             });
-            // Technikerunterschrift reist mit dem Rapport: mitgeschickt = setzen
-            // oder löschen, weggelassen = unverändert. Die Kundensignatur bleibt
-            // ihrem eigenen Weg (Signaturanfrage / Abschluss) vorbehalten.
+            // Beide Unterschriften reisen mit dem gemeinsamen Rapport-Editor:
+            // mitgeschickt = setzen/löschen, weggelassen = unverändert. Der
+            // speichernde Benutzer bleibt über das Rapport-Protokoll sichtbar.
             if (req.body.technicianSignature !== undefined) {
                 const signature = String(req.body.technicianSignature || '').startsWith('data:image/')
                     ? String(req.body.technicianSignature)
@@ -2099,6 +2153,19 @@ class ProjectController {
                 await prisma_client_1.default.projectReport.update({
                     where: { id: reportResult.id },
                     data: { technicianSignature: signature, technicianSignedAt: signature ? new Date() : null },
+                });
+            }
+            if (req.body.customerSignature !== undefined) {
+                const signature = String(req.body.customerSignature || '').startsWith('data:image/')
+                    ? String(req.body.customerSignature)
+                    : null;
+                await prisma_client_1.default.projectReport.update({
+                    where: { id: reportResult.id },
+                    data: {
+                        customerSignature: signature,
+                        isSigned: Boolean(signature),
+                        signedAt: signature ? new Date() : null,
+                    },
                 });
             }
             // Denetim kaydı best-effort'tür; kullanıcı yanıtını ayrı bir INSERT
@@ -2796,13 +2863,14 @@ class ProjectController {
             const tenantId = req.user.tenantId;
             const project = await prisma_client_1.default.project.findFirst({
                 where: { id: projectId, tenantId },
-                select: { id: true },
+                // tenderId: die Offerte des Projekts geht mit zurück in den Entwurf.
+                select: { id: true, tenderId: true },
             });
             if (!project)
                 return res.status(404).json({ error: "Proje bulunamadı." });
             const orders = await prisma_client_1.default.salesOrder.findMany({
                 where: { projectId, tenantId },
-                select: { id: true },
+                select: { id: true, tenderId: true, orderNumber: true },
             });
             const orderIds = orders.map((order) => order.id);
             const invoiceCount = await prisma_client_1.default.invoice.count({
@@ -2847,6 +2915,20 @@ class ProjectController {
                     await tx.salesOrder.deleteMany({ where: { id: { in: orderIds } } });
                 }
                 await tx.project.delete({ where: { id: projectId } });
+                // Mit dem Projekt gehen seine Aufträge — also sind deren Offerten
+                // wieder Entwurf und können erneut zu einem Auftrag werden. Die
+                // Offerte des Projekts selbst ist dabei, auch wenn sie es nie bis
+                // zu einem Auftrag geschafft hat.
+                const orderNumbers = orders.map((order) => order.orderNumber).filter(Boolean).join(', ');
+                await revertTendersToDraft(tx, tenantId, req.user.id, [project.tenderId, ...orders.map((order) => order.tenderId)], orderNumbers
+                    ? `Proje silindi; ${orderNumbers} kaldirildi, teklif taslaga dondu.`
+                    : 'Proje silindi; teklif taslaga dondu.');
+                // Sicherheitsnetz: `Tender.projectId` ist kein Fremdschlüssel, eine
+                // vergessene Verknüpfung zählte sonst weiter als «Auftrag».
+                await tx.tender.updateMany({
+                    where: { projectId, tenantId },
+                    data: { projectId: null },
+                });
             });
             res.status(204).send();
         }
@@ -2965,6 +3047,14 @@ class ProjectController {
                     }
                 }
                 await tx.salesOrder.delete({ where: { id: order.id } });
+                // Ein gelöschter HAUPTauftrag lässt seine Offerte auftragslos
+                // zurück — dieselbe Regel wie beim Projekt, sonst bliebe sie
+                // gesperrt und stünde in der Liste unter «Auftrag». Nachträge
+                // (`isAddon`) tragen keine Offerte und lassen den Hauptauftrag
+                // stehen, da ändert sich nichts.
+                if (!isAddon) {
+                    await revertTendersToDraft(tx, tenantId, req.user.id, [order.tenderId], `${order.orderNumber} silindi; teklif taslaga dondu.`);
+                }
             });
             res.status(204).send();
         }

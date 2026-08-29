@@ -1,7 +1,7 @@
 "use strict";
 /** Kleine Text-Helfer der Mail-Anbindung (bewusst ohne Abhängigkeiten). */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.parseParty = exports.previewOf = exports.clampBody = exports.MAX_BODY_CHARS = exports.htmlToText = exports.sanitizeMailHtml = exports.looksLikeHtml = exports.escapeHtml = exports.stripHeaderValue = exports.isValidEmail = void 0;
+exports.parseParty = exports.previewOf = exports.clampHtml = exports.MAX_HTML_CHARS = exports.clampBody = exports.MAX_BODY_CHARS = exports.htmlToText = exports.sanitizeMailHtml = exports.looksLikeHtml = exports.escapeHtml = exports.stripHeaderValue = exports.isValidEmail = void 0;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const isValidEmail = (value) => EMAIL_RE.test(value);
 exports.isValidEmail = isValidEmail;
@@ -17,7 +17,7 @@ const escapeHtml = (value) => value
 exports.escapeHtml = escapeHtml;
 const looksLikeHtml = (value) => /<([a-z][a-z0-9]*)\b[^>]*>/i.test(value);
 exports.looksLikeHtml = looksLikeHtml;
-const ALLOWED_TAGS = /^(b|strong|i|em|u|s|strike|ul|ol|li|br|p|div|span|font|h2|h3|a|blockquote)$/i;
+const ALLOWED_TAGS = /^(b|strong|i|em|u|s|strike|ul|ol|li|br|p|div|span|font|h[1-6]|a|blockquote|table|thead|tbody|tfoot|tr|td|th|hr|pre|code|sub|sup|small)$/i;
 /** Nur Formatierung überlebt (wie sanitizeMailHtml der Offerten-Mail, plus <a href> mit http(s)/mailto). */
 const sanitizeMailHtml = (html) => html
     .replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "")
@@ -75,6 +75,16 @@ const clampBody = (text) => {
     return text.length > exports.MAX_BODY_CHARS ? `${text.slice(0, exports.MAX_BODY_CHARS)}\n…` : text;
 };
 exports.clampBody = clampBody;
+/** Das bereinigte HTML darf mehr wiegen als der Text (Tags), bleibt aber
+    gedeckelt — ein Schnitt mitten im Tag ist egal, der Browser verzeiht das. */
+exports.MAX_HTML_CHARS = 300_000;
+const clampHtml = (html) => {
+    const clean = String(html || "").trim();
+    if (!clean)
+        return null;
+    return clean.length > exports.MAX_HTML_CHARS ? clean.slice(0, exports.MAX_HTML_CHARS) : clean;
+};
+exports.clampHtml = clampHtml;
 const previewOf = (text, max = 500) => {
     if (!text)
         return null;

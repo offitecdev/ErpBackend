@@ -503,6 +503,14 @@ class TenderRepository {
                 await tx.calculationItem.deleteMany({ where: { positionId: { in: positionIds } } });
                 await tx.position.deleteMany({ where: { tenderId: id } });
             }
+            // Eine aus der OSP entstandene Offerte gibt beim Löschen ihre
+            // OSP-Zeile wieder frei: ohne tenderId bietet /sales/osp erneut
+            // "Offerte erstellen" an (der Import selbst prüft ohnehin, ob die
+            // Offerte noch existiert — hier wird die Liste ehrlich gehalten).
+            await tx.ospDocument.updateMany({
+                where: { tenderId: id },
+                data: { tenderId: null, tenderNumber: null },
+            });
             await tx.tender.delete({ where: { id } });
         });
     }

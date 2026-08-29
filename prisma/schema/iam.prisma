@@ -59,6 +59,8 @@ model Tenant {
   signatureRequests      SignatureRequest[]
   meetingActivities      MeetingActivity[]
   roleModuleConfigs      RoleModuleConfig[]
+  enquiries              Enquiry[]
+  enquiryForm            EnquiryForm?
 
   @@index([parentTenantId], map: "Tenant_parentTenantId_fkey")
   @@index([moduleProfileId], map: "Tenant_moduleProfileId_fkey")
@@ -165,9 +167,12 @@ model Employee {
   createdCrmTasks               CrmTask[]                      @relation("CrmTaskCreator")
   crmTaskAssignments            CrmTaskAssignee[]              @relation("CrmTaskAssigneeRows")
   crmTaskNotes                  CrmTaskNote[]                  @relation("CrmTaskNoteAuthor")
+  crmTaskDocuments              CrmTaskDocument[]              @relation("CrmTaskDocumentUploader")
   passwordChangeRequests        PasswordChangeRequest[]        @relation("PasswordChangeRequests")
   passwordChangeDecisions       PasswordChangeRequest[]        @relation("PasswordChangeDecisions")
   mailAccounts                  MailAccount[]                  @relation("EmployeeMailAccounts")
+  assignedEnquiries             Enquiry[]                      @relation("EnquiryAssignee")
+  createdEnquiries              Enquiry[]                      @relation("EnquiryCreator")
 
   @@index([tenantId], map: "Employee_tenantId_fkey")
 }

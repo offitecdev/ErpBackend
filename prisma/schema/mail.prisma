@@ -56,6 +56,34 @@ model MailAccount {
   @@index([tenantId, status])
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POSTFACH-KATEGORIEN (08.09.2026): die persönliche Ordnung des Firmenpostfachs.
+// Eine Kategorie hängt an einem Datensatz des Hauses — Person, Kunde, Angebot,
+// Auftrag, Projekt oder Rechnung — oder sie ist die eingebaute Sammel-
+// kategorie «Anfragen» (kind REQUESTS, ohne entityId, je Mandant genau einmal,
+// nicht löschbar). Nachrichten werden per Klick oder Ziehen zugeordnet;
+// `displayOrder` ist die von Hand gezogene Reihenfolge in der Leiste.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MailCategory {
+  id       String  @id
+  tenantId String
+  // STAFF | CUSTOMER | TENDER | ORDER | PROJECT | INVOICE | REQUESTS
+  kind     String  @db.VarChar(12)
+  entityId String?
+  name     String  @db.VarChar(160)
+  // Randfarbe der Zuordnung (Sammelmodus) und Punkt in der Leiste.
+  color        String   @db.VarChar(16)
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  messages MailMessage[]
+
+  @@unique([tenantId, kind, entityId])
+  @@index([tenantId, displayOrder])
+}
+
 model MailMessage {
   id                String   @id
   tenantId          String
@@ -84,6 +112,10 @@ model MailMessage {
   // Reiner Text (HTML wird beim Sync in Text gewandelt); gedeckelt auf 60 000
   // Zeichen — Grunddaten, keine Archivkopie.
   bodyText          String?  @db.Text
+  // Bereinigtes HTML der Nachricht (nur Formatierung: fett, Listen, Tabellen,
+  // Zitate — sanitizeMailHtml). Damit liest sich die Post wie im Mailprogramm;
+  // `bodyText` bleibt die Grundlage für Vorschau und Suche.
+  bodyHtml          String?  @db.MediumText
   // Empfangs- (IN) bzw. Sendezeitpunkt (OUT).
   sentAt            DateTime
   hasAttachments    Boolean  @default(false)
@@ -105,18 +137,29 @@ model MailMessage {
   // Die CustomerActivity (OFFER_MAIL_SENT/ORDER_MAIL_SENT), die dieselbe
   // Sendung schon festhält — die Interaktionsliste blendet sie dann aus.
   activityId        String?
+  // Zuordnung zu einer Postfach-Kategorie (per Klick oder Ziehen).
+  categoryId        String?
+  // PAPIERKORB: Löschen legt die Nachricht erst hierher (Zeitpunkt gesetzt);
+  // endgültig gelöscht wird nur aus dem Papierkorb heraus. Der Abruf erkennt
+  // die Zeile weiterhin an der Message-ID — Gelöschtes kommt nicht wieder.
+  deletedAt         DateTime?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   account  MailAccount?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
   customer Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   contact  CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  category MailCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  // Die Anfrage, die aus dieser Nachricht entstand (Kategorie «Anfragen»).
+  enquiries Enquiry[]       @relation("MailMessageEnquiries")
 
   @@unique([accountId, providerMessageId])
   @@index([tenantId, sentAt])
   @@index([tenantId, customerId, sentAt])
   @@index([tenantId, direction, sentAt])
   @@index([tenantId, internetMessageId])
+  @@index([tenantId, categoryId, sentAt])
+  @@index([tenantId, deletedAt, sentAt])
   @@index([entityType, entityId])
   @@index([activityId])
   @@index([contactId])

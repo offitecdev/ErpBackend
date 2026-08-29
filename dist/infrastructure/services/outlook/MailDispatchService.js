@@ -67,6 +67,8 @@ const recordMessage = async (ctx, mail, ccList, result, record) => {
                 : client_1.Prisma.JsonNull,
             bodyPreview: (0, mailText_1.previewOf)(text, 500),
             bodyText: (0, mailText_1.clampBody)(text),
+            // Auch die eigene Sendung liest sich im Postfach formatiert.
+            bodyHtml: mail.html ? (0, mailText_1.clampHtml)((0, mailText_1.sanitizeMailHtml)(mail.html)) : null,
             sentAt: new Date(),
             hasAttachments: attachments.length > 0,
             attachments: attachments.length ? attachments : client_1.Prisma.JsonNull,

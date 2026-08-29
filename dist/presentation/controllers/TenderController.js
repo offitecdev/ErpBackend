@@ -16,6 +16,7 @@ const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const technicianSchedule_1 = require("./technicianSchedule");
 const tender_discounts_1 = require("./tender.discounts");
 const tenantTree_1 = require("../../shared/tenantTree");
+const OspClient_1 = require("../../infrastructure/services/OspClient");
 const documentNumber_1 = require("../../shared/documentNumber");
 const TenderDocumentStorageService_1 = require("../../infrastructure/services/TenderDocumentStorageService");
 // Versand läuft über dispatchMail: verbundenes Outlook-Postfach des Benutzers,
@@ -2229,8 +2230,39 @@ class TenderController {
             if (tender.status !== 'Draft') {
                 return res.status(403).json({ error: "Sadece taslak (Draft) teklifler silinebilir." });
             }
+            // Aus OSP entstandene Offerte? Die Zeilen VOR dem Löschen merken —
+            // danach ist die Verknüpfung (absichtlich) weg.
+            const ospRows = await prisma_client_1.default.ospDocument.findMany({
+                where: { tenderId },
+                select: { id: true, reference: true, tenantId: true },
+            }).catch(() => []);
             await this.tenderRepository.delete(tenderId, tender.tenantId);
             res.status(200).json({ message: "Teklif silindi." });
+            // §4b (Vertragsfassung (2)): die Anfrage bei der OSP ZURÜCKZIEHEN,
+            // damit drüben kein Stand mehr steht, den nichts mehr trägt — und
+            // die Zeile hier auf LISTED zurücksetzen ("Offerte erstellen" ist
+            // durch das Löschen ja wieder der nächste Schritt). Best-Effort im
+            // Hintergrund; das Ergebnis steht wie jede Meldung an der Zeile.
+            void (async () => {
+                for (const row of ospRows) {
+                    const setting = await prisma_client_1.default.ospSetting.findUnique({
+                        where: { tenantId: row.tenantId },
+                    }).catch(() => null);
+                    const result = setting ? await (0, OspClient_1.withdrawOspOfferStatus)(setting, row.reference) : { ok: false, skipped: true };
+                    await prisma_client_1.default.ospDocument.update({
+                        where: { id: row.id },
+                        data: {
+                            status: 'LISTED',
+                            lastReportedStatus: null,
+                            ...(result.ok
+                                ? { lastReportAt: new Date(), lastReportError: null }
+                                : result.skipped
+                                    ? {}
+                                    : { lastReportError: result.error || 'Rückzug bei der OSP fehlgeschlagen.' }),
+                        },
+                    }).catch(() => undefined);
+                }
+            })().catch(() => undefined);
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -3011,8 +3043,11 @@ class TenderController {
             if (subject.length > 200)
                 return res.status(400).json({ error: "Konu 200 karakteri aşamaz." });
             const message = String(req.body.message
+                // Der Anhang ist seit 29.08.2026 die AUFTRAGSBESTÄTIGUNG (AB-Nummer,
+                // Auftragsdatum, Verkäufer) und nicht mehr die blanke Offerte —
+                // der Text darf nichts anderes versprechen.
                 || "Guten Tag\n\nVielen Dank für Ihren Auftrag — wir haben ihn erfasst und bestätigen Ihnen die Ausführung.\n"
-                    + "Die zugehörige Offerte finden Sie als PDF im Anhang.\n\n"
+                    + "Die Auftragsbestätigung finden Sie als PDF im Anhang.\n\n"
                     + "Für Fragen stehen wir Ihnen gerne zur Verfügung.\n\nFreundliche Grüsse").trim();
             if (message.length > 5000) {
                 return res.status(400).json({ error: "Mesaj çok uzun." });

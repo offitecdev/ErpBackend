@@ -11,7 +11,7 @@
  * und schreibt beides an die Dokumentzeile (lastReport*).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fetchOspOfferStatus = exports.reportOspOfferStatus = exports.OSP_STATUS_RANK = exports.OSP_ENUM_TO_INTERNAL = exports.OSP_WIRE_STATUS = void 0;
+exports.fetchOspOfferStatus = exports.withdrawOspOfferStatus = exports.reportOspOfferStatus = exports.OSP_STATUS_RANK = exports.OSP_ENUM_TO_INTERNAL = exports.OSP_WIRE_STATUS = void 0;
 /** Interne Stände → OSP-Statusform auf der Leitung (§3). */
 exports.OSP_WIRE_STATUS = {
     LISTED: 'created',
@@ -59,11 +59,23 @@ const describeFetchFailure = (error, url) => {
  * Einen Bearbeitungsstand an die OSP melden. `salesmanEmail` ist bei
  * "under review" und "offer has been sent" Pflicht (OSP antwortet sonst 400) —
  * die Prüfung dazu macht der Aufrufer, hier wird nur übertragen.
+ *
+ * Seit Vertragsfassung (2) darf die zuständige Person als OBJEKT mitgehen
+ * (§3 "salesman"): hat die Adresse drüben KEIN OSP-Konto, sieht die Kundschaft
+ * dann trotzdem einen Namen statt einer nackten E-Mail-Adresse. Der Name wird
+ * am ersten Leerzeichen in Vor-/Nachname geteilt — mehr wissen wir nicht.
  */
-const reportOspOfferStatus = async (endpoint, reference, wireStatus, salesmanEmail) => {
+const reportOspOfferStatus = async (endpoint, reference, wireStatus, salesmanEmail, salesmanName) => {
     if (!endpointReady(endpoint))
         return { ok: false, skipped: true };
     const url = `${baseUrl(endpoint)}/integration/offer-status`;
+    const fullName = (salesmanName || '').trim();
+    const [firstName, ...rest] = fullName.split(/\s+/);
+    const salesman = salesmanEmail
+        ? (fullName
+            ? { salesman: { email: salesmanEmail, name: firstName, surname: rest.join(' ') || undefined } }
+            : { salesmanEmail })
+        : {};
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -74,7 +86,7 @@ const reportOspOfferStatus = async (endpoint, reference, wireStatus, salesmanEma
             body: JSON.stringify({
                 projectNumber: reference,
                 status: wireStatus,
-                ...(salesmanEmail ? { salesmanEmail } : {}),
+                ...salesman,
             }),
             signal: AbortSignal.timeout(OSP_TIMEOUT_MS),
         });
@@ -90,6 +102,35 @@ const reportOspOfferStatus = async (endpoint, reference, wireStatus, salesmanEma
     }
 };
 exports.reportOspOfferStatus = reportOspOfferStatus;
+/**
+ * Eine Offertanfrage bei der OSP ZURÜCKZIEHEN (§4b, Vertragsfassung (2)):
+ * DELETE /integration/offer-status/{reference}. Drüben wird nichts gelöscht —
+ * nur Status und Zuständigkeit werden geleert, die Karte zeigt wieder "keine
+ * Offerte" und die Kundschaft darf neu anfragen. Idempotent: ein Verweis ohne
+ * laufende Anfrage antwortet 200 mit unverändertem Stand.
+ */
+const withdrawOspOfferStatus = async (endpoint, reference) => {
+    if (!endpointReady(endpoint))
+        return { ok: false, skipped: true };
+    const url = `${baseUrl(endpoint)}/integration/offer-status/${encodeURIComponent(reference)}`;
+    try {
+        const response = await fetch(url, {
+            method: 'DELETE',
+            headers: { 'X-OSP-Integration-Key': (endpoint.ospApiKey || '').trim() },
+            signal: AbortSignal.timeout(OSP_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+            const message = await response.text().catch(() => '');
+            return { ok: false, error: `OSP ${response.status}: ${message.slice(0, 300)}` };
+        }
+        const rows = (await response.json().catch(() => []));
+        return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+    }
+    catch (error) {
+        return { ok: false, error: describeFetchFailure(error, url) };
+    }
+};
+exports.withdrawOspOfferStatus = withdrawOspOfferStatus;
 /**
  * Den Stand eines Belegs (oder ALLER Belege eines Projekts, bei nackter
  * Projektnummer) zurücklesen — zum Abgleich statt blinder Wiederholung (§4).

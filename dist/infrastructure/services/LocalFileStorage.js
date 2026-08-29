@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.staffDocumentStorage = exports.ospDatasheetStorage = exports.appointmentDocumentStorage = exports.LocalFileStorage = void 0;
+exports.staffDocumentStorage = exports.taskDocumentStorage = exports.ospDatasheetStorage = exports.appointmentDocumentStorage = exports.LocalFileStorage = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const fs_1 = require("fs");
 const path_1 = __importDefault(require("path"));
@@ -112,6 +112,22 @@ exports.ospDatasheetStorage = new LocalFileStorage({
     prefix: 'local:osp-datasheet/',
     directory: process.env.OFFITEC_OSP_DATASHEET_DIR
         || path_1.default.join(process.cwd(), 'storage', 'osp-datasheets'),
+});
+/**
+ * AUFGABEN-ANHÄNGE (11.09.2026, Vorgabe Samet: «beim Anlegen dieser kleinen
+ * Zeichen-Knöpfe und ebenso beim Ändern soll man nicht nur PNG, sondern auch
+ * PDF anhängen können»).
+ *
+ * Bild ODER Dokument, an der Aufgabe selbst — nicht an einer Notiz. Die
+ * Notizbilder bleiben Daten-URLs: das sind kleine, nachträglich geknipste
+ * Belege. Ein Datenblatt oder ein Plan ist keiner, und ein PDF als Base64 in
+ * einer JSON-Spalte wäre ein Drittel grösser und müsste zweimal umkodiert
+ * werden.
+ */
+exports.taskDocumentStorage = new LocalFileStorage({
+    prefix: 'local:crm-task-document/',
+    directory: process.env.OFFITEC_TASK_UPLOAD_DIR
+        || path_1.default.join(process.cwd(), 'storage', 'task-documents'),
 });
 /**
  * PERSONALAKTE (26.08.2026): der Arbeitsvertrag und die übrigen Unterlagen

@@ -14,7 +14,7 @@ exports.raiseDocumentCounter = exports.nextDocumentNumber = exports.parseDocumen
  *
  *   QUOTE   → AN-2026-10001   Angebot   / Quote            / Teklif
  *   PROJECT → PR-2026-10001   Projekt   / Project          / Proje
- *   ORDER   → AU-2026-10001   Auftrag   / Order            / Sipariş
+ *   ORDER   → AB-2026-10001   Auftragsbestätigung / Order confirmation
  *   ADDON   → NT-2026-10001   Nachtrag  / Additional order / Ek sipariş
  *   INVOICE → RE-2026-10001   Rechnung  / Invoice          / Fatura
  *
@@ -53,7 +53,15 @@ const prisma_client_1 = __importDefault(require("../infrastructure/database/pris
 exports.DOCUMENT_PREFIX = {
     QUOTE: 'AN',
     PROJECT: 'PR',
-    ORDER: 'AU',
+    /**
+     * AUFTRAGSBESTÄTIGUNG (Benutzerwunsch 29.08.2026 — vorher 'AU'/Auftrag).
+     * Der Beleg, den der Auftrag erzeugt, heißt Auftragsbestätigung, also
+     * trägt sein Code AB. Die Migration 20260912090000_order_confirmation hat
+     * die vorhandenen AU-Codes umgeschrieben (der alte Code bleibt in
+     * `legacyNumber` auffindbar), damit die Blockrückkehr unten (REGEXP auf den
+     * Präfix) weiterhin JEDE vergebene Auftragsnummer sieht.
+     */
+    ORDER: 'AB',
     ADDON: 'NT',
     INVOICE: 'RE',
 };
@@ -76,7 +84,7 @@ const ISSUED_NUMBER_SOURCE = {
 /**
  * Hedef blokta o türden dağıtılmış EN YÜKSEK sıra (yoksa 0). Önek REGEXP'i
  * AU/NT gibi aynı tabloyu paylaşan türleri ayırır; eski biçimli kodlar
- * (legacyNumber'a taşınmış olanlar) kalıba uymadığı için sayılmaz.
+ * (legacyNumber'a taşınmış olanlar — eski AU- kodları dahil) kalıba uymadığı için sayılmaz.
  */
 const maxIssuedSeqInBlock = async (client, tenantId, docType, floor, blockEnd) => {
     const source = ISSUED_NUMBER_SOURCE[docType];
@@ -93,7 +101,7 @@ const formatDocumentNumber = (type, year, seq) => `${exports.DOCUMENT_PREFIX[typ
 exports.formatDocumentNumber = formatDocumentNumber;
 /**
  * "AN-2026-10007" gibi bir kodu çözer; verilen türün biçimine uymuyorsa null.
- * Teklif kodunu izleyen sipariş kodu (AN-… → AU-…) bunun üzerinden türetilir.
+ * Teklif kodunu izleyen sipariş kodu (AN-… → AB-…) bunun üzerinden türetilir.
  */
 const parseDocumentNumber = (value, type) => {
     const match = String(value || '').trim().match(new RegExp(`^${exports.DOCUMENT_PREFIX[type]}-(\\d{4})-(\\d+)$`));

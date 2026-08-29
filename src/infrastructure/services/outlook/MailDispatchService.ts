@@ -8,7 +8,7 @@ import {
     newMessageId,
 } from "../SmtpMailService";
 import type { SentCopyResult } from "../ImapMailService";
-import { clampBody, htmlToText, previewOf } from "./mailText";
+import { clampBody, clampHtml, htmlToText, previewOf, sanitizeMailHtml } from "./mailText";
 import { normalizeAddress } from "./mailCustomerMatcher";
 
 /**
@@ -120,6 +120,8 @@ const recordMessage = async (
                 : Prisma.JsonNull,
             bodyPreview: previewOf(text, 500),
             bodyText: clampBody(text),
+            // Auch die eigene Sendung liest sich im Postfach formatiert.
+            bodyHtml: mail.html ? clampHtml(sanitizeMailHtml(mail.html)) : null,
             sentAt: new Date(),
             hasAttachments: attachments.length > 0,
             attachments: attachments.length ? (attachments as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,

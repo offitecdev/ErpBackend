@@ -3186,8 +3186,11 @@ export class TenderController {
 
             const message = String(
                 req.body.message
+                // Der Anhang ist seit 29.08.2026 die AUFTRAGSBESTÄTIGUNG (AB-Nummer,
+                // Auftragsdatum, Verkäufer) und nicht mehr die blanke Offerte —
+                // der Text darf nichts anderes versprechen.
                 || "Guten Tag\n\nVielen Dank für Ihren Auftrag — wir haben ihn erfasst und bestätigen Ihnen die Ausführung.\n"
-                + "Die zugehörige Offerte finden Sie als PDF im Anhang.\n\n"
+                + "Die Auftragsbestätigung finden Sie als PDF im Anhang.\n\n"
                 + "Für Fragen stehen wir Ihnen gerne zur Verfügung.\n\nFreundliche Grüsse",
             ).trim();
             if (message.length > 5000) {
