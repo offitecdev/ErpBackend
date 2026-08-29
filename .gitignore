@@ -6,3 +6,6 @@ node_modules
 
 # Runtime attachment data (use OFFITEC_TENDER_UPLOAD_DIR in production)
 /storage/
+
+# Runtime logs
+*.log
