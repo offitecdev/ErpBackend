@@ -10,6 +10,7 @@ import {
 import type { SentCopyResult } from "../ImapMailService";
 import { clampBody, clampHtml, htmlToText, previewOf, sanitizeMailHtml } from "./mailText";
 import { normalizeAddress } from "./mailCustomerMatcher";
+import { autoCategoryId, getCategoryIndex } from "./mailAutoCategory";
 
 /**
  * EIN Versandweg für alles, was das ERP an Kunden schickt (Angebot, Auftrag,
@@ -102,6 +103,13 @@ const recordMessage = async (
         contactId = contact?.id || null;
     }
     const attachments = attachmentMeta(mail);
+    /* Steht der Kunde in der Kategorienleiste, liegt auch die eigene Sendung
+       gleich in seinem Fach — sonst stünde dort die Antwort ohne die Frage.
+       `ctx.employeeId` zählt hier NICHT: das ist unsere Absenderin, nicht die
+       Gegenstelle. */
+    const categoryId = record.customerId
+        ? autoCategoryId(await getCategoryIndex(ctx.tenantId), { customerId: record.customerId })
+        : null;
     const row = await prisma.mailMessage.create({
         data: {
             id: nanoid(12),
@@ -133,6 +141,7 @@ const recordMessage = async (
             entityId: record.entityId || null,
             entityLabel: record.entityLabel?.slice(0, 64) || null,
             activityId: record.activityId || null,
+            categoryId,
         },
         select: { id: true },
     });

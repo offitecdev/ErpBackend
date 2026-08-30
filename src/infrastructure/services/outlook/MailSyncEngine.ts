@@ -14,6 +14,7 @@ import prisma from "../../database/prisma.client";
 import { GraphRequestError, graphFetch } from "./msGraphClient";
 import { MsAuthError } from "./msGraphAuth";
 import { getAddressBook, matchAddresses, normalizeAddress } from "./mailCustomerMatcher";
+import { autoCategoryId, getCategoryIndex } from "./mailAutoCategory";
 import { clampBody, htmlToText, previewOf } from "./mailText";
 
 /**
@@ -108,6 +109,9 @@ const syncFolder = async (account: AccountRow, folder: Folder): Promise<FolderRu
     let url: string = account[folder.linkField] || initialDeltaUrl(folder, account.syncFromDate);
     let usedFilter = !account[folder.linkField] && Boolean(account.syncFromDate);
     const book = await getAddressBook(account.tenantId);
+    // Wie beim IMAP-Abruf: steht die Gegenstelle in der Kategorienleiste,
+    // trägt die Nachricht das Etikett gleich mit.
+    const categories = await getCategoryIndex(account.tenantId);
 
     while (url && run.pages < MAX_PAGES_PER_FOLDER) {
         let page: any;
@@ -227,6 +231,7 @@ const syncFolder = async (account: AccountRow, folder: Folder): Promise<FolderRu
                     customerId: hit?.customerId || null,
                     contactId: hit?.contactId || null,
                     matchSource: hit?.source || null,
+                    categoryId: autoCategoryId(categories, { customerId: hit?.customerId, employeeId: hit?.employeeId }),
                 });
                 // Dieselbe providerId ein zweites Mal auf der Seite (bei Delta praktisch
                 // ausgeschlossen) nicht doppelt einfügen.

@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { Prisma } from "@prisma/client";
 import prisma from "../database/prisma.client";
 import { getAddressBook, matchAddresses, normalizeAddress } from "./outlook/mailCustomerMatcher";
+import { autoCategoryId, getCategoryIndex } from "./outlook/mailAutoCategory";
 import { clampBody, clampHtml, htmlToText, previewOf, sanitizeMailHtml } from "./outlook/mailText";
 import { mainBodyOf, stripImagePlaceholders } from "./outlook/mailBodyParts";
 import { importCalendarObject } from "./calendarImportService";
@@ -95,6 +96,12 @@ export interface CaptureSummary {
     stored: number;
     replies: number;
     byAddress: number;
+    /**
+     * Wie viele davon gleich in einer Kategorie liegen — der Kunde bzw. die
+     * Person steht in der Leiste. Die Antwort auf «warum ist mein Fach leer?»:
+     * ohne Kategorie in der Leiste wird auch nichts einsortiert.
+     */
+    labelled: number;
     /** Übernommene Kalender-Einladungen (angelegt/aktualisiert/abgesagt). */
     calendar: number;
     skipped: number;
@@ -302,7 +309,7 @@ export const buildImapClient = (settings: CaptureSettings): ImapFlow => {
 export const captureInbox = async (tenantId: string, options: CaptureOptions = {}): Promise<CaptureSummary> => {
     const startedAt = Date.now();
     const dryRun = Boolean(options.dryRun);
-    const summary: CaptureSummary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, calendar: 0, skipped: 0, skippedRepliesOnly: 0, durationMs: 0 };
+    const summary: CaptureSummary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, labelled: 0, calendar: 0, skipped: 0, skippedRepliesOnly: 0, durationMs: 0 };
     if (dryRun) summary.preview = [];
     if (running.has(tenantId)) {
         summary.error = "Abruf läuft bereits.";
@@ -420,7 +427,10 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
             }
 
             const own = normalizeAddress(settings.fromEmail);
-            const book = await getAddressBook(tenantId);
+            /* Adressbuch = WEM die Nachricht gehört, Kategorienleiste = WOHIN
+               sie gehört. Steht die erkannte Gegenstelle schon in der Leiste,
+               trägt die Nachricht das Etikett gleich beim Speichern. */
+            const [book, categories] = await Promise.all([getAddressBook(tenantId), getCategoryIndex(tenantId)]);
 
             /* In SCHÜBEN durcharbeiten, bis das Zeitbudget erschöpft ist: der
                ERSTABRUF liest zwei volle Monate, und mit einem Schub je
@@ -482,6 +492,7 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                             select: {
                                 internetMessageId: true, customerId: true, contactId: true,
                                 entityType: true, entityId: true, entityLabel: true, employeeId: true,
+                                categoryId: true,
                             },
                         })
                         : Promise.resolve([]),
@@ -498,6 +509,7 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                     entityId: string | null;
                     entityLabel: string | null;
                     employeeId: string | null;
+                    categoryId: string | null;
                 };
                 const keepers: Keeper[] = [];
                 /* Nur im Probelauf: Absender, deren Adresse nicht im System
@@ -539,6 +551,11 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                             entityId: parent.entityId,
                             entityLabel: parent.entityLabel,
                             employeeId: parent.employeeId,
+                            /* Die Antwort bleibt im Fach des Gesprächs: erst das
+                               Etikett der ERP-Mail, sonst das des Kunden. Die
+                               Person aus `employeeId` zählt hier NICHT — bei
+                               einer ERP-Sendung ist das unsere eigene Absenderin. */
+                            categoryId: parent.categoryId ?? autoCategoryId(categories, { customerId: parent.customerId }),
                             calendarPart,
                         });
                         summary.replies += 1;
@@ -558,6 +575,9 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         // Post einer registrierten Person: sie "gehört" ihr, damit
                         // sie im Postfach als eigene Zeile erkennbar ist.
                         employeeId: hit?.employeeId ?? null,
+                        // Kunde oder Person hat eine Kategorie? Dann liegt die
+                        // Nachricht ohne Zutun darin.
+                        categoryId: autoCategoryId(categories, { customerId: hit?.customerId, employeeId: hit?.employeeId }),
                         calendarPart,
                     });
                     if (hit) summary.byAddress += 1;
@@ -575,6 +595,7 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         .sort((a, b) => b.count - a.count)
                         .slice(0, 40);
                     summary.stored = keepers.length;
+                    summary.labelled = keepers.filter((keeper) => keeper.categoryId).length;
                     summary.durationMs = Date.now() - startedAt;
                     return summary;
                 }
@@ -665,7 +686,9 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         entityType: keeper.entityType,
                         entityId: keeper.entityId,
                         entityLabel: keeper.entityLabel,
+                        categoryId: keeper.categoryId,
                     });
+                    if (keeper.categoryId) summary.labelled += 1;
                 }
                 if (inserts.length) {
                     await prisma.mailMessage.createMany({ data: inserts, skipDuplicates: true });
@@ -712,7 +735,8 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                    wo Post verloren geht — der Lesestand rückt gleich hinter
                    diesen Schub und sieht ihn nie wieder an. */
                 console.log(`[MAIL-IN] ${job.folder} Schub ${batch[0]}…${batch[batch.length - 1]}: ${batch.length} angefragt,`
-                    + ` ${candidates.length} geholt, ${keepers.length} neu, ${inserts.length} geschrieben`);
+                    + ` ${candidates.length} geholt, ${keepers.length} neu, ${inserts.length} geschrieben,`
+                    + ` ${inserts.filter((row) => row.categoryId).length} etikettiert`);
 
                 /* DER LESESTAND DARF NUR ÜBER TATSÄCHLICH ANGESEHENE POST
                    HINWEGRÜCKEN. Liefert der Server auf ein FETCH weniger

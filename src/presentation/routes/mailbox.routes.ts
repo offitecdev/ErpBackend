@@ -9,6 +9,7 @@ import { buildSignatureParts } from "../../infrastructure/services/mailSignature
 import { captureInbox, fetchImapAttachment, isCaptureRunning, normalizeWindowMonths } from "../../infrastructure/services/ImapCaptureService";
 import { dispatchMail } from "../../infrastructure/services/outlook/MailDispatchService";
 import { getAddressBook, invalidateAddressBook, normalizeAddress } from "../../infrastructure/services/outlook/mailCustomerMatcher";
+import { invalidateCategoryIndex, labelExistingMessages } from "../../infrastructure/services/outlook/mailAutoCategory";
 import { getCompanyTreeTenantIds } from "../controllers/serviceTenantScope";
 import {
     escapeHtml,
@@ -446,7 +447,17 @@ router.post("/categories", requireAuth, READ, async (req, res) => {
                 displayOrder: (last._max.displayOrder ?? 0) + 1,
             },
         });
-        res.status(201).json({ id: row.id, kind: row.kind, entityId: row.entityId, name: row.name, color: row.color, displayOrder: row.displayOrder, count: 0 });
+        /* Die Kategorie kommt nicht leer auf die Welt: die schon gespeicherte
+           Post dieses Kunden bzw. dieser Person wird gleich eingesammelt
+           (nur wo noch KEIN Etikett steht), und der nächste Abruf legt neue
+           Nachrichten von selbst dazu — dafür muss der Index das frische
+           Etikett kennen. */
+        invalidateCategoryIndex(tenantId);
+        await labelExistingMessages(tenantId, kind, entityId, row.id);
+        // Gezählt wird wie in der Leiste: der Papierkorb bekommt sein Etikett,
+        // zeigt sich in der Kategorie aber nicht.
+        const count = await prisma.mailMessage.count({ where: { tenantId, categoryId: row.id, deletedAt: null } });
+        res.status(201).json({ id: row.id, kind: row.kind, entityId: row.entityId, name: row.name, color: row.color, displayOrder: row.displayOrder, count });
     } catch (error: any) {
         res.status(500).json({ error: error?.message || "Kategorie konnte nicht angelegt werden." });
     }
@@ -478,6 +489,8 @@ router.delete("/categories/:id", requireAuth, READ, async (req, res) => {
         if (row.kind === "REQUESTS") return res.status(400).json({ error: "«Anfragen» ist fest eingebaut und lässt sich nicht löschen." });
         // Die Nachrichten bleiben — sie verlieren nur die Zuordnung (FK SetNull).
         await prisma.mailCategory.delete({ where: { id: row.id } });
+        // Der Abruf darf nicht weiter in ein Fach einsortieren, das es nicht mehr gibt.
+        invalidateCategoryIndex(tenantId);
         res.status(204).send();
     } catch (error: any) {
         res.status(500).json({ error: error?.message || "Kategorie konnte nicht gelöscht werden." });
@@ -978,6 +991,7 @@ router.post("/messages/send", requireAuth, requirePermission("mail.send"), async
 /* ── Adressbuch-Cache: Kundenänderungen sollen den nächsten Abruf sofort treffen ── */
 router.post("/inbox/refresh-addressbook", requireAuth, requireAnyPermission(["crm.customers.view", "mail.manage"]), (req, res) => {
     invalidateAddressBook(req.user!.tenantId);
+    invalidateCategoryIndex(req.user!.tenantId);
     res.status(204).send();
 });
 
