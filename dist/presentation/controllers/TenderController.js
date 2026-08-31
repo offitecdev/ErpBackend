@@ -17,6 +17,7 @@ const technicianSchedule_1 = require("./technicianSchedule");
 const tender_discounts_1 = require("./tender.discounts");
 const tenantTree_1 = require("../../shared/tenantTree");
 const OspClient_1 = require("../../infrastructure/services/OspClient");
+const ospStatusSync_1 = require("../../infrastructure/services/ospStatusSync");
 const documentNumber_1 = require("../../shared/documentNumber");
 const TenderDocumentStorageService_1 = require("../../infrastructure/services/TenderDocumentStorageService");
 const serviceTenantScope_1 = require("./serviceTenantScope");
@@ -2253,7 +2254,17 @@ class TenderController {
                     await prisma_client_1.default.ospDocument.update({
                         where: { id: row.id },
                         data: {
+                            // §4b räumt drüben Status UND Zuständigkeit ab. Die
+                            // Zeile hier zieht nach: sie ist wieder eine offene
+                            // Anfrage, die niemand bearbeitet — wer sie erneut
+                            // übernimmt, meldet damit auch wieder "under
+                            // review". Bliebe die Person stehen, zeigte die
+                            // Liste eine Zuweisung, die drüben nicht existiert.
                             status: 'LISTED',
+                            salespersonId: null,
+                            salespersonEmail: null,
+                            salespersonName: null,
+                            salespersonProfile: null,
                             lastReportedStatus: null,
                             ...(result.ok
                                 ? { lastReportAt: new Date(), lastReportError: null }
@@ -2938,6 +2949,18 @@ class TenderController {
                     offerMailRecipient: to
                 }
             });
+            /* Kam die Offerte aus der OSP, ist ihre Anfrage damit erledigt:
+               "Gesendet" bei uns, `offer has been sent` drüben (§3). Nur ein
+               ECHTER Versand zählt — eine Vorschau ohne Mailkonto hat der
+               Kundschaft nichts zugestellt und darf die Anfrage nicht
+               abschliessen.
+
+               Im Hintergrund: die Kundschaft hat die Offerte bereits, und ob
+               die OSP antwortet, darf den Versand nicht aufhalten. Scheitert
+               die Meldung, steht der Grund an der OSP-Zeile. */
+            if (!result.preview) {
+                void (0, ospStatusSync_1.markOspOfferSent)(tenderId).catch(() => undefined);
+            }
             if (tender.customerId) {
                 const activity = await this.customerActivityRepo.create({
                     customerId: tender.customerId,

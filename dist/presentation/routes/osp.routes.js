@@ -16,6 +16,7 @@ const customerAddress_1 = require("../../application/utils/customerAddress");
 const OspClient_1 = require("../../infrastructure/services/OspClient");
 const ospDatasheet_1 = require("../../infrastructure/services/ospDatasheet");
 const LocalFileStorage_1 = require("../../infrastructure/services/LocalFileStorage");
+const ospStatusSync_1 = require("../../infrastructure/services/ospStatusSync");
 /**
  * ── OSP-MODUL (Offitec Selection Platform, 04.09.2026) ──────────────────────
  * Eingehender Webhook der OSP-Offertanfragen, die Belegliste der OSP-Seite
@@ -30,6 +31,9 @@ const LocalFileStorage_1 = require("../../infrastructure/services/LocalFileStora
  *    eine Offerte.
  *  • Der Kunde des Imports darf ein CRM-Kunde sein ODER von Hand eingegeben
  *    werden (Tender.manualCustomer*) — von Hand heisst: NIRGENDS registriert.
+ *  • Zuständig ist EINE Person: die Verkäuferin/der Verkäufer. Ihre Wahl ist
+ *    zugleich der Bearbeitungsstand — LISTED ohne, IN_OFFER mit (drüben
+ *    "under review"). Der Stand wird nirgends von Hand gesetzt.
  *  • Jede Meldung an die OSP ist Best-Effort; Ausgang + Fehler stehen an der
  *    Zeile (lastReport*).
  */
@@ -98,23 +102,6 @@ const loadFeedContext = async (tenantId) => {
     const visible = tenantId === rootId || selected.includes(tenantId);
     return { rootId, setting, visible };
 };
-/**
- * Die §3-Visitenkarte einer Zeile. Beim Wählen der Person wird sie ganz
- * abgelegt (Vorname, Nachname, Rufnummer); ältere Zeilen kennen nur den
- * zusammengesetzten Anzeigenamen — der wird dann am ersten Leerzeichen
- * geteilt, weil mehr über sie nicht bekannt ist.
- */
-const salesmanOf = (doc) => {
-    const email = asTrimmed(doc?.salespersonEmail);
-    if (!email)
-        return null;
-    const stored = doc?.salespersonProfile;
-    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-        return { ...stored, email };
-    }
-    const [first, ...rest] = String(doc?.salespersonName || '').trim().split(/\s+/);
-    return { email, name: first || null, surname: rest.join(' ') || null };
-};
 /** Die abzulegende Visitenkarte einer gewählten Person (§3-Form). */
 const salesmanProfileOf = (employee) => ({
     email: employee.email || null,
@@ -122,23 +109,6 @@ const salesmanProfileOf = (employee) => ({
     surname: employee.lastName || null,
     phone: employee.phone || null,
 });
-/** Meldung an die OSP + Protokoll an der Zeile — Best-Effort, wirft nie. */
-const reportDocumentStatus = async (setting, doc, internalStatus) => {
-    const wireStatus = OspClient_1.OSP_WIRE_STATUS[internalStatus];
-    if (!wireStatus || !setting)
-        return;
-    const result = await (0, OspClient_1.reportOspOfferStatus)(setting, doc.reference, wireStatus, salesmanOf(doc));
-    await prisma_client_1.default.ospDocument.update({
-        where: { id: doc.id },
-        data: result.ok
-            ? { lastReportedStatus: wireStatus, lastReportAt: new Date(), lastReportError: null }
-            : {
-                lastReportError: result.skipped
-                    ? 'OSP-Zugang nicht konfiguriert (Basisadresse/Schlüssel fehlen).'
-                    : result.error || 'Unbekannter Fehler.',
-            },
-    }).catch(() => undefined);
-};
 /**
  * Das Datenblatt einer Zeile holen, ablegen und auslesen — Best-Effort, wirft
  * nie. Erfolg wie Misserfolg stehen danach an der Zeile (datasheet*), genau
@@ -175,6 +145,24 @@ webhookSpecs) => {
     if (result.ok && old && old !== result.file) {
         await LocalFileStorage_1.ospDatasheetStorage.remove(old).catch(() => undefined);
     }
+};
+/**
+ * Der Stand FOLGT der Arbeit, er wird nicht gewählt (Vertrag, "Required
+ * workflow in the sales system"):
+ *
+ *  • niemand zuständig            → LISTED   (drüben "created", "Gelistet")
+ *  • Verkäufer:in gewählt         → IN_OFFER (drüben "under review",
+ *                                             bei uns "Verkäufer zugewiesen")
+ *  • Angebotsmail hinaus          → SENT     (drüben "offer has been sent")
+ *
+ * SENT und APPROVED bleiben stehen: eine hinausgegangene Offerte fällt nicht
+ * zurück, bloss weil jemand die Zuständigkeit tauscht. WITHDRAWN ebenso — die
+ * OSP hat ihre Seite dort bereits abgeräumt.
+ */
+const statusForAssignment = (current, hasSalesperson) => {
+    if (current === 'SENT' || current === 'APPROVED' || current === 'WITHDRAWN')
+        return current;
+    return hasSalesperson ? 'IN_OFFER' : 'LISTED';
 };
 const employeeDisplayName = (employee) => [employee.firstName, employee.lastName].filter(Boolean).join(' ').trim() || employee.email || '';
 /** Leere Felder raus — was die OSP nicht nennt, darf nichts überschreiben. */
@@ -278,11 +266,16 @@ const ingestOfferEntries = async (setting, entries, mode) => {
         const webhookSpecs = (0, ospDatasheet_1.specsFromOfferEntry)(entry);
         const existing = await prisma_client_1.default.ospDocument.findUnique({
             where: { tenantId_reference: { tenantId: setting.tenantId, reference } },
-            select: { id: true, status: true, datasheetUrl: true, datasheetFile: true, datasheetSpecs: true },
+            select: {
+                id: true, status: true, datasheetUrl: true, datasheetFile: true,
+                datasheetSpecs: true, salespersonEmail: true,
+            },
         });
         if (existing) {
             /** Eine Zeile, die nach einem Rückzug wieder auflebt (§1b → §1). */
             let revived = false;
+            /** Eine Überarbeitung, die drüben wieder auf "under review" gehört. */
+            let revisionReport = false;
             if (Object.keys(webhookSpecs).length) {
                 data.datasheetSpecs = (0, ospDatasheet_1.mergeSpecs)(existing.datasheetSpecs, webhookSpecs);
             }
@@ -292,6 +285,15 @@ const ingestOfferEntries = async (setting, entries, mode) => {
                 // besteht, gehört weiterhin zu diesem Beleg.
                 data.revisedAt = new Date();
                 data.revisionCount = { increment: 1 };
+                // Eine zur Kenntnis genommene frühere Überarbeitung deckt diese
+                // hier nicht mit ab — die Warnung an der Offerte lebt auf.
+                data.revisionSeenAt = null;
+                // Drüben steht die Anfrage nach der Überarbeitung wieder auf
+                // "created", die Zuständigkeit hier besteht aber fort. Also
+                // wird sie zurück auf "under review" gesetzt (§1a).
+                if (existing.salespersonEmail && existing.status === 'IN_OFFER') {
+                    revisionReport = true;
+                }
             }
             else if (existing.status === 'WITHDRAWN') {
                 // Nach einem Rückzug darf neu angefragt werden — das kommt als
@@ -310,7 +312,9 @@ const ingestOfferEntries = async (setting, entries, mode) => {
             await prisma_client_1.default.ospDocument.update({ where: { id: existing.id }, data });
             out.updated += 1;
             if (revived)
-                out.report.push({ id: existing.id, reference });
+                out.report.push({ id: existing.id, status: 'LISTED' });
+            else if (revisionReport)
+                out.report.push({ id: existing.id, status: 'IN_OFFER' });
             // Erneut geholt wird nur, wenn das Datenblatt fehlt oder die OSP
             // auf eine ANDERE Datei zeigt — sonst bliebe es bei jeder
             // Wiederholung derselben Anfrage beim Herunterladen.
@@ -324,14 +328,14 @@ const ingestOfferEntries = async (setting, entries, mode) => {
                 data.datasheetSpecs = webhookSpecs;
             const row = await prisma_client_1.default.ospDocument.create({
                 data: { id: (0, nanoid_1.nanoid)(12), tenantId: setting.tenantId, reference, status: 'LISTED', ...data },
-                select: { id: true, reference: true },
+                select: { id: true },
             });
             out.created += 1;
             // Auch eine Überarbeitung zu einem Beleg, den wir nie bekommen
             // haben, wird angelegt und quittiert: lieber eine Anfrage zu viel
             // in der Liste als eine, die niemand je sieht — die OSP wiederholt
             // nicht.
-            out.report.push(row);
+            out.report.push({ id: row.id, status: 'LISTED' });
             if (data.datasheetUrl)
                 out.datasheetJobs.push({ id: row.id, url: data.datasheetUrl, specs: webhookSpecs });
         }
@@ -347,7 +351,20 @@ const finishIngest = (setting, res, result) => {
         datasheets: result.datasheetJobs.length,
     });
     for (const row of result.report) {
-        void reportDocumentStatus(setting, row, 'LISTED').catch(() => undefined);
+        // Gemeldet wird die Zeile, wie sie nach dem Einlesen dasteht: die
+        // Visitenkarte gehört zur Meldung (§3), und bei einer Überarbeitung ist
+        // genau sie es, die drüben erhalten bleiben soll.
+        void (async () => {
+            const doc = await prisma_client_1.default.ospDocument.findUnique({
+                where: { id: row.id },
+                select: {
+                    id: true, reference: true, salespersonEmail: true,
+                    salespersonName: true, salespersonProfile: true,
+                },
+            }).catch(() => null);
+            if (doc)
+                await (0, ospStatusSync_1.reportOspDocumentStatus)(setting, doc, row.status);
+        })().catch(() => undefined);
     }
     for (const job of result.datasheetJobs) {
         void storeDatasheet(setting, job.id, job.url, job.specs).catch(() => undefined);
@@ -540,10 +557,11 @@ router.get('/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
                 }
             }
         }
-        /* Selbstpflege des Standes: hängt an einer Zeile eine Offerte, deren
-           Angebotsmail inzwischen HINAUS ist, rückt die Zeile von IN_OFFER auf
-           SENT vor — und die OSP bekommt "offer has been sent" gemeldet. So
-           braucht der Mailweg der Offerte keinen OSP-Haken. */
+        /* Sicherheitsnetz für den Stand: gemeldet wird "gesendet" am Mailweg
+           der Offerte selbst (markOspOfferSent). Ging das damals daneben — der
+           Serverstand war älter, der Aufruf brach ab —, holt die Liste es hier
+           nach: hängt an einer Zeile eine Offerte, deren Angebotsmail HINAUS
+           ist, rückt sie von IN_OFFER auf SENT vor und meldet es. */
         const mailCandidates = items.filter((doc) => doc.status === 'IN_OFFER' && doc.tenderId);
         if (mailCandidates.length) {
             const tenders = await prisma_client_1.default.tender.findMany({
@@ -556,7 +574,11 @@ router.get('/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
                     continue;
                 doc.status = 'SENT';
                 await prisma_client_1.default.ospDocument.update({ where: { id: doc.id }, data: { status: 'SENT' } });
-                void reportDocumentStatus(feed.setting, doc, 'SENT').catch(() => undefined);
+                // Ohne Verkäufer:in lehnt die OSP "offer has been sent" mit 400
+                // ab (§3) — der Stand bei uns stimmt trotzdem.
+                if (doc.salespersonEmail) {
+                    void (0, ospStatusSync_1.reportOspDocumentStatus)(feed.setting, doc, 'SENT').catch(() => undefined);
+                }
             }
         }
         const counts = { LISTED: 0, IN_OFFER: 0, SENT: 0, APPROVED: 0, WITHDRAWN: 0 };
@@ -579,7 +601,15 @@ router.get('/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
         res.status(500).json({ error: error?.message || 'OSP-Liste fehlgeschlagen.' });
     }
 });
-/* ── 3) Zeile pflegen: Status / zuständige Person / Rolle ────────────────── */
+/* ── 3) Zeile pflegen: die zuständige Verkäuferin / der zuständige Verkäufer ─
+   EINE Zuständigkeit, direkt gewählt (19.09.2026): die Projektleitung als
+   zweites Feld ist weg — an der Anfrage steht die Person, die die Offerte
+   macht, und genau die geht als `salesman` an die OSP.
+
+   Der STAND wird dabei nicht gewählt, sondern folgt (siehe
+   `statusForAssignment`): wer eine Person einträgt, setzt die Anfrage auf
+   "Verkäufer zugewiesen" und meldet der OSP "under review"; wer sie
+   herausnimmt, stellt sie zurück auf "Gelistet". */
 router.patch('/documents/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
@@ -593,74 +623,156 @@ router.patch('/documents/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
             return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
         const data = {};
         const body = req.body || {};
-        if (body.status !== undefined) {
-            const status = String(body.status || '').toUpperCase();
-            if (!OSP_STATUSES.includes(status)) {
-                return res.status(400).json({ error: 'Unbekannter Status.' });
+        if (body.salespersonId !== undefined) {
+            if (!body.salespersonId) {
+                data.salespersonId = null;
+                data.salespersonEmail = null;
+                data.salespersonName = null;
+                data.salespersonProfile = null;
             }
-            data.status = status;
-        }
-        // Verkäufer:in und Projektleiter:in sind ZWEI eigene Zuständigkeiten,
-        // die je direkt gewählt werden (bis 05.09.2026 war es eine Person mit
-        // umschaltbarer Rolle). Beide werden gleich aufgelöst.
-        for (const role of [
-            { field: 'salespersonId', columns: ['salespersonId', 'salespersonEmail', 'salespersonName'], sales: true },
-            { field: 'projectManagerId', columns: ['projectManagerId', 'projectManagerEmail', 'projectManagerName'], sales: false },
-        ]) {
-            const requested = body[role.field];
-            if (requested === undefined)
-                continue;
-            const [idColumn, emailColumn, nameColumn] = role.columns;
-            if (!requested) {
-                data[idColumn] = null;
-                data[emailColumn] = null;
-                data[nameColumn] = null;
-                if (role.sales)
-                    data.salespersonProfile = null;
-                continue;
-            }
-            // Person kommt aus dem Personalverzeichnis — Name und E-Mail
-            // werden hier aufgelöst, nie vom Client übernommen. Und zwar aus
-            // dem Verzeichnis der AUSGEWÄHLTEN Firma: die OSP-Liste hängt zwar
-            // am Stamm, die Zuständigen sind aber Leute der eigenen Firma.
-            const employee = await prisma_client_1.default.employee.findFirst({
-                where: { id: String(requested), ...(0, serviceTenantScope_1.employeeScopeWhere)(await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId)) },
-                select: { id: true, firstName: true, lastName: true, email: true, phone: true },
-            });
-            if (!employee)
-                return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
-            data[idColumn] = employee.id;
-            data[emailColumn] = employee.email || null;
-            data[nameColumn] = employeeDisplayName(employee);
-            // Die Visitenkarte, die §3 mitschickt — nur die Verkaufsseite geht
-            // je an die OSP, die Projektleitung bleibt intern.
-            if (role.sales)
+            else {
+                // Person kommt aus dem Personalverzeichnis — Name und E-Mail
+                // werden hier aufgelöst, nie vom Client übernommen. Und zwar
+                // aus dem Verzeichnis der AUSGEWÄHLTEN Firma: die OSP-Liste
+                // hängt zwar am Stamm, die Zuständigen sind aber Leute der
+                // eigenen Firma.
+                const employee = await prisma_client_1.default.employee.findFirst({
+                    where: { id: String(body.salespersonId), ...(0, serviceTenantScope_1.employeeScopeWhere)(await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId)) },
+                    select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+                });
+                if (!employee)
+                    return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
+                data.salespersonId = employee.id;
+                data.salespersonEmail = employee.email || null;
+                data.salespersonName = employeeDisplayName(employee);
+                // Die Visitenkarte, die §3 mitschickt.
                 data.salespersonProfile = salesmanProfileOf(employee);
+            }
         }
-        const nextStatus = data.status ?? doc.status;
         const nextEmail = data.salespersonEmail !== undefined ? data.salespersonEmail : doc.salespersonEmail;
-        // "under review" und "offer has been sent" sind ohne Verkäufer:in
-        // bedeutungslos — die OSP lehnt sie ab (400), also lehnen wir zuerst ab.
-        // (Die Projektleitung ist intern und wird nie gemeldet.) Geprüft wird
-        // nur, wenn die Änderung Status oder Verkauf ANFASST: sonst könnte an
-        // einer alten Zeile ohne Verkäufer-E-Mail nicht einmal mehr die
-        // Projektleitung eingetragen werden.
-        const touchesReported = body.status !== undefined || body.salespersonId !== undefined;
-        if (touchesReported && (nextStatus === 'IN_OFFER' || nextStatus === 'SENT') && !nextEmail) {
-            return res.status(400).json({ error: 'Für diesen Status muss zuerst eine Verkäuferin oder ein Verkäufer gewählt werden.' });
+        // Der Stand folgt der Zuständigkeit — von Hand gesetzt wird er nicht.
+        const nextStatus = statusForAssignment(doc.status, Boolean(nextEmail));
+        if (nextStatus !== doc.status)
+            data.status = nextStatus;
+        // "under review" ist ohne Verkäufer:in bedeutungslos — die OSP lehnt es
+        // mit 400 ab. Wer eine Person OHNE E-Mail-Adresse wählt, bekommt das
+        // hier gesagt, statt dass die Meldung später still an der Zeile
+        // scheitert.
+        if (body.salespersonId && !nextEmail) {
+            return res.status(400).json({ error: 'Diese Person hat keine E-Mail-Adresse — die OSP braucht sie, um die Zuweisung anzuzeigen.' });
         }
         const updatedDoc = await prisma_client_1.default.ospDocument.update({ where: { id: doc.id }, data });
-        // Nur eine ECHTE Änderung meldet an die OSP (erneute Zustellung wäre
-        // drüben zwar sicher, hier aber sinnlos).
-        const statusChanged = nextStatus !== doc.status;
+        /* Gemeldet wird jede ECHTE Änderung der Zuweisung:
+            • Person gewählt/gewechselt → "under review" mit ihrer Visitenkarte
+              (auch beim Wechsel — die OSP ersetzt sonst die alte Karte nicht),
+            • Person entfernt, solange die Offerte noch nicht hinaus ist →
+              "created" ohne Karte, denn drüben stünde sonst weiterhin jemand,
+              der die Anfrage gar nicht mehr bearbeitet. Eine GESENDETE Offerte
+              rührt das nicht an: sie ist beim Kunden. */
         const personChanged = nextEmail !== doc.salespersonEmail;
-        if ((statusChanged || personChanged) && (nextStatus === 'IN_OFFER' || nextStatus === 'SENT')) {
-            await reportDocumentStatus(feed.setting, updatedDoc, nextStatus);
+        if (personChanged && (nextStatus === 'IN_OFFER' || nextStatus === 'LISTED')) {
+            await (0, ospStatusSync_1.reportOspDocumentStatus)(feed.setting, updatedDoc, nextStatus);
         }
         res.json(await prisma_client_1.default.ospDocument.findUnique({ where: { id: doc.id } }));
     }
     catch (error) {
         res.status(500).json({ error: error?.message || 'OSP-Beleg konnte nicht gespeichert werden.' });
+    }
+});
+/* ── 3a) Die Anfrage zu einer OFFERTE — für die Offertenseite ───────────────
+   Die Offerte weiss von sich aus nichts über ihre Herkunft. Diese Adresse
+   beantwortet die eine Frage, die sie stellt: "komme ich aus der OSP, und was
+   ist seither passiert?" Ohne Zeile antwortet sie mit `null` — das ist der
+   Normalfall und kein Fehler. */
+router.get('/documents/by-tender/:tenderId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext(req.user.tenantId);
+        // Ohne freigeschaltete OSP gibt es zu einer Offerte schlicht nichts zu
+        // sagen — das ist keine Zugriffsverweigerung, sondern "keine Zeile".
+        if (!feed?.visible)
+            return res.json({ document: null });
+        const doc = await prisma_client_1.default.ospDocument.findFirst({
+            where: { tenderId: req.params.tenderId, tenantId: feed.rootId },
+        });
+        res.json({ document: doc || null });
+    }
+    catch (error) {
+        res.status(500).json({ error: error?.message || 'OSP-Beleg konnte nicht geladen werden.' });
+    }
+});
+/* ── 3c) Die Überarbeitung zur Kenntnis nehmen (§1a) ─────────────────────────
+   Die Warnung an der Offerte steht, solange die Überarbeitung jünger ist als
+   dieser Stempel. Gelöscht wird dabei nichts: `revisedAt` bleibt stehen, die
+   Zeile sagt weiterhin, dass und wann die Einheit neu gerechnet wurde. */
+router.post('/documents/:id/revision-seen', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext(req.user.tenantId);
+        if (!feed?.visible)
+            return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+        const doc = await prisma_client_1.default.ospDocument.findFirst({
+            where: { id: req.params.id, tenantId: feed.rootId },
+            select: { id: true },
+        });
+        if (!doc)
+            return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
+        res.json(await prisma_client_1.default.ospDocument.update({
+            where: { id: doc.id },
+            data: { revisionSeenAt: new Date() },
+        }));
+    }
+    catch (error) {
+        res.status(500).json({ error: error?.message || 'Speichern fehlgeschlagen.' });
+    }
+});
+/* ── 3d) Die Anfrage LÖSCHEN — und den Rückzug drüben melden (§4b) ───────────
+   Der Vertrag verlangt für Zeilen aus der OSP einen Löschknopf, der
+   `DELETE /integration/offer-status/{reference}` ruft: die Methode SELBST ist
+   die Meldung "gelöscht", einen Status `deleted` gibt es nicht. Drüben wird
+   dabei nichts gelöscht — Status und Zuständigkeit werden geleert, und die
+   anfragende Person darf neu anfragen.
+
+   Erst wenn die OSP mit 2xx quittiert hat, verschwindet die Zeile hier: sonst
+   wüssten die beiden Seiten Verschiedenes, ohne dass es jemandem auffiele. Ist
+   gar kein OSP-Zugang hinterlegt, gibt es nichts zu melden und die Zeile geht.
+
+   Die Offerte, die aus der Anfrage entstanden ist, bleibt bestehen — sie ist
+   ein eigener Beleg. Sie verliert nur ihre Herkunft. */
+router.delete('/documents/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext(req.user.tenantId);
+        if (!feed?.visible)
+            return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+        const doc = await prisma_client_1.default.ospDocument.findFirst({
+            where: { id: req.params.id, tenantId: feed.rootId },
+            select: { id: true, reference: true, datasheetFile: true },
+        });
+        if (!doc)
+            return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
+        const result = feed.setting
+            ? await (0, OspClient_1.withdrawOspOfferStatus)(feed.setting, doc.reference)
+            : { ok: false, skipped: true, notFound: false, error: undefined };
+        // Kennt die OSP den Beleg gar nicht (404), ist der Rückzug bereits
+        // erreicht: dort steht nichts mehr, was unsere Zeile noch trüge. Sie
+        // hier dann festzuhalten hiesse, sie nie mehr loszuwerden.
+        if (!result.ok && !result.skipped && !result.notFound) {
+            // Sichtbar stehen lassen und den Grund an die Zeile schreiben —
+            // erneut versuchen kann man danach mit demselben Knopf.
+            await prisma_client_1.default.ospDocument.update({
+                where: { id: doc.id },
+                data: { lastReportError: result.error || 'Rückzug bei der OSP fehlgeschlagen.' },
+            }).catch(() => undefined);
+            return res.status(502).json({ error: result.error || 'Die OSP hat den Rückzug nicht bestätigt — die Anfrage bleibt stehen.' });
+        }
+        await prisma_client_1.default.ospDocument.delete({ where: { id: doc.id } });
+        // Das abgelegte Datenblatt gehörte zur Zeile und hat ohne sie keinen
+        // Ort mehr. Best-Effort: eine Datei, die nicht wegzuräumen ist, darf
+        // die Löschung nicht scheitern lassen.
+        if (doc.datasheetFile)
+            await LocalFileStorage_1.ospDatasheetStorage.remove(doc.datasheetFile).catch(() => undefined);
+        res.json({ deleted: true, reference: doc.reference, reported: result.ok });
+    }
+    catch (error) {
+        res.status(500).json({ error: error?.message || 'OSP-Beleg konnte nicht gelöscht werden.' });
     }
 });
 /* ── 3b) Das Datenblatt: öffnen und (bei Bedarf) erneut holen ────────────── */
@@ -775,9 +887,9 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             .filter((row) => row.title);
         if (!positions.length)
             return res.status(400).json({ error: 'Mindestens eine Position angeben.' });
-        // Zuständige Personen: gewählt oder (bei der Verkaufsseite) die
-        // anlegende Person selbst. Die Projektleitung bleibt leer, wenn sie
-        // niemand gewählt hat — sie wird nie stillschweigend gesetzt.
+        // Zuständig ist EINE Person: die Verkäuferin/der Verkäufer. Gewählt
+        // an der Zeile, im Aufruf mitgegeben — oder, wenn beides fehlt, die
+        // Person, die den Import auslöst.
         const findEmployee = async (employeeId) => {
             const employee = await prisma_client_1.default.employee.findFirst({
                 where: { id: employeeId, ...(0, serviceTenantScope_1.employeeScopeWhere)(await (0, serviceTenantScope_1.getPersonnelTenantScope)(user.tenantId)) },
@@ -805,15 +917,6 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             // Niemand gewählt: es ist die Person, die den Import auslöst.
             salesperson = await findEmployee(user.id)
                 ?? { id: user.id, email: user.email || null, name: employeeDisplayName(user) };
-        }
-        let projectManager = doc.projectManagerId
-            ? { id: doc.projectManagerId, email: doc.projectManagerEmail, name: doc.projectManagerName }
-            : null;
-        const requestedProjectManagerId = asTrimmed(body.projectManagerId);
-        if (requestedProjectManagerId) {
-            projectManager = await findEmployee(requestedProjectManagerId);
-            if (!projectManager)
-                return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
         }
         /* Mehrzeilige manuelle Adresse: Strasse / PLZ Ort / Land.
 
@@ -914,19 +1017,12 @@ router.post('/documents/:id/import', AuthMiddleware_1.requireAuth, (0, RbacMiddl
                 salespersonEmail: salesperson.email,
                 salespersonName: salesperson.name,
                 ...(salesperson.profile ? { salespersonProfile: salesperson.profile } : {}),
-                ...(projectManager
-                    ? {
-                        projectManagerId: projectManager.id,
-                        projectManagerEmail: projectManager.email,
-                        projectManagerName: projectManager.name,
-                    }
-                    : {}),
             },
         });
         // "under review" braucht die zuständige Person — ohne E-Mail-Adresse
         // wird gar nicht gemeldet (die OSP würde mit 400 ablehnen).
         if (salesperson.email) {
-            await reportDocumentStatus(feed.setting, updatedDoc, 'IN_OFFER');
+            await (0, ospStatusSync_1.reportOspDocumentStatus)(feed.setting, updatedDoc, 'IN_OFFER');
         }
         res.status(201).json({ tenderId: tender.id, tenderNumber, document: updatedDoc });
     }

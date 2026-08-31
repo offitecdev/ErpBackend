@@ -12,21 +12,37 @@ const calendarMailService_1 = require("../../infrastructure/services/calendarMai
 const ImapCaptureService_1 = require("../../infrastructure/services/ImapCaptureService");
 const caldavCalendarService_1 = require("../../infrastructure/services/caldavCalendarService");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
+const mailboxIdentity_1 = require("../../infrastructure/services/mailboxIdentity");
+const calendarImportService_1 = require("../../infrastructure/services/calendarImportService");
 /* Workspace "meeting activities" (meetings & lightweight tasks) shown on the CRM
    overview and the unified calendar. Participants mix staff and customers. */
 const router = (0, express_1.Router)();
-const meetingVisibility = (tenantId, employeeId) => ({ tenantId, employeeId });
+const meetingVisibility = async (tenantId, employeeId) => {
+    const [mailTenantId, mailbox] = await Promise.all([
+        (0, serviceTenantScope_1.getMailTenantId)(tenantId).catch(() => tenantId),
+        (0, mailboxIdentity_1.currentMailboxIdentity)(tenantId).catch(() => ''),
+    ]);
+    return { tenantId, mailTenantId, mailbox, employeeId };
+};
 const visibleMeetingWhere = (scope) => ({
     OR: [
         { tenantId: scope.tenantId, externalOrigin: null },
         {
             NOT: { externalOrigin: null },
-            /* Only the participant link proves personal ownership. Historical
-               imports used an arbitrary employee merely to satisfy the
-               required createdBy column; using it here would leak old meetings
-               until the one-time IMAP backfill repairs them. */
+            /* Only the participant link proves personal ownership. The
+               imported row's createdBy may be an arbitrary employee — it only
+               fills the required column — so using it here would show one
+               person every meeting of the house. */
             participants: { some: { employeeId: scope.employeeId } },
         },
+        // Der Termin des Postfachs: von aussen, aber an niemanden persönlich
+        // adressiert. Ohne eingerichtetes Konto entfällt der Zweig.
+        ...(scope.mailbox ? [{
+                tenantId: scope.mailTenantId,
+                externalMailbox: scope.mailbox,
+                NOT: { externalOrigin: null },
+                participants: { none: { participantType: 'EMPLOYEE' } },
+            }] : []),
     ],
 });
 const PARTICIPANT_INCLUDE = {
@@ -80,7 +96,7 @@ router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
         const user = req.user;
         const start = req.query.start ? new Date(String(req.query.start)) : null;
         const end = req.query.end ? new Date(String(req.query.end)) : null;
-        const scope = meetingVisibility(user.tenantId, user.id);
+        const scope = await meetingVisibility(user.tenantId, user.id);
         const meetings = await prisma_client_1.default.meetingActivity.findMany({
             where: {
                 ...visibleMeetingWhere(scope),
@@ -156,7 +172,7 @@ router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
 router.patch('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;
-        const scope = meetingVisibility(user.tenantId, user.id);
+        const scope = await meetingVisibility(user.tenantId, user.id);
         const existing = await prisma_client_1.default.meetingActivity.findFirst({
             where: { id: String(req.params.id || ''), ...visibleMeetingWhere(scope) },
         });
@@ -224,7 +240,7 @@ router.patch('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
 router.delete('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;
-        const scope = meetingVisibility(user.tenantId, user.id);
+        const scope = await meetingVisibility(user.tenantId, user.id);
         const existing = await prisma_client_1.default.meetingActivity.findFirst({
             where: { id: String(req.params.id || ''), ...visibleMeetingWhere(scope) },
         });
@@ -246,7 +262,7 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
 router.post('/:id/send-invite', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;
-        const scope = meetingVisibility(user.tenantId, user.id);
+        const scope = await meetingVisibility(user.tenantId, user.id);
         const existing = await prisma_client_1.default.meetingActivity.findFirst({
             where: { id: String(req.params.id || ''), ...visibleMeetingWhere(scope) },
             select: { id: true },
@@ -346,7 +362,16 @@ router.post('/sync', AuthMiddleware_1.requireAuth, async (req, res) => {
         /* Die Abrufe laufen weiter, auch wenn die Antwort schon raus ist — darum
            MUSS der Fehlerfall hier hängen. Ohne das eigene `catch` stürbe der
            Prozess an einer abgelehnten Zusage, die niemand mehr abholt. */
-        const jobs = [];
+        /* Die Zuordnung der schon übernommenen Termine wird bei JEDEM echten
+           Durchgang nachgetragen — nicht nur, wenn jemand «nachholen» drückt.
+           Sie kostet ohne offene Fälle eine Abfrage, und der Kalender heilt
+           sich damit von selbst, statt auf einen Knopf zu warten. */
+        const jobs = [
+            (0, calendarImportService_1.repairImportedMeetingOwners)(mailTenantId).catch((error) => {
+                console.error('[KALENDER] Nachtragen der Zuordnung fehlgeschlagen:', error?.message || error);
+                return 0;
+            }),
+        ];
         if (mailDue) {
             jobs.push((0, ImapCaptureService_1.captureInbox)(mailTenantId).then((summary) => summary.calendar).catch((error) => {
                 console.error('[KALENDER] Postfachabruf beim Öffnen fehlgeschlagen:', error?.message || error);
@@ -377,6 +402,76 @@ router.post('/sync', AuthMiddleware_1.requireAuth, async (req, res) => {
         // Ein misslungener Abruf darf den Kalender nicht aufhalten: gemeldet,
         // aber nicht als Fehler der Seite.
         res.json({ started: false, reason: 'error', error: error?.message || 'Abruf fehlgeschlagen.', calendar: 0 });
+    }
+});
+/* ── ALLE TERMINE AUS DEM POSTFACH NACHHOLEN ─────────────────────────────────
+ *
+ * Vorgabe 14.09.2026 (Samet): «alle Besprechungen aus dem Posteingang gehören
+ * in den Kalender — und zwar personenbezogen; es wird eingehende und
+ * ausgehende geben.»
+ *
+ * Der gewöhnliche Abruf (`/sync`) liest NUR VORWÄRTS. Für die laufende Post
+ * ist das richtig, für die Einladungen war es die Lücke: was schon im
+ * Postfach lag, als der Abruf das erste Mal darüberging, wurde nie wieder
+ * angesehen — und jede spätere Verbesserung an der Zuordnung galt nur für
+ * Post, die noch gar nicht da war.
+ *
+ * Dieser Durchgang geht das GANZE Fenster (Posteingang UND Gesendet) noch
+ * einmal durch, sieht sich aber nur die Nachrichten mit Kalenderteil an und
+ * lässt Post wie Lesestand unangetastet. Er ist damit beliebig wiederholbar:
+ * jeder Termin landet über seine UID auf derselben Zeile, also wird er
+ * nachgeführt statt verdoppelt.
+ *
+ * Er kann MINUTEN dauern (zwei Monate Postfach). Darum dieselbe Regel wie
+ * beim Öffnen des Kalenders: nach zwölf Sekunden wird geantwortet, der Rest
+ * läuft im Hintergrund weiter, und die Seite lädt die Liste danach noch
+ * einmal nach.
+ */
+const BACKFILL_WAIT_MS = 12_000;
+router.post('/backfill', AuthMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const mailTenantId = await (0, serviceTenantScope_1.getMailTenantId)(req.user.tenantId).catch(() => req.user.tenantId);
+        const settings = await prisma_client_1.default.mailSetting.findUnique({
+            where: { tenantId: mailTenantId },
+            select: { imapHost: true, caldavEnabled: true },
+        });
+        if (!settings?.imapHost?.trim())
+            return res.json({ started: false, reason: 'not_configured', calendar: 0 });
+        if ((0, ImapCaptureService_1.isCaptureRunning)(mailTenantId))
+            return res.json({ started: false, reason: 'running', calendar: 0 });
+        /* ZUERST OHNE NETZ: die bereits übernommenen Termine, denen noch
+           niemand zugeordnet ist, tragen ihre Adressen selbst (`ccEmails`,
+           `externalOrganizer`). Das kostet zwei Abfragen und repariert auch
+           die Termine, deren Einladung längst nicht mehr auf dem Server liegt —
+           der Durchgang unten käme an die nie wieder heran. */
+        const repaired = await (0, calendarImportService_1.repairImportedMeetingOwners)(mailTenantId).catch((error) => {
+            console.error('[KALENDER] Nachtragen der Zuordnung fehlgeschlagen:', error?.message || error);
+            return 0;
+        });
+        /* Das Nachholen hängt NICHT am Schalter `imapCaptureEnabled`: der
+           bestimmt, ob der Zeitplan von selbst liest. Hier hat jemand
+           ausdrücklich darum gebeten. */
+        const jobs = [
+            (0, ImapCaptureService_1.captureInbox)(mailTenantId, { calendarOnly: true }).then((summary) => summary.calendar).catch((error) => {
+                console.error('[KALENDER] Nachholen aus dem Postfach fehlgeschlagen:', error?.message || error);
+                return 0;
+            }),
+        ];
+        if (settings.caldavEnabled && !(0, caldavCalendarService_1.isCaldavRunning)(mailTenantId)) {
+            jobs.push((0, caldavCalendarService_1.captureCalendar)(mailTenantId).then((summary) => summary.created + summary.updated).catch((error) => {
+                console.error('[KALENDER] Nachholen aus dem Kalenderkonto fehlgeschlagen:', error?.message || error);
+                return 0;
+            }));
+        }
+        const both = Promise.all(jobs).then((counts) => counts.reduce((sum, value) => sum + value, 0));
+        const changed = await Promise.race([
+            both,
+            new Promise((resolve) => setTimeout(() => resolve(null), BACKFILL_WAIT_MS)),
+        ]);
+        res.json({ started: true, calendar: (changed ?? 0) + repaired, repaired, pending: changed === null });
+    }
+    catch (error) {
+        res.json({ started: false, reason: 'error', error: error?.message || 'Nachholen fehlgeschlagen.', calendar: 0 });
     }
 });
 exports.default = router;

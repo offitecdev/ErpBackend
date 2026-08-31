@@ -186,6 +186,13 @@ class TenderRepository {
                     e.lastName AS creatorLastName,
                     e.email AS creatorEmail,
                     (SELECT COUNT(*) FROM Position p WHERE p.tenderId = t.id) AS positionCount,
+                    /* Herkunft aus der OSP — als Unterabfragen, NICHT als JOIN:
+                       ein JOIN könnte eine Offerte doppeln, wenn je zwei
+                       OSP-Zeilen auf sie zeigten, und die Sayım-Abfrage daneben
+                       müsste er mitmachen, um dieselbe Menge zu sehen. */
+                    (SELECT o.reference FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospReference,
+                    (SELECT o.revisedAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisedAt,
+                    (SELECT o.revisionSeenAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisionSeenAt,
                     (
                         SELECT COALESCE(SUM(
                             CASE
@@ -235,6 +242,9 @@ class TenderRepository {
             commissionNumber: row.commissionNumber ?? null,
             positionCount: Number(row.positionCount ?? 0),
             grandTotal: Number(row.grandTotal ?? 0),
+            ospReference: row.ospReference ?? null,
+            ospRevisedAt: row.ospRevisedAt ?? null,
+            ospRevisionSeenAt: row.ospRevisionSeenAt ?? null,
         }));
         return { items, total: Number(countRows[0]?.total ?? 0) };
     }

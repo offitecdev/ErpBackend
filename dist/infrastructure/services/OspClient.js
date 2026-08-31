@@ -144,7 +144,13 @@ const withdrawOspOfferStatus = async (endpoint, reference) => {
         });
         if (!response.ok) {
             const message = await response.text().catch(() => '');
-            return { ok: false, error: `OSP ${response.status}: ${message.slice(0, 300)}` };
+            return {
+                ok: false,
+                // Ein Beleg, den die OSP nicht kennt, kann drüben auch nichts
+                // mehr tragen — der Rückzug hat sein Ziel dann schon erreicht.
+                notFound: response.status === 404,
+                error: `OSP ${response.status}: ${message.slice(0, 300)}`,
+            };
         }
         const rows = (await response.json().catch(() => []));
         return { ok: true, rows: Array.isArray(rows) ? rows : [] };
