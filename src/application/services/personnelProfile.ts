@@ -25,6 +25,7 @@
  */
 import { Prisma } from '@prisma/client';
 import prisma from '../../infrastructure/database/prisma.client';
+import { employeeScopeSql } from '../../presentation/controllers/serviceTenantScope';
 import {
     addDays,
     buildLeaveEntitlement,
@@ -391,7 +392,7 @@ export const loadStaffForSearch = async (
     if (tenantIds.length === 0) return [];
 
     const conditions: Prisma.Sql[] = [
-        Prisma.sql`e.tenantId IN (${Prisma.join(tenantIds)})`,
+        employeeScopeSql(tenantIds),
         Prisma.sql`e.deletedAt IS NULL`,
     ];
     const search = staffSearchCondition(options.search ?? '');

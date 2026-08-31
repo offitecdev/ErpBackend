@@ -28,7 +28,7 @@ model Enquiry {
   tenantId String
 
   // FORM | MAIL | MANUAL
-  source String @default("MANUAL") @db.VarChar(8)
+  source   String @default("MANUAL") @db.VarChar(8)
   // NEW | IN_PROGRESS | ANSWERED | CONVERTED | CLOSED | SPAM
   //   NEW         — noch niemand hat sie angefasst (der Punkt im Menü zählt diese)
   //   IN_PROGRESS — jemand hat sie übernommen
@@ -36,7 +36,7 @@ model Enquiry {
   //   CONVERTED   — daraus wurde ein Kunde und/oder ein Angebot
   //   CLOSED      — erledigt / kein Interesse
   //   SPAM        — Müll aus dem öffentlichen Formular
-  status String @default("NEW") @db.VarChar(12)
+  status   String @default("NEW") @db.VarChar(12)
   // LOW | NORMAL | HIGH — von Hand gesetzt, nicht abgeleitet.
   priority String @default("NORMAL") @db.VarChar(8)
 
@@ -57,8 +57,8 @@ model Enquiry {
   country           String? @db.VarChar(120)
 
   // ── Was gefragt wird.
-  subject String  @db.VarChar(300)
-  message String? @db.Text
+  subject     String  @db.VarChar(300)
+  message     String? @db.Text
   // Freie Felder des Formulars ([{ label, value }]) — was über die festen
   // Felder hinaus gefragt wurde, ohne dafür Spalten anzulegen.
   extraFields Json?
@@ -96,6 +96,9 @@ model Enquiry {
   assignee    Employee?        @relation("EnquiryAssignee", fields: [assignedEmployeeId], references: [id], onDelete: SetNull)
   createdBy   Employee?        @relation("EnquiryCreator", fields: [createdByEmployeeId], references: [id], onDelete: SetNull)
 
+  // Eine Mail wird nur EINMAL zur Anfrage: wird sie erneut der Kategorie
+  // «Anfragen» zugeordnet, findet der Server die vorhandene Zeile hierüber.
+  @@unique([tenantId, mailMessageId])
   // Die Liste ist «neueste zuerst, gefiltert nach Stand» — beides aus dem Index.
   @@index([tenantId, createdAt])
   @@index([tenantId, status, createdAt])
@@ -103,9 +106,6 @@ model Enquiry {
   @@index([tenantId, email])
   @@index([customerId])
   @@index([contactId])
-  // Eine Mail wird nur EINMAL zur Anfrage: wird sie erneut der Kategorie
-  // «Anfragen» zugeordnet, findet der Server die vorhandene Zeile hierüber.
-  @@unique([tenantId, mailMessageId])
   @@index([tenderId])
 }
 
@@ -122,13 +122,13 @@ model EnquiryForm {
 
   // Was die öffentliche Seite über dem Formular zeigt. Leer = die eingebauten
   // Texte in der Sprache der Besucherin.
-  title    String? @db.VarChar(200)
-  intro    String? @db.Text
+  title        String? @db.VarChar(200)
+  intro        String? @db.Text
   // Text nach dem Absenden ("Danke, wir melden uns").
-  thanks   String? @db.Text
+  thanks       String? @db.Text
   // Welche der optionalen Felder überhaupt erscheinen und welche Pflicht sind:
   // { phone: 'off'|'optional'|'required', company: …, address: … }
-  fieldRules Json?
+  fieldRules   Json?
   // Wer eine Meldung bekommt, wenn eine Anfrage eintrifft (Mailadressen).
   notifyEmails Json?
 

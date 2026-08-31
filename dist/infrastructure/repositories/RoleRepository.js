@@ -7,6 +7,7 @@ exports.clearPermissionCacheForRole = exports.clearPermissionCacheForEmployee = 
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const pageCatalog_1 = require("../../shared/pageCatalog");
+const tenantSwitchAccess_1 = require("../../shared/tenantSwitchAccess");
 const PERMISSION_CACHE_TTL_MS = 60_000;
 const permissionCache = new Map();
 const permissionInFlight = new Map();
@@ -150,6 +151,11 @@ const clearPermissionCacheForEmployee = (employeeId) => {
     permissionInFlight.delete(employeeId);
     pageAccessCache.delete(employeeId);
     pageAccessInFlight.delete(employeeId);
+    /* Die Reichweite des Firmenumschalters haengt an derselben Rolle
+       (`Role.canSwitchTenant`, 31.08.2026) und wird hier mitgeleert. Sonst
+       bliebe ein ENTZOGENES Recht bis zum Ablauf der TTL bestehen — das darf
+       bei einer Zugriffsgrenze nicht passieren. */
+    (0, tenantSwitchAccess_1.invalidateTenantSwitchAccess)(employeeId);
 };
 exports.clearPermissionCacheForEmployee = clearPermissionCacheForEmployee;
 /**

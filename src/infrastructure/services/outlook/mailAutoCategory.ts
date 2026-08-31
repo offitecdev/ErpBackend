@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../../database/prisma.client";
+import { getMailTenantId } from "../../../presentation/controllers/serviceTenantScope";
 
 /**
  * DAS ETIKETT KOMMT VON SELBST (30.08.2026).
@@ -52,7 +53,10 @@ const loadIndex = async (tenantId: string): Promise<CategoryIndex> => {
     return { byCustomer, byStaff, loadedAt: Date.now() };
 };
 
-export const getCategoryIndex = async (tenantId: string, { fresh = false } = {}): Promise<CategoryIndex> => {
+export const getCategoryIndex = async (selectedTenantId: string, { fresh = false } = {}): Promise<CategoryIndex> => {
+    /* Die Leiste gehört dem Postfach, das Postfach dem Stamm des Firmenbaums:
+       ein Index je Baum, nicht je Firma. */
+    const tenantId = await getMailTenantId(selectedTenantId);
     const cached = indexes.get(tenantId);
     if (cached && !fresh && Date.now() - cached.loadedAt < INDEX_TTL_MS) return cached;
     const running = inflight.get(tenantId);
@@ -64,7 +68,14 @@ export const getCategoryIndex = async (tenantId: string, { fresh = false } = {})
     return job;
 };
 
-export const invalidateCategoryIndex = (tenantId: string) => { indexes.delete(tenantId); };
+export const invalidateCategoryIndex = (selectedTenantId: string) => {
+    // Sofort für den übergebenen Schlüssel (die Aufrufer halten den
+    // Mail-Mandanten), der aufgelöste Stamm einen Zug später hinterher.
+    indexes.delete(selectedTenantId);
+    void getMailTenantId(selectedTenantId)
+        .then((tenantId) => { indexes.delete(tenantId); })
+        .catch(() => undefined);
+};
 
 /**
  * Das Etikett zur erkannten Gegenstelle — oder null, wenn sie keine Kategorie

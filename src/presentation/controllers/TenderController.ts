@@ -21,8 +21,10 @@ import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOpti
 import { MAX_TOTAL_DISCOUNTS, normalizeDiscountList, resolveLineDiscount } from './tender.discounts';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { withdrawOspOfferStatus } from '../../infrastructure/services/OspClient';
+import { markOspOfferSent } from '../../infrastructure/services/ospStatusSync';
 import { nextDocumentNumber } from '../../shared/documentNumber';
 import { tenderDocumentStorageService } from '../../infrastructure/services/TenderDocumentStorageService';
+import { getMailTenantId } from "./serviceTenantScope";
 
 // Versand läuft über dispatchMail: verbundenes Outlook-Postfach des Benutzers,
 // sonst SMTP des Mandanten; jede Kundenmail landet zudem als MailMessage in der
@@ -2356,7 +2358,17 @@ export class TenderController {
                     await (prisma as any).ospDocument.update({
                         where: { id: row.id },
                         data: {
+                            // §4b räumt drüben Status UND Zuständigkeit ab. Die
+                            // Zeile hier zieht nach: sie ist wieder eine offene
+                            // Anfrage, die niemand bearbeitet — wer sie erneut
+                            // übernimmt, meldet damit auch wieder "under
+                            // review". Bliebe die Person stehen, zeigte die
+                            // Liste eine Zuweisung, die drüben nicht existiert.
                             status: 'LISTED',
+                            salespersonId: null,
+                            salespersonEmail: null,
+                            salespersonName: null,
+                            salespersonProfile: null,
                             lastReportedStatus: null,
                             ...(result.ok
                                 ? { lastReportAt: new Date(), lastReportError: null }
@@ -2445,6 +2457,54 @@ export class TenderController {
 
             const newTender = await this.tenderRepository.createNextVersion(tenderId, employeeId, tender.tenantId);
             res.status(201).json({ message: "Yeni versiyon başarıyla oluşturuldu.", tender: newTender });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * Angebot KOPIEREN (Benutzerwunsch 31.08.2026 — Zahnrad ueber dem
+     * Papierkorb). Die Kopie traegt dieselben Daten, ist aber ein eigener
+     * Beleg: frische AN-Nummer, Version 1, Entwurf ohne Projekt/Auftrag. Die
+     * neue VERSION dagegen behaelt die Nummer und zaehlt nur hoch.
+     */
+    async duplicate(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const employeeId = (req as any).user!.id;
+
+            if (!tenderId) {
+                return res.status(400).json({ error: "İhale ID zorunludur." });
+            }
+
+            const tender = await this.getAccessibleTender(tenderId, (req as any).user!);
+            if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
+
+            const copy = await this.tenderRepository.duplicate(tenderId, employeeId, tender.tenantId);
+
+            if (copy.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: copy.customerId,
+                    employeeId,
+                    activityType: "TENDER_CREATED",
+                    description: `${copy.tenderNumber} numaralı teklif, ${tender.tenderNumber} numaralı teklifin kopyası olarak oluşturuldu.`,
+                    referenceId: copy.id,
+                    activityDate: new Date()
+                });
+            }
+
+            await this.tenderLogRepo.create({
+                tenantId: copy.tenantId,
+                tenderId: copy.id,
+                employeeId,
+                actionType: "TENDER_CREATED",
+                fieldName: null,
+                oldValue: tender.tenderNumber,
+                newValue: copy.tenderNumber,
+                description: `${copy.tenderNumber} numaralı teklif, ${tender.tenderNumber} numaralı teklifin kopyası olarak oluşturuldu.`
+            });
+
+            res.status(201).json({ message: "Teklif kopyalandı.", tender: copy });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -2874,7 +2934,7 @@ export class TenderController {
                 return res.status(400).json({ error: "Müşterisi olmayan teklif için mail gönderilemez." });
             }
 
-            const settings = await prisma.mailSetting.findUnique({ where: { tenantId: tender.tenantId } });
+            const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tender.tenantId) } });
             // A date/time plan is optional — the proposal mail can be sent without any
             // appointment. When slots exist they are still included in the mail below.
             const slots = await (prisma as any).offerScheduleSlot.findMany({
@@ -3031,6 +3091,19 @@ export class TenderController {
                 }
             });
 
+            /* Kam die Offerte aus der OSP, ist ihre Anfrage damit erledigt:
+               "Gesendet" bei uns, `offer has been sent` drüben (§3). Nur ein
+               ECHTER Versand zählt — eine Vorschau ohne Mailkonto hat der
+               Kundschaft nichts zugestellt und darf die Anfrage nicht
+               abschliessen.
+
+               Im Hintergrund: die Kundschaft hat die Offerte bereits, und ob
+               die OSP antwortet, darf den Versand nicht aufhalten. Scheitert
+               die Meldung, steht der Grund an der OSP-Zeile. */
+            if (!result.preview) {
+                void markOspOfferSent(tenderId).catch(() => undefined);
+            }
+
             if (tender.customerId) {
                 const activity = await this.customerActivityRepo.create({
                     customerId: tender.customerId,
@@ -3134,7 +3207,7 @@ export class TenderController {
             }
 
             const [settings, salesOrder, contacts] = await Promise.all([
-                prisma.mailSetting.findUnique({ where: { tenantId: tender.tenantId } }),
+                prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tender.tenantId) } }),
                 (prisma as any).salesOrder.findFirst({
                     where: { tenderId },
                     select: { orderNumber: true, totalAmount: true, orderDate: true, createdAt: true },

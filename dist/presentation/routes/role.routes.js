@@ -74,12 +74,15 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermis
         // (moduleKeys) is entity-specific — it is reported for the SELECTED
         // company, and editing it only touches that company's config.
         const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+        const scopeTenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId);
         const roles = await prisma_client_1.default.role.findMany({
             where: { tenantId: { in: treeTenantIds } },
             orderBy: { roleName: 'asc' },
             include: {
                 permissions: { include: { permission: true } },
-                employees: true,
+                // Die Rolle ist baumweit, die KOPFZAHL nicht — gezählt wird,
+                // wer sie in der ausgewählten Firma trägt.
+                employees: { where: { employee: { tenantId: { in: scopeTenantIds } } } },
                 moduleConfigs: true,
             }
         });

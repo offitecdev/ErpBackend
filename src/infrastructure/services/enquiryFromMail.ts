@@ -26,6 +26,12 @@ import prisma from "../database/prisma.client";
  *
  * Der Aufruf ist ein Nebenzweig des Zuordnens: schlägt er fehl, bleibt die
  * Zuordnung trotzdem stehen (das Postfach ist nicht die Anfragenverwaltung).
+ *
+ * ZWEI MANDANTEN (13.09.2026): die MAIL liegt im Postfach am Stamm des
+ * Firmenbaums, die ANFRAGE entsteht in der Firma, in der gerade gearbeitet
+ * wird. Beides in einen Topf zu werfen hiesse: entweder findet die Suche die
+ * Nachricht nicht mehr, oder die Anfrage landet in einer Firma, in der sie
+ * niemand bearbeitet.
  */
 
 /** Was aus dem Absendernamen als Firmenname taugt — sonst bleibt das Feld leer. */
@@ -51,15 +57,16 @@ export interface EnquiryFromMailResult {
  * fehlende schreiben) — nicht zwei je Nachricht.
  */
 export const createEnquiriesFromMails = async (
-    tenantId: string,
+    mailTenantId: string,
     messageIds: string[],
     createdByEmployeeId: string | null,
+    enquiryTenantId: string = mailTenantId,
 ): Promise<EnquiryFromMailResult> => {
     if (!messageIds.length) return { created: 0, skipped: 0 };
 
     const [messages, existing] = await Promise.all([
         prisma.mailMessage.findMany({
-            where: { id: { in: messageIds }, tenantId, direction: "IN" },
+            where: { id: { in: messageIds }, tenantId: mailTenantId, direction: "IN" },
             select: {
                 id: true, subject: true, fromName: true, fromAddress: true,
                 bodyText: true, bodyPreview: true, sentAt: true,
@@ -67,7 +74,7 @@ export const createEnquiriesFromMails = async (
             },
         }),
         prisma.enquiry.findMany({
-            where: { tenantId, mailMessageId: { in: messageIds } },
+            where: { tenantId: enquiryTenantId, mailMessageId: { in: messageIds } },
             select: { mailMessageId: true },
         }),
     ]);
@@ -79,7 +86,7 @@ export const createEnquiriesFromMails = async (
     await prisma.enquiry.createMany({
         data: fresh.map((message) => ({
             id: nanoid(12),
-            tenantId,
+            tenantId: enquiryTenantId,
             source: "MAIL",
             status: "NEW",
             priority: "NORMAL",

@@ -64,10 +64,11 @@ class MaintenanceController {
     async validateTechniciansInScope(technicianIds, tenantId) {
         if (!technicianIds.length)
             return [];
-        // Personnel are shared company-wide -> technicians of the whole tree qualify.
-        const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+        // Personnel belong to the SELECTED company -> a sister company's
+        // technicians are not assignable here.
+        const tenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId);
         const employees = await prisma_client_1.default.employee.findMany({
-            where: { id: { in: technicianIds }, tenantId: { in: tenantIds }, isActive: true },
+            where: { id: { in: technicianIds }, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), isActive: true },
             select: { id: true },
         });
         const found = new Set(employees.map((employee) => employee.id));
@@ -126,11 +127,12 @@ class MaintenanceController {
     async listTechnicians(req, res) {
         try {
             const tenantId = req.user.tenantId;
-            // Personnel are shared company-wide -> offer the whole tree's technicians.
-            const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+            // Personnel belong to the SELECTED company -> the picker offers
+            // this company's technicians only.
+            const tenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId);
             const technicians = await prisma_client_1.default.employee.findMany({
                 where: {
-                    tenantId: { in: tenantIds },
+                    ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds),
                     isActive: true,
                     OR: [
                         { roleName: { contains: 'Teknisyen' } },
@@ -629,7 +631,7 @@ class MaintenanceController {
                 sentAt: new Date(),
             })));
             await this.maintenanceRepo.updateTask(taskId, { managerApprovedAt: null, managerApprovedById: null });
-            const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: task.contract.tenantId } });
+            const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(task.contract.tenantId) } });
             const frontendUrl = process.env.OFFITEC_FRONTEND_URL || "http://localhost:5173";
             const bookingLink = `${frontendUrl}/maintenance-booking/${bookingToken}`;
             const customerEmail = task.contract?.customer?.mainEmail || "";
@@ -927,7 +929,7 @@ class MaintenanceController {
                 sent.push("technician");
             }
             if (channel === "mail" || channel === "both") {
-                const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: reportTenantId } });
+                const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(reportTenantId) } });
                 const to = String(req.body.to || report.task?.contract?.customer?.mainEmail || "").trim();
                 const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user.email || "").trim();
                 const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";

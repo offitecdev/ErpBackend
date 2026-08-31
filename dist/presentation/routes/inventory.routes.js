@@ -22,6 +22,7 @@ const richText_1 = require("../../shared/richText");
 // aber aus der Liste des Mandanten (Einstellungen -> Module -> Lager).
 const measurementUnitCatalog_1 = require("../../application/services/measurementUnitCatalog");
 const nanoid_1 = require("nanoid");
+const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 /** Tedarikçi adresinin ayrı bileşenleri (tek serbest metin alanı yoktur). */
 const SUPPLIER_ADDRESS_FIELDS = ['address', 'addressSupplement', 'postalCode', 'city', 'state', 'country'];
 /** Kayıttaki bileşenler → PDF/ekran için 2 satırlık snapshot metni. */
@@ -2288,7 +2289,7 @@ router.post('/supply/requests', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
         const bodyText = b.emailBody ? String(b.emailBody) : '';
         let emailSent = false;
         if (sendEmail && supplierEmail) {
-            const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId } });
+            const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tenantId) } });
             const result = await smtp.send(settings || {}, {
                 fromEmail: settings?.fromEmail || req.user.email,
                 fromName: settings?.fromName || 'Offitec ERP',
@@ -3532,7 +3533,7 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
         const existing = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
         if (!existing)
             return res.status(404).json({ error: 'Sipariş bulunamadı.' });
-        const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId } });
+        const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tenantId) } });
         // Alıcı beyaz listesi: sipariş snapshot'ındaki e-posta + tedarikçi
         // kaydındaki e-posta. Keyfî adrese gönderim yok (açık relay engeli).
         const allowedRecipients = new Map();

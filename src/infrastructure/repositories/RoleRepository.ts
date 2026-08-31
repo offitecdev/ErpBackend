@@ -7,6 +7,7 @@ import {
     sanitizePageLevels,
     type PageLevel,
 } from "../../shared/pageCatalog";
+import { invalidateTenantSwitchAccess } from "../../shared/tenantSwitchAccess";
 
 const PERMISSION_CACHE_TTL_MS = 60_000;
 const permissionCache = new Map<string, { expiresAt: number; permissions: string[] }>();
@@ -172,6 +173,11 @@ export const clearPermissionCacheForEmployee = (employeeId: string): void => {
     permissionInFlight.delete(employeeId);
     pageAccessCache.delete(employeeId);
     pageAccessInFlight.delete(employeeId);
+    /* Die Reichweite des Firmenumschalters haengt an derselben Rolle
+       (`Role.canSwitchTenant`, 31.08.2026) und wird hier mitgeleert. Sonst
+       bliebe ein ENTZOGENES Recht bis zum Ablauf der TTL bestehen — das darf
+       bei einer Zugriffsgrenze nicht passieren. */
+    invalidateTenantSwitchAccess(employeeId);
 };
 
 /**

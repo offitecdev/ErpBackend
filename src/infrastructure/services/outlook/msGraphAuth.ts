@@ -10,6 +10,7 @@
  */
 import prisma from "../../database/prisma.client";
 import { decryptSecret } from "./mailCrypto";
+import { getMailTenantId } from "../../../presentation/controllers/serviceTenantScope";
 
 /**
  * Microsoft-Identity-Platform (v2.0) für die Outlook-/Microsoft-365-Anbindung.
@@ -60,9 +61,10 @@ const envConfig = (): MsAppConfig | null => {
  * `null` = Anbindung nicht eingerichtet — die UI zeigt dann den Hinweis
  * "App-Registrierung fehlt" statt eines Verbinden-Knopfs.
  */
-export const resolveMsAppConfig = async (tenantId: string): Promise<MsAppConfig | null> => {
+export const resolveMsAppConfig = async (selectedTenantId: string): Promise<MsAppConfig | null> => {
+    // Die App-Registrierung gehört zum Firmenpostfach — und das hängt am Stamm.
     const setting = await prisma.mailSetting.findUnique({
-        where: { tenantId },
+        where: { tenantId: await getMailTenantId(selectedTenantId) },
         select: { msClientId: true, msClientSecret: true, msTenantId: true },
     });
     const clientId = (setting?.msClientId || "").trim();

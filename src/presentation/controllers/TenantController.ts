@@ -5,6 +5,7 @@ import prisma from "../../infrastructure/database/prisma.client";
 import { parseAllowedTenantIds } from "../utils/tenantAccess";
 import { Prisma } from "@prisma/client";
 import { getAuthIdentity } from "../../shared/authIdentityCache";
+import { mayReachWholeCompanyTree } from "../../shared/tenantSwitchAccess";
 
 export class TenantController {
     constructor(
@@ -17,7 +18,10 @@ export class TenantController {
             const homeTenantId = req.user!.homeTenantId ?? req.user!.tenantId;
             // requireAuth has already loaded this identity in the current
             // request, so this is a memory hit rather than a second SQL query.
-            const identity = await getAuthIdentity(req.user!.id);
+            const [identity, reachesWholeTree] = await Promise.all([
+                getAuthIdentity(req.user!.id),
+                mayReachWholeCompanyTree(req.user!.id),
+            ]);
             const assignedTenantIds = parseAllowedTenantIds(identity?.allowedTenantIds);
 
             type TenantRow = {
@@ -100,13 +104,28 @@ export class TenantController {
             };
 
             const homeRootId = rootOf(homeTenantId);
-            // Personal company assignment narrows the switcher to the assigned
-            // companies (the same set the auth middleware accepts). Ids outside
-            // the own tree are dropped; nothing left = no restriction.
-            const assignedInTree = (assignedTenantIds ?? []).filter((tenantId) => rootOf(tenantId) === homeRootId);
+            /* Der Firmenumschalter zeigt genau die zugeteilten Firmen (dieselbe
+               Menge, die die Auth-Schicht akzeptiert). KEINE Zuteilung heisst
+               seit dem 31.08.2026 die eigene Firma — nicht mehr der ganze Baum.
+               Nur so sieht eine Untergesellschaft ihre Schwestern gar nicht erst.
+
+               DIE ZUTEILUNG WIRD NICHT MEHR AUF DEN EIGENEN BAUM BESCHNITTEN
+               (Vorgabe 31.08.2026): «Eine Auswahl muss getroffen werden, sie
+               muss angegeben werden — unabhaengig davon, ob es eine Unter-
+               gesellschaft ist oder nicht.» Wer eine zweite Firmengruppe unter
+               Personal → Person → Zugang ausdruecklich angehakt bekommt, findet
+               sie hier. Vorher fiel genau dieser Haken stumm heraus. */
+            const assigned = (assignedTenantIds ?? []).filter((tenantId) => byId.has(tenantId));
+            const selectable = assigned.length ? assigned : [homeTenantId];
+            /* Die Rolle kommt oben drauf (Vorgabe 31.08.2026): wer die
+               Administratorrolle traegt oder eine Rolle mit gesetztem
+               `Role.canSwitchTenant` — Verwaltung und Projektleitung —
+               bekommt den GANZEN eigenen Baum, ohne in jeder Firma einzeln
+               angehakt zu sein. Weiter als der eigene Baum traegt die Rolle
+               nicht: eine zweite Firmengruppe bleibt eine Sache des Hakens. */
             const visibleTenants = tenants
-                .filter((tenant) => rootOf(tenant.id) === homeRootId)
-                .filter((tenant) => !assignedInTree.length || assignedInTree.includes(tenant.id))
+                .filter((tenant) => selectable.includes(tenant.id)
+                    || (reachesWholeTree && rootOf(tenant.id) === homeRootId))
                 .sort((a, b) => {
                     if (!a.parentTenantId && b.parentTenantId) return -1;
                     if (a.parentTenantId && !b.parentTenantId) return 1;

@@ -1,5 +1,6 @@
 import prisma from '../database/prisma.client';
 import { SmtpMailService } from './SmtpMailService';
+import { getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
 
 const APP_URL = () => (process.env.OFFITEC_APP_URL || 'https://demo.offitec.ch').replace(/\/$/, '');
 
@@ -14,7 +15,7 @@ const smtp = new SmtpMailService();
  */
 export class AuthMailService {
     private async send(tenantId: string, to: string, subject: string, bodyLines: string[]) {
-        const settings = await prisma.mailSetting.findUnique({ where: { tenantId } });
+        const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
         const fromEmail = settings?.fromEmail || 'no-reply@offitec.ch';
         const text = bodyLines.join('\n');
         const html = bodyLines.map((line) => `<p>${line}</p>`).join('');

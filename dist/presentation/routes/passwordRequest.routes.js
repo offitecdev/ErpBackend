@@ -154,7 +154,8 @@ router.get('/mine', AuthMiddleware_1.requireAuth, async (req, res) => {
     führt. */
 router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['roles.manage', 'employees.update']), async (req, res) => {
     try {
-        const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
+        // Kennwortwünsche gehören der Firma, unter der sie gestellt wurden.
+        const treeTenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(req.user.tenantId);
         const status = String(req.query.status || 'PENDING').toUpperCase();
         const rows = await prisma_client_1.default.passwordChangeRequest.findMany({
             where: {
@@ -179,7 +180,7 @@ router.post('/:id/decide', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
         const user = req.user;
         const id = String(req.params.id || '');
         const approve = Boolean(req.body?.approve);
-        const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(user.tenantId);
+        const treeTenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(user.tenantId);
         const request = await prisma_client_1.default.passwordChangeRequest.findFirst({
             where: { id, tenantId: { in: treeTenantIds } },
             select: { id: true, employeeId: true, status: true, newPasswordHash: true },

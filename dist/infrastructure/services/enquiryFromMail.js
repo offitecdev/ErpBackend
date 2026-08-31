@@ -31,6 +31,12 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
  *
  * Der Aufruf ist ein Nebenzweig des Zuordnens: schlägt er fehl, bleibt die
  * Zuordnung trotzdem stehen (das Postfach ist nicht die Anfragenverwaltung).
+ *
+ * ZWEI MANDANTEN (13.09.2026): die MAIL liegt im Postfach am Stamm des
+ * Firmenbaums, die ANFRAGE entsteht in der Firma, in der gerade gearbeitet
+ * wird. Beides in einen Topf zu werfen hiesse: entweder findet die Suche die
+ * Nachricht nicht mehr, oder die Anfrage landet in einer Firma, in der sie
+ * niemand bearbeitet.
  */
 /** Was aus dem Absendernamen als Firmenname taugt — sonst bleibt das Feld leer. */
 const splitSenderName = (fromName, fromAddress) => {
@@ -46,12 +52,12 @@ const messageOf = (bodyText, bodyPreview) => (bodyText || bodyPreview || "").sli
  * keine besteht. Kostet zwei Abfragen für die ganze Menge (vorhandene suchen,
  * fehlende schreiben) — nicht zwei je Nachricht.
  */
-const createEnquiriesFromMails = async (tenantId, messageIds, createdByEmployeeId) => {
+const createEnquiriesFromMails = async (mailTenantId, messageIds, createdByEmployeeId, enquiryTenantId = mailTenantId) => {
     if (!messageIds.length)
         return { created: 0, skipped: 0 };
     const [messages, existing] = await Promise.all([
         prisma_client_1.default.mailMessage.findMany({
-            where: { id: { in: messageIds }, tenantId, direction: "IN" },
+            where: { id: { in: messageIds }, tenantId: mailTenantId, direction: "IN" },
             select: {
                 id: true, subject: true, fromName: true, fromAddress: true,
                 bodyText: true, bodyPreview: true, sentAt: true,
@@ -59,7 +65,7 @@ const createEnquiriesFromMails = async (tenantId, messageIds, createdByEmployeeI
             },
         }),
         prisma_client_1.default.enquiry.findMany({
-            where: { tenantId, mailMessageId: { in: messageIds } },
+            where: { tenantId: enquiryTenantId, mailMessageId: { in: messageIds } },
             select: { mailMessageId: true },
         }),
     ]);
@@ -70,7 +76,7 @@ const createEnquiriesFromMails = async (tenantId, messageIds, createdByEmployeeI
     await prisma_client_1.default.enquiry.createMany({
         data: fresh.map((message) => ({
             id: (0, nanoid_1.nanoid)(12),
-            tenantId,
+            tenantId: enquiryTenantId,
             source: "MAIL",
             status: "NEW",
             priority: "NORMAL",

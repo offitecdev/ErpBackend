@@ -609,6 +609,23 @@ model MailSetting {
   imapLastSyncAt         DateTime?
   imapLastError          String?   @db.Text
   imapLastSummary        String?   @db.VarChar(255)
+  // ── DER KALENDER DES POSTFACHS, DIREKT (CalDAV, 31.08.2026) ───────────────
+  // Bis hierher kam ein Termin nur an, wenn jemand das Postfach EINGELADEN
+  // hatte — was jemand sich selbst in den Kalender schreibt, erzeugte keine
+  // Mail und blieb draussen. CalDAV liest den Kalender desselben Kontos
+  // unmittelbar. Leer = aus; die Zugangsdaten sind standardmaessig die des
+  // IMAP-Kontos (dasselbe Postfach, derselbe Server), `caldavUrl` wird per
+  // /.well-known/caldav gesucht, wenn nichts eingetragen ist.
+  caldavEnabled          Boolean   @default(false)
+  caldavUrl              String?   @db.VarChar(512)
+  caldavUser             String?   @db.VarChar(255)
+  caldavPassword         String?   @db.Text
+  // Die gefundenen Kalender (Adressen + Namen) aus der letzten Suche —
+  // gespeichert, damit nicht jeder Durchgang die ganze Ermittlung wiederholt.
+  caldavCalendars        Json?
+  caldavLastSyncAt       DateTime?
+  caldavLastError        String?   @db.Text
+  caldavLastSummary      String?   @db.VarChar(255)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 

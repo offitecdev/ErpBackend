@@ -32,7 +32,13 @@ export interface OspDatasheetSpecs {
     power?: string;
     /** Ob die gefundene Leistung eine KÜHL-Leistung ist (Chiller). */
     powerIsCooling?: boolean;
+    /** Eine Wärmepumpe hat BEIDES: dann steht die Kühlleistung neben der
+        Heizleistung, statt dass eine der beiden gelieferten Zahlen wegfällt. */
+    coolingPower?: string;
     cop?: string;
+    /** Kühl-Wirkungsgrad. Eine Wärmepumpe nennt beide, ein Chiller nur den
+        EER — dann steht auf der Offerte "EER:" statt "COP:" (§1). */
+    eer?: string;
     medium?: string;
     /** Mehrzeilig: Wärmetauscher, Kältemittel, Steuerung … */
     technology?: string;
@@ -99,6 +105,14 @@ const asHttpUrl = (value: unknown): string | null => {
  */
 export const pickDatasheetUrl = (entry: unknown): string | null => {
     if (!entry || typeof entry !== 'object') return null;
+    // Seit der dritten Vertragsfassung steht der Name fest: `pdfUrl`, und
+    // "nur Dokumente mit gerendertem PDF kommen überhaupt in einer Anfrage
+    // vor" (§1) — also niemals null. Die Suche unten bleibt trotzdem stehen:
+    // sie beantwortet die Frage für ältere Zeilen und für die Zusatzfelder,
+    // die die OSP über den Vertrag hinaus mitschickt.
+    const declared = asHttpUrl((entry as Record<string, unknown>).pdfUrl);
+    if (declared) return declared;
+
     let best: { url: string; score: number } | null = null;
 
     const consider = (key: string, value: unknown, bonus: number): void => {
@@ -242,6 +256,102 @@ export const parseDatasheetSpecs = (text: string): OspDatasheetSpecs => {
     if (weight) specs.weight = weight;
 
     return specs;
+};
+
+/* ── 3b) … oder direkt aus dem Webhook ───────────────────────────────────── */
+
+/** "106.2" + " kW" — leere Angaben bleiben leer, `null` heisst "gibt es nicht". */
+const withUnit = (value: unknown, unit: string): string | undefined => {
+    if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+    const text = String(value).trim();
+    return text ? `${text} ${unit}` : undefined;
+};
+
+const plain = (value: unknown): string | undefined => {
+    if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+    const text = String(value).trim();
+    return text ? text : undefined;
+};
+
+/**
+ * Die berechneten Angaben der Einheit, wie §1 sie SELBST mitschickt.
+ *
+ * Bis zur dritten Vertragsfassung mussten sie aus dem PDF gelesen werden;
+ * seither stehen sie im Webhook — abgelesen aus derselben Momentaufnahme, aus
+ * der das PDF gerendert wurde, am eingegebenen Betriebspunkt statt am
+ * Katalogwert. Sie sind damit die bessere Quelle, und das Auslesen des PDF
+ * bleibt nur noch für das, was der Vertrag nicht kennt (das Medium) und für
+ * ältere Belege, deren Bericht die Momentaufnahme noch nicht hatte: dort ist
+ * jedes dieser Felder `null` (§1).
+ *
+ * `null` heisst ausdrücklich "gibt es an dieser Einheit nicht" — nie `0` oder
+ * `""`. Es wird deshalb weggelassen, nicht als Leerwert übernommen.
+ */
+export const specsFromOfferEntry = (entry: unknown): OspDatasheetSpecs => {
+    if (!entry || typeof entry !== 'object') return {};
+    const row = entry as Record<string, unknown>;
+    const specs: OspDatasheetSpecs = {};
+
+    const cooling = withUnit(row.coolingCapacityKw, 'kW');
+    const heating = withUnit(row.heatingCapacityKw, 'kW');
+    // Eine Heizleistung gibt es nur an einer Wärmepumpe (§1) — dann ist SIE
+    // die Kopfzahl, und die Kühlleistung steht daneben. Ein Chiller nennt
+    // ausschliesslich die Kühlleistung.
+    if (heating) {
+        specs.power = heating;
+        specs.powerIsCooling = false;
+        if (cooling) specs.coolingPower = cooling;
+    } else if (cooling) {
+        specs.power = cooling;
+        specs.powerIsCooling = true;
+    }
+
+    const cop = plain(row.cop);
+    const eer = plain(row.eer);
+    if (cop) specs.cop = cop;
+    if (eer) specs.eer = eer;
+
+    // Der Technologieblock der Offerte ist mehrzeilig; aus dem Vertrag kommen
+    // drei seiner Zeilen benannt statt aus dem Fliesstext geraten.
+    const technology = [
+        plain(row.evaporatorType) && `Verdampfer: ${plain(row.evaporatorType)}`,
+        plain(row.condenserType) && `Verflüssiger: ${plain(row.condenserType)}`,
+        plain(row.refrigerant) && `Kältemittel: ${plain(row.refrigerant)}`,
+    ].filter(Boolean) as string[];
+    if (technology.length) specs.technology = technology.join('\n');
+
+    const sound1m = withUnit(row.soundPressureAt1mDb, 'dB(A)');
+    const sound10m = withUnit(row.soundPressureAt10mDb, 'dB(A)');
+    if (sound1m) specs.sound1m = sound1m;
+    if (sound10m) specs.sound10m = sound10m;
+
+    // Nur vollständig: eine Länge ohne Breite und Höhe ist keine Abmessung.
+    const length = plain(row.lengthMm);
+    const width = plain(row.widthMm);
+    const height = plain(row.heightMm);
+    if (length && width && height) specs.dimensions = `${length} x ${width} x ${height} mm`;
+
+    const weight = withUnit(row.operatingWeightKg, 'kg');
+    if (weight) specs.weight = weight;
+
+    return specs;
+};
+
+/**
+ * Zwei Angabensätze übereinanderlegen. `stronger` gewinnt Feld für Feld, aber
+ * nur mit einem ECHTEN Wert — so füllt das PDF weiterhin auf, was der Webhook
+ * nicht kennt (das Medium), ohne je zu überschreiben, was er nennt.
+ */
+export const mergeSpecs = (
+    weaker: OspDatasheetSpecs | null | undefined,
+    stronger: OspDatasheetSpecs | null | undefined,
+): OspDatasheetSpecs => {
+    const merged: OspDatasheetSpecs = { ...(weaker || {}) };
+    for (const [key, value] of Object.entries(stronger || {})) {
+        if (value === undefined || value === null || value === '') continue;
+        (merged as Record<string, unknown>)[key] = value;
+    }
+    return merged;
 };
 
 /* ── 4) Der ganze Weg: holen → ablegen → auslesen ────────────────────────── */

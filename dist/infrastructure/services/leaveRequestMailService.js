@@ -91,13 +91,16 @@ const recipientsFor = async (request, stage) => {
                 name: `${person.firstName} ${person.lastName}`.trim(),
             }];
     }
-    const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(request.tenantId);
+    /* Nur die Firma des Antrags: die Verwaltung einer Schwesterfirma hat mit
+       den Ferien dieser Person nichts zu tun und darf sie auch nicht sehen.
+       Die im Antrag GEWÄHLTE freigebende Person kommt unten ohnehin dazu. */
+    const tenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(request.tenantId);
     /* SEIT DEM 27.08.2026 ENTSCHEIDEN ROLLEN AUS DEN EINSTELLUNGEN, nicht mehr
        die Personalrollen: die erste Stufe geht an die Administratorrolle, die
        zweite an die Purser-Rolle (Role.isPurser). */
     const rows = await prisma_client_1.default.employee.findMany({
         where: {
-            tenantId: { in: tenantIds.length ? tenantIds : [request.tenantId] },
+            ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds.length ? tenantIds : [request.tenantId]),
             deletedAt: null,
             isActive: true,
             employeeRoles: {
@@ -173,7 +176,7 @@ const linkFor = (stage, requestId) => stage === "DECIDED"
 const sendOne = async (request, recipient, stage) => {
     if (!recipient.email || !EMAIL_RE.test(recipient.email))
         return false;
-    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: request.tenantId } });
+    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(request.tenantId) } });
     if (!settings?.smtpHost?.trim() || !settings?.smtpPort)
         return false;
     const fromEmail = clean(settings.fromEmail);

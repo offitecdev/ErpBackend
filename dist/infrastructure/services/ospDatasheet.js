@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fetchOspDatasheet = exports.parseDatasheetSpecs = exports.pickDatasheetUrl = void 0;
+exports.fetchOspDatasheet = exports.mergeSpecs = exports.specsFromOfferEntry = exports.parseDatasheetSpecs = exports.pickDatasheetUrl = void 0;
 const LocalFileStorage_1 = require("./LocalFileStorage");
 /**
  * ── OSP-DATENBLATT (07.09.2026) ─────────────────────────────────────────────
@@ -82,6 +82,14 @@ const asHttpUrl = (value) => {
 const pickDatasheetUrl = (entry) => {
     if (!entry || typeof entry !== 'object')
         return null;
+    // Seit der dritten Vertragsfassung steht der Name fest: `pdfUrl`, und
+    // "nur Dokumente mit gerendertem PDF kommen überhaupt in einer Anfrage
+    // vor" (§1) — also niemals null. Die Suche unten bleibt trotzdem stehen:
+    // sie beantwortet die Frage für ältere Zeilen und für die Zusatzfelder,
+    // die die OSP über den Vertrag hinaus mitschickt.
+    const declared = asHttpUrl(entry.pdfUrl);
+    if (declared)
+        return declared;
     let best = null;
     const consider = (key, value, bonus) => {
         const url = asHttpUrl(value);
@@ -217,6 +225,102 @@ const parseDatasheetSpecs = (text) => {
     return specs;
 };
 exports.parseDatasheetSpecs = parseDatasheetSpecs;
+/* ── 3b) … oder direkt aus dem Webhook ───────────────────────────────────── */
+/** "106.2" + " kW" — leere Angaben bleiben leer, `null` heisst "gibt es nicht". */
+const withUnit = (value, unit) => {
+    if (typeof value !== 'string' && typeof value !== 'number')
+        return undefined;
+    const text = String(value).trim();
+    return text ? `${text} ${unit}` : undefined;
+};
+const plain = (value) => {
+    if (typeof value !== 'string' && typeof value !== 'number')
+        return undefined;
+    const text = String(value).trim();
+    return text ? text : undefined;
+};
+/**
+ * Die berechneten Angaben der Einheit, wie §1 sie SELBST mitschickt.
+ *
+ * Bis zur dritten Vertragsfassung mussten sie aus dem PDF gelesen werden;
+ * seither stehen sie im Webhook — abgelesen aus derselben Momentaufnahme, aus
+ * der das PDF gerendert wurde, am eingegebenen Betriebspunkt statt am
+ * Katalogwert. Sie sind damit die bessere Quelle, und das Auslesen des PDF
+ * bleibt nur noch für das, was der Vertrag nicht kennt (das Medium) und für
+ * ältere Belege, deren Bericht die Momentaufnahme noch nicht hatte: dort ist
+ * jedes dieser Felder `null` (§1).
+ *
+ * `null` heisst ausdrücklich "gibt es an dieser Einheit nicht" — nie `0` oder
+ * `""`. Es wird deshalb weggelassen, nicht als Leerwert übernommen.
+ */
+const specsFromOfferEntry = (entry) => {
+    if (!entry || typeof entry !== 'object')
+        return {};
+    const row = entry;
+    const specs = {};
+    const cooling = withUnit(row.coolingCapacityKw, 'kW');
+    const heating = withUnit(row.heatingCapacityKw, 'kW');
+    // Eine Heizleistung gibt es nur an einer Wärmepumpe (§1) — dann ist SIE
+    // die Kopfzahl, und die Kühlleistung steht daneben. Ein Chiller nennt
+    // ausschliesslich die Kühlleistung.
+    if (heating) {
+        specs.power = heating;
+        specs.powerIsCooling = false;
+        if (cooling)
+            specs.coolingPower = cooling;
+    }
+    else if (cooling) {
+        specs.power = cooling;
+        specs.powerIsCooling = true;
+    }
+    const cop = plain(row.cop);
+    const eer = plain(row.eer);
+    if (cop)
+        specs.cop = cop;
+    if (eer)
+        specs.eer = eer;
+    // Der Technologieblock der Offerte ist mehrzeilig; aus dem Vertrag kommen
+    // drei seiner Zeilen benannt statt aus dem Fliesstext geraten.
+    const technology = [
+        plain(row.evaporatorType) && `Verdampfer: ${plain(row.evaporatorType)}`,
+        plain(row.condenserType) && `Verflüssiger: ${plain(row.condenserType)}`,
+        plain(row.refrigerant) && `Kältemittel: ${plain(row.refrigerant)}`,
+    ].filter(Boolean);
+    if (technology.length)
+        specs.technology = technology.join('\n');
+    const sound1m = withUnit(row.soundPressureAt1mDb, 'dB(A)');
+    const sound10m = withUnit(row.soundPressureAt10mDb, 'dB(A)');
+    if (sound1m)
+        specs.sound1m = sound1m;
+    if (sound10m)
+        specs.sound10m = sound10m;
+    // Nur vollständig: eine Länge ohne Breite und Höhe ist keine Abmessung.
+    const length = plain(row.lengthMm);
+    const width = plain(row.widthMm);
+    const height = plain(row.heightMm);
+    if (length && width && height)
+        specs.dimensions = `${length} x ${width} x ${height} mm`;
+    const weight = withUnit(row.operatingWeightKg, 'kg');
+    if (weight)
+        specs.weight = weight;
+    return specs;
+};
+exports.specsFromOfferEntry = specsFromOfferEntry;
+/**
+ * Zwei Angabensätze übereinanderlegen. `stronger` gewinnt Feld für Feld, aber
+ * nur mit einem ECHTEN Wert — so füllt das PDF weiterhin auf, was der Webhook
+ * nicht kennt (das Medium), ohne je zu überschreiben, was er nennt.
+ */
+const mergeSpecs = (weaker, stronger) => {
+    const merged = { ...(weaker || {}) };
+    for (const [key, value] of Object.entries(stronger || {})) {
+        if (value === undefined || value === null || value === '')
+            continue;
+        merged[key] = value;
+    }
+    return merged;
+};
+exports.mergeSpecs = mergeSpecs;
 /* ── 4) Der ganze Weg: holen → ablegen → auslesen ────────────────────────── */
 /**
  * Das Datenblatt einer Zeile holen, ablegen und auslesen. Wirft nie — wie jede

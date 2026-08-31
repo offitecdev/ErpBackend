@@ -18,6 +18,7 @@
  */
 import { Prisma } from '@prisma/client';
 import prisma from '../../infrastructure/database/prisma.client';
+import { employeeScopeSql } from '../../presentation/controllers/serviceTenantScope';
 import {
     addDays,
     buildAccountingBalance,
@@ -88,7 +89,8 @@ const likeOrNull = (value?: string) => {
     return text ? `%${text}%` : null;
 };
 
-/** Die Personen des Firmenbaums, auf die die Namensfilter des Berichts passen. */
+/** Die Personen der ausgewaehlten Firma, auf die die Namensfilter des
+    Berichts passen (eigene Firma oder ausdrueckliche Zuteilung). */
 export const loadStaffForReport = async (
     tenantIds: string[],
     filters: ReportFilters,
@@ -96,7 +98,7 @@ export const loadStaffForReport = async (
     if (tenantIds.length === 0) return [];
 
     const conditions: Prisma.Sql[] = [
-        Prisma.sql`e.tenantId IN (${Prisma.join(tenantIds)})`,
+        employeeScopeSql(tenantIds),
         Prisma.sql`e.deletedAt IS NULL`,
     ];
     const firstName = likeOrNull(filters.firstName);

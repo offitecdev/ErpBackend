@@ -4,7 +4,7 @@ import { dispatchMail } from "./outlook/MailDispatchService";
 import { buildInviteHtml, buildInviteText, inviteWords, type InviteDetail } from "./calendarInviteMail";
 import { brandLogoInline, brandWaveInline } from "./mailBrand";
 import { kindIconInline } from "./mailKindIcons";
-import { getCompanyTreeTenantIds } from "../../presentation/controllers/serviceTenantScope";
+import { getMailTenantId, getPersonnelTenantScope, employeeScopeWhere } from "../../presentation/controllers/serviceTenantScope";
 import { requestTypeOf, type RequestType } from "../../shared/personnel";
 
 /**
@@ -99,13 +99,16 @@ const recipientsFor = async (request: LoadedRequest, stage: LeaveMailStage): Pro
         }];
     }
 
-    const tenantIds = await getCompanyTreeTenantIds(request.tenantId);
+    /* Nur die Firma des Antrags: die Verwaltung einer Schwesterfirma hat mit
+       den Ferien dieser Person nichts zu tun und darf sie auch nicht sehen.
+       Die im Antrag GEWÄHLTE freigebende Person kommt unten ohnehin dazu. */
+    const tenantIds = await getPersonnelTenantScope(request.tenantId);
     /* SEIT DEM 27.08.2026 ENTSCHEIDEN ROLLEN AUS DEN EINSTELLUNGEN, nicht mehr
        die Personalrollen: die erste Stufe geht an die Administratorrolle, die
        zweite an die Purser-Rolle (Role.isPurser). */
     const rows = await prisma.employee.findMany({
         where: {
-            tenantId: { in: tenantIds.length ? tenantIds : [request.tenantId] },
+            ...employeeScopeWhere(tenantIds.length ? tenantIds : [request.tenantId]),
             deletedAt: null,
             isActive: true,
             employeeRoles: {
@@ -188,7 +191,7 @@ const sendOne = async (
     stage: LeaveMailStage,
 ): Promise<boolean> => {
     if (!recipient.email || !EMAIL_RE.test(recipient.email)) return false;
-    const settings = await prisma.mailSetting.findUnique({ where: { tenantId: request.tenantId } });
+    const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(request.tenantId) } });
     if (!settings?.smtpHost?.trim() || !settings?.smtpPort) return false;
     const fromEmail = clean(settings.fromEmail);
     if (!EMAIL_RE.test(fromEmail)) return false;

@@ -17,6 +17,7 @@ import { normalizeRichText } from '../../shared/richText';
 // aber aus der Liste des Mandanten (Einstellungen -> Module -> Lager).
 import { listUnits, resolveUnit } from '../../application/services/measurementUnitCatalog';
 import { nanoid } from 'nanoid';
+import { getMailTenantId } from "../controllers/serviceTenantScope";
 
 /** Tedarikçi adresinin ayrı bileşenleri (tek serbest metin alanı yoktur). */
 const SUPPLIER_ADDRESS_FIELDS = ['address', 'addressSupplement', 'postalCode', 'city', 'state', 'country'] as const;
@@ -2551,7 +2552,7 @@ router.post(
 
             let emailSent = false;
             if (sendEmail && supplierEmail) {
-                const settings = await prisma.mailSetting.findUnique({ where: { tenantId } });
+                const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
                 const result = await smtp.send(settings || {}, {
                     fromEmail: settings?.fromEmail || req.user!.email,
                     fromName: settings?.fromName || 'Offitec ERP',
@@ -3854,7 +3855,7 @@ router.post(
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
 
-            const settings = await prisma.mailSetting.findUnique({ where: { tenantId } });
+            const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
 
             // Alıcı beyaz listesi: sipariş snapshot'ındaki e-posta + tedarikçi
             // kaydındaki e-posta. Keyfî adrese gönderim yok (açık relay engeli).

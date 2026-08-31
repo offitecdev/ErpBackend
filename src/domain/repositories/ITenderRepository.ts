@@ -55,6 +55,19 @@ export interface TenderListRow {
     commissionNumber: string | null;
     positionCount: number;
     grandTotal: number;
+    /* ── Herkunft aus der OSP (19.09.2026) ──────────────────────────────────
+       Eine Offerte, die aus einer OSP-Anfrage entstanden ist, trägt in der
+       Liste das OSP-Zeichen neben ihrer Nummer — man sieht auf einen Blick,
+       woher sie kommt. Gesetzt ist `ospReference` genau dann, wenn eine
+       OSP-Zeile auf diese Offerte zeigt.
+
+       `ospRevisedAt` sagt zusätzlich, dass die Einheit drüben NEU GERECHNET
+       wurde (§1a): das Datenblatt, aus dem offeriert wurde, gilt dann nicht
+       mehr. `ospRevisionSeenAt` ist der Zeitpunkt, an dem das jemand zur
+       Kenntnis genommen hat — ist er jünger, ist die Warnung erledigt. */
+    ospReference: string | null;
+    ospRevisedAt: Date | null;
+    ospRevisionSeenAt: Date | null;
 }
 
 export interface PaginatedResult<T> {
@@ -79,5 +92,7 @@ export interface ITenderRepository{
     ): Promise<TenderListItem[] | PaginatedResult<TenderListItem> | TenderListRow[] | PaginatedResult<TenderListRow>>;
     updateStatus(id:string , status:'Draft' | 'Approved' | 'Exported', tenantId:string): Promise<Tender>;
     createNextVersion(tenderId:string , newCreatedBy:string, tenantId:string): Promise<Tender>;
+    /** Kopie als EIGENER Beleg: frische AN-Nummer, Version 1, Entwurf. */
+    duplicate(tenderId: string, newCreatedBy: string, tenantId: string): Promise<Tender>;
     delete(id: string, tenantId: string): Promise<void>;
 }

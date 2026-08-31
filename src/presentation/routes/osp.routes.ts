@@ -5,6 +5,7 @@ import prisma from '../../infrastructure/database/prisma.client';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
 import { findTenantRootIdCached, getAllTenants, collectDescendantIds } from '../../shared/tenantTree';
+import { getPersonnelTenantScope, employeeScopeWhere } from '../controllers/serviceTenantScope';
 import { nextDocumentNumber } from '../../shared/documentNumber';
 import { formatCustomerAddress } from '../../application/utils/customerAddress';
 import {
@@ -12,11 +13,19 @@ import {
     OSP_STATUS_RANK,
     OSP_WIRE_STATUS,
     fetchOspOfferStatus,
-    reportOspOfferStatus,
+    withdrawOspOfferStatus,
+    type OspSalesmanDto,
     type OspStatusRow,
 } from '../../infrastructure/services/OspClient';
-import { fetchOspDatasheet, pickDatasheetUrl } from '../../infrastructure/services/ospDatasheet';
+import {
+    fetchOspDatasheet,
+    mergeSpecs,
+    pickDatasheetUrl,
+    specsFromOfferEntry,
+    type OspDatasheetSpecs,
+} from '../../infrastructure/services/ospDatasheet';
 import { ospDatasheetStorage } from '../../infrastructure/services/LocalFileStorage';
+import { reportOspDocumentStatus } from '../../infrastructure/services/ospStatusSync';
 
 /**
  * ── OSP-MODUL (Offitec Selection Platform, 04.09.2026) ──────────────────────
@@ -32,19 +41,37 @@ import { ospDatasheetStorage } from '../../infrastructure/services/LocalFileStor
  *    eine Offerte.
  *  • Der Kunde des Imports darf ein CRM-Kunde sein ODER von Hand eingegeben
  *    werden (Tender.manualCustomer*) — von Hand heisst: NIRGENDS registriert.
+ *  • Zuständig ist EINE Person: die Verkäuferin/der Verkäufer. Ihre Wahl ist
+ *    zugleich der Bearbeitungsstand — LISTED ohne, IN_OFFER mit (drüben
+ *    "under review"). Der Stand wird nirgends von Hand gesetzt.
  *  • Jede Meldung an die OSP ist Best-Effort; Ausgang + Fehler stehen an der
  *    Zeile (lastReport*).
  */
 
 const router = Router();
 
-const OSP_STATUSES = ['LISTED', 'IN_OFFER', 'SENT', 'APPROVED'] as const;
+/** WITHDRAWN steht neben der Reihe: die anfragende Person hat zurückgezogen. */
+const OSP_STATUSES = ['LISTED', 'IN_OFFER', 'SENT', 'APPROVED', 'WITHDRAWN'] as const;
 type OspStatus = (typeof OSP_STATUSES)[number];
 
 const SETTINGS_MANAGE = ['tenders.manage', 'roles.manage', 'tenants.update'];
 
 /** Standard-Seitengrösse der Liste — "in Gruppen von 15 ziehen" (Vorgabe). */
 const PAGE_SIZE = 15;
+
+/**
+ * Die Adressen, die der OSP für die drei eingehenden Aufrufe zu nennen sind
+ * (§1, §1a, §1b). Drei statt einer, damit drüben auf die ADRESSE geroutet
+ * werden kann und nicht aus dem Körper geraten werden muss, welcher Fall
+ * vorliegt. `changeWebhookPath` ist die Adresse der zweiten Vertragsfassung
+ * und bleibt stehen, solange sie drüben noch eingetragen ist.
+ */
+const OSP_WEBHOOK_PATHS = {
+    webhookPath: '/backend/api/v1/osp/webhook',
+    revisionWebhookPath: '/backend/api/v1/osp/webhook/revision',
+    withdrawalWebhookPath: '/backend/api/v1/osp/webhook/withdrawal',
+    changeWebhookPath: '/backend/api/v1/osp/webhook/change',
+} as const;
 
 /* ── kleine Helfer ──────────────────────────────────────────────────────── */
 
@@ -97,30 +124,15 @@ const loadFeedContext = async (tenantId: string): Promise<FeedContext | null> =>
     return { rootId, setting, visible };
 };
 
-/** Meldung an die OSP + Protokoll an der Zeile — Best-Effort, wirft nie. */
-const reportDocumentStatus = async (
-    setting: any | null,
-    doc: { id: string; reference: string },
-    internalStatus: string,
-    salesmanEmail?: string | null,
-    // Mitgeschickt als §3-"salesman"-Objekt, damit die Kundschaft drüben einen
-    // Namen sieht, auch wenn die Adresse dort kein OSP-Konto hat.
-    salesmanName?: string | null,
-): Promise<void> => {
-    const wireStatus = OSP_WIRE_STATUS[internalStatus];
-    if (!wireStatus || !setting) return;
-    const result = await reportOspOfferStatus(setting, doc.reference, wireStatus, salesmanEmail, salesmanName);
-    await (prisma as any).ospDocument.update({
-        where: { id: doc.id },
-        data: result.ok
-            ? { lastReportedStatus: wireStatus, lastReportAt: new Date(), lastReportError: null }
-            : {
-                lastReportError: result.skipped
-                    ? 'OSP-Zugang nicht konfiguriert (Basisadresse/Schlüssel fehlen).'
-                    : result.error || 'Unbekannter Fehler.',
-            },
-    }).catch(() => undefined);
-};
+/** Die abzulegende Visitenkarte einer gewählten Person (§3-Form). */
+const salesmanProfileOf = (employee: {
+    firstName?: string | null; lastName?: string | null; email?: string | null; phone?: string | null;
+}): OspSalesmanDto => ({
+    email: employee.email || null,
+    name: employee.firstName || null,
+    surname: employee.lastName || null,
+    phone: employee.phone || null,
+});
 
 /**
  * Das Datenblatt einer Zeile holen, ablegen und auslesen — Best-Effort, wirft
@@ -131,6 +143,11 @@ const storeDatasheet = async (
     setting: any | null,
     documentId: string,
     url: string,
+    // Die Angaben, die §1 zu DIESER Lieferung selbst mitgeschickt hat. Sie
+    // gelten vor dem, was im PDF steht (dieselbe Momentaufnahme, aber ohne
+    // Umweg über den Fliesstext); das PDF füllt nur noch auf, was der Vertrag
+    // nicht kennt — vor allem das Medium.
+    webhookSpecs?: OspDatasheetSpecs | null,
 ): Promise<void> => {
     if (!setting) return;
     const previous = await (prisma as any).ospDocument.findUnique({
@@ -139,12 +156,13 @@ const storeDatasheet = async (
     }).catch(() => null);
 
     const result = await fetchOspDatasheet(setting, setting.tenantId, url);
+    const specs = mergeSpecs(result.specs, webhookSpecs);
     await (prisma as any).ospDocument.update({
         where: { id: documentId },
         data: result.ok
             ? {
                 datasheetFile: result.file ?? null,
-                datasheetSpecs: (result.specs ?? null) as any,
+                datasheetSpecs: (Object.keys(specs).length ? specs : null) as any,
                 datasheetFetchedAt: new Date(),
                 // Ein unlesbares, aber abgelegtes PDF behält seinen Hinweis.
                 datasheetError: result.error ?? null,
@@ -159,137 +177,329 @@ const storeDatasheet = async (
     }
 };
 
+/**
+ * Der Stand FOLGT der Arbeit, er wird nicht gewählt (Vertrag, "Required
+ * workflow in the sales system"):
+ *
+ *  • niemand zuständig            → LISTED   (drüben "created", "Gelistet")
+ *  • Verkäufer:in gewählt         → IN_OFFER (drüben "under review",
+ *                                             bei uns "Verkäufer zugewiesen")
+ *  • Angebotsmail hinaus          → SENT     (drüben "offer has been sent")
+ *
+ * SENT und APPROVED bleiben stehen: eine hinausgegangene Offerte fällt nicht
+ * zurück, bloss weil jemand die Zuständigkeit tauscht. WITHDRAWN ebenso — die
+ * OSP hat ihre Seite dort bereits abgeräumt.
+ */
+const statusForAssignment = (current: string, hasSalesperson: boolean): string => {
+    if (current === 'SENT' || current === 'APPROVED' || current === 'WITHDRAWN') return current;
+    return hasSalesperson ? 'IN_OFFER' : 'LISTED';
+};
+
 const employeeDisplayName = (employee: { firstName?: string | null; lastName?: string | null; email?: string | null }): string =>
     [employee.firstName, employee.lastName].filter(Boolean).join(' ').trim() || employee.email || '';
 
-/* ── 1) Eingehender Webhook (OHNE JWT — gemeinsamer Schlüssel) ───────────── */
+/** Leere Felder raus — was die OSP nicht nennt, darf nichts überschreiben. */
+const withoutEmpty = <T extends Record<string, unknown>>(row: T): Partial<T> => {
+    const kept: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(row)) {
+        if (value === null || value === undefined || value === '') continue;
+        kept[key] = value;
+    }
+    return kept as Partial<T>;
+};
 
+/* ── 1) Eingehende Webhooks (OHNE JWT — gemeinsamer Schlüssel) ───────────── */
+
+/**
+ * Den Schlüssel des eingehenden Aufrufs prüfen und die dazugehörige Firma
+ * heraussuchen. Alle drei Webhooks (§1, §1a, §1b) hängen am SELBEN Schlüssel —
+ * getrennt sind nur die Adressen, damit die OSP nicht aus dem Körper raten
+ * muss, welcher der drei Fälle vorliegt.
+ *
+ * Ist nirgends ein Schlüssel hinterlegt, wird alles abgelehnt (503) — genau
+ * wie die OSP es umgekehrt hält: NIE offen durchfallen.
+ */
+const authenticateWebhook = async (req: any, res: any): Promise<any | null> => {
+    const key = asTrimmed(req.header('x-osp-integration-key'));
+    const settings = await (prisma as any).ospSetting.findMany({ where: { NOT: { webhookKey: null } } });
+    const armed = settings.filter((row: any) => asTrimmed(row.webhookKey));
+    if (!armed.length) {
+        res.status(503).json({ message: 'OSP integration key is not configured.' });
+        return null;
+    }
+    const setting = key ? armed.find((row: any) => keysMatch(asTrimmed(row.webhookKey) || '', key)) : null;
+    if (!setting) {
+        res.status(401).json({ message: 'Missing or wrong X-OSP-Integration-Key.' });
+        return null;
+    }
+    return setting;
+};
+
+interface IngestResult {
+    received: number;
+    created: number;
+    updated: number;
+    /** Nach der Quittung zu erledigen — die OSP wartet auf keine Datei. */
+    datasheetJobs: Array<{ id: string; url: string; specs: OspDatasheetSpecs }>;
+    /**
+     * Zeilen, deren Stand der OSP zu quittieren ist — mit dem Stand, der zu
+     * melden ist. Neuzugänge quittieren "created"; eine Überarbeitung meldet
+     * die Zeile wieder auf "under review", weil die OSP drüben selbst auf
+     * "created" zurückgesetzt hat, die Zuständigkeit hier aber bestehen bleibt
+     * (§1a, "The sales system must ensure OSP is back in `under review`").
+     */
+    report: Array<{ id: string; status: string }>;
+}
+
+/**
+ * Der gemeinsame Körper von §1 und §1a: ein JSON-Feld, ein Eintrag je Beleg.
+ * Die beiden Fassungen sind Feld für Feld gleich und unterscheiden sich nur
+ * darin, was sie bedeuten — deshalb EINE Auswertung mit einem Schalter:
+ *
+ *  • `NEW` (§1)       — eine Anfrage, die wir noch nie gesehen haben. Neue
+ *                       Zeilen werden der OSP mit "created" quittiert.
+ *  • `REVISION` (§1a) — dieselbe Anfrage, neu gerechnet. Die OSP hat drüben
+ *                       bereits selbst auf "created" zurückgesetzt (die
+ *                       Zuständigkeit bleibt), also wird NICHT zurückgemeldet;
+ *                       hier wird nur festgehalten, dass die Einheit sich
+ *                       geändert hat, damit niemand aus dem alten Datenblatt
+ *                       offeriert.
+ *
+ * Was die OSP nicht mitschickt, überschreibt nichts: der Vertrag hat Felder
+ * umbenannt und andere fallen gelassen (Kategorie, Modell, Kontotyp …), und
+ * eine spätere Lieferung darf nicht löschen, was eine frühere gebracht hat.
+ */
+const ingestOfferEntries = async (
+    setting: any,
+    entries: any[],
+    mode: 'NEW' | 'REVISION',
+): Promise<IngestResult> => {
+    const out: IngestResult = { received: entries.length, created: 0, updated: 0, datasheetJobs: [], report: [] };
+
+    for (const entry of entries) {
+        const reference = asTrimmed(entry.projectNumber);
+        if (!reference) continue;
+        const { projectNumber, documentId } = parseReference(reference);
+        const ospCreatedAtRaw = asTrimmed(entry.created_at);
+        const ospCreatedAt = ospCreatedAtRaw && !Number.isNaN(Date.parse(ospCreatedAtRaw))
+            ? new Date(ospCreatedAtRaw)
+            : null;
+
+        /* Die beschreibenden Felder. `companyName` und `projectAddress` sind
+           die Namen der dritten Vertragsfassung; die alten bleiben als
+           Rückfall stehen, weil ältere Zeilen und die Zusatzfelder der OSP sie
+           noch führen. Die Adressen beschreiben den AUFTRAG, nicht das Konto:
+           wo die anfragende Person "gleich wie Projekt" gewählt hat, wiederholt
+           die OSP die Projektadresse bereits aufgelöst (§1). */
+        const descriptive = withoutEmpty({
+            projectNumber,
+            documentId,
+            projectName: asTrimmed(entry.projectName),
+            requesterFirstName: asTrimmed(entry.username),
+            requesterLastName: asTrimmed(entry.surname),
+            requesterEmail: asTrimmed(entry.email),
+            phone: asTrimmed(entry.phone),
+            company: asTrimmed(entry.companyName) || asTrimmed(entry.company),
+            country: asTrimmed(entry.country),
+            city: asTrimmed(entry.city),
+            address: asTrimmed(entry.projectAddress) || asTrimmed(entry.address),
+            shippingAddress: asTrimmed(entry.shippingAddress),
+            billingAddress: asTrimmed(entry.billingAddress),
+            postalCode: asTrimmed(entry.postalCode),
+            userType: asTrimmed(entry.userType),
+            category: asTrimmed(entry.category),
+            unitType: asTrimmed(entry.type),
+            model: asTrimmed(entry.model),
+            ospCreatedAt,
+            datasheetUrl: pickDatasheetUrl(entry),
+        });
+        // Der unveränderte Eintrag geht IMMER mit — ohne ihn ist hinterher
+        // nicht mehr feststellbar, was tatsächlich geliefert wurde.
+        const data: any = { ...descriptive, rawPayload: entry as any };
+
+        /* Die berechneten Angaben der Einheit stehen seit der dritten
+           Vertragsfassung im Webhook selbst (§1 "The calculated unit"). Sie
+           stehen damit sofort an der Zeile — auf das PDF wartet niemand. */
+        const webhookSpecs = specsFromOfferEntry(entry);
+
+        const existing = await (prisma as any).ospDocument.findUnique({
+            where: { tenantId_reference: { tenantId: setting.tenantId, reference } },
+            select: {
+                id: true, status: true, datasheetUrl: true, datasheetFile: true,
+                datasheetSpecs: true, salespersonEmail: true,
+            },
+        });
+
+        if (existing) {
+            /** Eine Zeile, die nach einem Rückzug wieder auflebt (§1b → §1). */
+            let revived = false;
+            /** Eine Überarbeitung, die drüben wieder auf "under review" gehört. */
+            let revisionReport = false;
+            if (Object.keys(webhookSpecs).length) {
+                data.datasheetSpecs = mergeSpecs(existing.datasheetSpecs as OspDatasheetSpecs, webhookSpecs) as any;
+            }
+            if (mode === 'REVISION') {
+                // Sichtbar machen, dass die Einheit sich geändert hat. Der
+                // Bearbeitungsstand bleibt: die Offerte, die vielleicht schon
+                // besteht, gehört weiterhin zu diesem Beleg.
+                data.revisedAt = new Date();
+                data.revisionCount = { increment: 1 };
+                // Eine zur Kenntnis genommene frühere Überarbeitung deckt diese
+                // hier nicht mit ab — die Warnung an der Offerte lebt auf.
+                data.revisionSeenAt = null;
+                // Drüben steht die Anfrage nach der Überarbeitung wieder auf
+                // "created", die Zuständigkeit hier besteht aber fort. Also
+                // wird sie zurück auf "under review" gesetzt (§1a).
+                if (existing.salespersonEmail && existing.status === 'IN_OFFER') {
+                    revisionReport = true;
+                }
+            } else if (existing.status === 'WITHDRAWN') {
+                // Nach einem Rückzug darf neu angefragt werden — das kommt als
+                // NEUE Anfrage (§1), nicht als Überarbeitung. Die Zeile lebt
+                // damit wieder auf, mitsamt Offerte und Zuständigkeit.
+                data.status = 'LISTED';
+                data.withdrawnAt = null;
+                data.withdrawnByName = null;
+                data.withdrawnByEmail = null;
+                data.withdrawnFromStatus = null;
+                // Drüben ist es eine frische Anfrage, also wird sie auch wie
+                // eine quittiert — nach dem Rückzug steht dort gar kein Stand
+                // mehr, den unsere Meldung überschreiben könnte.
+                revived = true;
+            }
+            await (prisma as any).ospDocument.update({ where: { id: existing.id }, data });
+            out.updated += 1;
+            if (revived) out.report.push({ id: existing.id, status: 'LISTED' });
+            else if (revisionReport) out.report.push({ id: existing.id, status: 'IN_OFFER' });
+            // Erneut geholt wird nur, wenn das Datenblatt fehlt oder die OSP
+            // auf eine ANDERE Datei zeigt — sonst bliebe es bei jeder
+            // Wiederholung derselben Anfrage beim Herunterladen.
+            if (data.datasheetUrl
+                && (!existing.datasheetFile || existing.datasheetUrl !== data.datasheetUrl)) {
+                out.datasheetJobs.push({ id: existing.id, url: data.datasheetUrl, specs: webhookSpecs });
+            }
+        } else {
+            if (Object.keys(webhookSpecs).length) data.datasheetSpecs = webhookSpecs as any;
+            const row = await (prisma as any).ospDocument.create({
+                data: { id: nanoid(12), tenantId: setting.tenantId, reference, status: 'LISTED', ...data },
+                select: { id: true },
+            });
+            out.created += 1;
+            // Auch eine Überarbeitung zu einem Beleg, den wir nie bekommen
+            // haben, wird angelegt und quittiert: lieber eine Anfrage zu viel
+            // in der Liste als eine, die niemand je sieht — die OSP wiederholt
+            // nicht.
+            out.report.push({ id: row.id, status: 'LISTED' });
+            if (data.datasheetUrl) out.datasheetJobs.push({ id: row.id, url: data.datasheetUrl, specs: webhookSpecs });
+        }
+    }
+
+    return out;
+};
+
+/** Quittieren, dann in Ruhe arbeiten — die OSP wartet auf keine Datei. */
+const finishIngest = (setting: any, res: any, result: IngestResult): void => {
+    res.status(200).json({
+        received: result.received,
+        created: result.created,
+        updated: result.updated,
+        datasheets: result.datasheetJobs.length,
+    });
+    for (const row of result.report) {
+        // Gemeldet wird die Zeile, wie sie nach dem Einlesen dasteht: die
+        // Visitenkarte gehört zur Meldung (§3), und bei einer Überarbeitung ist
+        // genau sie es, die drüben erhalten bleiben soll.
+        void (async () => {
+            const doc = await (prisma as any).ospDocument.findUnique({
+                where: { id: row.id },
+                select: {
+                    id: true, reference: true, salespersonEmail: true,
+                    salespersonName: true, salespersonProfile: true,
+                },
+            }).catch(() => null);
+            if (doc) await reportOspDocumentStatus(setting, doc, row.status);
+        })().catch(() => undefined);
+    }
+    for (const job of result.datasheetJobs) {
+        void storeDatasheet(setting, job.id, job.url, job.specs).catch(() => undefined);
+    }
+};
+
+const asEntryArray = (body: unknown): any[] => {
+    const rows = Array.isArray(body) ? body : (body ? [body] : []);
+    return rows.filter((entry) => entry && typeof entry === 'object');
+};
+
+/* §1 — eine Anfrage, die wir noch nie gesehen haben (OFFER_WEBHOOK_URL). */
 router.post('/webhook', async (req, res) => {
     try {
-        const key = asTrimmed(req.header('x-osp-integration-key'));
-        const settings = await (prisma as any).ospSetting.findMany({
-            where: { NOT: { webhookKey: null } },
-        });
-        const armed = settings.filter((row: any) => asTrimmed(row.webhookKey));
-        // Kein konfigurierter Schlüssel → niemals offen durchfallen (wie die
-        // OSP selbst: 503 statt offen).
-        if (!armed.length) {
-            return res.status(503).json({ message: 'OSP integration key is not configured.' });
-        }
-        const setting = key ? armed.find((row: any) => keysMatch(asTrimmed(row.webhookKey) || '', key)) : null;
-        if (!setting) return res.status(401).json({ message: 'Missing or wrong X-OSP-Integration-Key.' });
-
-        const body = Array.isArray(req.body) ? req.body : (req.body ? [req.body] : []);
-        const entries = body.filter((entry) => entry && typeof entry === 'object');
+        const setting = await authenticateWebhook(req, res);
+        if (!setting) return;
+        const entries = asEntryArray(req.body);
         if (!entries.length) return res.status(400).json({ message: 'Empty payload.' });
-
-        const created: Array<{ id: string; reference: string }> = [];
-        /** Datenblätter, die nach der Quittung geholt werden (siehe unten). */
-        const datasheetJobs: Array<{ id: string; url: string }> = [];
-        let updated = 0;
-
-        for (const entry of entries) {
-            const reference = asTrimmed((entry as any).projectNumber);
-            if (!reference) continue;
-            const { projectNumber, documentId } = parseReference(reference);
-            const ospCreatedAtRaw = asTrimmed((entry as any).created_at);
-            const ospCreatedAt = ospCreatedAtRaw && !Number.isNaN(Date.parse(ospCreatedAtRaw))
-                ? new Date(ospCreatedAtRaw)
-                : null;
-
-            // Beschreibende Felder werden bei JEDER Lieferung aufgefrischt;
-            // der Bearbeitungsstand und die Zuständigkeit bleiben unangetastet
-            // (erneute Lieferung derselben Anfrage ist erlaubt und sicher).
-            const descriptive = {
-                projectNumber,
-                documentId,
-                projectName: asTrimmed((entry as any).projectName) || '',
-                requesterFirstName: asTrimmed((entry as any).username),
-                requesterLastName: asTrimmed((entry as any).surname),
-                requesterEmail: asTrimmed((entry as any).email),
-                company: asTrimmed((entry as any).company),
-                country: asTrimmed((entry as any).country),
-                city: asTrimmed((entry as any).city),
-                address: asTrimmed((entry as any).address),
-                postalCode: asTrimmed((entry as any).postalCode),
-                userType: asTrimmed((entry as any).userType),
-                category: asTrimmed((entry as any).category),
-                unitType: asTrimmed((entry as any).type),
-                model: asTrimmed((entry as any).model),
-                ospCreatedAt,
-                // Die Adresse des ECHTEN Datenblatt-PDF (nicht der Link auf die
-                // Offerte drüben) — und der unveränderte Eintrag dazu, damit
-                // später nachvollziehbar bleibt, was tatsächlich geliefert wurde.
-                datasheetUrl: pickDatasheetUrl(entry),
-                rawPayload: entry as any,
-            };
-
-            const existing = await (prisma as any).ospDocument.findUnique({
-                where: { tenantId_reference: { tenantId: setting.tenantId, reference } },
-                select: { id: true, datasheetUrl: true, datasheetFile: true },
-            });
-            if (existing) {
-                await (prisma as any).ospDocument.update({ where: { id: existing.id }, data: descriptive });
-                updated += 1;
-                // Erneut geholt wird nur, wenn das Datenblatt fehlt oder die OSP
-                // auf eine ANDERE Datei zeigt — sonst bliebe es bei jeder
-                // Wiederholung derselben Anfrage beim Herunterladen.
-                if (descriptive.datasheetUrl
-                    && (!existing.datasheetFile || existing.datasheetUrl !== descriptive.datasheetUrl)) {
-                    datasheetJobs.push({ id: existing.id, url: descriptive.datasheetUrl });
-                }
-            } else {
-                const row = await (prisma as any).ospDocument.create({
-                    data: { id: nanoid(12), tenantId: setting.tenantId, reference, status: 'LISTED', ...descriptive },
-                    select: { id: true, reference: true },
-                });
-                created.push(row);
-                if (descriptive.datasheetUrl) datasheetJobs.push({ id: row.id, url: descriptive.datasheetUrl });
-            }
-        }
-
-        // Antwort sofort — die "created"-Bestätigung an die OSP ist Kür und
-        // läuft im Hintergrund (Best-Effort, §3: salesman dabei optional).
-        res.status(200).json({
-            received: entries.length,
-            created: created.length,
-            updated,
-            datasheets: datasheetJobs.length,
-        });
-        for (const row of created) {
-            void reportDocumentStatus(setting, row, 'LISTED').catch(() => undefined);
-        }
-        // Das Datenblatt wird ebenfalls im Hintergrund geholt: die OSP wartet
-        // auf eine schnelle Quittung, nicht auf unseren Dateidownload.
-        for (const job of datasheetJobs) {
-            void storeDatasheet(setting, job.id, job.url).catch(() => undefined);
-        }
+        finishIngest(setting, res, await ingestOfferEntries(setting, entries, 'NEW'));
     } catch (error: any) {
         res.status(500).json({ message: error?.message || 'Webhook failed.' });
     }
 });
 
-/* ── 1b) Änderungs-Webhook (Vertragsfassung (2), §1b) ────────────────────────
-   Die Kundschaft arbeitet nach der Anfrage weiter (Neuberechnung, Optionen,
-   Sprache …) — die OSP rendert das Datenblatt neu und meldet das hier als
-   EINZELNES Objekt je Änderung: { projectNumber, projectName, model, change,
-   offerStatus, pdfUrl, changed_at }. Wir holen das NEUE PDF und lesen die
-   Angaben neu aus; Bearbeitungsstand, Zuständigkeit und die Angaben der
-   anfragenden Person bleiben unangetastet (die stehen nur im §1-Webhook).
-   Eigene Adresse (DOCUMENT_CHANGE_WEBHOOK_URL), derselbe Schlüssel wie §1. */
+/* ── §1a — die überarbeitete Anfrage (OFFER_REVISION_WEBHOOK_URL) ───────────
+   Die anfragende Person hat den Beleg nach der Anfrage geändert (neu gerechnet,
+   Optionen getauscht, Projektangaben korrigiert) und ihn ERNEUT angefragt. Der
+   Körper ist Feld für Feld derselbe wie in §1 — nur die Adresse ist eine
+   andere, damit klar ist, dass es kein zweiter Interessent ist, sondern ein
+   Ersatz für eine Anfrage, die schon in Arbeit ist.
 
+   Ein Druck auf "Get Offer" kann BEIDE Aufrufe auslösen, wenn die Auswahl neue
+   und bereits gesendete Belege mischt; leer bleibt keiner der beiden.
+
+   Für einen bereits beantworteten Beleg ("offer has been sent") kommt hier NIE
+   etwas an — den schliesst die OSP für weitere Anfragen. Wieder zu öffnen ist
+   er nur über §4b (Anfrage zurückziehen). */
+router.post('/webhook/revision', async (req, res) => {
+    try {
+        const setting = await authenticateWebhook(req, res);
+        if (!setting) return;
+        const entries = asEntryArray(req.body);
+        if (!entries.length) return res.status(400).json({ message: 'Empty payload.' });
+        finishIngest(setting, res, await ingestOfferEntries(setting, entries, 'REVISION'));
+    } catch (error: any) {
+        res.status(500).json({ message: error?.message || 'Revision webhook failed.' });
+    }
+});
+
+/* Die Adresse der zweiten Vertragsfassung (DOCUMENT_CHANGE_WEBHOOK_URL). Sie
+   bleibt bestehen, solange die OSP sie noch eingetragen hat: dort hiess die
+   Überarbeitung "Änderung" und kam als EINZELNES Objekt. Beide Formen landen
+   auf derselben Auswertung — ein Feld ebenso wie ein einzelnes Objekt. */
 router.post('/webhook/change', async (req, res) => {
     try {
-        const key = asTrimmed(req.header('x-osp-integration-key'));
-        const settings = await (prisma as any).ospSetting.findMany({
-            where: { NOT: { webhookKey: null } },
-        });
-        const armed = settings.filter((row: any) => asTrimmed(row.webhookKey));
-        if (!armed.length) {
-            return res.status(503).json({ message: 'OSP integration key is not configured.' });
-        }
-        const setting = key ? armed.find((row: any) => keysMatch(asTrimmed(row.webhookKey) || '', key)) : null;
-        if (!setting) return res.status(401).json({ message: 'Missing or wrong X-OSP-Integration-Key.' });
+        const setting = await authenticateWebhook(req, res);
+        if (!setting) return;
+        const entries = asEntryArray(req.body);
+        if (!entries.length) return res.status(400).json({ message: 'Empty payload.' });
+        finishIngest(setting, res, await ingestOfferEntries(setting, entries, 'REVISION'));
+    } catch (error: any) {
+        res.status(500).json({ message: error?.message || 'Change webhook failed.' });
+    }
+});
+
+/* ── §1b — die Anfrage wurde zurückgezogen (OFFER_WITHDRAWAL_WEBHOOK_URL) ───
+   Die anfragende Person nimmt ihre Anfrage im OSP zurück. EIN Objekt je Beleg:
+   ein Rückzug ist eine Entscheidung über einen Beleg, nicht über einen Stapel.
+
+   Zurückgezogen werden kann nur eine OFFENE Anfrage ("offer request sent" oder
+   "under review") — ist die Offerte einmal draussen, verschwindet der Knopf
+   drüben. Das Gegenstück in die andere Richtung ist §4b: dort sagen WIR der
+   OSP, dass die Anfrage bei uns weg ist (das tut die Offertenlöschung).
+
+   Gelöscht wird hier nichts. Die Zeile behält Offerte, Datenblatt und
+   Zuständigkeit und wechselt auf WITHDRAWN — sichtbar, damit niemand
+   weiterarbeitet, und rückholbar, falls neu angefragt wird. */
+router.post('/webhook/withdrawal', async (req, res) => {
+    try {
+        const setting = await authenticateWebhook(req, res);
+        if (!setting) return;
 
         const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
         const reference = asTrimmed(body?.projectNumber);
@@ -297,29 +507,41 @@ router.post('/webhook/change', async (req, res) => {
 
         const doc = await (prisma as any).ospDocument.findUnique({
             where: { tenantId_reference: { tenantId: setting.tenantId, reference } },
-            select: { id: true, datasheetUrl: true },
+            select: { id: true, status: true },
         });
-        // Eine Änderung zu einem Beleg, den wir nie bekommen haben, ist kein
+        // Ein Rückzug zu einem Beleg, den wir nie bekommen haben, ist kein
         // Fehler — die OSP wiederholt nicht, also freundlich quittieren.
         if (!doc) return res.status(200).json({ received: 1, matched: 0 });
 
-        const url = pickDatasheetUrl(body);
-        const data: any = {};
-        const projectName = asTrimmed(body?.projectName);
-        const model = asTrimmed(body?.model);
-        if (projectName) data.projectName = projectName;
-        if (model) data.model = model;
-        if (url) data.datasheetUrl = url;
-        if (Object.keys(data).length) {
-            await (prisma as any).ospDocument.update({ where: { id: doc.id }, data });
-        }
+        const withdrawnAtRaw = asTrimmed(body?.withdrawn_at);
+        const withdrawnAt = withdrawnAtRaw && !Number.isNaN(Date.parse(withdrawnAtRaw))
+            ? new Date(withdrawnAtRaw)
+            : new Date();
 
-        res.status(200).json({ received: 1, matched: 1, datasheets: url ? 1 : 0 });
-        // Das NEUE Datenblatt ersetzt die abgelegte Kopie samt Angaben — im
-        // Hintergrund, die OSP wartet nur auf die Quittung.
-        if (url) void storeDatasheet(setting, doc.id, url).catch(() => undefined);
+        await (prisma as any).ospDocument.update({
+            where: { id: doc.id },
+            data: {
+                status: 'WITHDRAWN',
+                withdrawnAt,
+                withdrawnByName: [asTrimmed(body?.username), asTrimmed(body?.surname)].filter(Boolean).join(' ') || null,
+                withdrawnByEmail: asTrimmed(body?.email),
+                // Der Stand, in dem zurückgezogen wurde — drüben gesehen.
+                withdrawnFromStatus: asTrimmed(body?.offerStatus),
+                // Der Rückzug beendet die Meldekette: was zuletzt gemeldet
+                // wurde, gilt drüben nicht mehr, denn die OSP hat ihre Seite
+                // bereits abgeräumt, bevor sie uns angerufen hat.
+                lastReportedStatus: null,
+                lastReportAt: null,
+                lastReportError: null,
+            },
+        });
+
+        // Zurückgemeldet wird NICHTS: die OSP räumt ihre Seite zuerst und
+        // bedingungslos ab (§1b) — eine Statusmeldung darauf würde eine
+        // Anfrage wiederbeleben, die es drüben nicht mehr gibt.
+        res.status(200).json({ received: 1, matched: 1, status: 'WITHDRAWN' });
     } catch (error: any) {
-        res.status(500).json({ message: error?.message || 'Change webhook failed.' });
+        res.status(500).json({ message: error?.message || 'Withdrawal webhook failed.' });
     }
 });
 
@@ -390,10 +612,11 @@ router.get('/documents', requireAuth, requirePermission('tenders.view'), async (
             }
         }
 
-        /* Selbstpflege des Standes: hängt an einer Zeile eine Offerte, deren
-           Angebotsmail inzwischen HINAUS ist, rückt die Zeile von IN_OFFER auf
-           SENT vor — und die OSP bekommt "offer has been sent" gemeldet. So
-           braucht der Mailweg der Offerte keinen OSP-Haken. */
+        /* Sicherheitsnetz für den Stand: gemeldet wird "gesendet" am Mailweg
+           der Offerte selbst (markOspOfferSent). Ging das damals daneben — der
+           Serverstand war älter, der Aufruf brach ab —, holt die Liste es hier
+           nach: hängt an einer Zeile eine Offerte, deren Angebotsmail HINAUS
+           ist, rückt sie von IN_OFFER auf SENT vor und meldet es. */
         const mailCandidates = items.filter((doc: any) => doc.status === 'IN_OFFER' && doc.tenderId);
         if (mailCandidates.length) {
             const tenders = await prisma.tender.findMany({
@@ -405,11 +628,15 @@ router.get('/documents', requireAuth, requirePermission('tenders.view'), async (
                 if (!sentTenders.has(doc.tenderId)) continue;
                 doc.status = 'SENT';
                 await (prisma as any).ospDocument.update({ where: { id: doc.id }, data: { status: 'SENT' } });
-                void reportDocumentStatus(feed.setting, doc, 'SENT', doc.salespersonEmail, doc.salespersonName).catch(() => undefined);
+                // Ohne Verkäufer:in lehnt die OSP "offer has been sent" mit 400
+                // ab (§3) — der Stand bei uns stimmt trotzdem.
+                if (doc.salespersonEmail) {
+                    void reportOspDocumentStatus(feed.setting, doc, 'SENT').catch(() => undefined);
+                }
             }
         }
 
-        const counts: Record<OspStatus, number> = { LISTED: 0, IN_OFFER: 0, SENT: 0, APPROVED: 0 };
+        const counts: Record<OspStatus, number> = { LISTED: 0, IN_OFFER: 0, SENT: 0, APPROVED: 0, WITHDRAWN: 0 };
         for (const row of grouped as Array<{ status: string; _count: { _all: number } }>) {
             if ((OSP_STATUSES as readonly string[]).includes(row.status)) {
                 counts[row.status as OspStatus] = row._count._all;
@@ -430,7 +657,15 @@ router.get('/documents', requireAuth, requirePermission('tenders.view'), async (
     }
 });
 
-/* ── 3) Zeile pflegen: Status / zuständige Person / Rolle ────────────────── */
+/* ── 3) Zeile pflegen: die zuständige Verkäuferin / der zuständige Verkäufer ─
+   EINE Zuständigkeit, direkt gewählt (19.09.2026): die Projektleitung als
+   zweites Feld ist weg — an der Anfrage steht die Person, die die Offerte
+   macht, und genau die geht als `salesman` an die OSP.
+
+   Der STAND wird dabei nicht gewählt, sondern folgt (siehe
+   `statusForAssignment`): wer eine Person einträgt, setzt die Anfrage auf
+   "Verkäufer zugewiesen" und meldet der OSP "under review"; wer sie
+   herausnimmt, stellt sie zurück auf "Gelistet". */
 
 router.patch('/documents/:id', requireAuth, requirePermission('tenders.manage'), async (req, res) => {
     try {
@@ -446,69 +681,158 @@ router.patch('/documents/:id', requireAuth, requirePermission('tenders.manage'),
         const data: any = {};
         const body = req.body || {};
 
-        if (body.status !== undefined) {
-            const status = String(body.status || '').toUpperCase();
-            if (!(OSP_STATUSES as readonly string[]).includes(status)) {
-                return res.status(400).json({ error: 'Unbekannter Status.' });
+        if (body.salespersonId !== undefined) {
+            if (!body.salespersonId) {
+                data.salespersonId = null;
+                data.salespersonEmail = null;
+                data.salespersonName = null;
+                data.salespersonProfile = null;
+            } else {
+                // Person kommt aus dem Personalverzeichnis — Name und E-Mail
+                // werden hier aufgelöst, nie vom Client übernommen. Und zwar
+                // aus dem Verzeichnis der AUSGEWÄHLTEN Firma: die OSP-Liste
+                // hängt zwar am Stamm, die Zuständigen sind aber Leute der
+                // eigenen Firma.
+                const employee = await prisma.employee.findFirst({
+                    where: { id: String(body.salespersonId), ...employeeScopeWhere(await getPersonnelTenantScope(tenantId)) },
+                    select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+                });
+                if (!employee) return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
+                data.salespersonId = employee.id;
+                data.salespersonEmail = employee.email || null;
+                data.salespersonName = employeeDisplayName(employee);
+                // Die Visitenkarte, die §3 mitschickt.
+                data.salespersonProfile = salesmanProfileOf(employee) as any;
             }
-            data.status = status;
         }
 
-        // Verkäufer:in und Projektleiter:in sind ZWEI eigene Zuständigkeiten,
-        // die je direkt gewählt werden (bis 05.09.2026 war es eine Person mit
-        // umschaltbarer Rolle). Beide werden gleich aufgelöst.
-        for (const role of [
-            { field: 'salespersonId', columns: ['salespersonId', 'salespersonEmail', 'salespersonName'] as const },
-            { field: 'projectManagerId', columns: ['projectManagerId', 'projectManagerEmail', 'projectManagerName'] as const },
-        ]) {
-            const requested = (body as any)[role.field];
-            if (requested === undefined) continue;
-            const [idColumn, emailColumn, nameColumn] = role.columns;
-            if (!requested) {
-                data[idColumn] = null;
-                data[emailColumn] = null;
-                data[nameColumn] = null;
-                continue;
-            }
-            // Person kommt aus dem Personalverzeichnis — Name und E-Mail
-            // werden hier aufgelöst, nie vom Client übernommen.
-            const treeIds = collectDescendantIds(await getAllTenants(), feed.rootId);
-            const employee = await prisma.employee.findFirst({
-                where: { id: String(requested), tenantId: { in: treeIds } },
-                select: { id: true, firstName: true, lastName: true, email: true },
-            });
-            if (!employee) return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
-            data[idColumn] = employee.id;
-            data[emailColumn] = employee.email || null;
-            data[nameColumn] = employeeDisplayName(employee);
-        }
-
-        const nextStatus: string = data.status ?? doc.status;
         const nextEmail: string | null = data.salespersonEmail !== undefined ? data.salespersonEmail : doc.salespersonEmail;
-        // "under review" und "offer has been sent" sind ohne Verkäufer:in
-        // bedeutungslos — die OSP lehnt sie ab (400), also lehnen wir zuerst ab.
-        // (Die Projektleitung ist intern und wird nie gemeldet.) Geprüft wird
-        // nur, wenn die Änderung Status oder Verkauf ANFASST: sonst könnte an
-        // einer alten Zeile ohne Verkäufer-E-Mail nicht einmal mehr die
-        // Projektleitung eingetragen werden.
-        const touchesReported = body.status !== undefined || body.salespersonId !== undefined;
-        if (touchesReported && (nextStatus === 'IN_OFFER' || nextStatus === 'SENT') && !nextEmail) {
-            return res.status(400).json({ error: 'Für diesen Status muss zuerst eine Verkäuferin oder ein Verkäufer gewählt werden.' });
+        // Der Stand folgt der Zuständigkeit — von Hand gesetzt wird er nicht.
+        const nextStatus = statusForAssignment(doc.status, Boolean(nextEmail));
+        if (nextStatus !== doc.status) data.status = nextStatus;
+
+        // "under review" ist ohne Verkäufer:in bedeutungslos — die OSP lehnt es
+        // mit 400 ab. Wer eine Person OHNE E-Mail-Adresse wählt, bekommt das
+        // hier gesagt, statt dass die Meldung später still an der Zeile
+        // scheitert.
+        if (body.salespersonId && !nextEmail) {
+            return res.status(400).json({ error: 'Diese Person hat keine E-Mail-Adresse — die OSP braucht sie, um die Zuweisung anzuzeigen.' });
         }
 
         const updatedDoc = await (prisma as any).ospDocument.update({ where: { id: doc.id }, data });
 
-        // Nur eine ECHTE Änderung meldet an die OSP (erneute Zustellung wäre
-        // drüben zwar sicher, hier aber sinnlos).
-        const statusChanged = nextStatus !== doc.status;
+        /* Gemeldet wird jede ECHTE Änderung der Zuweisung:
+            • Person gewählt/gewechselt → "under review" mit ihrer Visitenkarte
+              (auch beim Wechsel — die OSP ersetzt sonst die alte Karte nicht),
+            • Person entfernt, solange die Offerte noch nicht hinaus ist →
+              "created" ohne Karte, denn drüben stünde sonst weiterhin jemand,
+              der die Anfrage gar nicht mehr bearbeitet. Eine GESENDETE Offerte
+              rührt das nicht an: sie ist beim Kunden. */
         const personChanged = nextEmail !== doc.salespersonEmail;
-        if ((statusChanged || personChanged) && (nextStatus === 'IN_OFFER' || nextStatus === 'SENT')) {
-            await reportDocumentStatus(feed.setting, updatedDoc, nextStatus, nextEmail, updatedDoc.salespersonName);
+        if (personChanged && (nextStatus === 'IN_OFFER' || nextStatus === 'LISTED')) {
+            await reportOspDocumentStatus(feed.setting, updatedDoc, nextStatus);
         }
 
         res.json(await (prisma as any).ospDocument.findUnique({ where: { id: doc.id } }));
     } catch (error: any) {
         res.status(500).json({ error: error?.message || 'OSP-Beleg konnte nicht gespeichert werden.' });
+    }
+});
+
+/* ── 3a) Die Anfrage zu einer OFFERTE — für die Offertenseite ───────────────
+   Die Offerte weiss von sich aus nichts über ihre Herkunft. Diese Adresse
+   beantwortet die eine Frage, die sie stellt: "komme ich aus der OSP, und was
+   ist seither passiert?" Ohne Zeile antwortet sie mit `null` — das ist der
+   Normalfall und kein Fehler. */
+
+router.get('/documents/by-tender/:tenderId', requireAuth, requirePermission('tenders.view'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext((req as any).user!.tenantId);
+        // Ohne freigeschaltete OSP gibt es zu einer Offerte schlicht nichts zu
+        // sagen — das ist keine Zugriffsverweigerung, sondern "keine Zeile".
+        if (!feed?.visible) return res.json({ document: null });
+        const doc = await (prisma as any).ospDocument.findFirst({
+            where: { tenderId: req.params.tenderId, tenantId: feed.rootId },
+        });
+        res.json({ document: doc || null });
+    } catch (error: any) {
+        res.status(500).json({ error: error?.message || 'OSP-Beleg konnte nicht geladen werden.' });
+    }
+});
+
+/* ── 3c) Die Überarbeitung zur Kenntnis nehmen (§1a) ─────────────────────────
+   Die Warnung an der Offerte steht, solange die Überarbeitung jünger ist als
+   dieser Stempel. Gelöscht wird dabei nichts: `revisedAt` bleibt stehen, die
+   Zeile sagt weiterhin, dass und wann die Einheit neu gerechnet wurde. */
+
+router.post('/documents/:id/revision-seen', requireAuth, requirePermission('tenders.manage'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext((req as any).user!.tenantId);
+        if (!feed?.visible) return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+        const doc = await (prisma as any).ospDocument.findFirst({
+            where: { id: req.params.id, tenantId: feed.rootId },
+            select: { id: true },
+        });
+        if (!doc) return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
+        res.json(await (prisma as any).ospDocument.update({
+            where: { id: doc.id },
+            data: { revisionSeenAt: new Date() },
+        }));
+    } catch (error: any) {
+        res.status(500).json({ error: error?.message || 'Speichern fehlgeschlagen.' });
+    }
+});
+
+/* ── 3d) Die Anfrage LÖSCHEN — und den Rückzug drüben melden (§4b) ───────────
+   Der Vertrag verlangt für Zeilen aus der OSP einen Löschknopf, der
+   `DELETE /integration/offer-status/{reference}` ruft: die Methode SELBST ist
+   die Meldung "gelöscht", einen Status `deleted` gibt es nicht. Drüben wird
+   dabei nichts gelöscht — Status und Zuständigkeit werden geleert, und die
+   anfragende Person darf neu anfragen.
+
+   Erst wenn die OSP mit 2xx quittiert hat, verschwindet die Zeile hier: sonst
+   wüssten die beiden Seiten Verschiedenes, ohne dass es jemandem auffiele. Ist
+   gar kein OSP-Zugang hinterlegt, gibt es nichts zu melden und die Zeile geht.
+
+   Die Offerte, die aus der Anfrage entstanden ist, bleibt bestehen — sie ist
+   ein eigener Beleg. Sie verliert nur ihre Herkunft. */
+
+router.delete('/documents/:id', requireAuth, requirePermission('tenders.manage'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext((req as any).user!.tenantId);
+        if (!feed?.visible) return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+
+        const doc = await (prisma as any).ospDocument.findFirst({
+            where: { id: req.params.id, tenantId: feed.rootId },
+            select: { id: true, reference: true, datasheetFile: true },
+        });
+        if (!doc) return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
+
+        const result = feed.setting
+            ? await withdrawOspOfferStatus(feed.setting, doc.reference)
+            : { ok: false, skipped: true as const, notFound: false, error: undefined };
+        // Kennt die OSP den Beleg gar nicht (404), ist der Rückzug bereits
+        // erreicht: dort steht nichts mehr, was unsere Zeile noch trüge. Sie
+        // hier dann festzuhalten hiesse, sie nie mehr loszuwerden.
+        if (!result.ok && !result.skipped && !result.notFound) {
+            // Sichtbar stehen lassen und den Grund an die Zeile schreiben —
+            // erneut versuchen kann man danach mit demselben Knopf.
+            await (prisma as any).ospDocument.update({
+                where: { id: doc.id },
+                data: { lastReportError: result.error || 'Rückzug bei der OSP fehlgeschlagen.' },
+            }).catch(() => undefined);
+            return res.status(502).json({ error: result.error || 'Die OSP hat den Rückzug nicht bestätigt — die Anfrage bleibt stehen.' });
+        }
+
+        await (prisma as any).ospDocument.delete({ where: { id: doc.id } });
+        // Das abgelegte Datenblatt gehörte zur Zeile und hat ohne sie keinen
+        // Ort mehr. Best-Effort: eine Datei, die nicht wegzuräumen ist, darf
+        // die Löschung nicht scheitern lassen.
+        if (doc.datasheetFile) await ospDatasheetStorage.remove(doc.datasheetFile).catch(() => undefined);
+
+        res.json({ deleted: true, reference: doc.reference, reported: result.ok });
+    } catch (error: any) {
+        res.status(500).json({ error: error?.message || 'OSP-Beleg konnte nicht gelöscht werden.' });
     }
 });
 
@@ -551,7 +875,7 @@ router.post('/documents/:id/datasheet', requireAuth, requirePermission('tenders.
 
         const doc = await (prisma as any).ospDocument.findFirst({
             where: { id: req.params.id, tenantId: feed.rootId },
-            select: { id: true, datasheetUrl: true },
+            select: { id: true, datasheetUrl: true, rawPayload: true },
         });
         if (!doc) return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
         // Die Adresse darf auch von Hand kommen — dann steht sie danach an der
@@ -562,7 +886,10 @@ router.post('/documents/:id/datasheet', requireAuth, requirePermission('tenders.
             await (prisma as any).ospDocument.update({ where: { id: doc.id }, data: { datasheetUrl: url } });
         }
 
-        await storeDatasheet(feed.setting, doc.id, url);
+        // Was §1 selbst mitgeschickt hat, gilt weiterhin vor dem PDF — sonst
+        // würde ein erneutes Holen die genaueren Zahlen durch die aus dem
+        // Fliesstext gelesenen ersetzen.
+        await storeDatasheet(feed.setting, doc.id, url, specsFromOfferEntry(doc.rawPayload));
         res.json(await (prisma as any).ospDocument.findUnique({ where: { id: doc.id } }));
     } catch (error: any) {
         res.status(500).json({ error: error?.message || 'Datenblatt konnte nicht geholt werden.' });
@@ -622,21 +949,25 @@ router.post('/documents/:id/import', requireAuth, requirePermission('tenders.man
             .filter((row: any) => row.title);
         if (!positions.length) return res.status(400).json({ error: 'Mindestens eine Position angeben.' });
 
-        // Zuständige Personen: gewählt oder (bei der Verkaufsseite) die
-        // anlegende Person selbst. Die Projektleitung bleibt leer, wenn sie
-        // niemand gewählt hat — sie wird nie stillschweigend gesetzt.
+        // Zuständig ist EINE Person: die Verkäuferin/der Verkäufer. Gewählt
+        // an der Zeile, im Aufruf mitgegeben — oder, wenn beides fehlt, die
+        // Person, die den Import auslöst.
         const findEmployee = async (employeeId: string) => {
-            const treeIds = collectDescendantIds(await getAllTenants(), feed.rootId);
             const employee = await prisma.employee.findFirst({
-                where: { id: employeeId, tenantId: { in: treeIds } },
-                select: { id: true, firstName: true, lastName: true, email: true },
+                where: { id: employeeId, ...employeeScopeWhere(await getPersonnelTenantScope(user.tenantId)) },
+                select: { id: true, firstName: true, lastName: true, email: true, phone: true },
             });
             return employee
-                ? { id: employee.id, email: employee.email || null, name: employeeDisplayName(employee) }
+                ? {
+                    id: employee.id,
+                    email: employee.email || null,
+                    name: employeeDisplayName(employee),
+                    profile: salesmanProfileOf(employee),
+                }
                 : null;
         };
 
-        let salesperson = doc.salespersonId
+        let salesperson: { id: string; email: string | null; name: string; profile?: OspSalesmanDto } | null = doc.salespersonId
             ? { id: doc.salespersonId, email: doc.salespersonEmail, name: doc.salespersonName }
             : null;
         const requestedSalespersonId = asTrimmed(body.salespersonId);
@@ -645,24 +976,29 @@ router.post('/documents/:id/import', requireAuth, requirePermission('tenders.man
             if (!salesperson) return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
         }
         if (!salesperson) {
-            salesperson = { id: user.id, email: user.email || null, name: employeeDisplayName(user) };
+            // Niemand gewählt: es ist die Person, die den Import auslöst.
+            salesperson = await findEmployee(user.id)
+                ?? { id: user.id, email: user.email || null, name: employeeDisplayName(user) };
         }
 
-        let projectManager = doc.projectManagerId
-            ? { id: doc.projectManagerId, email: doc.projectManagerEmail, name: doc.projectManagerName }
+        /* Mehrzeilige manuelle Adresse: Strasse / PLZ Ort / Land.
+
+           Die OSP schickt ihre Adressen seit der dritten Vertragsfassung als
+           EINEN fertigen Satz ("Bahnhofstrasse 12, 8005 Zürich") statt in
+           Bestandteilen. Was darin schon steht, wird deshalb nicht noch einmal
+           angehängt — sonst stünde der Ort zweimal untereinander. */
+        const streetLine = manual ? asTrimmed(manual.address) : null;
+        const alreadyNamed = (value: string | null): boolean =>
+            Boolean(value && streetLine && streetLine.toLowerCase().includes(value.toLowerCase()));
+        const placeLine = manual
+            ? [asTrimmed(manual.postalCode), asTrimmed(manual.city)].filter(Boolean).join(' ') || null
             : null;
-        const requestedProjectManagerId = asTrimmed(body.projectManagerId);
-        if (requestedProjectManagerId) {
-            projectManager = await findEmployee(requestedProjectManagerId);
-            if (!projectManager) return res.status(404).json({ error: 'Mitarbeiter nicht gefunden.' });
-        }
-
-        // Mehrzeilige manuelle Adresse: Strasse / PLZ Ort / Land.
+        const countryLine = manual ? asTrimmed(manual.country) : null;
         const manualAddress = manual
             ? [
-                asTrimmed(manual.address),
-                [asTrimmed(manual.postalCode), asTrimmed(manual.city)].filter(Boolean).join(' ') || null,
-                asTrimmed(manual.country),
+                streetLine,
+                alreadyNamed(placeLine) ? null : placeLine,
+                alreadyNamed(countryLine) ? null : countryLine,
             ].filter(Boolean).join('\n') || null
             : null;
         const manualEmail = manual ? asTrimmed(manual.email) : null;
@@ -748,20 +1084,14 @@ router.post('/documents/:id/import', requireAuth, requirePermission('tenders.man
                 salespersonId: salesperson.id,
                 salespersonEmail: salesperson.email,
                 salespersonName: salesperson.name,
-                ...(projectManager
-                    ? {
-                        projectManagerId: projectManager.id,
-                        projectManagerEmail: projectManager.email,
-                        projectManagerName: projectManager.name,
-                    }
-                    : {}),
+                ...(salesperson.profile ? { salespersonProfile: salesperson.profile as any } : {}),
             },
         });
 
         // "under review" braucht die zuständige Person — ohne E-Mail-Adresse
         // wird gar nicht gemeldet (die OSP würde mit 400 ablehnen).
         if (salesperson.email) {
-            await reportDocumentStatus(feed.setting, updatedDoc, 'IN_OFFER', salesperson.email, salesperson.name);
+            await reportOspDocumentStatus(feed.setting, updatedDoc, 'IN_OFFER');
         }
 
         res.status(201).json({ tenderId: tender.id, tenderNumber, document: updatedDoc });
@@ -781,7 +1111,10 @@ router.post('/sync', requireAuth, requirePermission('tenders.manage'), async (re
 
         const docs = await (prisma as any).ospDocument.findMany({
             where: { tenantId: feed.rootId },
-            select: { id: true, reference: true, projectNumber: true, status: true, salespersonEmail: true, salespersonName: true },
+            select: {
+                id: true, reference: true, projectNumber: true, status: true,
+                salespersonEmail: true, salespersonName: true, salespersonProfile: true, lastReportedStatus: true,
+            },
         });
         if (!docs.length) return res.json({ checked: 0, updated: 0, failed: 0 });
 
@@ -805,6 +1138,11 @@ router.post('/sync', requireAuth, requirePermission('tenders.manage'), async (re
         for (const doc of docs) {
             const row = byReference.get(doc.reference);
             if (!row) continue;
+            // Eine zurückgezogene Anfrage bleibt zurückgezogen: die OSP hat
+            // ihre Seite abgeräumt und meldet dazu gar keinen Stand mehr —
+            // was hier ankäme, wäre der einer NEUEN Anfrage, und die kommt
+            // ihrerseits über §1.
+            if (doc.status === 'WITHDRAWN') continue;
             const mapped = OSP_ENUM_TO_INTERNAL[String(row.status || '').toUpperCase()] || null;
             const data: any = {};
             // Der Abgleich bewegt den Stand nur VORWÄRTS — was hier weiter ist
@@ -817,6 +1155,9 @@ router.post('/sync', requireAuth, requirePermission('tenders.manage'), async (re
             if (salesmanEmail && !doc.salespersonEmail) {
                 data.salespersonEmail = salesmanEmail;
                 data.salespersonName = [row.salesman?.name, row.salesman?.surname].filter(Boolean).join(' ') || doc.salespersonName;
+                // Die Karte, die die OSP führt — inklusive Rufnummer und Bild,
+                // sofern die Adresse drüben ein Konto hat.
+                data.salespersonProfile = { ...row.salesman, email: salesmanEmail } as any;
             }
             if (Object.keys(data).length) {
                 await (prisma as any).ospDocument.update({ where: { id: doc.id }, data });
@@ -844,12 +1185,10 @@ router.get('/settings', requireAuth, requireAnyPermission(SETTINGS_MANAGE), asyn
             webhookKey: setting?.webhookKey || '',
             ospBaseUrl: setting?.ospBaseUrl || '',
             hasApiKey: Boolean(asTrimmed(setting?.ospApiKey)),
-            // Die Adresse, die der OSP als OFFER_WEBHOOK_URL zu nennen ist —
-            // relativ; die Oberfläche stellt den eigenen Ursprung davor.
-            webhookPath: '/backend/api/v1/osp/webhook',
-            // … und die DOCUMENT_CHANGE_WEBHOOK_URL für §1b (eigene Adresse,
-            // weil die beiden Körper verschieden geformt sind).
-            changeWebhookPath: '/backend/api/v1/osp/webhook/change',
+            // Die drei Adressen, die der OSP zu nennen sind — relativ; die
+            // Oberfläche stellt den eigenen Ursprung davor. Getrennt, damit
+            // drüben auf die Adresse geroutet werden kann statt auf den Inhalt.
+            ...OSP_WEBHOOK_PATHS,
         });
     } catch (error: any) {
         res.status(500).json({ error: error?.message || 'OSP-Einstellungen fehlgeschlagen.' });
@@ -888,7 +1227,7 @@ router.put('/settings', requireAuth, requireAnyPermission(SETTINGS_MANAGE), asyn
             webhookKey: setting.webhookKey || '',
             ospBaseUrl: setting.ospBaseUrl || '',
             hasApiKey: Boolean(asTrimmed(setting.ospApiKey)),
-            webhookPath: '/backend/api/v1/osp/webhook',
+            ...OSP_WEBHOOK_PATHS,
         });
     } catch (error: any) {
         res.status(500).json({ error: error?.message || 'OSP-Einstellungen konnten nicht gespeichert werden.' });

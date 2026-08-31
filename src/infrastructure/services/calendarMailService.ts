@@ -13,6 +13,7 @@ import {
 } from "./calendarInviteMail";
 import { brandLogoInline, brandWaveInline } from "./mailBrand";
 import { kindIconInline } from "./mailKindIcons";
+import { getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
 
 /**
  * TERMIN → EINLADUNGSMAIL (18.08.2026, Versand auf Befehl seit 19.08.2026).
@@ -193,7 +194,7 @@ export type InviteSendResult =
     | { sent: false; reason: "NO_SMTP" | "NO_SENDER" | "NO_RECIPIENT" };
 
 const sendInvite = async (context: InviteContext): Promise<InviteSendResult> => {
-    const settings = await prisma.mailSetting.findUnique({ where: { tenantId: context.tenantId } });
+    const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(context.tenantId) } });
     if (!settings?.smtpHost?.trim() || !settings?.smtpPort) {
         console.log(`[KALENDER] ${context.uid}: kein SMTP-Server eingerichtet, keine Einladung verschickt.`);
         return { sent: false, reason: "NO_SMTP" };
@@ -516,7 +517,7 @@ const collectAppointmentInvite = async (
     if (method === "CANCEL" && !appointment.icalUid) return null;
 
     const settings = await prisma.mailSetting.findUnique({
-        where: { tenantId: appointment.tenantId },
+        where: { tenantId: await getMailTenantId(appointment.tenantId) },
         select: { fromEmail: true },
     });
     const domain = appointmentDomain(settings?.fromEmail);
@@ -837,7 +838,7 @@ const collectMeetingInvite = async (
     if (method === "CANCEL" && !meeting.icalUid) return null;
 
     const settings = await prisma.mailSetting.findUnique({
-        where: { tenantId: meeting.tenantId },
+        where: { tenantId: await getMailTenantId(meeting.tenantId) },
         select: { fromEmail: true },
     });
     const uid = meeting.icalUid || newIcalUid(meeting.id, appointmentDomain(settings?.fromEmail));

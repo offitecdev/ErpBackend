@@ -14,6 +14,7 @@ const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const ImapCaptureService_1 = require("../../infrastructure/services/ImapCaptureService");
 const MailDispatchService_1 = require("../../infrastructure/services/outlook/MailDispatchService");
 const mailCustomerMatcher_1 = require("../../infrastructure/services/outlook/mailCustomerMatcher");
+const mailAutoCategory_1 = require("../../infrastructure/services/outlook/mailAutoCategory");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 const mailText_1 = require("../../infrastructure/services/outlook/mailText");
 /* FIRMENPOSTFACH IM ERP — HTTP-Schicht (18.08.2026).
@@ -32,6 +33,28 @@ const mailText_1 = require("../../infrastructure/services/outlook/mailText");
    Rechte: lesen = crm.customers.view, senden = mail.send, Einstellungen =
    mail.manage. Bewusst keine neuen Rechte-Schlüssel (siehe crm.routes.ts). */
 const router = (0, express_1.Router)();
+/* ── ZWEI MANDANTEN, ZWEI FRAGEN (13.09.2026) ────────────────────────────────
+ *
+ * Das Postfach gehört dem STAMM des Firmenbaums (ein Postfach je Firma, siehe
+ * getMailTenantId): jede `MailMessage`, jede `MailCategory`, die `MailSetting`
+ * samt Lesestand wird über `mailTenantOf(req)` gesucht und geschrieben. Wer die
+ * Firma umschaltet, sieht dieselbe Post — vorher sah er einen zweiten, halb
+ * gefüllten Bestand.
+ *
+ * Die Datensätze, auf die eine Mail ZEIGT, sind das Gegenteil: Kunde,
+ * Ansprechpartner, Angebot, Auftrag, Projekt und Rechnung bleiben in ihrer
+ * eigenen Firma. Sie werden über `recordTenantsOf(req)` gesucht — den ganzen
+ * Firmenbaum, denn ein am Stamm hängendes Postfach trägt die Post ALLER Firmen
+ * des Baums und muss deren Kundschaft auch wiederfinden. Nur mit dem
+ * Mail-Mandanten gesucht, liefe jede Zuordnung ins Leere.
+ *
+ * Ausnahme in beide Richtungen: PERSONAL. Wen man sehen darf, entscheidet
+ * weiterhin `getPersonnelTenantScope` (die eine ausgewählte Firma) — dass eine
+ * Absenderadresse "eine von uns" ist, entscheidet dagegen baumweit das
+ * Adressbuch (mailCustomerMatcher).
+ */
+const mailTenantOf = (req) => (0, serviceTenantScope_1.getMailTenantId)(req.user.tenantId);
+const recordTenantsOf = (req) => (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
 const parseJson = (value) => {
     if (value == null)
         return null;
@@ -83,7 +106,7 @@ const inboxStatus = async (tenantId) => {
 };
 router.get("/inbox/status", AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
-        res.json(await inboxStatus(req.user.tenantId));
+        res.json(await inboxStatus(await mailTenantOf(req)));
     }
     catch (error) {
         res.status(500).json({ error: error?.message || "Status konnte nicht gelesen werden." });
@@ -92,7 +115,7 @@ router.get("/inbox/status", AuthMiddleware_1.requireAuth, async (req, res) => {
 /** Abruf jetzt ausführen (bis ~25 s warten, danach läuft er im Hintergrund weiter). */
 router.post("/inbox/capture", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)("crm.customers.view"), async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = await mailTenantOf(req);
         const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId }, select: { imapHost: true } });
         if (!settings?.imapHost?.trim()) {
             return res.status(409).json({ error: "Kein IMAP-Server hinterlegt. Bitte in den Mail-Einstellungen eintragen.", code: "imap_missing" });
@@ -119,7 +142,7 @@ router.post("/inbox/capture", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
 /** Ein-/Ausschalten des automatischen Abrufs (Schalter in der Leiste). */
 router.patch("/inbox/settings", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(["mail.manage", "crm.customers.view"]), async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = await mailTenantOf(req);
         const data = {};
         if (req.body?.captureEnabled !== undefined)
             data.imapCaptureEnabled = Boolean(req.body.captureEnabled);
@@ -143,11 +166,12 @@ const READ = (0, RbacMiddleware_1.requirePermission)("crm.customers.view");
 router.get("/messages", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
         const user = req.user;
+        const mailTenantId = await mailTenantOf(req);
         const q = req.query;
         const page = Math.max(1, Number(q.page) || 1);
         const pageSize = Math.min(100, Math.max(1, Number(q.pageSize) || 50));
         const folder = q.folder || "inbox";
-        const where = [client_1.Prisma.sql `m.tenantId = ${user.tenantId}`];
+        const where = [client_1.Prisma.sql `m.tenantId = ${mailTenantId}`];
         /* PAPIERKORB: Gelöschtes liegt in KEINEM Ordner und in KEINER
            Kategorie mehr — nur der Ordner `bin` zeigt es, bis es von dort
            endgültig entfernt wird. */
@@ -236,7 +260,7 @@ router.get("/messages/stats", AuthMiddleware_1.requireAuth, READ, async (req, re
                 SUM(m.deletedAt IS NULL AND m.direction = 'IN') AS inbox,
                 SUM(m.deletedAt IS NULL AND m.direction = 'OUT') AS sent,
                 SUM(m.deletedAt IS NOT NULL) AS bin
-            FROM MailMessage m WHERE m.tenantId = ${req.user.tenantId}`;
+            FROM MailMessage m WHERE m.tenantId = ${await mailTenantOf(req)}`;
         const row = rows[0] || {};
         res.json({
             unreadInbox: Number(row.unreadInbox || 0),
@@ -276,18 +300,22 @@ const ensureRequestsCategory = async (tenantId) => {
 };
 /**
  * Den Datensatz hinter einer neuen Kategorie auflösen: gibt Namen zurück oder
- * null, wenn er im Mandanten nicht existiert. Personal gilt firmenbaumweit
- * (wie überall sonst); alles andere ist mandanteneigen.
+ * null, wenn er im Mandanten nicht existiert. Personal gilt seit dem
+ * 31.08.2026 mandanteneigen — wie alles andere auch.
  */
-const resolveCategoryEntity = async (tenantId, kind, entityId) => {
+const resolveCategoryEntity = async (selectedTenantId, kind, entityId) => {
     if (kind === "STAFF") {
-        const staffTenants = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+        const staffTenants = await (0, serviceTenantScope_1.getPersonnelTenantScope)(selectedTenantId);
         const row = await prisma_client_1.default.employee.findFirst({
-            where: { id: entityId, tenantId: { in: staffTenants }, deletedAt: null },
+            where: { id: entityId, ...(0, serviceTenantScope_1.employeeScopeWhere)(staffTenants), deletedAt: null },
             select: { firstName: true, lastName: true },
         });
         return row ? `${row.firstName} ${row.lastName}`.trim() : null;
     }
+    // Der Beleg gehört seiner Firma, das Postfach dem Stamm: gesucht wird im
+    // ganzen Firmenbaum, sonst liesse sich in einer Untergesellschaft keine
+    // Kategorie mehr anlegen.
+    const tenantId = { in: await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(selectedTenantId) };
     if (kind === "CUSTOMER") {
         const row = await prisma_client_1.default.customer.findFirst({ where: { id: entityId, tenantId }, select: { companyName: true } });
         return row?.companyName || null;
@@ -312,7 +340,7 @@ const resolveCategoryEntity = async (tenantId, kind, entityId) => {
 };
 router.get("/categories", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = await mailTenantOf(req);
         await ensureRequestsCategory(tenantId);
         const [categories, counts] = await Promise.all([
             prisma_client_1.default.mailCategory.findMany({
@@ -349,7 +377,10 @@ router.get("/categories", AuthMiddleware_1.requireAuth, READ, async (req, res) =
  */
 router.get("/categories/options", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const selectedTenantId = req.user.tenantId;
+        // Belege des ganzen Firmenbaums (das Postfach trägt die Post aller
+        // Firmen), Personen nur aus der eigenen Firma.
+        const tenantId = { in: await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(selectedTenantId) };
         const kind = String(req.query.kind || "").trim().toUpperCase();
         const search = String(req.query.search || "").trim().slice(0, 80);
         const take = 25;
@@ -357,10 +388,10 @@ router.get("/categories/options", AuthMiddleware_1.requireAuth, READ, async (req
             return res.status(400).json({ error: "Unbekannte Kategorie-Art." });
         let options = [];
         if (kind === "STAFF") {
-            const staffTenants = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+            const staffTenants = await (0, serviceTenantScope_1.getPersonnelTenantScope)(selectedTenantId);
             const rows = await prisma_client_1.default.employee.findMany({
                 where: {
-                    tenantId: { in: staffTenants },
+                    ...(0, serviceTenantScope_1.employeeScopeWhere)(staffTenants),
                     deletedAt: null,
                     isActive: true,
                     ...(search ? { OR: [{ firstName: { contains: search } }, { lastName: { contains: search } }, { email: { contains: search } }] } : {}),
@@ -432,14 +463,14 @@ router.get("/categories/options", AuthMiddleware_1.requireAuth, READ, async (req
 });
 router.post("/categories", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = await mailTenantOf(req);
         const kind = String(req.body?.kind || "").trim().toUpperCase();
         const entityId = String(req.body?.entityId || "").trim();
         if (!CATEGORY_KINDS.has(kind))
             return res.status(400).json({ error: "Unbekannte Kategorie-Art." });
         if (!entityId)
             return res.status(400).json({ error: "Kein Datensatz gewählt." });
-        const name = await resolveCategoryEntity(tenantId, kind, entityId);
+        const name = await resolveCategoryEntity(req.user.tenantId, kind, entityId);
         if (!name)
             return res.status(404).json({ error: "Datensatz nicht gefunden." });
         const existing = await prisma_client_1.default.mailCategory.findFirst({ where: { tenantId, kind, entityId }, select: { id: true } });
@@ -457,7 +488,17 @@ router.post("/categories", AuthMiddleware_1.requireAuth, READ, async (req, res) 
                 displayOrder: (last._max.displayOrder ?? 0) + 1,
             },
         });
-        res.status(201).json({ id: row.id, kind: row.kind, entityId: row.entityId, name: row.name, color: row.color, displayOrder: row.displayOrder, count: 0 });
+        /* Die Kategorie kommt nicht leer auf die Welt: die schon gespeicherte
+           Post dieses Kunden bzw. dieser Person wird gleich eingesammelt
+           (nur wo noch KEIN Etikett steht), und der nächste Abruf legt neue
+           Nachrichten von selbst dazu — dafür muss der Index das frische
+           Etikett kennen. */
+        (0, mailAutoCategory_1.invalidateCategoryIndex)(tenantId);
+        await (0, mailAutoCategory_1.labelExistingMessages)(tenantId, kind, entityId, row.id);
+        // Gezählt wird wie in der Leiste: der Papierkorb bekommt sein Etikett,
+        // zeigt sich in der Kategorie aber nicht.
+        const count = await prisma_client_1.default.mailMessage.count({ where: { tenantId, categoryId: row.id, deletedAt: null } });
+        res.status(201).json({ id: row.id, kind: row.kind, entityId: row.entityId, name: row.name, color: row.color, displayOrder: row.displayOrder, count });
     }
     catch (error) {
         res.status(500).json({ error: error?.message || "Kategorie konnte nicht angelegt werden." });
@@ -466,7 +507,7 @@ router.post("/categories", AuthMiddleware_1.requireAuth, READ, async (req, res) 
 /** Die von Hand gezogene Reihenfolge der Leiste — ein Zug, ein Patch. */
 router.patch("/categories/order", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = await mailTenantOf(req);
         const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).slice(0, 200) : [];
         if (!ids.length)
             return res.status(400).json({ error: "Keine Reihenfolge übergeben." });
@@ -481,7 +522,7 @@ router.patch("/categories/order", AuthMiddleware_1.requireAuth, READ, async (req
 });
 router.delete("/categories/:id", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = await mailTenantOf(req);
         const row = await prisma_client_1.default.mailCategory.findFirst({ where: { id: String(req.params.id), tenantId }, select: { id: true, kind: true } });
         if (!row)
             return res.status(404).json({ error: "Kategorie nicht gefunden." });
@@ -489,6 +530,8 @@ router.delete("/categories/:id", AuthMiddleware_1.requireAuth, READ, async (req,
             return res.status(400).json({ error: "«Anfragen» ist fest eingebaut und lässt sich nicht löschen." });
         // Die Nachrichten bleiben — sie verlieren nur die Zuordnung (FK SetNull).
         await prisma_client_1.default.mailCategory.delete({ where: { id: row.id } });
+        // Der Abruf darf nicht weiter in ein Fach einsortieren, das es nicht mehr gibt.
+        (0, mailAutoCategory_1.invalidateCategoryIndex)(tenantId);
         res.status(204).send();
     }
     catch (error) {
@@ -499,7 +542,7 @@ router.delete("/categories/:id", AuthMiddleware_1.requireAuth, READ, async (req,
     Sammelmodus schickt jede Auswahl einzeln, das Ziehen genau eine. */
 router.post("/messages/assign", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = await mailTenantOf(req);
         const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).slice(0, 200) : [];
         if (!ids.length)
             return res.status(400).json({ error: "Keine Nachrichten gewählt." });
@@ -522,7 +565,10 @@ router.post("/messages/assign", AuthMiddleware_1.requireAuth, READ, async (req, 
            ohne Kunden. Nebenzweig: schlaegt er fehl, bleibt die Zuordnung. */
         let enquiries = 0;
         if (categoryKind === "REQUESTS") {
-            enquiries = await (0, enquiryFromMail_1.createEnquiriesFromMails)(tenantId, ids, req.user.id)
+            /* Die Mail liegt am Stamm, die ANFRAGE entsteht in der Firma, in
+               der gerade gearbeitet wird — sie ist ein Vorgang des Betriebs,
+               kein Postfacheintrag. */
+            enquiries = await (0, enquiryFromMail_1.createEnquiriesFromMails)(tenantId, ids, req.user.id, req.user.tenantId)
                 .then((outcome) => outcome.created)
                 .catch(() => 0);
         }
@@ -532,7 +578,8 @@ router.post("/messages/assign", AuthMiddleware_1.requireAuth, READ, async (req, 
         res.status(500).json({ error: error?.message || "Zuordnung fehlgeschlagen." });
     }
 });
-const loadMessage = async (id, tenantId) => {
+/** `mailTenantId` ist IMMER der Stamm des Firmenbaums — siehe mailTenantOf. */
+const loadMessage = async (id, mailTenantId) => {
     const rows = await prisma_client_1.default.$queryRaw `
         SELECT m.*, cu.companyName AS customerName, ct.firstName AS contactFirstName, ct.lastName AS contactLastName,
                e.firstName AS byFirstName, e.lastName AS byLastName,
@@ -542,7 +589,7 @@ const loadMessage = async (id, tenantId) => {
         LEFT JOIN CustomerContact ct ON ct.id = m.contactId
         LEFT JOIN Employee e ON e.id = m.employeeId
         LEFT JOIN MailCategory mc ON mc.id = m.categoryId
-        WHERE m.id = ${id} AND m.tenantId = ${tenantId}
+        WHERE m.id = ${id} AND m.tenantId = ${mailTenantId}
         LIMIT 1`;
     return rows[0] || null;
 };
@@ -578,7 +625,7 @@ const messageDetailDto = (row, employeeId) => ({
 router.get("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
         const user = req.user;
-        const row = await loadMessage(String(req.params.id), user.tenantId);
+        const row = await loadMessage(String(req.params.id), await mailTenantOf(req));
         if (!row)
             return res.status(404).json({ error: "Nachricht nicht gefunden." });
         if (!row.isRead) {
@@ -594,7 +641,7 @@ router.get("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, res)
 /** Anhangs-METADATEN — beim Abruf aus der BODYSTRUCTURE mitgeschrieben. */
 router.get("/messages/:id/attachments", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const row = await loadMessage(String(req.params.id), req.user.tenantId);
+        const row = await loadMessage(String(req.params.id), await mailTenantOf(req));
         if (!row)
             return res.status(404).json({ error: "Nachricht nicht gefunden." });
         const cached = parseJson(row.attachments);
@@ -607,7 +654,8 @@ router.get("/messages/:id/attachments", AuthMiddleware_1.requireAuth, READ, asyn
 /** Anhang-INHALT live vom Mailserver durchreichen — nichts wird gespeichert. */
 router.get("/messages/:id/attachments/:part", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const row = await loadMessage(String(req.params.id), req.user.tenantId);
+        const mailTenantId = await mailTenantOf(req);
+        const row = await loadMessage(String(req.params.id), mailTenantId);
         if (!row)
             return res.status(404).json({ error: "Nachricht nicht gefunden." });
         if (row.origin !== "IMAP" || !row.providerMessageId) {
@@ -616,7 +664,7 @@ router.get("/messages/:id/attachments/:part", AuthMiddleware_1.requireAuth, READ
         const part = String(req.params.part);
         const meta = parseJson(row.attachments)
             ?.find((item) => item.id === part);
-        const file = await (0, ImapCaptureService_1.fetchImapAttachment)(req.user.tenantId, String(row.providerMessageId), part);
+        const file = await (0, ImapCaptureService_1.fetchImapAttachment)(mailTenantId, String(row.providerMessageId), part);
         if (!file)
             return res.status(404).json({ error: "Anhang nicht gefunden." });
         const name = String(meta?.name || "anhang").replace(/[\\/\r\n"]+/g, "_");
@@ -633,7 +681,8 @@ router.get("/messages/:id/attachments/:part", AuthMiddleware_1.requireAuth, READ
 router.patch("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
         const user = req.user;
-        const row = await loadMessage(String(req.params.id), user.tenantId);
+        const mailTenantId = await mailTenantOf(req);
+        const row = await loadMessage(String(req.params.id), mailTenantId);
         if (!row)
             return res.status(404).json({ error: "Nachricht nicht gefunden." });
         const body = req.body || {};
@@ -641,7 +690,13 @@ router.patch("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, re
         if (body.customerId !== undefined) {
             const customerId = body.customerId ? String(body.customerId) : null;
             if (customerId) {
-                const customer = await prisma_client_1.default.customer.findFirst({ where: { id: customerId, tenantId: user.tenantId }, select: { id: true } });
+                /* Der Kunde darf aus jeder Firma des Baums stammen: das
+                   Postfach am Stamm trägt die Post aller — der Vorschlag käme
+                   sonst aus dem Adressbuch und liesse sich nicht speichern. */
+                const customer = await prisma_client_1.default.customer.findFirst({
+                    where: { id: customerId, tenantId: { in: await recordTenantsOf(req) } },
+                    select: { id: true },
+                });
                 if (!customer)
                     return res.status(404).json({ error: "Kunde nicht gefunden." });
                 let contactId = null;
@@ -663,7 +718,7 @@ router.patch("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, re
         if (body.categoryId !== undefined) {
             const categoryId = body.categoryId ? String(body.categoryId) : null;
             if (categoryId) {
-                const category = await prisma_client_1.default.mailCategory.findFirst({ where: { id: categoryId, tenantId: user.tenantId }, select: { id: true } });
+                const category = await prisma_client_1.default.mailCategory.findFirst({ where: { id: categoryId, tenantId: mailTenantId }, select: { id: true } });
                 if (!category)
                     return res.status(404).json({ error: "Kategorie nicht gefunden." });
             }
@@ -685,12 +740,12 @@ router.patch("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, re
                     UPDATE MailMessage m
                        SET m.customerId = ${data.customerId}, m.contactId = ${data.contactId ?? null},
                            m.matchSource = 'MANUAL', m.updatedAt = NOW(3)
-                     WHERE m.tenantId = ${user.tenantId} AND m.customerId IS NULL AND m.id <> ${row.id}
+                     WHERE m.tenantId = ${mailTenantId} AND m.customerId IS NULL AND m.id <> ${row.id}
                        AND (m.fromAddress = ${counterpart} OR m.toRecipients LIKE ${like} OR m.ccRecipients LIKE ${like})`;
                 alsoLinked = Number(result || 0);
             }
         }
-        const fresh = await loadMessage(row.id, user.tenantId);
+        const fresh = await loadMessage(row.id, mailTenantId);
         res.json({ ...messageDetailDto(fresh, user.id), alsoLinked });
     }
     catch (error) {
@@ -703,7 +758,7 @@ router.patch("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, re
 router.delete("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
         const row = await prisma_client_1.default.mailMessage.findFirst({
-            where: { id: String(req.params.id), tenantId: req.user.tenantId },
+            where: { id: String(req.params.id), tenantId: await mailTenantOf(req) },
             select: { id: true, deletedAt: true },
         });
         if (!row)
@@ -723,15 +778,16 @@ router.delete("/messages/:id", AuthMiddleware_1.requireAuth, READ, async (req, r
 router.post("/messages/:id/restore", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
         const user = req.user;
+        const mailTenantId = await mailTenantOf(req);
         const row = await prisma_client_1.default.mailMessage.findFirst({
-            where: { id: String(req.params.id), tenantId: user.tenantId },
+            where: { id: String(req.params.id), tenantId: mailTenantId },
             select: { id: true, deletedAt: true },
         });
         if (!row)
             return res.status(404).json({ error: "Nachricht nicht gefunden." });
         if (row.deletedAt)
             await prisma_client_1.default.mailMessage.update({ where: { id: row.id }, data: { deletedAt: null } });
-        const fresh = await loadMessage(row.id, user.tenantId);
+        const fresh = await loadMessage(row.id, mailTenantId);
         res.json(messageDetailDto(fresh, user.id));
     }
     catch (error) {
@@ -741,8 +797,8 @@ router.post("/messages/:id/restore", AuthMiddleware_1.requireAuth, READ, async (
 /** Vorschläge fürs Zuordnen: Kunden mit derselben Domain wie die Gegenstelle. */
 router.get("/messages/:id/suggestions", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
-        const user = req.user;
-        const row = await loadMessage(String(req.params.id), user.tenantId);
+        const mailTenantId = await mailTenantOf(req);
+        const row = await loadMessage(String(req.params.id), mailTenantId);
         if (!row)
             return res.status(404).json({ error: "Nachricht nicht gefunden." });
         const addresses = row.direction === "IN"
@@ -751,7 +807,7 @@ router.get("/messages/:id/suggestions", AuthMiddleware_1.requireAuth, READ, asyn
         const domains = Array.from(new Set(addresses.map((a) => a.split("@")[1] || "").filter(Boolean)));
         if (!domains.length)
             return res.json({ customers: [] });
-        const book = await (0, mailCustomerMatcher_1.getAddressBook)(user.tenantId);
+        const book = await (0, mailCustomerMatcher_1.getAddressBook)(mailTenantId);
         const ids = new Set();
         for (const domain of domains)
             for (const id of book.byDomain.get(domain) || [])
@@ -759,7 +815,7 @@ router.get("/messages/:id/suggestions", AuthMiddleware_1.requireAuth, READ, asyn
         if (!ids.size)
             return res.json({ customers: [] });
         const customers = await prisma_client_1.default.customer.findMany({
-            where: { id: { in: Array.from(ids).slice(0, 10) }, tenantId: user.tenantId },
+            where: { id: { in: Array.from(ids).slice(0, 10) }, tenantId: { in: await recordTenantsOf(req) } },
             select: { id: true, companyName: true, mainEmail: true, city: true },
         });
         res.json({ customers });
@@ -787,11 +843,15 @@ router.get("/address-book", AuthMiddleware_1.requireAuth, READ, async (req, res)
         const search = String(req.query.search || "").trim();
         const take = Math.min(30, Math.max(1, Number(req.query.limit) || 8));
         const like = `%${search}%`;
-        const employeeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(user.tenantId);
+        const employeeTenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(user.tenantId);
+        /* Kundschaft aus dem GANZEN Firmenbaum: das Postfach hängt am Stamm und
+           zeigt die Post aller Firmen — ein Adressbuch, das nur die eine Firma
+           kennt, könnte auf die Hälfte davon nicht antworten. */
+        const recordTenantIds = await recordTenantsOf(req);
         const [customers, contacts, employees] = await Promise.all([
             prisma_client_1.default.customer.findMany({
                 where: {
-                    tenantId: user.tenantId,
+                    tenantId: { in: recordTenantIds },
                     isActive: true,
                     NOT: { mainEmail: null },
                     ...(search ? { OR: [{ companyName: { contains: search } }, { mainEmail: { contains: search } }] } : {}),
@@ -804,14 +864,15 @@ router.get("/address-book", AuthMiddleware_1.requireAuth, READ, async (req, res)
                 SELECT ct.id, ct.firstName, ct.lastName, ct.email, ct.customerId, cu.companyName
                   FROM CustomerContact ct
                   JOIN Customer cu ON cu.id = ct.customerId
-                 WHERE ct.tenantId = ${user.tenantId} AND ct.email IS NOT NULL AND ct.email <> ''
+                 WHERE ${recordTenantIds.length ? client_1.Prisma.sql `ct.tenantId IN (${client_1.Prisma.join(recordTenantIds)})` : client_1.Prisma.sql `1 = 0`}
+                   AND ct.email IS NOT NULL AND ct.email <> ''
                    ${search ? client_1.Prisma.sql `AND (ct.firstName LIKE ${like} OR ct.lastName LIKE ${like} OR ct.email LIKE ${like} OR cu.companyName LIKE ${like})` : client_1.Prisma.empty}
                  ORDER BY ct.lastName ASC, ct.firstName ASC
                  LIMIT ${take}`,
             employeeTenantIds.length
                 ? prisma_client_1.default.employee.findMany({
                     where: {
-                        tenantId: { in: employeeTenantIds },
+                        ...(0, serviceTenantScope_1.employeeScopeWhere)(employeeTenantIds),
                         isActive: true,
                         deletedAt: null,
                         ...(search
@@ -879,10 +940,11 @@ router.get("/recipients", AuthMiddleware_1.requireAuth, READ, async (req, res) =
         const customerId = String(req.query.customerId || "").trim();
         if (!customerId)
             return res.status(400).json({ error: "customerId fehlt." });
+        const recordTenantIds = await recordTenantsOf(req);
         const [customer, contacts] = await Promise.all([
-            prisma_client_1.default.customer.findFirst({ where: { id: customerId, tenantId: user.tenantId }, select: { id: true, companyName: true, mainEmail: true } }),
+            prisma_client_1.default.customer.findFirst({ where: { id: customerId, tenantId: { in: recordTenantIds } }, select: { id: true, companyName: true, mainEmail: true } }),
             prisma_client_1.default.customerContact.findMany({
-                where: { customerId, tenantId: user.tenantId },
+                where: { customerId, tenantId: { in: recordTenantIds } },
                 select: { id: true, firstName: true, lastName: true, email: true, isPrimaryContact: true },
                 orderBy: [{ isPrimaryContact: "desc" }, { lastName: "asc" }],
             }),
@@ -962,7 +1024,7 @@ router.post("/messages/send", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
         let customerId = null;
         let contactId = null;
         if (body.customerId) {
-            const customer = await prisma_client_1.default.customer.findFirst({ where: { id: String(body.customerId), tenantId: user.tenantId }, select: { id: true } });
+            const customer = await prisma_client_1.default.customer.findFirst({ where: { id: String(body.customerId), tenantId: { in: await recordTenantsOf(req) } }, select: { id: true } });
             if (!customer)
                 return res.status(404).json({ error: "Kunde nicht gefunden." });
             customerId = customer.id;
@@ -974,7 +1036,9 @@ router.post("/messages/send", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
         const entityType = body.entityType ? String(body.entityType).toUpperCase().slice(0, 24) : null;
         const entityId = entityType && body.entityId ? String(body.entityId) : null;
         const entityLabel = entityType && body.entityLabel ? (0, mailText_1.stripHeaderValue)(body.entityLabel).slice(0, 64) : null;
-        const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: user.tenantId } });
+        // Gesendet wird über das Postfach der FIRMA, nicht über eines je
+        // Untergesellschaft — die Zugangsdaten stehen am Stamm.
+        const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await mailTenantOf(req) } });
         if (!settings?.smtpHost?.trim() || !settings?.smtpPort) {
             return res.status(400).json({
                 error: "Kein SMTP-Server eingerichtet: bitte in den Mail-Einstellungen Server, Port und Zugangsdaten hinterlegen.",
@@ -1008,8 +1072,10 @@ router.post("/messages/send", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1
     }
 });
 /* ── Adressbuch-Cache: Kundenänderungen sollen den nächsten Abruf sofort treffen ── */
-router.post("/inbox/refresh-addressbook", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(["crm.customers.view", "mail.manage"]), (req, res) => {
-    (0, mailCustomerMatcher_1.invalidateAddressBook)(req.user.tenantId);
+router.post("/inbox/refresh-addressbook", AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(["crm.customers.view", "mail.manage"]), async (req, res) => {
+    const tenantId = await mailTenantOf(req);
+    (0, mailCustomerMatcher_1.invalidateAddressBook)(tenantId);
+    (0, mailAutoCategory_1.invalidateCategoryIndex)(tenantId);
     res.status(204).send();
 });
 exports.default = router;

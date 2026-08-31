@@ -57,6 +57,9 @@ export interface OspCallResult {
     /** true, wenn gar keine Basisadresse/kein Schlüssel hinterlegt ist —
         dann ist "nichts melden" gewollt und KEIN Fehler. */
     skipped?: boolean;
+    /** 404: die OSP kennt diesen Beleg gar nicht. Für einen RÜCKZUG ist das
+        kein Fehler, sondern das Ziel — drüben steht schon nichts mehr. */
+    notFound?: boolean;
     error?: string;
     rows?: OspStatusRow[];
 }
@@ -91,31 +94,51 @@ const describeFetchFailure = (error: any, url: string): string => {
 };
 
 /**
- * Einen Bearbeitungsstand an die OSP melden. `salesmanEmail` ist bei
- * "under review" und "offer has been sent" Pflicht (OSP antwortet sonst 400) —
- * die Prüfung dazu macht der Aufrufer, hier wird nur übertragen.
+ * Die §3-Visitenkarte auf der Leitung. Nur `email` trägt für sich Gewicht;
+ * alles andere ist freiwillig und wird weggelassen, wenn es leer ist —
+ * Fehlendes füllt die OSP aus dem eigenen Konto, sofern es die Adresse kennt.
+ */
+const salesmanBody = (salesman: OspSalesmanDto | null | undefined): Record<string, unknown> => {
+    const email = (salesman?.email || '').trim();
+    if (!email) return {};
+    const parts: Record<string, string> = {};
+    for (const [key, value] of Object.entries({
+        name: salesman?.name,
+        surname: salesman?.surname,
+        phone: salesman?.phone,
+        imageUrl: salesman?.imageUrl,
+    })) {
+        const trimmed = (value || '').trim();
+        if (trimmed) parts[key] = trimmed;
+    }
+    // Ohne einen einzigen weiteren Wert bleibt die flache Form: ein Objekt,
+    // das nur eine Adresse enthält, sagt nichts, was `salesmanEmail` nicht
+    // schon sagt — und ein leeres `salesman` würde drüben die abgelegte
+    // Visitenkarte durch nichts ersetzen.
+    if (!Object.keys(parts).length) return { salesmanEmail: email };
+    return { salesman: { email, ...parts } };
+};
+
+/**
+ * Einen Bearbeitungsstand an die OSP melden. Die Adresse der zuständigen
+ * Person ist bei "under review" und "offer has been sent" Pflicht (OSP
+ * antwortet sonst 400) — die Prüfung dazu macht der Aufrufer, hier wird nur
+ * übertragen.
  *
- * Seit Vertragsfassung (2) darf die zuständige Person als OBJEKT mitgehen
- * (§3 "salesman"): hat die Adresse drüben KEIN OSP-Konto, sieht die Kundschaft
- * dann trotzdem einen Namen statt einer nackten E-Mail-Adresse. Der Name wird
- * am ersten Leerzeichen in Vor-/Nachname geteilt — mehr wissen wir nicht.
+ * Mitgeschickt wird die ganze Visitenkarte (§3 "salesman"): hat die Adresse
+ * drüben KEIN OSP-Konto, sieht die anfragende Person dann trotzdem Name und
+ * Rufnummer statt einer nackten E-Mail-Adresse. Und mitgeschickt wird sie bei
+ * JEDER Meldung — eine Meldung, die nur eine Adresse trägt, ersetzt drüben die
+ * abgelegte Karte, sodass nach einem Wechsel sonst der alte Name stehen bliebe.
  */
 export const reportOspOfferStatus = async (
     endpoint: OspEndpoint,
     reference: string,
     wireStatus: string,
-    salesmanEmail?: string | null,
-    salesmanName?: string | null,
+    salesman?: OspSalesmanDto | null,
 ): Promise<OspCallResult> => {
     if (!endpointReady(endpoint)) return { ok: false, skipped: true };
     const url = `${baseUrl(endpoint)}/integration/offer-status`;
-    const fullName = (salesmanName || '').trim();
-    const [firstName, ...rest] = fullName.split(/\s+/);
-    const salesman = salesmanEmail
-        ? (fullName
-            ? { salesman: { email: salesmanEmail, name: firstName, surname: rest.join(' ') || undefined } }
-            : { salesmanEmail })
-        : {};
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -126,7 +149,7 @@ export const reportOspOfferStatus = async (
             body: JSON.stringify({
                 projectNumber: reference,
                 status: wireStatus,
-                ...salesman,
+                ...salesmanBody(salesman),
             }),
             signal: AbortSignal.timeout(OSP_TIMEOUT_MS),
         });
@@ -142,7 +165,7 @@ export const reportOspOfferStatus = async (
 };
 
 /**
- * Eine Offertanfrage bei der OSP ZURÜCKZIEHEN (§4b, Vertragsfassung (2)):
+ * Eine Offertanfrage bei der OSP ZURÜCKZIEHEN (§4b):
  * DELETE /integration/offer-status/{reference}. Drüben wird nichts gelöscht —
  * nur Status und Zuständigkeit werden geleert, die Karte zeigt wieder "keine
  * Offerte" und die Kundschaft darf neu anfragen. Idempotent: ein Verweis ohne
@@ -162,7 +185,13 @@ export const withdrawOspOfferStatus = async (
         });
         if (!response.ok) {
             const message = await response.text().catch(() => '');
-            return { ok: false, error: `OSP ${response.status}: ${message.slice(0, 300)}` };
+            return {
+                ok: false,
+                // Ein Beleg, den die OSP nicht kennt, kann drüben auch nichts
+                // mehr tragen — der Rückzug hat sein Ziel dann schon erreicht.
+                notFound: response.status === 404,
+                error: `OSP ${response.status}: ${message.slice(0, 300)}`,
+            };
         }
         const rows = (await response.json().catch(() => [])) as OspStatusRow[];
         return { ok: true, rows: Array.isArray(rows) ? rows : [] };

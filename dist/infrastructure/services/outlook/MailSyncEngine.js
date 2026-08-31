@@ -20,6 +20,7 @@ const prisma_client_1 = __importDefault(require("../../database/prisma.client"))
 const msGraphClient_1 = require("./msGraphClient");
 const msGraphAuth_1 = require("./msGraphAuth");
 const mailCustomerMatcher_1 = require("./mailCustomerMatcher");
+const mailAutoCategory_1 = require("./mailAutoCategory");
 const mailText_1 = require("./mailText");
 /**
  * SYNC OUTLOOK → ERP (Grunddaten).
@@ -83,6 +84,9 @@ const syncFolder = async (account, folder) => {
     let url = account[folder.linkField] || initialDeltaUrl(folder, account.syncFromDate);
     let usedFilter = !account[folder.linkField] && Boolean(account.syncFromDate);
     const book = await (0, mailCustomerMatcher_1.getAddressBook)(account.tenantId);
+    // Wie beim IMAP-Abruf: steht die Gegenstelle in der Kategorienleiste,
+    // trägt die Nachricht das Etikett gleich mit.
+    const categories = await (0, mailAutoCategory_1.getCategoryIndex)(account.tenantId);
     while (url && run.pages < MAX_PAGES_PER_FOLDER) {
         let page;
         try {
@@ -208,6 +212,7 @@ const syncFolder = async (account, folder) => {
                     customerId: hit?.customerId || null,
                     contactId: hit?.contactId || null,
                     matchSource: hit?.source || null,
+                    categoryId: (0, mailAutoCategory_1.autoCategoryId)(categories, { customerId: hit?.customerId, employeeId: hit?.employeeId }),
                 });
                 // Dieselbe providerId ein zweites Mal auf der Seite (bei Delta praktisch
                 // ausgeschlossen) nicht doppelt einfügen.

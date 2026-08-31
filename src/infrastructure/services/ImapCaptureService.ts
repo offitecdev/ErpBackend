@@ -6,7 +6,9 @@ import { getAddressBook, matchAddresses, normalizeAddress } from "./outlook/mail
 import { autoCategoryId, getCategoryIndex } from "./outlook/mailAutoCategory";
 import { clampBody, clampHtml, htmlToText, previewOf, sanitizeMailHtml } from "./outlook/mailText";
 import { mainBodyOf, stripImagePlaceholders } from "./outlook/mailBodyParts";
-import { importCalendarObject } from "./calendarImportService";
+import { importCalendarPayload } from "./calendarImportService";
+import { getCompanyTreeTenantIds, getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
+import { mailboxIdentityOf } from "./mailboxIdentity";
 
 /**
  * POSTEINGANG DES EIGENEN MAILSERVERS → ERP (18.08.2026; umgebaut 08.09.2026).
@@ -136,6 +138,22 @@ export interface CaptureOptions {
      * Einschalten prüfen, ob Zugangsdaten, Ordner und Filter stimmen.
      */
     dryRun?: boolean;
+    /**
+     * NUR DIE TERMINE NACHHOLEN (14.09.2026).
+     *
+     * Der gewöhnliche Abruf liest NUR VORWÄRTS: was einmal hinter dem
+     * Lesestand liegt, sieht er nie wieder an. Für die Post ist das richtig —
+     * für die Einladungen war es das Loch: jede Änderung an der Zuordnung
+     * (wem gehört ein übernommener Termin?) galt nur für Post, die NOCH NICHT
+     * da war. Alles, was schon im Postfach lag, blieb auf dem alten Stand
+     * oder fehlte im Kalender ganz.
+     *
+     * Dieser Durchgang liest darum das ganze Fenster erneut, sieht sich aber
+     * NUR die Nachrichten mit `text/calendar` an und rührt sonst nichts an:
+     * keine `MailMessage`-Zeile, kein Lesestand. Er lässt sich beliebig oft
+     * laufen — jeder Termin landet über seine UID auf derselben Zeile.
+     */
+    calendarOnly?: boolean;
 }
 
 const running = new Set<string>();
@@ -240,18 +258,34 @@ const collectBodyParts = (node: any, out: BodyPartRef[] = []): BodyPartRef[] => 
     return out;
 };
 
-/** Der `text/calendar`-Abschnitt einer Einladung, falls vorhanden. */
-const findCalendarPart = (node: any): { part: string } | null => {
-    if (!node) return null;
-    const children = node.childNodes || node.children || [];
-    for (const child of children) {
-        const found = findCalendarPart(child);
-        if (found) return found;
-    }
-    const type = String(node.type || "").toLowerCase();
-    const filename = String(node.dispositionParameters?.filename || node.parameters?.name || "").toLowerCase();
-    if (type === "text/calendar" || filename.endsWith(".ics")) return { part: String(node.part || "1") };
-    return null;
+/**
+ * Der Abschnitt, in dem der TERMIN steckt — falls es einen gibt.
+ *
+ *   ICS   `text/calendar` oder ein `.ics`-Anhang: die gewöhnliche Einladung.
+ *   TNEF  `application/ms-tnef` oder `winmail.dat` (14.09.2026, Samet: «du
+ *         kannst auch aus den .dat-Dateien ziehen»): Outlook im Rich-Text-
+ *         Modus packt die GANZE Nachricht samt Termin in diesen einen Anhang,
+ *         ein `text/calendar` gibt es dann nicht. Gelesen wird er von `tnef.ts`.
+ *
+ * Trägt eine Nachricht beides, gewinnt die ICS — sie ist die vollständigere
+ * Fassung desselben Termins.
+ */
+type CalendarPartRef = { part: string; kind: "ICS" | "TNEF" };
+const findCalendarPart = (node: any): CalendarPartRef | null => {
+    let tnef: CalendarPartRef | null = null;
+    const visit = (current: any): CalendarPartRef | null => {
+        if (!current) return null;
+        for (const child of (current.childNodes || current.children || [])) {
+            const found = visit(child);
+            if (found) return found;
+        }
+        const type = String(current.type || "").toLowerCase();
+        const filename = String(current.dispositionParameters?.filename || current.parameters?.name || "").toLowerCase();
+        if (type === "text/calendar" || filename.endsWith(".ics")) return { part: String(current.part || "1"), kind: "ICS" };
+        if (!tnef && (/ms-tnef/.test(type) || filename === "winmail.dat")) tnef = { part: String(current.part || "1"), kind: "TNEF" };
+        return null;
+    };
+    return visit(node) || tnef;
 };
 
 /* Bekannte Namen des Gesendet-Ordners, falls der Server sein `\\Sent`-Merkmal
@@ -303,12 +337,24 @@ export const buildImapClient = (settings: CaptureSettings): ImapFlow => {
 };
 
 /**
- * Ein Durchgang für EINEN Mandanten. Wirft nicht: Fehler landen in
+ * Ein Durchgang für EIN POSTFACH. Wirft nicht: Fehler landen in
  * `MailSetting.imapLastError` und im Rückgabewert.
+ *
+ * EIN POSTFACH JE FIRMENBAUM (13.09.2026): der übergebene Mandant wird auf den
+ * Stamm seines Baums aufgelöst (`getMailTenantId`) — Zugangsdaten, Lesestand
+ * und Nachrichten gehören dorthin. Vorher lief der Abruf je Mandant: standen
+ * dieselben IMAP-Daten in zwei Firmen desselben Baums, holten ZWEI Abrufe
+ * dasselbe Serverpostfach in zwei getrennte Bestände, jeder mit eigenem,
+ * NUR VORWÄRTS laufendem Lesestand — der später gestartete zeigte für immer
+ * nur, was seit seinem Beginn ankam.
  */
-export const captureInbox = async (tenantId: string, options: CaptureOptions = {}): Promise<CaptureSummary> => {
+export const captureInbox = async (selectedTenantId: string, options: CaptureOptions = {}): Promise<CaptureSummary> => {
     const startedAt = Date.now();
     const dryRun = Boolean(options.dryRun);
+    const calendarOnly = Boolean(options.calendarOnly);
+    // Fällt die Auflösung aus (Mandantenbaum nicht lesbar), bleibt es bei der
+    // übergebenen Firma — der Abruf soll deswegen nicht ausfallen.
+    const tenantId = await getMailTenantId(selectedTenantId).catch(() => selectedTenantId);
     const summary: CaptureSummary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, labelled: 0, calendar: 0, skipped: 0, skippedRepliesOnly: 0, durationMs: 0 };
     if (dryRun) summary.preview = [];
     if (running.has(tenantId)) {
@@ -318,19 +364,33 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
     running.add(tenantId);
     let client: ImapFlow | null = null;
     try {
-        const settings = await prisma.mailSetting.findUnique({
-            where: { tenantId },
-            select: {
-                tenantId: true, imapHost: true, imapPort: true, imapSecure: true, imapUser: true, imapPassword: true,
-                smtpUser: true, smtpPassword: true, fromEmail: true, imapInboxFolder: true,
-                imapCaptureRepliesOnly: true, imapUidValidity: true, imapLastUid: true, imapWindowMonths: true,
-                sentFolder: true, imapSentUidValidity: true, imapSentLastUid: true,
-            },
-        });
+        const select = {
+            tenantId: true, imapHost: true, imapPort: true, imapSecure: true, imapUser: true, imapPassword: true,
+            smtpUser: true, smtpPassword: true, fromEmail: true, imapInboxFolder: true,
+            imapCaptureRepliesOnly: true, imapUidValidity: true, imapLastUid: true, imapWindowMonths: true,
+            sentFolder: true, imapSentUidValidity: true, imapSentLastUid: true,
+        } as const;
+        /* DIE ZUGANGSDATEN STEHEN AM STAMM — aber nicht überall schon: eine
+           Einrichtung, die vor dem Umbau in einer Untergesellschaft eingetragen
+           wurde, liegt weiterhin dort. Dann wird SIE benutzt, und der Lesestand
+           bleibt in ihrer Zeile (`settingsTenantId`); die NACHRICHTEN gehen
+           trotzdem an den Stamm. Sonst stünde der Abruf still, ohne dass
+           irgendwo etwas anderes stünde als «Kein IMAP-Server hinterlegt». */
+        let settings = await prisma.mailSetting.findUnique({ where: { tenantId }, select });
+        if (!settings?.imapHost?.trim()) {
+            const treeTenantIds = await getCompanyTreeTenantIds(tenantId).catch(() => [] as string[]);
+            settings = await prisma.mailSetting.findFirst({
+                where: { tenantId: { in: treeTenantIds }, NOT: { imapHost: null } },
+                orderBy: { imapLastSyncAt: "desc" },
+                select,
+            });
+        }
         if (!settings?.imapHost?.trim()) {
             summary.error = "Kein IMAP-Server hinterlegt.";
             return summary;
         }
+        // Wessen Zeile den Lesestand führt: fast immer der Stamm selbst.
+        const settingsTenantId = settings.tenantId;
 
         // Der Ordner-Umweg gilt NUR im Probelauf: sonst liefe der Lesestand
         // eines fremden Ordners in die Einstellung des Posteingangs.
@@ -398,7 +458,10 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
             let lastUid = resetCursor ? 0n : (job.lastUid ?? 0n);
 
             let uids: number[] = [];
-            if (lastUid > 0n) {
+            /* Das Nachholen der Termine kennt keinen Lesestand: es sieht sich
+               IMMER das ganze Fenster an. Genau das ist sein Zweck — die
+               Einladungen, die längst hinter dem Lesestand liegen. */
+            if (lastUid > 0n && !calendarOnly) {
                 uids = await client.search({ uid: `${Number(lastUid) + 1}:*` }, { uid: true }) as unknown as number[];
                 // Manche Server geben bei `n:*` immer die letzte Nachricht zurück.
                 uids = (uids || []).filter((uid) => BigInt(uid) > lastUid);
@@ -419,9 +482,9 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                     + ` (${uids[0]} … ${uids[uids.length - 1]})`);
             }
 
-            if (!uids.length && !dryRun && (resetCursor || job.uidValidity === null)) {
+            if (!uids.length && !dryRun && !calendarOnly && (resetCursor || job.uidValidity === null)) {
                 await prisma.mailSetting.update({
-                    where: { tenantId },
+                    where: { tenantId: settingsTenantId },
                     data: job.cursorFields(uidValidity, 0n),
                 });
             }
@@ -478,12 +541,19 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 // Schon vorhandene Nachrichten (z. B. nach UIDVALIDITY-Wechsel)
                 // und die von UNS verschickten Mails in EINEM Zug nachschlagen.
                 const ownIds = candidates.map((c) => c.messageId).filter(Boolean) as string[];
+                const providerIds = candidates.map((c) => `${job.folder}:${uidValidity}:${c.uid}`);
                 const refIds = Array.from(new Set(candidates.flatMap((c) => c.refs)));
                 const [existing, parents] = await Promise.all([
-                    ownIds.length
+                    ownIds.length || providerIds.length
                         ? prisma.mailMessage.findMany({
-                            where: { tenantId, internetMessageId: { in: ownIds } },
-                            select: { internetMessageId: true },
+                            where: {
+                                tenantId,
+                                OR: [
+                                    ...(ownIds.length ? [{ internetMessageId: { in: ownIds } }] : []),
+                                    { providerMessageId: { in: providerIds } },
+                                ],
+                            },
+                            select: { internetMessageId: true, providerMessageId: true },
                         })
                         : Promise.resolve([]),
                     refIds.length
@@ -497,19 +567,22 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         })
                         : Promise.resolve([]),
                 ]);
-                const known = new Set(existing.map((row) => row.internetMessageId));
+                const known = new Set(existing.map((row) => row.internetMessageId).filter(Boolean));
+                const knownProviders = new Set(existing.map((row) => row.providerMessageId).filter(Boolean));
                 const parentById = new Map(parents.map((row) => [row.internetMessageId!, row]));
 
                 type Keeper = Candidate & {
                     customerId: string | null;
                     contactId: string | null;
                     matchSource: "REPLY" | "AUTO_ADDRESS" | "AUTO_DOMAIN" | "AUTO_EMPLOYEE" | null;
-                    calendarPart?: string | null;
+                    calendarPart?: CalendarPartRef | null;
                     entityType: string | null;
                     entityId: string | null;
                     entityLabel: string | null;
                     employeeId: string | null;
                     categoryId: string | null;
+                    /** Mail row already exists; keep only to (re)import its ICS. */
+                    alreadyStored: boolean;
                 };
                 const keepers: Keeper[] = [];
                 /* Nur im Probelauf: Absender, deren Adresse nicht im System
@@ -518,7 +591,19 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                    ohne Kundenzuordnung ankommen wird. */
                 const unknown = new Map<string, number>();
                 for (const candidate of candidates) {
-                    if (candidate.messageId && known.has(candidate.messageId)) { summary.skipped += 1; continue; }
+                    const providerId = `${job.folder}:${uidValidity}:${candidate.uid}`;
+                    const alreadyStored = Boolean(
+                        (candidate.messageId && known.has(candidate.messageId))
+                        || knownProviders.has(providerId),
+                    );
+                    const calendarPart = findCalendarPart(candidate.bodyStructure);
+                    // A reset/backfill must revisit existing calendar mails so
+                    // their personal recipient ownership can be repaired.
+                    if (alreadyStored && !calendarPart) { summary.skipped += 1; continue; }
+                    // Beim Nachholen der Termine zählt NUR die Einladung: alles
+                    // andere wird nicht einmal angesehen, geschweige denn
+                    // gespeichert.
+                    if (calendarOnly && !calendarPart) { summary.skipped += 1; continue; }
 
                     /* Die GEGENSTELLE — nur noch für die ZUORDNUNG, keine
                        Schranke mehr: gespeichert wird jede Nachricht.
@@ -535,8 +620,6 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         const address = counterparts[0] || "(ohne Absender)";
                         unknown.set(address, (unknown.get(address) || 0) + 1);
                     }
-
-                    const calendarPart = findCalendarPart(candidate.bodyStructure)?.part ?? null;
 
                     // (1) Antwort auf eine ERP-Mail? Dann erbt sie deren
                     // Zuordnung — genauer als der reine Adresstreffer.
@@ -557,6 +640,7 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                                einer ERP-Sendung ist das unsere eigene Absenderin. */
                             categoryId: parent.categoryId ?? autoCategoryId(categories, { customerId: parent.customerId }),
                             calendarPart,
+                            alreadyStored,
                         });
                         summary.replies += 1;
                         continue;
@@ -579,6 +663,7 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                         // Nachricht ohne Zutun darin.
                         categoryId: autoCategoryId(categories, { customerId: hit?.customerId, employeeId: hit?.employeeId }),
                         calendarPart,
+                        alreadyStored,
                     });
                     if (hit) summary.byAddress += 1;
                 }
@@ -603,6 +688,10 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 // ── 2. Für jede Nachricht den Rumpf holen ─────────────────────
                 const inserts: Prisma.MailMessageCreateManyInput[] = [];
                 for (const keeper of keepers) {
+                    // Beim Nachholen der Termine bleibt das Postfach unberührt:
+                    // die Rümpfe stehen längst da, geholt wird gleich unten nur
+                    // der Kalenderteil.
+                    if (keeper.alreadyStored || calendarOnly) continue;
                     let bodyText: string | null = null;
                     let bodyHtml: string | null = null;
                     const bodyParts = collectBodyParts(keeper.bodyStructure);
@@ -708,14 +797,37 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 for (const keeper of keepers) {
                     if (!keeper.calendarPart) continue;
                     try {
-                        const download = await client.download(String(keeper.uid), keeper.calendarPart, { uid: true, maxBytes: 256 * 1024 });
+                        // Bei winmail.dat ist die ganze Nachricht drin, samt Bildern —
+                        // darum das grössere Limit; imapflow dekodiert base64 bereits.
+                        const download = await client.download(String(keeper.uid), keeper.calendarPart.part, { uid: true, maxBytes: 2 * 1024 * 1024 });
                         const chunks: Buffer[] = [];
                         for await (const chunk of download.content as any) chunks.push(chunk as Buffer);
-                        const result = await importCalendarObject(tenantId, Buffer.concat(chunks).toString("utf8"), {
+                        /* DER TERMIN GEHÖRT DEM POSTFACH (31.08.2026).
+                           Bis hierher wurde er in die Firma der erkannten
+                           Person gelegt — der Kalender war streng je Firma.
+                           Das hatte zwei Folgen, die beide falsch waren: wer
+                           die Firma wechselte, sah einen anderen Kalender
+                           (obwohl es EIN Postfach ist), und die Termine eines
+                           abgelegten Kontos blieben in der Untergesellschaft
+                           stehen, weil das Aufräumen am Stamm ansetzte.
+
+                           Jetzt liegt der Termin dort, wo auch das Postfach und
+                           die Nachrichten liegen: am Stamm. Den Urheber sucht
+                           `importCalendarEvent` im ganzen Firmenbaum — am Stamm
+                           allein ist oft niemand angestellt, und eine Suche nur
+                           dort verwürfe die Einladung wortlos. */
+                        const result = await importCalendarPayload(tenantId, Buffer.concat(chunks), keeper.calendarPart.kind, {
                             senderEmail: partiesOf(keeper.envelope?.from)[0]?.address || null,
+                            subject: String(keeper.envelope?.subject || "").trim() || null,
+                            recipientEmails: [
+                                ...partiesOf(keeper.envelope?.to),
+                                ...partiesOf(keeper.envelope?.cc),
+                            ].map((party) => party.address),
                             customerId: keeper.customerId,
                             employeeId: keeper.employeeId,
                             direction: job.direction,
+                            mailbox: mailboxIdentityOf(settings),
+                            source: "MAIL",
                         });
                         if (result.action !== "ignored") {
                             summary.calendar += 1;
@@ -737,6 +849,15 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 console.log(`[MAIL-IN] ${job.folder} Schub ${batch[0]}…${batch[batch.length - 1]}: ${batch.length} angefragt,`
                     + ` ${candidates.length} geholt, ${keepers.length} neu, ${inserts.length} geschrieben,`
                     + ` ${inserts.filter((row) => row.categoryId).length} etikettiert`);
+
+                /* DER LESESTAND GEHÖRT DER POST, NICHT DEN TERMINEN. Rückte er
+                   beim Nachholen mit, hätte ein einziger Durchgang das ganze
+                   Fenster als "gelesen" abgehakt — und die Nachrichten darin
+                   wären nie in der Kommunikation gelandet. */
+                if (calendarOnly) {
+                    if (Date.now() - startedAt > RUN_TIME_BUDGET_MS) break;
+                    continue;
+                }
 
                 /* DER LESESTAND DARF NUR ÜBER TATSÄCHLICH ANGESEHENE POST
                    HINWEGRÜCKEN. Liefert der Server auf ein FETCH weniger
@@ -773,7 +894,7 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
                 }
                 lastUid = BigInt(highestUid);
                 await prisma.mailSetting.update({
-                    where: { tenantId },
+                    where: { tenantId: settingsTenantId },
                     data: job.cursorFields(uidValidity, lastUid),
                 });
                 // Der Schub blieb unvollständig: hier abbrechen, sonst liefe
@@ -791,10 +912,15 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
 
         summary.durationMs = Date.now() - startedAt;
         if (dryRun) return summary;
-        const text = `${summary.examined} geprüft, ${summary.stored} übernommen (${summary.replies} Antworten, ${summary.byAddress} bekannte Adressen, ${summary.calendar} Termine), ${summary.skipped} übersprungen`
-            + (summary.skippedRepliesOnly > 0 ? ` — davon ${summary.skippedRepliesOnly} nur wegen «nur Antworten»` : "");
+        const text = calendarOnly
+            /* Der Nachhol-Durchgang schreibt SEINE eigene Zeile: sonst stünde
+               im Postfach «0 geprüft, 0 übernommen» und sähe wie ein
+               fehlgeschlagener Abruf aus, obwohl er gar keine Post ansieht. */
+            ? `Termine nachgeholt: ${summary.examined} Nachrichten durchgesehen, ${summary.calendar} Termine übernommen`
+            : `${summary.examined} geprüft, ${summary.stored} übernommen (${summary.replies} Antworten, ${summary.byAddress} bekannte Adressen, ${summary.calendar} Termine), ${summary.skipped} übersprungen`
+                + (summary.skippedRepliesOnly > 0 ? ` — davon ${summary.skippedRepliesOnly} nur wegen «nur Antworten»` : "");
         await prisma.mailSetting.update({
-            where: { tenantId },
+            where: { tenantId: settingsTenantId },
             data: { imapLastSyncAt: new Date(), imapLastSummary: text.slice(0, 255), imapLastError: null },
         });
         if (summary.examined) console.log(`[MAIL-IN] ${tenantId}: ${text} (${summary.durationMs}ms)`);
@@ -803,7 +929,7 @@ export const captureInbox = async (tenantId: string, options: CaptureOptions = {
         summary.error = error?.message || String(error);
         console.error(`[MAIL-IN] ${tenantId} fehlgeschlagen:`, summary.error);
         if (dryRun) return summary;
-        await prisma.mailSetting.update({
+        await prisma.mailSetting.updateMany({
             where: { tenantId },
             data: { imapLastError: String(summary.error).slice(0, 1000), imapLastSyncAt: new Date() },
         }).catch(() => undefined);
@@ -818,10 +944,12 @@ export const isCaptureRunning = (tenantId: string) => running.has(tenantId);
 
 /** Einen einzelnen Anhang vom Mailserver holen — NICHTS wird gespeichert. */
 export const fetchImapAttachment = async (
-    tenantId: string,
+    selectedTenantId: string,
     providerMessageId: string,
     part: string,
 ): Promise<{ content: Buffer; contentType: string | null } | null> => {
+    // Der Anhang liegt in dem Postfach, aus dem die Nachricht stammt.
+    const tenantId = await getMailTenantId(selectedTenantId).catch(() => selectedTenantId);
     const settings = await prisma.mailSetting.findUnique({
         where: { tenantId },
         select: {
@@ -859,7 +987,14 @@ export const fetchImapAttachment = async (
     }
 };
 
-/** Alle Mandanten mit eingeschaltetem Abruf, nacheinander. */
+/**
+ * Alle Postfächer mit eingeschaltetem Abruf, nacheinander.
+ *
+ * EIN POSTFACH JE FIRMENBAUM: mehrere Mandanten desselben Baums fallen auf
+ * denselben Abruf zusammen. Ohne dieses Zusammenlegen liefen zwei Durchgänge
+ * über dasselbe Serverpostfach — doppelte Last, zwei Lesestände, und in der
+ * zweiten Firma ein Bestand, der erst mit seinem ersten Lauf beginnt.
+ */
 const runPass = async (): Promise<void> => {
     const tenants = await prisma.mailSetting.findMany({
         where: { imapCaptureEnabled: true, NOT: { imapHost: null } },
@@ -867,9 +1002,12 @@ const runPass = async (): Promise<void> => {
         orderBy: { imapLastSyncAt: "asc" },
         take: 50,
     });
+    const seen = new Set<string>();
     for (const { tenantId } of tenants) {
-        if (running.has(tenantId)) continue;
-        await captureInbox(tenantId);
+        const mailTenantId = await getMailTenantId(tenantId).catch(() => tenantId);
+        if (seen.has(mailTenantId) || running.has(mailTenantId)) continue;
+        seen.add(mailTenantId);
+        await captureInbox(mailTenantId);
     }
 };
 

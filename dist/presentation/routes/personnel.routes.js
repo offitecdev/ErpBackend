@@ -12,9 +12,11 @@ exports.QR_PREFIX = void 0;
  * Weg. Die abgelösten Router (`attendance.routes.ts`, `leave.routes.ts`) sind
  * entfallen.
  *
- * TENANT-BEREICH: Personal gehört dem GANZEN Firmenbaum (getCompanyTreeTenantIds),
- * nicht der einzelnen Firma — dieselbe Regel wie bei /employees. Geschäftsdaten
- * bleiben davon unberührt.
+ * TENANT-BEREICH: Personal gehört der AUSGEWÄHLTEN Firma
+ * (getPersonnelTenantScope, seit 31.08.2026) — dieselbe Regel wie bei
+ * /employees. Wer unter einer Untergesellschaft angelegt wurde, erscheint
+ * NUR dort; Schwesterfirmen sehen einander nicht. Das Arbeitszeitmodell
+ * (Schichtplan) bleibt baumweit, siehe shiftPlanTenantId.
  *
  * DER QR-SCHLÜSSEL: `Employee.qrToken` ist der einzige Code je Person. Derselbe
  * Code meldet an der Anmeldeseite an (siehe auth.routes.ts, /auth/qr-login) und
@@ -29,6 +31,7 @@ const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
+const tenantTree_1 = require("../../shared/tenantTree");
 const BcryptCryptoService_1 = require("../../infrastructure/services/BcryptCryptoService");
 const password_1 = require("../../application/validation/password");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
@@ -43,7 +46,8 @@ const roleRepo = new RoleRepository_1.RoleRepository();
 /** Der QR-Text auf dem Ausdruck. Das Präfix trennt ihn von jedem anderen Code. */
 exports.QR_PREFIX = 'OFITEC-STAFF:';
 const newQrToken = () => `${exports.QR_PREFIX}${(0, nanoid_1.nanoid)(24)}`;
-const treeOf = (req) => (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
+/** Die Firmen, aus denen PERSONEN gelesen werden: genau die ausgewählte. */
+const treeOf = (req) => (0, serviceTenantScope_1.getPersonnelTenantScope)(req.user.tenantId);
 const fail = (res, status, message) => res.status(status).json({ error: message });
 /** Die Zeitraum- und Namensfilter, die jeder Bericht teilt. */
 const readReportFilters = (query) => {
@@ -63,14 +67,11 @@ const readReportFilters = (query) => {
 // ─────────────────────────────────────────────────────────────────────────────
 /**
  * Der Plan hängt am STAMM des Firmenbaums, nicht an der gerade gewählten Firma:
- * Personal ist baumweit geteilt, also muss auch sein Arbeitszeitmodell baumweit
- * dasselbe sein — sonst rechnete derselbe Bericht je nach Firmenumschalter
- * andere Sollstunden.
+ * das Arbeitszeitmodell ist eine Regel des HAUSES — sonst rechnete derselbe
+ * Bericht je nach Firmenumschalter andere Sollstunden. Personenlisten sind
+ * seit dem 31.08.2026 firmeneigen (treeOf), der Schichtplan ausdrücklich nicht.
  */
-const shiftPlanTenantId = async (req) => {
-    const tenantIds = await treeOf(req);
-    return tenantIds[0] ?? req.user.tenantId;
-};
+const shiftPlanTenantId = async (req) => (await (0, tenantTree_1.findTenantRootIdCached)(req.user.tenantId)) ?? req.user.tenantId;
 const loadShiftPlan = async (req) => {
     const tenantId = await shiftPlanTenantId(req);
     const row = await prisma_client_1.default.staffShiftPlan.findUnique({ where: { tenantId } });
@@ -143,7 +144,7 @@ router.get('/staff', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireP
             return res.status(200).json({ data: [], total: 0, page, pageSize });
         }
         const conditions = [
-            client_1.Prisma.sql `e.tenantId IN (${client_1.Prisma.join(tenantIds)})`,
+            (0, serviceTenantScope_1.employeeScopeSql)(tenantIds),
             client_1.Prisma.sql `e.deletedAt IS NULL`,
         ];
         const search = String(req.query.search || '').trim();
@@ -259,10 +260,13 @@ router.post('/staff/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
             const clash = entries.find((entry) => takenSet.has(entry.email));
             return res.status(409).json({ error: `E-Mail-Adresse ist bereits vergeben: ${clash?.email}`, index: clash?.index });
         }
-        const tenantIds = await treeOf(req);
         const tenantId = req.user.tenantId;
+        /* Die Personalnummer laeuft BAUMWEIT weiter, auch wenn die Listen es
+           nicht mehr tun: sie steht auf Ausdrucken und Rapporten und soll im
+           ganzen Haus genau eine Person meinen. Ein reiner Zaehlerstand
+           verraet nichts ueber die Schwesterfirmen. */
         const highest = await prisma_client_1.default.employee.aggregate({
-            where: { tenantId: { in: tenantIds.length ? tenantIds : [tenantId] } },
+            where: { tenantId: { in: await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId) } },
             _max: { staffNumber: true },
         });
         let nextStaffNumber = (highest._max.staffNumber ?? 0) + 1;
@@ -313,7 +317,7 @@ router.post('/staff/:id/qr', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
     try {
         const tenantIds = await treeOf(req);
         const existing = await prisma_client_1.default.employee.findFirst({
-            where: { id: String(req.params.id), tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: String(req.params.id), ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true },
         });
         if (!existing)
@@ -352,7 +356,7 @@ const APPROVER_PERMISSIONS = ['leaves.approve', 'roles.manage', 'users.manage'];
 const approverRowsSql = (tenantIds) => client_1.Prisma.sql `
     SELECT e.id, e.firstName, e.lastName, e.email, e.staffNumber
     FROM Employee e
-    WHERE e.tenantId IN (${client_1.Prisma.join(tenantIds)})
+    WHERE ${(0, serviceTenantScope_1.employeeScopeSql)(tenantIds)}
       AND e.deletedAt IS NULL
       AND e.isActive = 1
       AND EXISTS (
@@ -390,7 +394,7 @@ const purserCount = async (tenantIds) => {
         FROM Employee e
         JOIN EmployeeRole er ON er.employeeId = e.id
         JOIN Role r ON r.id = er.roleId
-        WHERE e.tenantId IN (${client_1.Prisma.join(tenantIds)})
+        WHERE ${(0, serviceTenantScope_1.employeeScopeSql)(tenantIds)}
           AND e.deletedAt IS NULL
           AND e.isActive = 1
           AND r.isPurser = 1
@@ -423,7 +427,7 @@ const isApprover = async (employeeId, tenantIds) => {
         SELECT e.id
         FROM Employee e
         WHERE e.id = ${employeeId}
-          AND e.tenantId IN (${client_1.Prisma.join(tenantIds)})
+          AND ${(0, serviceTenantScope_1.employeeScopeSql)(tenantIds)}
           AND e.deletedAt IS NULL
           AND e.isActive = 1
           AND EXISTS (
@@ -444,7 +448,7 @@ const isApprover = async (employeeId, tenantIds) => {
 const staffByQrToken = async (token, tenantIds) => prisma_client_1.default.employee.findFirst({
     where: {
         qrToken: token,
-        tenantId: { in: tenantIds },
+        ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds),
         deletedAt: null,
         bannedAt: null,
         isActive: true,
@@ -559,7 +563,7 @@ router.get('/clock/activity', AuthMiddleware_1.requireAuth, async (req, res) => 
                    e.firstName, e.lastName, e.staffNumber
             FROM StaffTimeEntry t
             JOIN Employee e ON e.id = t.employeeId
-            WHERE e.tenantId IN (${client_1.Prisma.join(tenantIds)})
+            WHERE ${(0, serviceTenantScope_1.employeeScopeSql)(tenantIds)}
               AND t.workDate = ${day}
             ORDER BY t.startedAt ASC
         `);
@@ -626,7 +630,7 @@ router.get('/clock/week', AuthMiddleware_1.requireAuth, async (req, res) => {
                    e.firstName, e.lastName, e.staffNumber
             FROM StaffTimeEntry t
             JOIN Employee e ON e.id = t.employeeId
-            WHERE e.tenantId IN (${client_1.Prisma.join(tenantIds)})
+            WHERE ${(0, serviceTenantScope_1.employeeScopeSql)(tenantIds)}
               AND t.workDate >= ${monday}
               AND t.workDate <= ${friday}
             ORDER BY t.workDate ASC, e.lastName ASC, t.startedAt ASC
@@ -714,7 +718,7 @@ router.patch('/time-entries/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddlewa
     try {
         const tenantIds = await treeOf(req);
         const entry = await prisma_client_1.default.staffTimeEntry.findFirst({
-            where: { id: String(req.params.id), employee: { tenantId: { in: tenantIds } } },
+            where: { id: String(req.params.id), employee: (0, serviceTenantScope_1.employeeScopeWhere)(tenantIds) },
         });
         if (!entry)
             return fail(res, 404, 'Zeile nicht gefunden.');
@@ -757,7 +761,7 @@ router.delete('/time-entries/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddlew
     try {
         const tenantIds = await treeOf(req);
         const entry = await prisma_client_1.default.staffTimeEntry.findFirst({
-            where: { id: String(req.params.id), employee: { tenantId: { in: tenantIds } } },
+            where: { id: String(req.params.id), employee: (0, serviceTenantScope_1.employeeScopeWhere)(tenantIds) },
             select: { id: true },
         });
         if (!entry)
@@ -827,7 +831,7 @@ router.get('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
         const tenantIds = await treeOf(req);
         const kind = String(req.query.kind || '').trim();
         const where = {
-            employee: { tenantId: { in: tenantIds.length ? tenantIds : [req.user.tenantId] } },
+            employee: (0, serviceTenantScope_1.employeeScopeWhere)(tenantIds.length ? tenantIds : [req.user.tenantId]),
         };
         if (kind === 'LEAVE' || kind === 'REMOTE')
             where.kind = kind;
@@ -1012,7 +1016,7 @@ router.patch('/leaves/:id/decision', AuthMiddleware_1.requireAuth, async (req, r
         const note = String(req.body?.note ?? '').trim() || null;
         const tenantIds = await treeOf(req);
         const request = await prisma_client_1.default.staffLeaveRequest.findFirst({
-            where: { id: String(req.params.id), employee: { tenantId: { in: tenantIds } } },
+            where: { id: String(req.params.id), employee: (0, serviceTenantScope_1.employeeScopeWhere)(tenantIds) },
         });
         if (!request)
             return fail(res, 404, 'Antrag nicht gefunden.');
@@ -1095,7 +1099,7 @@ router.patch('/leaves/:id/decision', AuthMiddleware_1.requireAuth, async (req, r
 router.get('/leaves/counts', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const tenantIds = await treeOf(req);
-        const scope = { employee: { tenantId: { in: tenantIds.length ? tenantIds : [req.user.tenantId] } } };
+        const scope = { employee: (0, serviceTenantScope_1.employeeScopeWhere)(tenantIds.length ? tenantIds : [req.user.tenantId]) };
         const amPurser = await isPurserEmployee(req.user.id);
         const [approver, accounting, mine] = await Promise.all([
             prisma_client_1.default.staffLeaveRequest.count({ where: { ...scope, approverId: req.user.id, status: 'PENDING_MANAGER' } }),
@@ -1139,7 +1143,7 @@ router.patch('/staff/:id/role', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
     try {
         const tenantIds = await treeOf(req);
         const existing = await prisma_client_1.default.employee.findFirst({
-            where: { id: String(req.params.id), tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: String(req.params.id), ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true },
         });
         if (!existing)
@@ -1195,7 +1199,7 @@ router.get('/staff/:id/overview', AuthMiddleware_1.requireAuth, async (req, res)
         if (tenantIds.length === 0)
             return fail(res, 404, 'Person nicht gefunden.');
         const person = await prisma_client_1.default.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: {
                 id: true, tenantId: true, staffNumber: true, firstName: true, lastName: true,
                 email: true, phone: true, title: true, isActive: true, staffRole: true,
@@ -1456,7 +1460,7 @@ router.put('/staff/:id/photo', AuthMiddleware_1.requireAuth, async (req, res) =>
         }
         const tenantIds = await treeOf(req);
         const person = await prisma_client_1.default.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true },
         });
         if (!person)
@@ -1506,7 +1510,7 @@ router.get('/photos', AuthMiddleware_1.requireAuth, async (req, res) => {
             SELECT e.id, COALESCE(e.profilePictureThumb, e.profilePictureUrl) AS photo
             FROM Employee e
             WHERE e.id IN (${client_1.Prisma.join(ids)})
-              AND e.tenantId IN (${client_1.Prisma.join(tenantIds)})
+              AND ${(0, serviceTenantScope_1.employeeScopeSql)(tenantIds)}
               AND (e.profilePictureThumb IS NOT NULL OR e.profilePictureUrl IS NOT NULL)
         `);
         const photos = {};

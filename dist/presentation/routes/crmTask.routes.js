@@ -17,6 +17,7 @@ const taskMailService_1 = require("../../infrastructure/services/taskMailService
 const crmTaskMaintenance_1 = require("../../infrastructure/services/crmTaskMaintenance");
 const GetUserPermissionsUseCase_1 = require("../../application/use-cases/auth/GetUserPermissionsUseCase");
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
+const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 /* Aufgaben & Erinnerungen (mounted under /crm alongside crm.routes.ts).
 
    Stand 19.08.2026 — OHNE Freigabe:
@@ -251,11 +252,17 @@ const fastPatchStatus = async (id, tenantId, userId, body) => {
         ...(allDay !== undefined ? { allDay } : {}),
     };
 };
-/** Personen der Firma prüfen und die Verantwortlichen-Zeilen neu setzen. */
-const validateEmployees = async (ids) => {
+/** Personen der Firma prüfen und die Verantwortlichen-Zeilen neu setzen.
+    Der Mandant gehört zur Prüfung: sonst liesse sich eine Aufgabe mit einer
+    von Hand gesetzten Id an eine Person der Schwesterfirma hängen — genau die
+    Vermischung, die es seit dem 31.08.2026 nicht mehr geben darf. */
+const validateEmployees = async (ids, tenantId) => {
     if (ids.length === 0)
         return [];
-    const rows = await prisma_client_1.default.employee.findMany({ where: { id: { in: ids } }, select: { id: true } });
+    const rows = await prisma_client_1.default.employee.findMany({
+        where: { id: { in: ids }, ...(0, serviceTenantScope_1.employeeScopeWhere)(await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId)) },
+        select: { id: true },
+    });
     const found = new Set(rows.map((row) => row.id));
     return ids.filter((id) => found.has(id));
 };
@@ -664,7 +671,7 @@ router.post('/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
             customerId ? prisma_client_1.default.customer.findFirst({ where: { id: customerId, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve(null),
             contactId && customerId ? prisma_client_1.default.customerContact.findFirst({ where: { id: contactId, customerId }, select: { id: true } }) : Promise.resolve(null),
             tenderId ? prisma_client_1.default.tender.findFirst({ where: { id: tenderId, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve(null),
-            validateEmployees(wantedAssignees),
+            validateEmployees(wantedAssignees, user.tenantId),
         ]);
         if (customerId && !customer)
             return res.status(404).json({ error: 'Müşteri bulunamadı.' });
@@ -748,7 +755,7 @@ router.post('/tasks/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
         const [customers, contacts, assignees, tenders] = await Promise.all([
             customerIds.length ? prisma_client_1.default.customer.findMany({ where: { id: { in: customerIds }, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve([]),
             contactIds.length ? prisma_client_1.default.customerContact.findMany({ where: { id: { in: contactIds }, tenantId: user.tenantId }, select: { id: true, customerId: true } }) : Promise.resolve([]),
-            assigneeIds.length ? prisma_client_1.default.employee.findMany({ where: { id: { in: assigneeIds } }, select: { id: true } }) : Promise.resolve([]),
+            assigneeIds.length ? prisma_client_1.default.employee.findMany({ where: { id: { in: assigneeIds }, ...(0, serviceTenantScope_1.employeeScopeWhere)(await (0, serviceTenantScope_1.getPersonnelTenantScope)(user.tenantId)) }, select: { id: true } }) : Promise.resolve([]),
             tenderIds.length ? prisma_client_1.default.tender.findMany({ where: { id: { in: tenderIds }, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve([]),
         ]);
         const allowedCustomers = new Set(customers.map((row) => row.id));
@@ -915,7 +922,7 @@ router.patch('/tasks/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
         const wantedAssignees = parseAssigneeIds(req.body);
         let assigneeIds = null;
         if (wantedAssignees !== undefined) {
-            assigneeIds = await validateEmployees(wantedAssignees);
+            assigneeIds = await validateEmployees(wantedAssignees, user.tenantId);
             if (assigneeIds.length !== wantedAssignees.length)
                 return res.status(400).json({ error: 'Verantwortliche Person nicht gefunden.' });
         }

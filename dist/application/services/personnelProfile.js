@@ -31,6 +31,7 @@ exports.loadStaffForSearch = exports.staffSearchCondition = exports.buildLeaveYe
  */
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 const personnel_1 = require("../../shared/personnel");
 const personnelReports_1 = require("./personnelReports");
 /**
@@ -273,7 +274,7 @@ const loadStaffForSearch = async (tenantIds, options) => {
     if (tenantIds.length === 0)
         return [];
     const conditions = [
-        client_1.Prisma.sql `e.tenantId IN (${client_1.Prisma.join(tenantIds)})`,
+        (0, serviceTenantScope_1.employeeScopeSql)(tenantIds),
         client_1.Prisma.sql `e.deletedAt IS NULL`,
     ];
     const search = (0, exports.staffSearchCondition)(options.search ?? '');

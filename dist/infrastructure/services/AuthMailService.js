@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AuthMailService = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const SmtpMailService_1 = require("./SmtpMailService");
+const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 const APP_URL = () => (process.env.OFFITEC_APP_URL || 'https://demo.offitec.ch').replace(/\/$/, '');
 const smtp = new SmtpMailService_1.SmtpMailService();
 /**
@@ -17,7 +18,7 @@ const smtp = new SmtpMailService_1.SmtpMailService();
  */
 class AuthMailService {
     async send(tenantId, to, subject, bodyLines) {
-        const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId } });
+        const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tenantId) } });
         const fromEmail = settings?.fromEmail || 'no-reply@offitec.ch';
         const text = bodyLines.join('\n');
         const html = bodyLines.map((line) => `<p>${line}</p>`).join('');

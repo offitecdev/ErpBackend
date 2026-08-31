@@ -9,6 +9,7 @@ const nanoid_1 = require("nanoid");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 /* CRM v2 surfaces: tenant-wide contact list (Ansprechpartner), unified
    communication history (phone/e-mail/meeting/note) and tasks & reminders.
    Tenant scoping matches the rest of the CRM module (exact tenantId, like
@@ -259,10 +260,20 @@ router.get('/interactions', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.r
         // Angebots-/Auftragsmails, die seit der Outlook-Anbindung als MailMessage
         // festgehalten sind (activityId zeigt her), erscheinen nur einmal — als Mail.
         actWhere.push(client_1.Prisma.sql `NOT EXISTS (SELECT 1 FROM MailMessage mm WHERE mm.activityId = ca.id)`);
-        // Zweig 4 — MailMessage (Outlook-Sync + ERP-Sendungen), nur mit Kundenbezug.
-        // Betreff + Vorschau als "note"; die Direction/den Outlook-Link tragen die
-        // Zusatzspalten, die die anderen Zweige mit NULL füllen.
-        const mailWhere = [client_1.Prisma.sql `m.tenantId = ${user.tenantId}`, client_1.Prisma.sql `m.customerId IS NOT NULL`];
+        /* Zweig 4 — MailMessage (Outlook-Sync + ERP-Sendungen), nur mit Kundenbezug.
+           Betreff + Vorschau als "note"; die Direction/den Outlook-Link tragen die
+           Zusatzspalten, die die anderen Zweige mit NULL füllen.
+
+           ZWEI MANDANTEN: die Post liegt im Postfach am Stamm des Firmenbaums
+           (getMailTenantId), der KUNDE gehört seiner Firma. Darum zwei
+           Bedingungen — der Mandant der Nachricht und, über den Verbund, der
+           Mandant des Kunden. Mit nur der ersten sähe eine Firma die
+           Kundenpost der Schwesterfirmen. */
+        const mailWhere = [
+            client_1.Prisma.sql `m.tenantId = ${await (0, serviceTenantScope_1.getMailTenantId)(user.tenantId)}`,
+            client_1.Prisma.sql `cu.tenantId = ${user.tenantId}`,
+            client_1.Prisma.sql `m.customerId IS NOT NULL`,
+        ];
         if (customerId)
             mailWhere.push(client_1.Prisma.sql `m.customerId = ${customerId}`);
         if (typeFilter && typeFilter !== 'EMAIL')

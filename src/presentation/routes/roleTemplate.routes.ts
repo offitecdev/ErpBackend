@@ -4,7 +4,7 @@ import { nanoid } from 'nanoid';
 import prisma from '../../infrastructure/database/prisma.client';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
-import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
+import { getCompanyTreeTenantIds, getPersonnelTenantScope } from '../controllers/serviceTenantScope';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
 import { clearPermissionCacheForRole } from '../../infrastructure/repositories/RoleRepository';
@@ -263,6 +263,7 @@ router.get('/', requireAuth, requirePermission('roles.manage'), async (req, res)
     try {
         const tenantId = req.user!.tenantId;
         const treeTenantIds = await getCompanyTreeTenantIds(tenantId);
+        const scopeTenantIds = await getPersonnelTenantScope(tenantId);
         const rootTenantId = (await findTenantRootIdCached(tenantId)) ?? tenantId;
         await ensureSystemAdminRole(rootTenantId, treeTenantIds);
         await ensurePurserRole(rootTenantId, treeTenantIds);
@@ -276,8 +277,13 @@ router.get('/', requireAuth, requirePermission('roles.manage'), async (req, res)
                 pageLevels: true,
                 isSystemAdmin: true,
                 isPurser: true,
+                canSwitchTenant: true,
                 permissions: { select: { permission: { select: { permissionName: true } } } },
-                _count: { select: { employees: true } },
+                /* Die Rolle ist baumweit, die KOPFZAHL nicht: gezählt wird, wer
+                   sie in der ausgewählten Firma trägt. Sonst stünde auf der
+                   Berechtigungsseite einer Untergesellschaft die Mannschaft
+                   der Schwesterfirmen mit drin. */
+                _count: { select: { employees: { where: { employee: { tenantId: { in: scopeTenantIds } } } } } },
             } as any,
         }) as any[];
 
@@ -286,6 +292,10 @@ router.get('/', requireAuth, requirePermission('roles.manage'), async (req, res)
             roleName: role.roleName,
             isSystemAdmin: Boolean(role.isSystemAdmin),
             isPurser: Boolean(role.isPurser),
+            /* Die Administratorrolle traegt den Firmenwechsel IMMER — sie ist
+               fest und soll ihn sich nicht abwaehlen koennen. Deshalb steht
+               hier das abgeleitete Ja, nicht die rohe Spalte. */
+            canSwitchTenant: Boolean(role.isSystemAdmin || role.canSwitchTenant),
             userCount: role._count?.employees ?? 0,
             pageLevels: resolvePageLevels(
                 role,
@@ -341,8 +351,9 @@ router.post('/', requireAuth, requirePermission('roles.manage'), async (req, res
         if (duplicate) return res.status(400).json({ error: 'Eine Rolle mit diesem Namen besteht bereits.' });
 
         const pageLevels = sanitizePageLevels(req.body?.pageLevels);
+        const canSwitchTenant = req.body?.canSwitchTenant === true;
         const role = await prisma.role.create({
-            data: { id: nanoid(8), tenantId: rootTenantId, roleName, pageLevels } as any,
+            data: { id: nanoid(8), tenantId: rootTenantId, roleName, pageLevels, canSwitchTenant } as any,
             select: { id: true, roleName: true },
         });
         await syncRolePermissions(role.id, permissionsForPageLevels(pageLevels));
@@ -357,7 +368,7 @@ router.post('/', requireAuth, requirePermission('roles.manage'), async (req, res
             ...auditLog.context(req),
         });
 
-        res.status(201).json({ id: role.id, roleName: role.roleName, isSystemAdmin: false, userCount: 0, pageLevels });
+        res.status(201).json({ id: role.id, roleName: role.roleName, isSystemAdmin: false, canSwitchTenant, userCount: 0, pageLevels });
     } catch (error: any) {
         res.status(400).json({ error: error.message });
     }
@@ -372,7 +383,7 @@ router.put('/:id', requireAuth, requirePermission('roles.manage'), async (req, r
         const treeTenantIds = await getCompanyTreeTenantIds(user.tenantId);
         const existing = await prisma.role.findFirst({
             where: { id, tenantId: { in: treeTenantIds } },
-            select: { id: true, roleName: true, isSystemAdmin: true, isPurser: true } as any,
+            select: { id: true, roleName: true, isSystemAdmin: true, isPurser: true, canSwitchTenant: true } as any,
         }) as any;
         if (!existing) return res.status(404).json({ error: 'Rolle nicht gefunden.' });
         if (existing.isSystemAdmin) {
@@ -427,13 +438,28 @@ router.put('/:id', requireAuth, requirePermission('roles.manage'), async (req, r
             data.pageLevels = pageLevels;
         }
 
+        /* DER FIRMENWECHSEL (31.08.2026, Vorgabe): eine eigene Flagge neben der
+           Stufenkarte, weil er keine SEITE ist — er entscheidet, wie weit der
+           Umschalter im Kopf reicht, nicht was jemand oeffnen darf. Gedacht fuer
+           die Verwaltung und die Projektleitung; die Administratorrolle kommt
+           hier ohnehin nicht vorbei (403 weiter oben). */
+        const canSwitchTenant = req.body?.canSwitchTenant === undefined
+            ? undefined
+            : req.body.canSwitchTenant === true;
+        const switchChanged = canSwitchTenant !== undefined
+            && canSwitchTenant !== Boolean(existing.canSwitchTenant);
+        if (switchChanged) data.canSwitchTenant = canSwitchTenant;
+
         if (Object.keys(data).length) await prisma.role.update({ where: { id }, data: data as any });
 
         if (pageLevels) {
             await syncRolePermissions(id, permissionsForPageLevels(pageLevels));
             await syncRoleModuleConfigs(id, treeTenantIds, moduleKeysForPageLevels(pageLevels));
+        }
+        if (pageLevels || switchChanged) {
             // Die Rechte der Trägerinnen und Träger stehen im Cache — ohne das
-            // Leeren griffe die neue Stufe erst nach Ablauf der TTL.
+            // Leeren griffe die neue Stufe erst nach Ablauf der TTL. Dasselbe
+            // gilt für den entzogenen Firmenwechsel, der am selben Cache hängt.
             await clearPermissionCacheForRole(id);
         }
 
@@ -450,6 +476,7 @@ router.put('/:id', requireAuth, requirePermission('roles.manage'), async (req, r
             id,
             roleName: (data.roleName as string) ?? existing.roleName,
             isSystemAdmin: false,
+            canSwitchTenant: canSwitchTenant ?? Boolean(existing.canSwitchTenant),
             pageLevels: pageLevels ?? undefined,
         });
     } catch (error: any) {

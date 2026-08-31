@@ -34,50 +34,72 @@ model OspSetting {
 /// ⚠ OSP-Zeilen legen NIE Artikel oder Bestand an: der Import erzeugt eine
 /// Offerte mit reinen Textpositionen (rowType CUSTOM) — nur für diese Offerte.
 model OspDocument {
-  id                 String    @id
+  id                  String    @id
   /// Wurzel-Mandant (Eigentümer des Feeds) — siehe OspSetting.
-  tenantId           String
+  tenantId            String
   /// Volle Belegreferenz "4820193-57" — Schlüssel jeder Statusmeldung.
-  reference          String
+  reference           String
   /// Die 7-stellige Projektnummer (linke Hälfte der Referenz).
-  projectNumber      String
+  projectNumber       String
   /// Dokument-Id (rechte Hälfte) — OSP-weit eindeutig.
-  documentId         String?
-  projectName        String    @default("")
+  documentId          String?
+  projectName         String    @default("")
   /// Anfragende Person (OSP-Konto) — wird beim Import als manueller Kunde
   /// vorgeschlagen, aber NIE als CRM-Kunde gespeichert.
-  requesterFirstName String?
-  requesterLastName  String?
-  requesterEmail     String?
+  requesterFirstName  String?
+  requesterLastName   String?
+  requesterEmail      String?
   /// Firma des anfragenden OSP-Kontos. Bei user-Konten ist dies der
   /// vorgeschlagene Kundenname der Offerte, nicht der Personenname.
-  company            String?
-  /// Adressblock der anfragenden Person, sofern die OSP ihn mitschickt.
-  country            String?
-  city               String?
-  address            String?   @db.Text
-  postalCode         String?
+  company             String?
+  /// Rufnummer FÜR DIESES PROJEKT (Vertrag §1 `phone`) — nicht zwingend die
+  /// des OSP-Kontos.
+  phone               String?
+  /// Adressblock des AUFTRAGS, nicht des Kontos: die anfragende Person darf
+  /// eine Anlage in einem Land offerieren, in dem sie nicht wohnt (§1).
+  /// `address` ist die Projektadresse (Vertrag `projectAddress`); Liefer- und
+  /// Rechnungsadresse kommen bereits aufgelöst an — wo die Person "gleich wie
+  /// Projekt" gewählt hat, wiederholen sie die Projektadresse schlicht.
+  country             String?
+  city                String?
+  address             String?   @db.Text
+  shippingAddress     String?   @db.Text
+  billingAddress      String?   @db.Text
+  postalCode          String?
   /// OSP-Kontotyp ("user" | "admin").
-  userType           String?
+  userType            String?
   /// "chiller" | "heat pump" | "dry cooler".
-  category           String?
+  category            String?
   /// "air to water" | "water to water".
-  unitType           String?
-  model              String?
+  unitType            String?
+  model               String?
   /// created_at aus der OSP (Projektanlage drüben).
-  ospCreatedAt       DateTime?
+  ospCreatedAt        DateTime?
   /// Unser Bearbeitungsstand: LISTED → IN_OFFER → SENT → APPROVED.
-  /// IN_OFFER meldet der OSP "under review", SENT "offer has been sent";
-  /// LISTED und APPROVED bleiben intern.
-  status             String    @default("LISTED")
+  /// Er wird NIE von Hand gesetzt, sondern folgt der Arbeit (§ "Required
+  /// workflow"): eine Anfrage ohne Verkäufer:in ist LISTED ("Gelistet"), mit
+  /// gewählter Verkäufer:in IN_OFFER ("Verkäufer zugewiesen", drüben "under
+  /// review"), und sobald die Angebotsmail hinaus ist SENT ("Gesendet",
+  /// drüben "offer has been sent"). APPROVED bleibt intern. WITHDRAWN steht daneben: die
+  /// anfragende Person hat die Anfrage drüben zurückgezogen (§1b).
+  status              String    @default("LISTED")
   /// Verkäufer:in — aus dem Personalverzeichnis gewählt; die E-Mail ist das,
   /// was die OSP als salesmanEmail sieht.
-  salespersonId      String?
-  salespersonEmail   String?
-  salespersonName    String?
-  /// Projektleiter:in — dieselbe Auswahl, aber eine EIGENE Zuständigkeit:
-  /// beide werden direkt gewählt (früher eine Person mit umschaltbarer Rolle).
-  /// Rein intern; an die OSP geht ausschliesslich die Verkäufer-E-Mail.
+  salespersonId       String?
+  salespersonEmail    String?
+  salespersonName     String?
+  /// Das §3-"salesman"-Objekt, wie es gemeldet wird: { email, name, surname,
+  /// phone }. Hat die Adresse drüben KEIN OSP-Konto, ist genau das die
+  /// Visitenkarte, die die anfragende Person zu sehen bekommt — sonst sähe
+  /// sie eine nackte E-Mail-Adresse. Als Ganzes abgelegt, weil der Vertrag
+  /// das Objekt als Ganzes verlangt (und später ein Bild dazukommen darf).
+  salespersonProfile  Json?
+  /// VERALTET (19.09.2026): die Projektleitung war eine zweite, rein interne
+  /// Zuständigkeit an der Anfrage. Gemeldet wurde sie nie, und gewählt wird
+  /// jetzt nur noch die Verkäuferin/der Verkäufer — die eine Person, die die
+  /// Offerte macht. Die Spalten bleiben stehen wie `salespersonRole`: sie
+  /// werden nicht mehr geschrieben und nicht mehr gelesen, damit alte Zeilen
+  /// behalten, was einmal an ihnen stand.
   projectManagerId    String?
   projectManagerEmail String?
   projectManagerName  String?
@@ -85,36 +107,58 @@ model OspDocument {
   /// geschrieben und nicht mehr gelesen — die Spalte bleibt nur stehen, damit
   /// alte Zeilen ihren Ursprung behalten (die Migration hat PROJECT_MANAGER-
   /// Zeilen bereits nach projectManager* umgehängt).
-  salespersonRole    String    @default("SALES")
+  salespersonRole     String    @default("SALES")
   /// Die aus dem Import entstandene Offerte (Belegspalte der Liste).
-  tenderId           String?
-  tenderNumber       String?
+  tenderId            String?
+  tenderNumber        String?
   /// ── DATENBLATT (07.09.2026) ───────────────────────────────────────────
   /// Die OSP schickt im Webhook die Adresse des ECHTEN Datenblatt-PDF der
   /// Einheit — nicht den Link auf die Offerte drüben. Die Datei wird einmal
   /// geholt und liegt danach bei uns (LocalFileStorage-Verweis), damit sie
   /// auch dann noch da ist, wenn die OSP-Adresse abläuft.
-  datasheetUrl       String?   @db.Text
-  datasheetFile      String?
-  datasheetFetchedAt DateTime?
+  datasheetUrl        String?   @db.Text
+  datasheetFile       String?
+  datasheetFetchedAt  DateTime?
   /// Warum das Holen bzw. Auslesen scheiterte — steht an der Zeile, wie bei
   /// den Statusmeldungen auch.
-  datasheetError     String?   @db.Text
+  datasheetError      String?   @db.Text
   /// Die aus dem PDF gelesenen Angaben (Leistung, COP, Medium, Technologie,
   /// Schalldruck, Abmessungen, Gewicht). Sie füllen das Import-Fenster vor —
   /// getippt wird nur noch, was das Datenblatt nicht hergibt.
-  datasheetSpecs     Json?
+  datasheetSpecs      Json?
   /// Der unveränderte Webhook-Eintrag. Die OSP schickt mehr Felder, als der
   /// Vertrag beschreibt (company, city, userType …); ohne diese Kopie ist
   /// hinterher nicht mehr feststellbar, was tatsächlich geliefert wurde.
-  rawPayload         Json?
+  rawPayload          Json?
+  /// ── ZURÜCKGEZOGEN (§1b) ───────────────────────────────────────────────
+  /// Die anfragende Person nimmt ihre Anfrage im OSP zurück. Die OSP räumt
+  /// ihre Seite ZUERST und bedingungslos ab; wir bekommen nur noch Bescheid.
+  /// Gelöscht wird bei uns nichts — die Zeile behält Offerte und Datenblatt
+  /// und wechselt auf WITHDRAWN, damit niemand weiterarbeitet.
+  withdrawnAt         DateTime?
+  withdrawnByName     String?
+  withdrawnByEmail    String?
+  /// Der Stand, in dem die Anfrage zurückgezogen wurde ("offer request sent"
+  /// oder "under review" — nie "offer has been sent").
+  withdrawnFromStatus String?
+  /// ── ÜBERARBEITET (§1a) ────────────────────────────────────────────────
+  /// Dieselbe Anfrage kommt neu berechnet noch einmal. Die OSP setzt drüben
+  /// auf "created" zurück (Verkäufer:in bleibt); hier bleibt der Stand, aber
+  /// die Zeile sagt sichtbar, dass die Einheit sich geändert hat.
+  revisedAt           DateTime?
+  revisionCount       Int       @default(0)
+  /// Wann die Überarbeitung an der OFFERTE zur Kenntnis genommen wurde. Die
+  /// Offerte warnt, solange `revisedAt` jünger ist als dieser Stempel — das
+  /// alte Datenblatt gilt dann nicht mehr, und niemand soll aus ihm heraus
+  /// weiterofferieren, ohne es gesehen zu haben.
+  revisionSeenAt      DateTime?
   /// Letzte erfolgreich an die OSP gemeldete Statusform (created/under
   /// review/offer has been sent) + Zeitpunkt/Fehler der letzten Meldung.
-  lastReportedStatus String?
-  lastReportAt       DateTime?
-  lastReportError    String?   @db.Text
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  lastReportedStatus  String?
+  lastReportAt        DateTime?
+  lastReportError     String?   @db.Text
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@unique([tenantId, reference])
   @@index([tenantId, status, createdAt])

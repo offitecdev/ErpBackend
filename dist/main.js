@@ -99,6 +99,7 @@ const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashbo
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const ReminderEngine_1 = require("./infrastructure/services/ReminderEngine");
 const ImapCaptureService_1 = require("./infrastructure/services/ImapCaptureService");
+const caldavCalendarService_1 = require("./infrastructure/services/caldavCalendarService");
 const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
 const prisma_client_1 = __importDefault(require("./infrastructure/database/prisma.client"));
 const app = (0, express_1.default)();
@@ -236,6 +237,10 @@ app.listen(PORT, () => {
     (0, MaintenanceReminderService_1.startMaintenanceReminderService)();
     (0, ReminderEngine_1.startReminderEngine)();
     (0, ImapCaptureService_1.startImapCaptureService)();
+    // Der Kalender des Kontos (CalDAV) hat seinen eigenen Zeitplan: er
+    // liest keine Lesestände fort, sondern jedes Mal den ganzen Zeitraum,
+    // und darf deshalb seltener und unabhängig laufen.
+    (0, caldavCalendarService_1.startCaldavCaptureService)();
     // Open the remote-DB connection pool now instead of on the first request,
     // which otherwise pays the connection handshakes itself. Several parallel
     // probes force several pool connections open: batch saves fire their

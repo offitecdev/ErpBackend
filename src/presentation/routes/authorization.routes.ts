@@ -6,7 +6,7 @@ import { EmployeeRepository } from '../../infrastructure/repositories/EmployeeRe
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
 import { BcryptCryptoService } from '../../infrastructure/services/BcryptCryptoService';
 import { assertPasswordPolicy } from '../../application/validation/password';
-import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
+import { getCompanyTreeTenantIds, getPersonnelTenantScope, getAssignableTenantIds, employeeScopeWhere } from '../controllers/serviceTenantScope';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { parseAllowedTenantIds } from '../utils/tenantAccess';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
@@ -39,19 +39,24 @@ router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'),
     try {
         const user = req.user!;
         const id = String(req.params.id || '');
+        // Rollen sind baumweit (sie werden am Stamm gebaut); die PERSON gehört
+        // dagegen nur der ausgewählten Firma — eine Person der Schwesterfirma
+        // ist von hier aus unsichtbar und antwortet 404.
         const treeTenantIds = await getCompanyTreeTenantIds(user.tenantId);
+        const scopeTenantIds = await getPersonnelTenantScope(user.tenantId);
         const rootTenantId = (await findTenantRootIdCached(user.tenantId)) ?? user.tenantId;
         await ensureSystemAdminRole(rootTenantId, treeTenantIds);
 
         const [employee, roles] = await Promise.all([
             prisma.employee.findFirst({
-                where: { id, tenantId: { in: treeTenantIds }, deletedAt: null },
+                where: { id, ...employeeScopeWhere(scopeTenantIds), deletedAt: null },
                 select: {
                     id: true,
                     firstName: true,
                     lastName: true,
                     email: true,
                     isActive: true,
+                    tenantId: true,
                     allowedTenantIds: true,
                     employeeRoles: { take: 1, select: { roleId: true } },
                 },
@@ -64,6 +69,7 @@ router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'),
                     roleName: true,
                     pageLevels: true,
                     isSystemAdmin: true,
+                    canSwitchTenant: true,
                     permissions: { select: { permission: { select: { permissionName: true } } } },
                 } as any,
             }) as any,
@@ -74,9 +80,31 @@ router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'),
             id: role.id,
             roleName: role.roleName,
             isSystemAdmin: Boolean(role.isSystemAdmin),
+            /* Damit die Verwaltung auf DIESER Seite sieht, was die Rolle zur
+               Firmenauswahl beitraegt: eine Rolle mit Firmenwechsel oeffnet die
+               ganze eigene Gruppe, auch ohne einen Haken unten. Sonst haekelt
+               jemand drei Firmen an und wundert sich, dass fuenf erscheinen. */
+            canSwitchTenant: Boolean(role.isSystemAdmin || role.canSwitchTenant),
             pageLevels: resolvePageLevels(role, role.permissions.map((e: any) => e.permission.permissionName)),
         }));
         options.sort((a, b) => Number(b.isSystemAdmin) - Number(a.isSystemAdmin));
+
+        /* Die Firmenauswahl dieser Seite kommt NICHT aus dem Firmenumschalter
+           (der zeigt nur die zugeteilten Firmen — damit liesse sich nie eine
+           weitere zuteilen), sondern aus `getAssignableTenantIds`: seit dem
+           31.08.2026 JEDE aktive Firma, Untergesellschaft oder nicht. Die
+           Vorgabe lautet, dass die Verwaltung hier sieht, was ueberhaupt in der
+           Liste steht, und die Auswahl ausdruecklich trifft. */
+        const assignableTenantIds = await getAssignableTenantIds(user.tenantId, user.homeTenantId);
+        const companies = (await prisma.tenant.findMany({
+            where: { id: { in: assignableTenantIds } },
+            select: { id: true, tenantName: true, parentTenantId: true },
+            orderBy: { tenantName: 'asc' },
+        })).sort((a, b) => {
+            if (!a.parentTenantId && b.parentTenantId) return -1;
+            if (a.parentTenantId && !b.parentTenantId) return 1;
+            return a.tenantName.localeCompare(b.tenantName, 'de');
+        });
 
         const roleId = employee.employeeRoles[0]?.roleId ?? null;
         res.status(200).json({
@@ -85,7 +113,11 @@ router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'),
             lastName: employee.lastName,
             email: employee.email,
             isActive: employee.isActive,
+            // Die Firma, unter der die Person angelegt wurde: ohne eigene
+            // Zuteilung ist genau das ihre einzige Firma.
+            homeTenantId: employee.tenantId,
             allowedTenantIds: Array.isArray(employee.allowedTenantIds) ? employee.allowedTenantIds : null,
+            companies,
             roleId,
             roles: options,
         });
@@ -105,9 +137,10 @@ router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'),
     try {
         const user = req.user!;
         const id = String(req.params.id || '');
+        // Person: nur die ausgewählte Firma. Rollen: baumweit (siehe GET).
         const treeTenantIds = await getCompanyTreeTenantIds(user.tenantId);
         const employee = await prisma.employee.findFirst({
-            where: { id, tenantId: { in: treeTenantIds }, deletedAt: null },
+            where: { id, ...employeeScopeWhere(await getPersonnelTenantScope(user.tenantId)), deletedAt: null },
             select: { id: true, email: true },
         });
         if (!employee) return res.status(404).json({ error: 'Person nicht gefunden.' });
@@ -155,8 +188,13 @@ router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'),
         if (req.body?.allowedTenantIds !== undefined) {
             const wanted = parseAllowedTenantIds(req.body.allowedTenantIds);
             if (wanted) {
-                const outside = wanted.filter((tenantId) => !treeTenantIds.includes(tenantId));
-                if (outside.length) return res.status(400).json({ error: 'Eine der gewählten Firmen gehört nicht zu diesem Firmenbaum.' });
+                // Nur der eigene Teilbaum — dieselbe Menge, die die Fläche
+                // anbietet. Eine Untergesellschaft kann so keinen Zugang zu
+                // einer Schwesterfirma verteilen, auch nicht mit einer von
+                // Hand gesetzten Id.
+                const assignable = await getAssignableTenantIds(user.tenantId, user.homeTenantId);
+                const outside = wanted.filter((tenantId) => !assignable.includes(tenantId));
+                if (outside.length) return res.status(400).json({ error: 'Eine der gewählten Firmen steht Ihnen nicht zur Verfügung.' });
             }
             patch.allowedTenantIds = wanted;
         }

@@ -6,6 +6,30 @@ import { ITenderRepository, ITenderFilter, TenderListItem, TenderListRow } from 
 import { Tender } from "../../domain/entities/Tender";
 import { formatCustomerAddress } from "../../application/utils/customerAddress";
 import { nanoid } from "nanoid";
+import { nextDocumentNumber } from "../../shared/documentNumber";
+
+/**
+ * Der Transaktions-Client, wie ihn `prisma.$transaction` hier tatsaechlich
+ * liefert. `Prisma.TransactionClient` passt nicht: der Client traegt den
+ * MariaDB-Adapter, also wird der Typ aus dem Aufruf selbst abgeleitet.
+ */
+type TenderTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+/**
+ * Gueltigkeitsdatum einer KOPIE: ein noch laufendes Datum wird uebernommen, ein
+ * abgelaufenes auf einen Monat ab heute gesetzt — genau die Frist, die eine neu
+ * angelegte Offerte bekommt. Ohne das kaeme die frische Kopie als "Abgelaufen"
+ * auf die Welt (isExpiredTender liest validUntil). Ohne Datum bleibt es leer.
+ */
+const copiedValidUntil = (validUntil: Date | null): Date | null => {
+    if (!validUntil) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (validUntil.getTime() >= today.getTime()) return validUntil;
+    const refreshed = new Date();
+    refreshed.setMonth(refreshed.getMonth() + 1);
+    return refreshed;
+};
 
 // Liste tablosunun çizdiği kolonlar artık `findLeanList` içindeki tek ham
 // sorguda seçiliyor. Tam gövdedeki coverLetter / closingNote / closingImages
@@ -185,6 +209,13 @@ export class TenderRepository implements ITenderRepository {
                     e.lastName AS creatorLastName,
                     e.email AS creatorEmail,
                     (SELECT COUNT(*) FROM Position p WHERE p.tenderId = t.id) AS positionCount,
+                    /* Herkunft aus der OSP — als Unterabfragen, NICHT als JOIN:
+                       ein JOIN könnte eine Offerte doppeln, wenn je zwei
+                       OSP-Zeilen auf sie zeigten, und die Sayım-Abfrage daneben
+                       müsste er mitmachen, um dieselbe Menge zu sehen. */
+                    (SELECT o.reference FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospReference,
+                    (SELECT o.revisedAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisedAt,
+                    (SELECT o.revisionSeenAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisionSeenAt,
                     (
                         SELECT COALESCE(SUM(
                             CASE
@@ -235,6 +266,9 @@ export class TenderRepository implements ITenderRepository {
             commissionNumber: row.commissionNumber ?? null,
             positionCount: Number(row.positionCount ?? 0),
             grandTotal: Number(row.grandTotal ?? 0),
+            ospReference: row.ospReference ?? null,
+            ospRevisedAt: row.ospRevisedAt ?? null,
+            ospRevisionSeenAt: row.ospRevisionSeenAt ?? null,
         }));
 
         return { items, total: Number(countRows[0]?.total ?? 0) };
@@ -594,7 +628,194 @@ export class TenderRepository implements ITenderRepository {
         return this.mapToEntity(data);
     }
 
-    async createNextVersion(tenderId: string, newCreatedBy: string, tenantId: string): Promise<Tender> {
+    /**
+     * Kopf- und Positionsdaten einer Offerte in eine NEUE Offerte schreiben.
+     *
+     * Zwei Wege teilen sich diesen Rumpf: die neue VERSION (gleiche AN-Nummer,
+     * Version + 1) und die KOPIE (frische AN-Nummer, Version 1). Alles, was die
+     * beiden trennt, kommt ueber `overrides` herein; der Feldkatalog steht nur
+     * einmal da, damit eine neue Spalte nicht in einem der beiden Wege
+     * vergessen wird.
+     */
+    private async copyTenderRecord(
+        tx: TenderTx,
+        existingTender: any,
+        newTenderId: string,
+        overrides: {
+            tenderNumber: string;
+            version: number;
+            createdByEmployeeId: string;
+            /** Kopie: null — sie haengt an keinem Projekt und keinem Auftrag. */
+            projectId: string | null;
+            sourceStatus: string | null;
+            validUntil: Date | null;
+        },
+    ) {
+        const createdTender = await tx.tender.create({
+            data: {
+                id: newTenderId,
+                tenantId: existingTender.tenantId,
+                customerId: existingTender.customerId,
+                tenderNumber: overrides.tenderNumber,
+                version: overrides.version,
+                format: existingTender.format,
+                status: 'Draft',
+                createdByEmployeeId: overrides.createdByEmployeeId,
+                validUntil: overrides.validUntil,
+                sourceCreatedAt: existingTender.sourceCreatedAt,
+                orderDate: existingTender.orderDate,
+                billingAddress: existingTender.billingAddress,
+                installationAddress: existingTender.installationAddress,
+                deliveryAddress: existingTender.deliveryAddress,
+                billingSameAsInstallation: existingTender.billingSameAsInstallation,
+                directDiscount: existingTender.directDiscount,
+                directDiscountLabel: existingTender.directDiscountLabel,
+                extraDiscount: existingTender.extraDiscount,
+                extraDiscountLabel: existingTender.extraDiscountLabel,
+                totalDiscounts: existingTender.totalDiscounts,
+                paymentStages: existingTender.paymentStages,
+                internalDeliveryDate: existingTender.internalDeliveryDate,
+                priceList: existingTender.priceList,
+                paymentTerms: existingTender.paymentTerms,
+                commissionNumber: existingTender.commissionNumber,
+                customerReference: existingTender.customerReference,
+                currency: existingTender.currency,
+                salespersonName: existingTender.salespersonName,
+                // Eine Offerte kann OHNE CRM-Kunden leben (OSP-Import): dann
+                // steht der Empfaenger in diesen drei Feldern. Ohne sie kaeme
+                // die Kopie ohne Kunden auf die Welt.
+                manualCustomerName: existingTender.manualCustomerName,
+                manualCustomerEmail: existingTender.manualCustomerEmail,
+                manualCustomerAddress: existingTender.manualCustomerAddress,
+                // Json-Spalte: `null` verlangt bei Prisma Prisma.DbNull, also
+                // wird das Feld bei leerer CC-Liste schlicht weggelassen.
+                ccEmails: existingTender.ccEmails ?? undefined,
+                sourceStatus: overrides.sourceStatus,
+                sourceCompany: existingTender.sourceCompany,
+                shippingTerms: existingTender.shippingTerms,
+                shippingWeight: existingTender.shippingWeight,
+                fiscalPosition: existingTender.fiscalPosition,
+                salesTeam: existingTender.salesTeam,
+                onlineSignature: existingTender.onlineSignature,
+                onlinePayment: existingTender.onlinePayment,
+                coverLetter: existingTender.coverLetter,
+                closingNote: existingTender.closingNote,
+                closingImages: existingTender.closingImages,
+                sourceTotal: existingTender.sourceTotal,
+                sourceNetAmount: existingTender.sourceNetAmount,
+                sourceTaxAmount: existingTender.sourceTaxAmount,
+                sourceRecurringTotal: existingTender.sourceRecurringTotal,
+                sourceMargin: existingTender.sourceMargin,
+                projectId: overrides.projectId,
+            }
+        });
+
+        // Der Positionsbaum wird als Ganzes gespiegelt: erst fuer jede Zeile
+        // eine neue Id reservieren, damit `parentPositionId` beim Schreiben
+        // schon auf die KOPIE zeigt und nicht auf das Original.
+        const idMapping = new Map<string, string>();
+        for (const pos of existingTender.positions) {
+            idMapping.set(pos.id, nanoid(10));
+        }
+
+        // Drei Sammel-Inserts statt drei pro Zeile: die Datenbank steht
+        // entfernt, und eine Offerte mit 200 Zeilen haette sonst 600
+        // Netzwerkrunden INNERHALB der Transaktion gebraucht (deren
+        // Standardfrist 5 s betraegt).
+        const positionRows: Prisma.PositionCreateManyInput[] = [];
+        const calculationRows: Prisma.CalculationItemCreateManyInput[] = [];
+        const mappingRows: Prisma.PositionArticleMappingCreateManyInput[] = [];
+
+        for (const pos of existingTender.positions) {
+            const newPosId = idMapping.get(pos.id)!;
+            const newParentId = pos.parentPositionId ? idMapping.get(pos.parentPositionId) || null : null;
+
+            positionRows.push({
+                id: newPosId,
+                tenantId: pos.tenantId,
+                tenderId: newTenderId,
+                parentPositionId: newParentId,
+                rowType: pos.rowType || 'SECTION',
+                sourceArticleId: pos.sourceArticleId || null,
+                displayOrder: pos.displayOrder ?? 0,
+                npkCode: pos.npkCode || null,
+                positionNumber: pos.positionNumber,
+                shortDescription: pos.shortDescription,
+                longDescription: pos.longDescription || null,
+                quantity: pos.quantity,
+                unit: pos.unit || null,
+                hierarchyLevel: pos.hierarchyLevel,
+                unitPrice: pos.unitPrice,
+                discount: pos.discount,
+                discounts: pos.discounts,
+                taxRate: pos.taxRate,
+                imageUrl: pos.imageUrl,
+            });
+
+            if (pos.calculation) {
+                calculationRows.push({
+                    id: nanoid(8),
+                    positionId: newPosId,
+                    materialCost: pos.calculation.materialCost,
+                    laborCost: pos.calculation.laborCost,
+                    overheadCost: pos.calculation.overheadCost,
+                    riskAmount: pos.calculation.riskAmount,
+                    additionalCost: pos.calculation.additionalCost || 0,
+                    profitMargin: pos.calculation.profitMargin,
+                    totalCalculatedPrice: pos.calculation.totalCalculatedPrice,
+                });
+            }
+
+            for (const mapping of pos.articleMappings || []) {
+                mappingRows.push({
+                    id: nanoid(10),
+                    positionId: newPosId,
+                    articleId: mapping.articleId,
+                    quantityMultiplier: mapping.quantityMultiplier,
+                    discount: mapping.discount ?? 0,
+                });
+            }
+        }
+
+        // InnoDB prueft den Selbstbezug `parentPositionId` sofort, Zeile fuer
+        // Zeile — in EINER Sammel-Einfuegung muessen Eltern also VOR ihren
+        // Kindern stehen. Die Reihenfolge, in der die Zeilen aus der Datenbank
+        // kommen, garantiert das nicht, deshalb der Baumdurchlauf.
+        const orderedPositionRows: Prisma.PositionCreateManyInput[] = [];
+        const rowsByParent = new Map<string | null, Prisma.PositionCreateManyInput[]>();
+        for (const row of positionRows) {
+            const parentKey = (row.parentPositionId as string | null) ?? null;
+            const bucket = rowsByParent.get(parentKey);
+            if (bucket) bucket.push(row);
+            else rowsByParent.set(parentKey, [row]);
+        }
+        const emitChildrenOf = (parentId: string | null) => {
+            for (const row of rowsByParent.get(parentId) || []) {
+                orderedPositionRows.push(row);
+                emitChildrenOf(row.id as string);
+            }
+        };
+        emitChildrenOf(null);
+        // Sicherheitsnetz: haenge alles an, was der Durchlauf nicht erreicht hat
+        // (ein Zyklus in den Altdaten), damit keine Zeile verloren geht.
+        if (orderedPositionRows.length < positionRows.length) {
+            const emitted = new Set(orderedPositionRows.map((row) => row.id));
+            for (const row of positionRows) {
+                if (!emitted.has(row.id)) orderedPositionRows.push(row);
+            }
+        }
+
+        // Reihenfolge ist Pflicht: Kalkulation und Artikelzuordnung haengen als
+        // Fremdschluessel an der Position.
+        if (orderedPositionRows.length) await tx.position.createMany({ data: orderedPositionRows });
+        if (calculationRows.length) await tx.calculationItem.createMany({ data: calculationRows });
+        if (mappingRows.length) await tx.positionArticleMapping.createMany({ data: mappingRows });
+
+        return createdTender;
+    }
+
+    /** Die zu kopierende Offerte samt vollem Positionsbaum. */
+    private async findTenderForCopy(tenderId: string, tenantId: string) {
         const existingTender = await prisma.tender.findFirst({
             where: { id: tenderId, tenantId },
             include: {
@@ -606,130 +827,51 @@ export class TenderRepository implements ITenderRepository {
                 }
             }
         });
-
         if (!existingTender) throw new Error("Kopyalanacak teklif bulunamadı.");
+        return existingTender;
+    }
 
-        const newTenderId = nanoid(10);
-        const newVersion = existingTender.version + 1;
+    async createNextVersion(tenderId: string, newCreatedBy: string, tenantId: string): Promise<Tender> {
+        const existingTender = await this.findTenderForCopy(tenderId, tenantId);
+
+        const result = await prisma.$transaction(async (tx) =>
+            this.copyTenderRecord(tx, existingTender, nanoid(10), {
+                // Alle Versionen einer Offerte teilen sich dieselbe AN-Nummer;
+                // nur der Zaehler dahinter steigt.
+                tenderNumber: existingTender.tenderNumber,
+                version: existingTender.version + 1,
+                createdByEmployeeId: newCreatedBy,
+                projectId: existingTender.projectId,
+                sourceStatus: (existingTender as any).sourceStatus,
+                validUntil: existingTender.validUntil,
+            }));
+
+        return this.mapToEntity(result);
+    }
+
+    /**
+     * Offerte KOPIEREN — dieselben Daten, aber ein EIGENER Beleg: frische
+     * AN-Nummer, Version 1, Entwurf. (Die neue Version behaelt dagegen die
+     * Nummer und zaehlt nur die Version hoch.)
+     */
+    async duplicate(tenderId: string, newCreatedBy: string, tenantId: string): Promise<Tender> {
+        const existingTender = await this.findTenderForCopy(tenderId, tenantId);
 
         const result = await prisma.$transaction(async (tx) => {
-            const createdTender = await tx.tender.create({
-                data: {
-                    id: newTenderId,
-                    tenantId: existingTender.tenantId,
-                    customerId: existingTender.customerId,
-                    tenderNumber: existingTender.tenderNumber,
-                    version: newVersion,
-                    format: existingTender.format,
-                    status: 'Draft',
-                    createdByEmployeeId: newCreatedBy,
-                    validUntil: existingTender.validUntil,
-                    sourceCreatedAt: (existingTender as any).sourceCreatedAt,
-                    orderDate: (existingTender as any).orderDate,
-                    billingAddress: (existingTender as any).billingAddress,
-                    installationAddress: (existingTender as any).installationAddress,
-                    deliveryAddress: (existingTender as any).deliveryAddress,
-                    billingSameAsInstallation: (existingTender as any).billingSameAsInstallation,
-                    directDiscount: (existingTender as any).directDiscount,
-                    directDiscountLabel: (existingTender as any).directDiscountLabel,
-                    extraDiscount: (existingTender as any).extraDiscount,
-                    extraDiscountLabel: (existingTender as any).extraDiscountLabel,
-                    totalDiscounts: (existingTender as any).totalDiscounts,
-                    paymentStages: (existingTender as any).paymentStages,
-                    internalDeliveryDate: (existingTender as any).internalDeliveryDate,
-                    priceList: (existingTender as any).priceList,
-                    paymentTerms: (existingTender as any).paymentTerms,
-                    commissionNumber: (existingTender as any).commissionNumber,
-                    customerReference: (existingTender as any).customerReference,
-                    currency: (existingTender as any).currency,
-                    salespersonName: (existingTender as any).salespersonName,
-                    sourceStatus: (existingTender as any).sourceStatus,
-                    sourceCompany: (existingTender as any).sourceCompany,
-                    shippingTerms: (existingTender as any).shippingTerms,
-                    shippingWeight: (existingTender as any).shippingWeight,
-                    fiscalPosition: (existingTender as any).fiscalPosition,
-                    salesTeam: (existingTender as any).salesTeam,
-                    onlineSignature: (existingTender as any).onlineSignature,
-                    onlinePayment: (existingTender as any).onlinePayment,
-                    coverLetter: (existingTender as any).coverLetter,
-                    closingNote: (existingTender as any).closingNote,
-                    closingImages: (existingTender as any).closingImages,
-                    sourceTotal: (existingTender as any).sourceTotal,
-                    sourceNetAmount: (existingTender as any).sourceNetAmount,
-                    sourceTaxAmount: (existingTender as any).sourceTaxAmount,
-                    sourceRecurringTotal: (existingTender as any).sourceRecurringTotal,
-                    sourceMargin: (existingTender as any).sourceMargin,
-                    projectId: existingTender.projectId,
-                }
+            // Die Nummer wird IN dieser Transaktion gezogen: bricht das
+            // Kopieren ab, bleibt keine Luecke in der Belegreihe zurueck.
+            const tenderNumber = await nextDocumentNumber(existingTender.tenantId, 'QUOTE', tx);
+            return this.copyTenderRecord(tx, existingTender, nanoid(10), {
+                tenderNumber,
+                version: 1,
+                createdByEmployeeId: newCreatedBy,
+                // Die Kopie startet als ENTWURF: kein Projekt, kein
+                // Auftragsstatus — sonst zeigten Liste und Detail sie sofort
+                // als "Auftrag" (isOrderTender liest genau diese zwei Felder).
+                projectId: null,
+                sourceStatus: null,
+                validUntil: copiedValidUntil(existingTender.validUntil),
             });
-
-            const idMapping = new Map<string, string>(); 
-
-            for (const pos of existingTender.positions) {
-                const newPosId = nanoid(10);
-                idMapping.set(pos.id, newPosId);
-            }
-
-            for (const pos of existingTender.positions) {
-                const newPosId = idMapping.get(pos.id)!;
-                const newParentId = pos.parentPositionId ? idMapping.get(pos.parentPositionId) || null : null;
-
-                await tx.position.create({
-                    data: {
-                        id: newPosId,
-                        tenantId: pos.tenantId,
-                        tenderId: newTenderId,
-                        parentPositionId: newParentId,
-                        rowType: (pos as any).rowType || 'SECTION',
-                        sourceArticleId: (pos as any).sourceArticleId || null,
-                        displayOrder: (pos as any).displayOrder ?? 0,
-                        npkCode: pos.npkCode || null,
-                        positionNumber: pos.positionNumber,
-                        shortDescription: pos.shortDescription,
-                        longDescription: pos.longDescription || null,
-                        quantity: pos.quantity,
-                        unit: pos.unit || null,
-                        hierarchyLevel: pos.hierarchyLevel,
-                        unitPrice: pos.unitPrice,
-                        discount: pos.discount,
-                        discounts: (pos as any).discounts,
-                        taxRate: pos.taxRate,
-                        imageUrl: pos.imageUrl,
-                    }
-                });
-
-                if (pos.calculation) {
-                    await tx.calculationItem.create({
-                        data: {
-                            id: nanoid(8),
-                            positionId: newPosId,
-                            materialCost: pos.calculation.materialCost,
-                            laborCost: pos.calculation.laborCost,
-                            overheadCost: pos.calculation.overheadCost,
-                            riskAmount: pos.calculation.riskAmount,
-                            additionalCost: (pos.calculation as any).additionalCost || 0,
-                            profitMargin: pos.calculation.profitMargin,
-                            totalCalculatedPrice: pos.calculation.totalCalculatedPrice
-                        }
-                    });
-                }
-
-                if (pos.articleMappings && pos.articleMappings.length > 0) {
-                    for (const mapping of pos.articleMappings) {
-                        await tx.positionArticleMapping.create({
-                            data: {
-                                id: nanoid(10),
-                                positionId: newPosId,
-                                articleId: mapping.articleId,
-                                quantityMultiplier: mapping.quantityMultiplier,
-                                discount: (mapping as any).discount ?? 0,
-                            }
-                        });
-                    }
-                }
-            }
-
-            return createdTender;
         });
 
         return this.mapToEntity(result);

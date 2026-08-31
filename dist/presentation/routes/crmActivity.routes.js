@@ -8,6 +8,7 @@ const client_1 = require("@prisma/client");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 /* AKTIVITAETEN (10.09.2026, Vorgabe Samet) — «alles, was auf einem Datensatz
    passiert ist», in EINER Zeitleiste.
 
@@ -117,7 +118,14 @@ router.get("/activities", AuthMiddleware_1.requireAuth, READ, async (req, res) =
             taskWhere.push(client_1.Prisma.sql `ct.createdAt <= ${to}`);
         if (search)
             taskWhere.push(client_1.Prisma.sql `ct.title LIKE ${like}`);
-        const mailWhere = [client_1.Prisma.sql `m.tenantId = ${tenantId}`, client_1.Prisma.sql `m.deletedAt IS NULL`];
+        /* Das Postfach haengt am Stamm des Firmenbaums, der Kunde an seiner
+           Firma: gezeigt wird die Post DIESER Firma — Zeilen ohne Kunden
+           bleiben drin, sie sind die Post des gemeinsamen Postfachs. */
+        const mailWhere = [
+            client_1.Prisma.sql `m.tenantId = ${await (0, serviceTenantScope_1.getMailTenantId)(tenantId)}`,
+            client_1.Prisma.sql `(m.customerId IS NULL OR cu.tenantId = ${tenantId})`,
+            client_1.Prisma.sql `m.deletedAt IS NULL`,
+        ];
         if (customerId)
             mailWhere.push(client_1.Prisma.sql `m.customerId = ${customerId}`);
         if (employeeId)
@@ -139,6 +147,13 @@ router.get("/activities", AuthMiddleware_1.requireAuth, READ, async (req, res) =
             contactWhere.push(client_1.Prisma.sql `cc.occurredAt <= ${to}`);
         if (search)
             contactWhere.push(client_1.Prisma.sql `(cc.note LIKE ${like} OR cu.companyName LIKE ${like})`);
+        /* JEDER Zweig benennt seine Spalten selbst. Bei einem UNION nimmt die
+           abgeleitete Tabelle die Namen des ERSTEN Zweigs — steht aber nur EIN
+           Zweig da (die Leiste filtert auf eine Quelle), gelten seine eigenen.
+           Ohne Namen hiessen dort zwei Spalten `id` (der Datensatz und sein
+           Sprungziel), und die Abfrage bricht mit «Duplicate column name 'id'»:
+           bis heute lief nur die Auswahl «Anfragen», weil allein ihr Zweig
+           Namen trug. */
         const branches = [
             ...branch("ENQUIRY", client_1.Prisma.sql `
                 SELECT 'ENQUIRY' AS kind, e.id AS id, e.createdAt AS occurredAt,
@@ -152,55 +167,55 @@ router.get("/activities", AuthMiddleware_1.requireAuth, READ, async (req, res) =
                   LEFT JOIN Employee emp ON emp.id = e.createdByEmployeeId
                  WHERE ${client_1.Prisma.join(enquiryWhere, " AND ")}`),
             ...branch("QUOTE", client_1.Prisma.sql `
-                SELECT 'QUOTE', t.id, t.createdAt,
-                       t.tenderNumber,
-                       COALESCE(cu.companyName, ''),
-                       t.customerId, cu.companyName,
-                       NULL, NULL, NULL,
-                       t.status, t.id, NULL
+                SELECT 'QUOTE' AS kind, t.id AS id, t.createdAt AS occurredAt,
+                       t.tenderNumber AS title,
+                       COALESCE(cu.companyName, '') AS detail,
+                       t.customerId AS customerId, cu.companyName AS customerName,
+                       NULL AS employeeId, NULL AS firstName, NULL AS lastName,
+                       t.status AS statusText, t.id AS linkId, NULL AS variant
                   FROM Tender t
                   LEFT JOIN Customer cu ON cu.id = t.customerId
                  WHERE ${client_1.Prisma.join(quoteWhere, " AND ")}`),
             ...branch("ORDER", client_1.Prisma.sql `
-                SELECT 'ORDER', so.id, so.createdAt,
-                       so.orderNumber,
-                       COALESCE(cu.companyName, ''),
-                       so.customerId, cu.companyName,
-                       so.createdByEmployeeId, emp.firstName, emp.lastName,
-                       so.status, so.id, NULL
+                SELECT 'ORDER' AS kind, so.id AS id, so.createdAt AS occurredAt,
+                       so.orderNumber AS title,
+                       COALESCE(cu.companyName, '') AS detail,
+                       so.customerId AS customerId, cu.companyName AS customerName,
+                       so.createdByEmployeeId AS employeeId, emp.firstName AS firstName, emp.lastName AS lastName,
+                       so.status AS statusText, so.id AS linkId, NULL AS variant
                   FROM SalesOrder so
                   LEFT JOIN Customer cu ON cu.id = so.customerId
                   LEFT JOIN Employee emp ON emp.id = so.createdByEmployeeId
                  WHERE ${client_1.Prisma.join(orderWhere, " AND ")}`),
             ...branch("TASK", client_1.Prisma.sql `
-                SELECT 'TASK', ct.id, ct.createdAt,
-                       ct.title,
-                       COALESCE(cu.companyName, ''),
-                       ct.customerId, cu.companyName,
-                       ct.assigneeEmployeeId, emp.firstName, emp.lastName,
-                       ct.status, ct.id, ct.kind
+                SELECT 'TASK' AS kind, ct.id AS id, ct.createdAt AS occurredAt,
+                       ct.title AS title,
+                       COALESCE(cu.companyName, '') AS detail,
+                       ct.customerId AS customerId, cu.companyName AS customerName,
+                       ct.assigneeEmployeeId AS employeeId, emp.firstName AS firstName, emp.lastName AS lastName,
+                       ct.status AS statusText, ct.id AS linkId, ct.kind AS variant
                   FROM CrmTask ct
                   LEFT JOIN Customer cu ON cu.id = ct.customerId
                   LEFT JOIN Employee emp ON emp.id = ct.assigneeEmployeeId
                  WHERE ${client_1.Prisma.join(taskWhere, " AND ")}`),
             ...branch("MAIL", client_1.Prisma.sql `
-                SELECT 'MAIL', m.id, m.sentAt,
-                       COALESCE(m.subject, ''),
-                       COALESCE(m.fromName, m.fromAddress, ''),
-                       m.customerId, cu.companyName,
-                       m.employeeId, emp.firstName, emp.lastName,
-                       m.direction, m.id, m.origin
+                SELECT 'MAIL' AS kind, m.id AS id, m.sentAt AS occurredAt,
+                       COALESCE(m.subject, '') AS title,
+                       COALESCE(m.fromName, m.fromAddress, '') AS detail,
+                       m.customerId AS customerId, cu.companyName AS customerName,
+                       m.employeeId AS employeeId, emp.firstName AS firstName, emp.lastName AS lastName,
+                       m.direction AS statusText, m.id AS linkId, m.origin AS variant
                   FROM MailMessage m
                   LEFT JOIN Customer cu ON cu.id = m.customerId
                   LEFT JOIN Employee emp ON emp.id = m.employeeId
                  WHERE ${client_1.Prisma.join(mailWhere, " AND ")}`),
             ...branch("CONTACT", client_1.Prisma.sql `
-                SELECT 'CONTACT', cc.id, cc.occurredAt,
-                       LEFT(cc.note, 300),
-                       COALESCE(cu.companyName, ''),
-                       cc.customerId, cu.companyName,
-                       cc.createdByEmployeeId, emp.firstName, emp.lastName,
-                       cc.channel, cc.id, cc.channel
+                SELECT 'CONTACT' AS kind, cc.id AS id, cc.occurredAt AS occurredAt,
+                       LEFT(cc.note, 300) AS title,
+                       COALESCE(cu.companyName, '') AS detail,
+                       cc.customerId AS customerId, cu.companyName AS customerName,
+                       cc.createdByEmployeeId AS employeeId, emp.firstName AS firstName, emp.lastName AS lastName,
+                       cc.channel AS statusText, cc.id AS linkId, cc.channel AS variant
                   FROM CrmCommunication cc
                   JOIN Customer cu ON cu.id = cc.customerId
                   LEFT JOIN Employee emp ON emp.id = cc.createdByEmployeeId
@@ -260,7 +275,7 @@ router.get("/activities/stats", AuthMiddleware_1.requireAuth, READ, async (req, 
               (SELECT COUNT(*) FROM Tender t WHERE t.tenantId = ${tenantId} AND t.createdAt >= ${since}) AS quotes,
               (SELECT COUNT(*) FROM SalesOrder so WHERE so.tenantId = ${tenantId} AND so.createdAt >= ${since}) AS orders,
               (SELECT COUNT(*) FROM CrmTask ct WHERE ct.tenantId = ${tenantId} AND ct.createdAt >= ${since}) AS tasks,
-              (SELECT COUNT(*) FROM MailMessage m WHERE m.tenantId = ${tenantId} AND m.deletedAt IS NULL AND m.sentAt >= ${since}) AS mails,
+              (SELECT COUNT(*) FROM MailMessage m WHERE m.tenantId = ${await (0, serviceTenantScope_1.getMailTenantId)(tenantId)} AND m.deletedAt IS NULL AND m.sentAt >= ${since}) AS mails,
               (SELECT COUNT(*) FROM CrmCommunication cc WHERE cc.tenantId = ${tenantId} AND cc.occurredAt >= ${since}) AS contacts
         `);
         const row = rows[0] || {};

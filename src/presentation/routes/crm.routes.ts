@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
+import { getMailTenantId } from '../controllers/serviceTenantScope';
 
 /* CRM v2 surfaces: tenant-wide contact list (Ansprechpartner), unified
    communication history (phone/e-mail/meeting/note) and tasks & reminders.
@@ -265,10 +266,20 @@ router.get('/interactions', requireAuth, requirePermission('crm.customers.view')
         // festgehalten sind (activityId zeigt her), erscheinen nur einmal — als Mail.
         actWhere.push(Prisma.sql`NOT EXISTS (SELECT 1 FROM MailMessage mm WHERE mm.activityId = ca.id)`);
 
-        // Zweig 4 — MailMessage (Outlook-Sync + ERP-Sendungen), nur mit Kundenbezug.
-        // Betreff + Vorschau als "note"; die Direction/den Outlook-Link tragen die
-        // Zusatzspalten, die die anderen Zweige mit NULL füllen.
-        const mailWhere: Prisma.Sql[] = [Prisma.sql`m.tenantId = ${user.tenantId}`, Prisma.sql`m.customerId IS NOT NULL`];
+        /* Zweig 4 — MailMessage (Outlook-Sync + ERP-Sendungen), nur mit Kundenbezug.
+           Betreff + Vorschau als "note"; die Direction/den Outlook-Link tragen die
+           Zusatzspalten, die die anderen Zweige mit NULL füllen.
+
+           ZWEI MANDANTEN: die Post liegt im Postfach am Stamm des Firmenbaums
+           (getMailTenantId), der KUNDE gehört seiner Firma. Darum zwei
+           Bedingungen — der Mandant der Nachricht und, über den Verbund, der
+           Mandant des Kunden. Mit nur der ersten sähe eine Firma die
+           Kundenpost der Schwesterfirmen. */
+        const mailWhere: Prisma.Sql[] = [
+            Prisma.sql`m.tenantId = ${await getMailTenantId(user.tenantId)}`,
+            Prisma.sql`cu.tenantId = ${user.tenantId}`,
+            Prisma.sql`m.customerId IS NOT NULL`,
+        ];
         if (customerId) mailWhere.push(Prisma.sql`m.customerId = ${customerId}`);
         if (typeFilter && typeFilter !== 'EMAIL') mailWhere.push(Prisma.sql`1 = 0`);
         if (employeeId) mailWhere.push(Prisma.sql`m.employeeId = ${employeeId}`);

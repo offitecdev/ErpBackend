@@ -19,6 +19,7 @@ const tenantTree_1 = require("../../shared/tenantTree");
 const OspClient_1 = require("../../infrastructure/services/OspClient");
 const documentNumber_1 = require("../../shared/documentNumber");
 const TenderDocumentStorageService_1 = require("../../infrastructure/services/TenderDocumentStorageService");
+const serviceTenantScope_1 = require("./serviceTenantScope");
 // Versand läuft über dispatchMail: verbundenes Outlook-Postfach des Benutzers,
 // sonst SMTP des Mandanten; jede Kundenmail landet zudem als MailMessage in der
 // Kundenkommunikation (siehe outlook/MailDispatchService.ts).
@@ -2340,6 +2341,49 @@ class TenderController {
             res.status(400).json({ error: error.message });
         }
     }
+    /**
+     * Angebot KOPIEREN (Benutzerwunsch 31.08.2026 — Zahnrad ueber dem
+     * Papierkorb). Die Kopie traegt dieselben Daten, ist aber ein eigener
+     * Beleg: frische AN-Nummer, Version 1, Entwurf ohne Projekt/Auftrag. Die
+     * neue VERSION dagegen behaelt die Nummer und zaehlt nur hoch.
+     */
+    async duplicate(req, res) {
+        try {
+            const tenderId = req.params.id;
+            const employeeId = req.user.id;
+            if (!tenderId) {
+                return res.status(400).json({ error: "İhale ID zorunludur." });
+            }
+            const tender = await this.getAccessibleTender(tenderId, req.user);
+            if (!tender)
+                return res.status(404).json({ error: "İhale bulunamadı." });
+            const copy = await this.tenderRepository.duplicate(tenderId, employeeId, tender.tenantId);
+            if (copy.customerId) {
+                await this.customerActivityRepo.create({
+                    customerId: copy.customerId,
+                    employeeId,
+                    activityType: "TENDER_CREATED",
+                    description: `${copy.tenderNumber} numaralı teklif, ${tender.tenderNumber} numaralı teklifin kopyası olarak oluşturuldu.`,
+                    referenceId: copy.id,
+                    activityDate: new Date()
+                });
+            }
+            await this.tenderLogRepo.create({
+                tenantId: copy.tenantId,
+                tenderId: copy.id,
+                employeeId,
+                actionType: "TENDER_CREATED",
+                fieldName: null,
+                oldValue: tender.tenderNumber,
+                newValue: copy.tenderNumber,
+                description: `${copy.tenderNumber} numaralı teklif, ${tender.tenderNumber} numaralı teklifin kopyası olarak oluşturuldu.`
+            });
+            res.status(201).json({ message: "Teklif kopyalandı.", tender: copy });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async approve(req, res) {
         try {
             const tenderId = req.params.id;
@@ -2755,7 +2799,7 @@ class TenderController {
             if (!tender.customerId) {
                 return res.status(400).json({ error: "Müşterisi olmayan teklif için mail gönderilemez." });
             }
-            const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: tender.tenantId } });
+            const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tender.tenantId) } });
             // A date/time plan is optional — the proposal mail can be sent without any
             // appointment. When slots exist they are still included in the mail below.
             const slots = await prisma_client_1.default.offerScheduleSlot.findMany({
@@ -2994,7 +3038,7 @@ class TenderController {
                 return res.status(400).json({ error: "Müşterisi olmayan teklif için mail gönderilemez." });
             }
             const [settings, salesOrder, contacts] = await Promise.all([
-                prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: tender.tenantId } }),
+                prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tender.tenantId) } }),
                 prisma_client_1.default.salesOrder.findFirst({
                     where: { tenderId },
                     select: { orderNumber: true, totalAmount: true, orderDate: true, createdAt: true },

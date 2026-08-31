@@ -11,6 +11,7 @@ import type { SentCopyResult } from "../ImapMailService";
 import { clampBody, clampHtml, htmlToText, previewOf, sanitizeMailHtml } from "./mailText";
 import { normalizeAddress } from "./mailCustomerMatcher";
 import { autoCategoryId, getCategoryIndex } from "./mailAutoCategory";
+import { getMailTenantId } from "../../../presentation/controllers/serviceTenantScope";
 
 /**
  * EIN Versandweg für alles, was das ERP an Kunden schickt (Angebot, Auftrag,
@@ -110,10 +111,18 @@ const recordMessage = async (
     const categoryId = record.customerId
         ? autoCategoryId(await getCategoryIndex(ctx.tenantId), { customerId: record.customerId })
         : null;
+    /* DIE ZEILE GEHÖRT INS POSTFACH, und das hängt am Stamm des Firmenbaums
+       (getMailTenantId) — nicht an der Firma, aus der heraus gerade gearbeitet
+       wird. Sonst läge die eigene Sendung in einem anderen Bestand als die
+       Antwort des Kunden, die der Abruf hereinholt: das Gespräch fiele
+       auseinander, und der Faden über die Message-ID risse. Alle Aufrufer
+       (Angebot, Auftrag, Rechnung, Kalender, Aufgaben) geben weiterhin ihre
+       eigene Firma mit — aufgelöst wird hier, an der einen Stelle. */
+    const mailTenantId = await getMailTenantId(ctx.tenantId).catch(() => ctx.tenantId);
     const row = await prisma.mailMessage.create({
         data: {
             id: nanoid(12),
-            tenantId: ctx.tenantId,
+            tenantId: mailTenantId,
             accountId: result.accountId,
             employeeId: ctx.employeeId,
             direction: "OUT",

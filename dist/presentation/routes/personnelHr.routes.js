@@ -20,10 +20,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   /holidays                 Die geführten Feiertage + der amtliche Katalog
  *   /leave-policy             Die Urlaubsregel des Hauses
  *
- * TENANT-BEREICH: wie im Personal-Router — Personal gehört dem GANZEN
- * Firmenbaum (getCompanyTreeTenantIds). Schichtplan, Urlaubsregel und
- * Feiertage hängen am STAMM des Baums: sie sind eine Regel des Hauses, keine
- * der einzelnen Firma, und dürfen sich beim Firmenumschalter nicht ändern.
+ * TENANT-BEREICH: wie im Personal-Router — Personal gehört der AUSGEWÄHLTEN
+ * Firma (getPersonnelTenantScope, seit 31.08.2026); Schwesterfirmen sehen
+ * einander nicht. Schichtplan, Urlaubsregel und Feiertage hängen weiterhin am
+ * STAMM des Baums: sie sind eine Regel des Hauses, keine der einzelnen Firma,
+ * und dürfen sich beim Firmenumschalter nicht ändern.
  */
 const express_1 = require("express");
 const multer_1 = __importDefault(require("multer"));
@@ -33,6 +34,7 @@ const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
+const tenantTree_1 = require("../../shared/tenantTree");
 const LocalFileStorage_1 = require("../../infrastructure/services/LocalFileStorage");
 const staffDirectoryCache_1 = require("../../shared/staffDirectoryCache");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
@@ -50,12 +52,12 @@ const staffDocumentUpload = (0, multer_1.default)({
     limits: { fileSize: 12 * 1024 * 1024, files: 10 },
 });
 const fail = (res, status, message) => res.status(status).json({ error: message });
-const treeOf = (req) => (0, serviceTenantScope_1.getCompanyTreeTenantIds)(req.user.tenantId);
-/** Der Stamm des Firmenbaums — dort hängen Schichtplan, Feiertage, Urlaubsregel. */
-const houseTenantId = async (req) => {
-    const tenantIds = await treeOf(req);
-    return tenantIds[0] ?? req.user.tenantId;
-};
+/** Die Firmen, aus denen PERSONEN gelesen werden: genau die ausgewählte. */
+const treeOf = (req) => (0, serviceTenantScope_1.getPersonnelTenantScope)(req.user.tenantId);
+/** Der Stamm des Firmenbaums — dort hängen Schichtplan, Feiertage, Urlaubsregel.
+    Diese Regeln bleiben BAUMWEIT: sie gehören dem Haus, nicht der einzelnen
+    Firma, und dürfen sich beim Firmenumschalter nicht ändern. */
+const houseTenantId = async (req) => (await (0, tenantTree_1.findTenantRootIdCached)(req.user.tenantId)) ?? req.user.tenantId;
 const loadShiftPlan = async (tenantId) => {
     const row = await prisma_client_1.default.staffShiftPlan.findUnique({ where: { tenantId } });
     if (!row)
@@ -270,7 +272,7 @@ router.get('/staff/:id/profile', AuthMiddleware_1.requireAuth, async (req, res) 
             return fail(res, 404, 'Person nicht gefunden.');
         const [person, documents, roles] = await Promise.all([
             prisma_client_1.default.employee.findFirst({
-                where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+                where: { id, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
                 select: {
                     id: true, staffNumber: true, firstName: true, lastName: true,
                     email: true, phone: true, title: true, isActive: true,
@@ -293,6 +295,7 @@ router.get('/staff/:id/profile', AuthMiddleware_1.requireAuth, async (req, res) 
             // Die Auswahlliste der Systemrollen — nur die Verwaltung sieht sie.
             access.canManage
                 ? prisma_client_1.default.role.findMany({
+                    // Rollen bleiben baumweit sichtbar, siehe role.routes.ts.
                     where: { tenantId: { in: tenantIds } },
                     select: { id: true, roleName: true },
                     orderBy: { roleName: 'asc' },
@@ -346,7 +349,7 @@ router.patch('/staff/:id/profile', AuthMiddleware_1.requireAuth, (0, RbacMiddlew
         const id = String(req.params.id || '');
         const tenantIds = await treeOf(req);
         const existing = await prisma_client_1.default.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true, email: true },
         });
         if (!existing)
@@ -436,7 +439,7 @@ router.post('/staff/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddle
         const id = String(req.params.id || '');
         const tenantIds = await treeOf(req);
         const person = await prisma_client_1.default.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true, tenantId: true },
         });
         if (!person)
@@ -552,7 +555,7 @@ router.get('/staff/:id/leave-year', AuthMiddleware_1.requireAuth, async (req, re
         const tenantId = tenantIds[0] ?? req.user.tenantId;
         const year = Math.trunc(Number(req.query.year)) || new Date().getFullYear();
         const person = await prisma_client_1.default.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true, hireDate: true, createdAt: true },
         });
         if (!person)
@@ -623,7 +626,7 @@ router.get('/staff/:id/time-log', AuthMiddleware_1.requireAuth, async (req, res)
         const tenantId = tenantIds[0] ?? req.user.tenantId;
         const plan = await loadShiftPlan(tenantId);
         const person = await prisma_client_1.default.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true, staffNumber: true, firstName: true, lastName: true, email: true, hireDate: true, createdAt: true },
         });
         if (!person)
@@ -826,7 +829,7 @@ router.post('/time-entries/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddlewa
            Eintritts und ab heute entsteht ohnehin keine Zeile. */
         const tenantIds = await treeOf(req);
         const person = await prisma_client_1.default.employee.findFirst({
-            where: { id: employeeId, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: employeeId, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true, tenantId: true, hireDate: true, createdAt: true },
         });
         if (!person)
@@ -928,7 +931,7 @@ router.post('/absences/manual', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
         }
         const tenantIds = await treeOf(req);
         const person = await prisma_client_1.default.employee.findFirst({
-            where: { id: employeeId, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: employeeId, ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
             select: { id: true, tenantId: true, hireDate: true, createdAt: true },
         });
         if (!person)

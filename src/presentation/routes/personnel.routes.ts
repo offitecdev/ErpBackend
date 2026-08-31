@@ -6,9 +6,11 @@
  * Weg. Die abgelösten Router (`attendance.routes.ts`, `leave.routes.ts`) sind
  * entfallen.
  *
- * TENANT-BEREICH: Personal gehört dem GANZEN Firmenbaum (getCompanyTreeTenantIds),
- * nicht der einzelnen Firma — dieselbe Regel wie bei /employees. Geschäftsdaten
- * bleiben davon unberührt.
+ * TENANT-BEREICH: Personal gehört der AUSGEWÄHLTEN Firma
+ * (getPersonnelTenantScope, seit 31.08.2026) — dieselbe Regel wie bei
+ * /employees. Wer unter einer Untergesellschaft angelegt wurde, erscheint
+ * NUR dort; Schwesterfirmen sehen einander nicht. Das Arbeitszeitmodell
+ * (Schichtplan) bleibt baumweit, siehe shiftPlanTenantId.
  *
  * DER QR-SCHLÜSSEL: `Employee.qrToken` ist der einzige Code je Person. Derselbe
  * Code meldet an der Anmeldeseite an (siehe auth.routes.ts, /auth/qr-login) und
@@ -22,7 +24,8 @@ import prisma from '../../infrastructure/database/prisma.client';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
-import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
+import { getPersonnelTenantScope, getCompanyTreeTenantIds, employeeScopeWhere, employeeScopeSql } from '../controllers/serviceTenantScope';
+import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { BcryptCryptoService } from '../../infrastructure/services/BcryptCryptoService';
 import { assertPasswordPolicy } from '../../application/validation/password';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
@@ -72,7 +75,8 @@ const roleRepo = new RoleRepository();
 export const QR_PREFIX = 'OFITEC-STAFF:';
 const newQrToken = () => `${QR_PREFIX}${nanoid(24)}`;
 
-const treeOf = (req: any): Promise<string[]> => getCompanyTreeTenantIds(req.user!.tenantId);
+/** Die Firmen, aus denen PERSONEN gelesen werden: genau die ausgewählte. */
+const treeOf = (req: any): Promise<string[]> => getPersonnelTenantScope(req.user!.tenantId);
 
 const fail = (res: any, status: number, message: string) => res.status(status).json({ error: message });
 
@@ -95,14 +99,12 @@ const readReportFilters = (query: Record<string, unknown>): ReportFilters | null
 
 /**
  * Der Plan hängt am STAMM des Firmenbaums, nicht an der gerade gewählten Firma:
- * Personal ist baumweit geteilt, also muss auch sein Arbeitszeitmodell baumweit
- * dasselbe sein — sonst rechnete derselbe Bericht je nach Firmenumschalter
- * andere Sollstunden.
+ * das Arbeitszeitmodell ist eine Regel des HAUSES — sonst rechnete derselbe
+ * Bericht je nach Firmenumschalter andere Sollstunden. Personenlisten sind
+ * seit dem 31.08.2026 firmeneigen (treeOf), der Schichtplan ausdrücklich nicht.
  */
-const shiftPlanTenantId = async (req: any): Promise<string> => {
-    const tenantIds = await treeOf(req);
-    return tenantIds[0] ?? req.user!.tenantId;
-};
+const shiftPlanTenantId = async (req: any): Promise<string> =>
+    (await findTenantRootIdCached(req.user!.tenantId)) ?? req.user!.tenantId;
 
 const loadShiftPlan = async (req: any): Promise<ShiftPlan> => {
     const tenantId = await shiftPlanTenantId(req);
@@ -178,7 +180,7 @@ router.get('/staff', requireAuth, requirePermission('employees.view'), async (re
         }
 
         const conditions: Prisma.Sql[] = [
-            Prisma.sql`e.tenantId IN (${Prisma.join(tenantIds)})`,
+            employeeScopeSql(tenantIds),
             Prisma.sql`e.deletedAt IS NULL`,
         ];
         const search = String(req.query.search || '').trim();
@@ -300,10 +302,13 @@ router.post('/staff/bulk', requireAuth, requirePermission('employees.create'), a
             return res.status(409).json({ error: `E-Mail-Adresse ist bereits vergeben: ${clash?.email}`, index: clash?.index });
         }
 
-        const tenantIds = await treeOf(req);
         const tenantId = req.user!.tenantId;
+        /* Die Personalnummer laeuft BAUMWEIT weiter, auch wenn die Listen es
+           nicht mehr tun: sie steht auf Ausdrucken und Rapporten und soll im
+           ganzen Haus genau eine Person meinen. Ein reiner Zaehlerstand
+           verraet nichts ueber die Schwesterfirmen. */
         const highest = await prisma.employee.aggregate({
-            where: { tenantId: { in: tenantIds.length ? tenantIds : [tenantId] } },
+            where: { tenantId: { in: await getCompanyTreeTenantIds(tenantId) } },
             _max: { staffNumber: true },
         });
         let nextStaffNumber = (highest._max.staffNumber ?? 0) + 1;
@@ -360,7 +365,7 @@ router.post('/staff/:id/qr', requireAuth, requirePermission('employees.update'),
     try {
         const tenantIds = await treeOf(req);
         const existing = await prisma.employee.findFirst({
-            where: { id: String(req.params.id), tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: String(req.params.id), ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true },
         });
         if (!existing) return fail(res, 404, 'Person nicht gefunden.');
@@ -400,7 +405,7 @@ const APPROVER_PERMISSIONS = ['leaves.approve', 'roles.manage', 'users.manage'];
 const approverRowsSql = (tenantIds: string[]) => Prisma.sql`
     SELECT e.id, e.firstName, e.lastName, e.email, e.staffNumber
     FROM Employee e
-    WHERE e.tenantId IN (${Prisma.join(tenantIds)})
+    WHERE ${employeeScopeSql(tenantIds)}
       AND e.deletedAt IS NULL
       AND e.isActive = 1
       AND EXISTS (
@@ -439,7 +444,7 @@ const purserCount = async (tenantIds: string[]): Promise<number> => {
         FROM Employee e
         JOIN EmployeeRole er ON er.employeeId = e.id
         JOIN Role r ON r.id = er.roleId
-        WHERE e.tenantId IN (${Prisma.join(tenantIds)})
+        WHERE ${employeeScopeSql(tenantIds)}
           AND e.deletedAt IS NULL
           AND e.isActive = 1
           AND r.isPurser = 1
@@ -471,7 +476,7 @@ const isApprover = async (employeeId: string, tenantIds: string[]): Promise<bool
         SELECT e.id
         FROM Employee e
         WHERE e.id = ${employeeId}
-          AND e.tenantId IN (${Prisma.join(tenantIds)})
+          AND ${employeeScopeSql(tenantIds)}
           AND e.deletedAt IS NULL
           AND e.isActive = 1
           AND EXISTS (
@@ -495,7 +500,7 @@ const staffByQrToken = async (token: string, tenantIds: string[]) =>
     prisma.employee.findFirst({
         where: {
             qrToken: token,
-            tenantId: { in: tenantIds },
+            ...employeeScopeWhere(tenantIds),
             deletedAt: null,
             bannedAt: null,
             isActive: true,
@@ -616,7 +621,7 @@ router.get('/clock/activity', requireAuth, async (req, res) => {
                    e.firstName, e.lastName, e.staffNumber
             FROM StaffTimeEntry t
             JOIN Employee e ON e.id = t.employeeId
-            WHERE e.tenantId IN (${Prisma.join(tenantIds)})
+            WHERE ${employeeScopeSql(tenantIds)}
               AND t.workDate = ${day}
             ORDER BY t.startedAt ASC
         `);
@@ -685,7 +690,7 @@ router.get('/clock/week', requireAuth, async (req, res) => {
                    e.firstName, e.lastName, e.staffNumber
             FROM StaffTimeEntry t
             JOIN Employee e ON e.id = t.employeeId
-            WHERE e.tenantId IN (${Prisma.join(tenantIds)})
+            WHERE ${employeeScopeSql(tenantIds)}
               AND t.workDate >= ${monday}
               AND t.workDate <= ${friday}
             ORDER BY t.workDate ASC, e.lastName ASC, t.startedAt ASC
@@ -772,7 +777,7 @@ router.patch('/time-entries/:id', requireAuth, requirePermission('attendance.upd
     try {
         const tenantIds = await treeOf(req);
         const entry = await prisma.staffTimeEntry.findFirst({
-            where: { id: String(req.params.id), employee: { tenantId: { in: tenantIds } } },
+            where: { id: String(req.params.id), employee: employeeScopeWhere(tenantIds) },
         });
         if (!entry) return fail(res, 404, 'Zeile nicht gefunden.');
 
@@ -814,7 +819,7 @@ router.delete('/time-entries/:id', requireAuth, requirePermission('attendance.up
     try {
         const tenantIds = await treeOf(req);
         const entry = await prisma.staffTimeEntry.findFirst({
-            where: { id: String(req.params.id), employee: { tenantId: { in: tenantIds } } },
+            where: { id: String(req.params.id), employee: employeeScopeWhere(tenantIds) },
             select: { id: true },
         });
         if (!entry) return fail(res, 404, 'Zeile nicht gefunden.');
@@ -887,7 +892,7 @@ router.get('/leaves', requireAuth, async (req, res) => {
         const kind = String(req.query.kind || '').trim();
 
         const where: Prisma.StaffLeaveRequestWhereInput = {
-            employee: { tenantId: { in: tenantIds.length ? tenantIds : [req.user!.tenantId] } },
+            employee: employeeScopeWhere(tenantIds.length ? tenantIds : [req.user!.tenantId]),
         };
         if (kind === 'LEAVE' || kind === 'REMOTE') where.kind = kind;
 
@@ -1071,7 +1076,7 @@ router.patch('/leaves/:id/decision', requireAuth, async (req, res) => {
 
         const tenantIds = await treeOf(req);
         const request = await prisma.staffLeaveRequest.findFirst({
-            where: { id: String(req.params.id), employee: { tenantId: { in: tenantIds } } },
+            where: { id: String(req.params.id), employee: employeeScopeWhere(tenantIds) },
         });
         if (!request) return fail(res, 404, 'Antrag nicht gefunden.');
 
@@ -1162,7 +1167,7 @@ router.patch('/leaves/:id/decision', requireAuth, async (req, res) => {
 router.get('/leaves/counts', requireAuth, async (req, res) => {
     try {
         const tenantIds = await treeOf(req);
-        const scope = { employee: { tenantId: { in: tenantIds.length ? tenantIds : [req.user!.tenantId] } } };
+        const scope = { employee: employeeScopeWhere(tenantIds.length ? tenantIds : [req.user!.tenantId]) };
         const amPurser = await isPurserEmployee(req.user!.id);
         const [approver, accounting, mine] = await Promise.all([
             prisma.staffLeaveRequest.count({ where: { ...scope, approverId: req.user!.id, status: 'PENDING_MANAGER' } }),
@@ -1205,7 +1210,7 @@ router.patch('/staff/:id/role', requireAuth, requireAnyPermission(['employees.up
     try {
         const tenantIds = await treeOf(req);
         const existing = await prisma.employee.findFirst({
-            where: { id: String(req.params.id), tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: String(req.params.id), ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true },
         });
         if (!existing) return fail(res, 404, 'Person nicht gefunden.');
@@ -1260,7 +1265,7 @@ router.get('/staff/:id/overview', requireAuth, async (req, res) => {
         if (tenantIds.length === 0) return fail(res, 404, 'Person nicht gefunden.');
 
         const person = await prisma.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: {
                 id: true, tenantId: true, staffNumber: true, firstName: true, lastName: true,
                 email: true, phone: true, title: true, isActive: true, staffRole: true,
@@ -1526,7 +1531,7 @@ router.put('/staff/:id/photo', requireAuth, async (req, res) => {
 
         const tenantIds = await treeOf(req);
         const person = await prisma.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true },
         });
         if (!person) return fail(res, 404, 'Person nicht gefunden.');
@@ -1577,7 +1582,7 @@ router.get('/photos', requireAuth, async (req, res) => {
             SELECT e.id, COALESCE(e.profilePictureThumb, e.profilePictureUrl) AS photo
             FROM Employee e
             WHERE e.id IN (${Prisma.join(ids)})
-              AND e.tenantId IN (${Prisma.join(tenantIds)})
+              AND ${employeeScopeSql(tenantIds)}
               AND (e.profilePictureThumb IS NOT NULL OR e.profilePictureUrl IS NOT NULL)
         `);
 

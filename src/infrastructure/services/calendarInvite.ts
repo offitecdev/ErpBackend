@@ -189,6 +189,17 @@ export interface ParsedCalendarEvent {
      * nach Absender in einer eigenen Eigenschaft oder nur im Beschreibungstext.
      */
     onlineUrl: string | null;
+    /**
+     * EINZELNER TERMIN AUS EINER SERIE (RECURRENCE-ID, 31.08.2026).
+     *
+     * Aus einer Mail kommt so etwas praktisch nie — dort steht der Serienkopf,
+     * und der wird abgewiesen. Aus dem KALENDER (CalDAV) dagegen liefert der
+     * Server die Serie auf Wunsch bereits AUFGELÖST: jeder Termin kommt als
+     * eigenes VEVENT, alle mit derselben UID und unterschiedlicher
+     * RECURRENCE-ID. Ohne dieses Feld trügen sie denselben Schlüssel und
+     * überschrieben einander bis auf einen.
+     */
+    recurrenceId: string | null;
 }
 
 const unescapeText = (value: string): string =>
@@ -278,33 +289,79 @@ const paramValue = (params: string, name: string): string | null => {
 };
 
 /**
- * Liest das ERSTE VEVENT eines iCalendar-Textes. Genau so viel, wie für die
- * Übernahme in den Kalender nötig ist — Wiederholungsregeln (RRULE) bleiben
- * bewusst aussen vor, eine Serie käme sonst als EIN Termin an und wäre
- * schlimmer als gar keiner.
+ * Liest die VEVENTs eines iCalendar-Textes.
+ *
+ * Aus einer MAIL kommt genau eines — eine Einladung beschreibt einen Termin.
+ * Aus dem KALENDER (CalDAV) kommen viele: der Server antwortet auf eine Anfrage
+ * über einen Zeitraum mit allen Terminen darin, und eine aufgelöste Serie
+ * liefert je Vorkommen ein eigenes VEVENT. `parseCalendarObject` bleibt der
+ * Einstieg für den Mailweg und gibt das erste zurück.
+ *
+ * Wiederholungsregeln (RRULE) werden GELESEN, aber nicht ausgewertet: ein
+ * Serienkopf als einzelner Termin wäre falsch und bliebe es jede Woche neu.
+ * `recurring` sagt es, damit der Aufrufer den Grund nennen kann.
  */
-export const parseCalendarObject = (text: string): ParsedCalendarEvent | null => {
-    if (!text || !/BEGIN:VCALENDAR/i.test(text)) return null;
+export const parseCalendarObjects = (text: string): ParsedCalendarEvent[] => {
+    if (!text || !/BEGIN:VCALENDAR/i.test(text)) return [];
     // Gefaltete Zeilen zusammenziehen, danach ist jede Zeile eine Eigenschaft.
     const unfolded = text.replace(/\r?\n[ \t]/g, "");
     const lines = unfolded.split(/\r?\n/);
 
+    /* METHOD steht EINMAL im VCALENDAR, vor den Terminen — nicht in jedem
+       VEVENT. Es wird deshalb vorab gelesen und gilt für alle Termine des
+       Textes. Ein CalDAV-Kalender schickt gar keines; dann bleibt es bei
+       REQUEST, was für einen Termin im eigenen Kalender genau stimmt. */
     let method = "REQUEST";
-    let inEvent = false;
-    let hasRecurrence = false;
-    // Verschachtelte Blöcke im VEVENT (VALARM) haben EIGENE Eigenschaften mit
-    // denselben Namen — die Erinnerung eines Outlook-Termins trägt fast immer
-    // ein `DESCRIPTION:Erinnerung`. Ohne diese Tiefenzählung überschriebe sie
-    // die Beschreibung des Termins.
+    const events: ParsedCalendarEvent[] = [];
+    let block: string[] | null = null;
     let nested = 0;
+
+    for (const line of lines) {
+        const separator = line.indexOf(":");
+        if (separator < 0) continue;
+        const head = line.slice(0, separator);
+        const value = line.slice(separator + 1).trim().toUpperCase();
+        const semicolon = head.indexOf(";");
+        const name = (semicolon < 0 ? head : head.slice(0, semicolon)).trim().toUpperCase();
+
+        if (!block) {
+            if (name === "METHOD") { method = value; continue; }
+            if (name === "BEGIN" && value === "VEVENT") { block = []; nested = 0; }
+            continue;
+        }
+        // Verschachtelte Blöcke im VEVENT (VALARM) tragen EIGENE Eigenschaften
+        // mit denselben Namen — die Erinnerung eines Outlook-Termins hat fast
+        // immer ein `DESCRIPTION:Erinnerung`. Ohne die Tiefenzählung endete der
+        // Termin hier am END:VALARM.
+        if (name === "BEGIN") { nested += 1; block.push(line); continue; }
+        if (name === "END" && value === "VEVENT" && nested === 0) {
+            const event = parseVevent(block, method);
+            if (event) events.push(event);
+            block = null;
+            continue;
+        }
+        if (name === "END") { nested = Math.max(0, nested - 1); block.push(line); continue; }
+        block.push(line);
+    }
+    return events;
+};
+
+/** Der Mailweg: eine Einladung beschreibt EINEN Termin. */
+export const parseCalendarObject = (text: string): ParsedCalendarEvent | null =>
+    parseCalendarObjects(text)[0] ?? null;
+
+/** Ein einzelnes VEVENT (ohne die BEGIN/END-Zeilen) in seine Felder zerlegen. */
+const parseVevent = (lines: string[], method: string): ParsedCalendarEvent | null => {
+    let hasRecurrence = false;
     // Die HTML-Fassung der Beschreibung (Outlook: X-ALT-DESC) trägt den
     // Teams-Link auch dann, wenn die Textfassung ihn verstümmelt hat.
     let richText = "";
+    let nested = 0;
     const event: ParsedCalendarEvent = {
         method, uid: "", sequence: 0, start: null, end: null,
         summary: null, description: null, location: null,
         organizer: null, attendees: [], cancelled: false,
-        recurring: false, onlineUrl: null,
+        recurring: false, onlineUrl: null, recurrenceId: null,
     };
 
     for (const line of lines) {
@@ -316,10 +373,6 @@ export const parseCalendarObject = (text: string): ParsedCalendarEvent | null =>
         const name = (semicolon < 0 ? head : head.slice(0, semicolon)).trim().toUpperCase();
         const params = semicolon < 0 ? "" : head.slice(semicolon + 1);
 
-        if (name === "METHOD" && !inEvent) { method = value.trim().toUpperCase(); continue; }
-        if (name === "BEGIN" && value.trim().toUpperCase() === "VEVENT") { inEvent = true; continue; }
-        if (name === "END" && value.trim().toUpperCase() === "VEVENT" && nested === 0) break;
-        if (!inEvent) continue;
         if (name === "BEGIN") { nested += 1; continue; }
         if (name === "END") { nested = Math.max(0, nested - 1); continue; }
         if (nested > 0) continue;
@@ -334,6 +387,10 @@ export const parseCalendarObject = (text: string): ParsedCalendarEvent | null =>
             case "LOCATION": event.location = unescapeText(value).trim() || null; break;
             case "STATUS": if (value.trim().toUpperCase() === "CANCELLED") event.cancelled = true; break;
             case "RRULE": case "RDATE": hasRecurrence = true; break;
+            // Ein aufgelöstes Vorkommen einer Serie. Der Wert wird roh
+            // übernommen (er ist nur ein Schlüsselbestandteil, kein Datum, das
+            // hier gerechnet werden müsste).
+            case "RECURRENCE-ID": event.recurrenceId = value.trim() || null; break;
             // Teams schreibt den Beitrittslink in eine eigene Eigenschaft;
             // RFC 7986 kennt dafür CONFERENCE. Beides ist eindeutiger als der
             // Beschreibungstext und geht ihm deshalb vor.
@@ -361,13 +418,12 @@ export const parseCalendarObject = (text: string): ParsedCalendarEvent | null =>
     }
 
     if (!event.uid || !event.start) return null;
-    // Serientermine werden NICHT übernommen: ein einzelner Eintrag an ihrer
-    // Stelle wäre falsch und würde jede Woche neu falsch sein. Gelesen wird die
-    // Einladung trotzdem — der Abruf soll den Grund nennen können.
-    event.recurring = hasRecurrence;
+    /* Ein AUFGELÖSTES Vorkommen ist kein Serientermin mehr: es hat ein eigenes
+       Datum und einen eigenen Schlüssel. Nur der Serienkopf (RRULE ohne
+       RECURRENCE-ID) bleibt draussen. */
+    event.recurring = hasRecurrence && !event.recurrenceId;
     if (!event.onlineUrl) event.onlineUrl = findOnlineUrl(event.description) || findOnlineUrl(richText) || findOnlineUrl(event.location);
-    event.method = method;
-    if (method === "CANCEL") event.cancelled = true;
+    if (event.method === "CANCEL") event.cancelled = true;
     // Ohne DTEND gilt die Vorgabe: eine Stunde.
     if (!event.end) event.end = new Date(event.start.getTime() + 60 * 60_000);
     return event;

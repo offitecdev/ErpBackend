@@ -9,6 +9,24 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Tender_1 = require("../../domain/entities/Tender");
 const customerAddress_1 = require("../../application/utils/customerAddress");
 const nanoid_1 = require("nanoid");
+const documentNumber_1 = require("../../shared/documentNumber");
+/**
+ * Gueltigkeitsdatum einer KOPIE: ein noch laufendes Datum wird uebernommen, ein
+ * abgelaufenes auf einen Monat ab heute gesetzt — genau die Frist, die eine neu
+ * angelegte Offerte bekommt. Ohne das kaeme die frische Kopie als "Abgelaufen"
+ * auf die Welt (isExpiredTender liest validUntil). Ohne Datum bleibt es leer.
+ */
+const copiedValidUntil = (validUntil) => {
+    if (!validUntil)
+        return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (validUntil.getTime() >= today.getTime())
+        return validUntil;
+    const refreshed = new Date();
+    refreshed.setMonth(refreshed.getMonth() + 1);
+    return refreshed;
+};
 // Liste tablosunun çizdiği kolonlar artık `findLeanList` içindeki tek ham
 // sorguda seçiliyor. Tam gövdedeki coverLetter / closingNote / closingImages
 // LONGTEXT'tir — closingImages data-URI (base64 görsel) dizisi tutar, yani satır
@@ -527,7 +545,177 @@ class TenderRepository {
         const data = await prisma_client_1.default.tender.findUniqueOrThrow({ where: { id } });
         return this.mapToEntity(data);
     }
-    async createNextVersion(tenderId, newCreatedBy, tenantId) {
+    /**
+     * Kopf- und Positionsdaten einer Offerte in eine NEUE Offerte schreiben.
+     *
+     * Zwei Wege teilen sich diesen Rumpf: die neue VERSION (gleiche AN-Nummer,
+     * Version + 1) und die KOPIE (frische AN-Nummer, Version 1). Alles, was die
+     * beiden trennt, kommt ueber `overrides` herein; der Feldkatalog steht nur
+     * einmal da, damit eine neue Spalte nicht in einem der beiden Wege
+     * vergessen wird.
+     */
+    async copyTenderRecord(tx, existingTender, newTenderId, overrides) {
+        const createdTender = await tx.tender.create({
+            data: {
+                id: newTenderId,
+                tenantId: existingTender.tenantId,
+                customerId: existingTender.customerId,
+                tenderNumber: overrides.tenderNumber,
+                version: overrides.version,
+                format: existingTender.format,
+                status: 'Draft',
+                createdByEmployeeId: overrides.createdByEmployeeId,
+                validUntil: overrides.validUntil,
+                sourceCreatedAt: existingTender.sourceCreatedAt,
+                orderDate: existingTender.orderDate,
+                billingAddress: existingTender.billingAddress,
+                installationAddress: existingTender.installationAddress,
+                deliveryAddress: existingTender.deliveryAddress,
+                billingSameAsInstallation: existingTender.billingSameAsInstallation,
+                directDiscount: existingTender.directDiscount,
+                directDiscountLabel: existingTender.directDiscountLabel,
+                extraDiscount: existingTender.extraDiscount,
+                extraDiscountLabel: existingTender.extraDiscountLabel,
+                totalDiscounts: existingTender.totalDiscounts,
+                paymentStages: existingTender.paymentStages,
+                internalDeliveryDate: existingTender.internalDeliveryDate,
+                priceList: existingTender.priceList,
+                paymentTerms: existingTender.paymentTerms,
+                commissionNumber: existingTender.commissionNumber,
+                customerReference: existingTender.customerReference,
+                currency: existingTender.currency,
+                salespersonName: existingTender.salespersonName,
+                // Eine Offerte kann OHNE CRM-Kunden leben (OSP-Import): dann
+                // steht der Empfaenger in diesen drei Feldern. Ohne sie kaeme
+                // die Kopie ohne Kunden auf die Welt.
+                manualCustomerName: existingTender.manualCustomerName,
+                manualCustomerEmail: existingTender.manualCustomerEmail,
+                manualCustomerAddress: existingTender.manualCustomerAddress,
+                // Json-Spalte: `null` verlangt bei Prisma Prisma.DbNull, also
+                // wird das Feld bei leerer CC-Liste schlicht weggelassen.
+                ccEmails: existingTender.ccEmails ?? undefined,
+                sourceStatus: overrides.sourceStatus,
+                sourceCompany: existingTender.sourceCompany,
+                shippingTerms: existingTender.shippingTerms,
+                shippingWeight: existingTender.shippingWeight,
+                fiscalPosition: existingTender.fiscalPosition,
+                salesTeam: existingTender.salesTeam,
+                onlineSignature: existingTender.onlineSignature,
+                onlinePayment: existingTender.onlinePayment,
+                coverLetter: existingTender.coverLetter,
+                closingNote: existingTender.closingNote,
+                closingImages: existingTender.closingImages,
+                sourceTotal: existingTender.sourceTotal,
+                sourceNetAmount: existingTender.sourceNetAmount,
+                sourceTaxAmount: existingTender.sourceTaxAmount,
+                sourceRecurringTotal: existingTender.sourceRecurringTotal,
+                sourceMargin: existingTender.sourceMargin,
+                projectId: overrides.projectId,
+            }
+        });
+        // Der Positionsbaum wird als Ganzes gespiegelt: erst fuer jede Zeile
+        // eine neue Id reservieren, damit `parentPositionId` beim Schreiben
+        // schon auf die KOPIE zeigt und nicht auf das Original.
+        const idMapping = new Map();
+        for (const pos of existingTender.positions) {
+            idMapping.set(pos.id, (0, nanoid_1.nanoid)(10));
+        }
+        // Drei Sammel-Inserts statt drei pro Zeile: die Datenbank steht
+        // entfernt, und eine Offerte mit 200 Zeilen haette sonst 600
+        // Netzwerkrunden INNERHALB der Transaktion gebraucht (deren
+        // Standardfrist 5 s betraegt).
+        const positionRows = [];
+        const calculationRows = [];
+        const mappingRows = [];
+        for (const pos of existingTender.positions) {
+            const newPosId = idMapping.get(pos.id);
+            const newParentId = pos.parentPositionId ? idMapping.get(pos.parentPositionId) || null : null;
+            positionRows.push({
+                id: newPosId,
+                tenantId: pos.tenantId,
+                tenderId: newTenderId,
+                parentPositionId: newParentId,
+                rowType: pos.rowType || 'SECTION',
+                sourceArticleId: pos.sourceArticleId || null,
+                displayOrder: pos.displayOrder ?? 0,
+                npkCode: pos.npkCode || null,
+                positionNumber: pos.positionNumber,
+                shortDescription: pos.shortDescription,
+                longDescription: pos.longDescription || null,
+                quantity: pos.quantity,
+                unit: pos.unit || null,
+                hierarchyLevel: pos.hierarchyLevel,
+                unitPrice: pos.unitPrice,
+                discount: pos.discount,
+                discounts: pos.discounts,
+                taxRate: pos.taxRate,
+                imageUrl: pos.imageUrl,
+            });
+            if (pos.calculation) {
+                calculationRows.push({
+                    id: (0, nanoid_1.nanoid)(8),
+                    positionId: newPosId,
+                    materialCost: pos.calculation.materialCost,
+                    laborCost: pos.calculation.laborCost,
+                    overheadCost: pos.calculation.overheadCost,
+                    riskAmount: pos.calculation.riskAmount,
+                    additionalCost: pos.calculation.additionalCost || 0,
+                    profitMargin: pos.calculation.profitMargin,
+                    totalCalculatedPrice: pos.calculation.totalCalculatedPrice,
+                });
+            }
+            for (const mapping of pos.articleMappings || []) {
+                mappingRows.push({
+                    id: (0, nanoid_1.nanoid)(10),
+                    positionId: newPosId,
+                    articleId: mapping.articleId,
+                    quantityMultiplier: mapping.quantityMultiplier,
+                    discount: mapping.discount ?? 0,
+                });
+            }
+        }
+        // InnoDB prueft den Selbstbezug `parentPositionId` sofort, Zeile fuer
+        // Zeile — in EINER Sammel-Einfuegung muessen Eltern also VOR ihren
+        // Kindern stehen. Die Reihenfolge, in der die Zeilen aus der Datenbank
+        // kommen, garantiert das nicht, deshalb der Baumdurchlauf.
+        const orderedPositionRows = [];
+        const rowsByParent = new Map();
+        for (const row of positionRows) {
+            const parentKey = row.parentPositionId ?? null;
+            const bucket = rowsByParent.get(parentKey);
+            if (bucket)
+                bucket.push(row);
+            else
+                rowsByParent.set(parentKey, [row]);
+        }
+        const emitChildrenOf = (parentId) => {
+            for (const row of rowsByParent.get(parentId) || []) {
+                orderedPositionRows.push(row);
+                emitChildrenOf(row.id);
+            }
+        };
+        emitChildrenOf(null);
+        // Sicherheitsnetz: haenge alles an, was der Durchlauf nicht erreicht hat
+        // (ein Zyklus in den Altdaten), damit keine Zeile verloren geht.
+        if (orderedPositionRows.length < positionRows.length) {
+            const emitted = new Set(orderedPositionRows.map((row) => row.id));
+            for (const row of positionRows) {
+                if (!emitted.has(row.id))
+                    orderedPositionRows.push(row);
+            }
+        }
+        // Reihenfolge ist Pflicht: Kalkulation und Artikelzuordnung haengen als
+        // Fremdschluessel an der Position.
+        if (orderedPositionRows.length)
+            await tx.position.createMany({ data: orderedPositionRows });
+        if (calculationRows.length)
+            await tx.calculationItem.createMany({ data: calculationRows });
+        if (mappingRows.length)
+            await tx.positionArticleMapping.createMany({ data: mappingRows });
+        return createdTender;
+    }
+    /** Die zu kopierende Offerte samt vollem Positionsbaum. */
+    async findTenderForCopy(tenderId, tenantId) {
         const existingTender = await prisma_client_1.default.tender.findFirst({
             where: { id: tenderId, tenantId },
             include: {
@@ -541,119 +729,44 @@ class TenderRepository {
         });
         if (!existingTender)
             throw new Error("Kopyalanacak teklif bulunamadı.");
-        const newTenderId = (0, nanoid_1.nanoid)(10);
-        const newVersion = existingTender.version + 1;
+        return existingTender;
+    }
+    async createNextVersion(tenderId, newCreatedBy, tenantId) {
+        const existingTender = await this.findTenderForCopy(tenderId, tenantId);
+        const result = await prisma_client_1.default.$transaction(async (tx) => this.copyTenderRecord(tx, existingTender, (0, nanoid_1.nanoid)(10), {
+            // Alle Versionen einer Offerte teilen sich dieselbe AN-Nummer;
+            // nur der Zaehler dahinter steigt.
+            tenderNumber: existingTender.tenderNumber,
+            version: existingTender.version + 1,
+            createdByEmployeeId: newCreatedBy,
+            projectId: existingTender.projectId,
+            sourceStatus: existingTender.sourceStatus,
+            validUntil: existingTender.validUntil,
+        }));
+        return this.mapToEntity(result);
+    }
+    /**
+     * Offerte KOPIEREN — dieselben Daten, aber ein EIGENER Beleg: frische
+     * AN-Nummer, Version 1, Entwurf. (Die neue Version behaelt dagegen die
+     * Nummer und zaehlt nur die Version hoch.)
+     */
+    async duplicate(tenderId, newCreatedBy, tenantId) {
+        const existingTender = await this.findTenderForCopy(tenderId, tenantId);
         const result = await prisma_client_1.default.$transaction(async (tx) => {
-            const createdTender = await tx.tender.create({
-                data: {
-                    id: newTenderId,
-                    tenantId: existingTender.tenantId,
-                    customerId: existingTender.customerId,
-                    tenderNumber: existingTender.tenderNumber,
-                    version: newVersion,
-                    format: existingTender.format,
-                    status: 'Draft',
-                    createdByEmployeeId: newCreatedBy,
-                    validUntil: existingTender.validUntil,
-                    sourceCreatedAt: existingTender.sourceCreatedAt,
-                    orderDate: existingTender.orderDate,
-                    billingAddress: existingTender.billingAddress,
-                    installationAddress: existingTender.installationAddress,
-                    deliveryAddress: existingTender.deliveryAddress,
-                    billingSameAsInstallation: existingTender.billingSameAsInstallation,
-                    directDiscount: existingTender.directDiscount,
-                    directDiscountLabel: existingTender.directDiscountLabel,
-                    extraDiscount: existingTender.extraDiscount,
-                    extraDiscountLabel: existingTender.extraDiscountLabel,
-                    totalDiscounts: existingTender.totalDiscounts,
-                    paymentStages: existingTender.paymentStages,
-                    internalDeliveryDate: existingTender.internalDeliveryDate,
-                    priceList: existingTender.priceList,
-                    paymentTerms: existingTender.paymentTerms,
-                    commissionNumber: existingTender.commissionNumber,
-                    customerReference: existingTender.customerReference,
-                    currency: existingTender.currency,
-                    salespersonName: existingTender.salespersonName,
-                    sourceStatus: existingTender.sourceStatus,
-                    sourceCompany: existingTender.sourceCompany,
-                    shippingTerms: existingTender.shippingTerms,
-                    shippingWeight: existingTender.shippingWeight,
-                    fiscalPosition: existingTender.fiscalPosition,
-                    salesTeam: existingTender.salesTeam,
-                    onlineSignature: existingTender.onlineSignature,
-                    onlinePayment: existingTender.onlinePayment,
-                    coverLetter: existingTender.coverLetter,
-                    closingNote: existingTender.closingNote,
-                    closingImages: existingTender.closingImages,
-                    sourceTotal: existingTender.sourceTotal,
-                    sourceNetAmount: existingTender.sourceNetAmount,
-                    sourceTaxAmount: existingTender.sourceTaxAmount,
-                    sourceRecurringTotal: existingTender.sourceRecurringTotal,
-                    sourceMargin: existingTender.sourceMargin,
-                    projectId: existingTender.projectId,
-                }
+            // Die Nummer wird IN dieser Transaktion gezogen: bricht das
+            // Kopieren ab, bleibt keine Luecke in der Belegreihe zurueck.
+            const tenderNumber = await (0, documentNumber_1.nextDocumentNumber)(existingTender.tenantId, 'QUOTE', tx);
+            return this.copyTenderRecord(tx, existingTender, (0, nanoid_1.nanoid)(10), {
+                tenderNumber,
+                version: 1,
+                createdByEmployeeId: newCreatedBy,
+                // Die Kopie startet als ENTWURF: kein Projekt, kein
+                // Auftragsstatus — sonst zeigten Liste und Detail sie sofort
+                // als "Auftrag" (isOrderTender liest genau diese zwei Felder).
+                projectId: null,
+                sourceStatus: null,
+                validUntil: copiedValidUntil(existingTender.validUntil),
             });
-            const idMapping = new Map();
-            for (const pos of existingTender.positions) {
-                const newPosId = (0, nanoid_1.nanoid)(10);
-                idMapping.set(pos.id, newPosId);
-            }
-            for (const pos of existingTender.positions) {
-                const newPosId = idMapping.get(pos.id);
-                const newParentId = pos.parentPositionId ? idMapping.get(pos.parentPositionId) || null : null;
-                await tx.position.create({
-                    data: {
-                        id: newPosId,
-                        tenantId: pos.tenantId,
-                        tenderId: newTenderId,
-                        parentPositionId: newParentId,
-                        rowType: pos.rowType || 'SECTION',
-                        sourceArticleId: pos.sourceArticleId || null,
-                        displayOrder: pos.displayOrder ?? 0,
-                        npkCode: pos.npkCode || null,
-                        positionNumber: pos.positionNumber,
-                        shortDescription: pos.shortDescription,
-                        longDescription: pos.longDescription || null,
-                        quantity: pos.quantity,
-                        unit: pos.unit || null,
-                        hierarchyLevel: pos.hierarchyLevel,
-                        unitPrice: pos.unitPrice,
-                        discount: pos.discount,
-                        discounts: pos.discounts,
-                        taxRate: pos.taxRate,
-                        imageUrl: pos.imageUrl,
-                    }
-                });
-                if (pos.calculation) {
-                    await tx.calculationItem.create({
-                        data: {
-                            id: (0, nanoid_1.nanoid)(8),
-                            positionId: newPosId,
-                            materialCost: pos.calculation.materialCost,
-                            laborCost: pos.calculation.laborCost,
-                            overheadCost: pos.calculation.overheadCost,
-                            riskAmount: pos.calculation.riskAmount,
-                            additionalCost: pos.calculation.additionalCost || 0,
-                            profitMargin: pos.calculation.profitMargin,
-                            totalCalculatedPrice: pos.calculation.totalCalculatedPrice
-                        }
-                    });
-                }
-                if (pos.articleMappings && pos.articleMappings.length > 0) {
-                    for (const mapping of pos.articleMappings) {
-                        await tx.positionArticleMapping.create({
-                            data: {
-                                id: (0, nanoid_1.nanoid)(10),
-                                positionId: newPosId,
-                                articleId: mapping.articleId,
-                                quantityMultiplier: mapping.quantityMultiplier,
-                                discount: mapping.discount ?? 0,
-                            }
-                        });
-                    }
-                }
-            }
-            return createdTender;
         });
         return this.mapToEntity(result);
     }

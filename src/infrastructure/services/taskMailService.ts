@@ -3,6 +3,7 @@ import { dispatchMail } from "./outlook/MailDispatchService";
 import { buildInviteHtml, buildInviteText, inviteWords, type InviteDetail } from "./calendarInviteMail";
 import { brandLogoInline, brandWaveInline } from "./mailBrand";
 import { kindIconInline } from "./mailKindIcons";
+import { getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
 
 /**
  * AUFGABE → MAIL AN DIE VERANTWORTLICHE (19.08.2026, Vorgabe Samet).
@@ -82,7 +83,7 @@ const sendOne = async (
     recipient: TaskRecipient,
     employeeId: string,
 ): Promise<boolean> => {
-    const settings = await prisma.mailSetting.findUnique({ where: { tenantId: task.tenantId } });
+    const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(task.tenantId) } });
     if (!settings?.smtpHost?.trim() || !settings?.smtpPort) return false;
     const fromEmail = clean(settings.fromEmail);
     if (!EMAIL_RE.test(fromEmail)) return false;

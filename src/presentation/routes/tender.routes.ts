@@ -229,6 +229,22 @@ router.post(
 
 /**
  * @swagger
+ * /tenders/{id}/duplicate:
+ *   post:
+ *     tags: [Tender]
+ *     summary: Teklifi kopyala (yeni belge kodu, versiyon 1, taslak)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/:id/duplicate',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.duplicate(req, res)
+);
+
+/**
+ * @swagger
  * /tenders/{id}/approve:
  *   patch:
  *     tags: [Tender]

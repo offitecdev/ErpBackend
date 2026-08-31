@@ -11,7 +11,7 @@ import { validate } from '../middlewares/ValidationMiddleware';
 import { employeeCreateSchema, employeeUpdateSchema } from '../validation/employeeSchemas';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
-import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
+import { getPersonnelTenantScope, isEmployeeInScope } from '../controllers/serviceTenantScope';
 
 const router = Router();
 
@@ -227,11 +227,11 @@ router.patch(
         try {
             // Repoyu kullanarak kişiyi pasife çekiyoruz
             const id = req.params.id as string;
-            // Ownership check: only employees of the caller's company tree can be
-            // deactivated (personnel are shared across the tree's tenants).
+            // Ownership check: only employees of the SELECTED company can be
+            // deactivated — a sister company's staff answer 404 here.
             const existing = await employeeRepo.findById(id);
-            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
-            if (!existing || !treeTenantIds.includes(existing.tenantId)) {
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
+            if (!existing || !isEmployeeInScope(existing, scopeTenantIds)) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
             const updated = await employeeRepo.update(id, { isActive: false, terminationDate: new Date() });
@@ -265,8 +265,8 @@ router.patch(
         try {
             const id = req.params.id as string;
             const existing = await employeeRepo.findById(id);
-            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
-            if (!existing || !treeTenantIds.includes(existing.tenantId)) {
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
+            if (!existing || !isEmployeeInScope(existing, scopeTenantIds)) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
             if (existing.bannedAt) {
@@ -311,8 +311,8 @@ router.patch(
         try {
             const id = req.params.id as string;
             const existing = await employeeRepo.findById(id);
-            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
-            if (!existing || !treeTenantIds.includes(existing.tenantId)) {
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
+            if (!existing || !isEmployeeInScope(existing, scopeTenantIds)) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
             if (id === req.user!.id) {

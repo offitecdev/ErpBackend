@@ -201,9 +201,9 @@ model AuditLog {
 /// root. Permissions are part of the shared role; the module package is
 /// configured per entity via RoleModuleConfig.
 model Role {
-  id            String             @id
-  tenantId      String
-  roleName      String
+  id              String             @id
+  tenantId        String
+  roleName        String
   /// ROLLENVORLAGE (17.08.2026): die Seitenrechte, wie die Tabelle unter
   /// Einstellungen → Berechtigungen sie zeigt —
   /// { "crm.customers": 2, "inventory.stock": 3 }, 1 ansehen / 2 bearbeiten /
@@ -211,20 +211,29 @@ model Role {
   /// das Modulpaket werden daraus ABGELEITET; diese Spalte ist die Fassung,
   /// die bearbeitet wird. null = Altrolle aus der abgelösten Stufenseite; ihre
   /// Karte wird beim Lesen aus den Rechten zurückgerechnet.
-  pageLevels    Json?
+  pageLevels      Json?
   /// Feste Administratorrolle des Firmenbaums: alle Seiten, alle Rechte, nicht
   /// änderbar und nicht löschbar. Genau EINE je Stamm.
-  isSystemAdmin Boolean            @default(false)
+  isSystemAdmin   Boolean            @default(false)
   /// Feste Purser-Rolle (27.08.2026): wer sie trägt, führt die ZWEITE Stufe des
   /// Antragswegs — erst die Verwaltung, dann der Purser; seine Freigabe
   /// schliesst den Antrag ab. Sie löst die alte Personalrolle ACCOUNTANT ab.
   /// Genau EINE je Stamm, Seitenstufen bleiben bearbeitbar, Name und Flagge
   /// nicht.
-  isPurser      Boolean            @default(false)
-  employees     EmployeeRole[]
-  tenant        Tenant             @relation(fields: [tenantId], references: [id])
-  permissions   RolePermission[]
-  moduleConfigs RoleModuleConfig[]
+  isPurser        Boolean            @default(false)
+  /// FIRMENWECHSEL (31.08.2026, Vorgabe): darf, wer diese Rolle traegt, im Kopf
+  /// JEDE Firma des eigenen Konzernbaums auswaehlen — auch ohne Zuteilung unter
+  /// Personal → Person → Zugang? Gedacht fuer die Verwaltung und die
+  /// Projektleitung, die ueber alle Haeuser hinweg arbeiten. Die
+  /// Administratorrolle traegt das Recht immer, unabhaengig von dieser Spalte.
+  /// `Employee.allowedTenantIds` bleibt daneben stehen: es entscheidet weiter
+  /// die MITGLIEDSCHAFT (in welcher Firmenliste die Person auftaucht), diese
+  /// Flagge nur die REICHWEITE des Umschalters.
+  canSwitchTenant Boolean            @default(false)
+  employees       EmployeeRole[]
+  tenant          Tenant             @relation(fields: [tenantId], references: [id])
+  permissions     RolePermission[]
+  moduleConfigs   RoleModuleConfig[]
 
   @@index([tenantId], map: "Role_tenantId_fkey")
 }

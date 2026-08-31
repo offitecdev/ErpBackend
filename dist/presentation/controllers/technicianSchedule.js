@@ -29,12 +29,13 @@ async function validateTechnicians(technicianIds, tenantId) {
     const ids = [...new Set(technicianIds.filter(Boolean))];
     if (!ids.length)
         return [];
-    // Personnel are shared company-wide -> technicians of the whole tree qualify.
-    const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+    // Personnel belong to the SELECTED company -> a sister company's
+    // technicians are not assignable here.
+    const tenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId);
     const employees = await prisma_client_1.default.employee.findMany({
         where: {
             id: { in: ids },
-            tenantId: { in: tenantIds },
+            ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds),
             isActive: true,
             OR: [
                 { roleName: "Teknisyen" },
@@ -64,11 +65,12 @@ async function validateTechnicians(technicianIds, tenantId) {
  * shaped identically for the project and tender option pickers.
  */
 async function listTechnicianOptions(tenantId) {
-    // Personnel are shared company-wide -> offer the whole tree's technicians.
-    const tenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+    // Personnel belong to the SELECTED company -> the picker offers this
+    // company's technicians only.
+    const tenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(tenantId);
     const technicians = await prisma_client_1.default.employee.findMany({
         where: {
-            tenantId: { in: tenantIds },
+            ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds),
             isActive: true,
             OR: [
                 { roleName: "Teknisyen" },

@@ -9,7 +9,7 @@ import { IRoleRepository } from '../../domain/repositories/IRoleRepository';
 import { ICryptoService } from '../../application/interfaces/ICryptoService';
 import { assertPasswordPolicy } from '../../application/validation/password';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
-import { getCompanyTreeTenantIds } from './serviceTenantScope';
+import { getPersonnelTenantScope, getAssignableTenantIds, employeeScopeSql, isEmployeeInScope } from './serviceTenantScope';
 import { getCachedStaffDirectory } from '../../shared/staffDirectoryCache';
 import { parseAllowedTenantIds } from '../utils/tenantAccess';
 
@@ -47,19 +47,28 @@ export class EmployeeController {
     }
 
     /**
-     * Company assignment: which tenants of the tree the staff member may work
-     * in. undefined = leave untouched; empty selection clears to null (= every
-     * company of the tree). Ids outside the caller's own tree are refused, so
-     * an admin can never hand out access to a foreign company.
+     * Company assignment: which companies the staff member works in. It does
+     * two things at once — it opens the company switcher AND puts the person
+     * into that company's staff list (see getPersonnelTenantScope).
+     *
+     * undefined = leave untouched; an empty selection clears to null, which
+     * means the ONE company the person was created under (since 31.08.2026 —
+     * it used to mean "every company of the tree"). Only companies of the
+     * caller's own subtree may be handed out, so a sub-company can never grant
+     * access to a sister company.
      */
-    private async normalizeAllowedTenantIds(input: unknown, callerTenantId: string): Promise<string[] | null | undefined> {
+    private async normalizeAllowedTenantIds(
+        input: unknown,
+        callerTenantId: string,
+        callerHomeTenantId?: string,
+    ): Promise<string[] | null | undefined> {
         if (input === undefined) return undefined;
         const tenantIds = parseAllowedTenantIds(input);
         if (!tenantIds) return null;
-        const treeTenantIds = await getCompanyTreeTenantIds(callerTenantId);
-        const outside = tenantIds.filter((tenantId) => !treeTenantIds.includes(tenantId));
+        const assignable = await getAssignableTenantIds(callerTenantId, callerHomeTenantId);
+        const outside = tenantIds.filter((tenantId) => !assignable.includes(tenantId));
         if (outside.length) {
-            throw new Error('Seçilen şirketlerden biri bu şirket ağacına ait değil.');
+            throw new Error('Seçilen şirketlerden biri size açık değil.');
         }
         return tenantIds;
     }
@@ -74,7 +83,7 @@ export class EmployeeController {
                 // Accessible pages are a property of the ROLE (RoleModuleConfig),
                 // never of the individual — a personal package is not accepted.
                 moduleKeys: undefined,
-                allowedTenantIds: await this.normalizeAllowedTenantIds(req.body.allowedTenantIds, req.user!.tenantId) ?? null,
+                allowedTenantIds: await this.normalizeAllowedTenantIds(req.body.allowedTenantIds, req.user!.tenantId, req.user!.homeTenantId) ?? null,
                 tenantId: req.user?.tenantId
             };
             const result = await this.createEmployeeUseCase.execute(employeeData);
@@ -118,8 +127,9 @@ export class EmployeeController {
         `take: 1`, one trip.
 
         On top of that the result is briefly cached: the list is identical for
-        everyone in a company tree and barely ever changes, but a picker fetched
-        it on EVERY open. `EmployeeRepository` drops the cache on every write, so
+        everyone in the same company and barely ever changes, but a picker
+        fetched it on EVERY open. The cache key carries the tenant ids, so two
+        companies never share an entry. `EmployeeRepository` drops the cache on every write, so
         the TTL is only a ceiling for changes made outside this process. */
     private async lightStaffRows(treeTenantIds: string[], isActive?: boolean, hideDeleted = false) {
         if (treeTenantIds.length === 0) return [];
@@ -133,7 +143,7 @@ export class EmployeeController {
 
     private async loadLightStaffRows(treeTenantIds: string[], isActive?: boolean, hideDeleted = false) {
         const conditions: Prisma.Sql[] = [
-            Prisma.sql`e.tenantId IN (${Prisma.join(treeTenantIds)})`,
+            employeeScopeSql(treeTenantIds),
         ];
         if (isActive !== undefined) conditions.push(Prisma.sql`e.isActive = ${isActive}`);
         if (hideDeleted) conditions.push(Prisma.sql`e.deletedAt IS NULL`);
@@ -171,11 +181,11 @@ export class EmployeeController {
        HR data (salary, leave, notes, password state). */
     async directory(req: AuthRequest, res: Response) {
         try {
-            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
             const isActive = req.query.isActive !== undefined ? req.query.isActive === 'true' : true;
             // A directory never suggests someone who has left: soft-deleted
             // records stay out, unlike in the HR listing where admins need them.
-            return res.status(200).json(await this.lightStaffRows(treeTenantIds, isActive, true));
+            return res.status(200).json(await this.lightStaffRows(scopeTenantIds, isActive, true));
         } catch (error: any) {
             return res.status(400).json({ error: error.message });
         }
@@ -183,18 +193,18 @@ export class EmployeeController {
 
     async list(req: AuthRequest, res: Response) {
         try {
-            // Personnel are shared company-wide: the same staff pool shows under
-            // the main tenant and every sub-tenant.
-            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
+            // Personnel belong to the SELECTED company only — a person shows up
+            // under the company they were created in and nowhere else.
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
             if (String(req.query.light || '') === '1') {
                 return res.status(200).json(await this.lightStaffRows(
-                    treeTenantIds,
+                    scopeTenantIds,
                     req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined,
                 ));
             }
             const filters = {
                 tenantId: req.user!.tenantId,
-                tenantIds: treeTenantIds,
+                tenantIds: scopeTenantIds,
                 isActive: req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined,
                 departmentId: req.query.departmentId as string,
                 roleName: req.query.roleName as string,
@@ -212,11 +222,12 @@ export class EmployeeController {
         try {
             const id = req.params.id as string;
             const employee = await this.employeeRepository.findById(id);
-            // Ownership check: an id outside the caller's company tree answers 404,
+            // Ownership check: an id outside the SELECTED company answers 404,
             // exactly like a non-existent id, so foreign records can't be read (IDOR).
-            // Personnel are shared across the tree, so any tenant of it qualifies.
-            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
-            if (!employee || !treeTenantIds.includes(employee.tenantId)) {
+            // A sister company's staff are foreign records too — see
+            // getPersonnelTenantScope.
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
+            if (!employee || !isEmployeeInScope(employee, scopeTenantIds)) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
             const { passwordHash, ...safeResult } = employee;
@@ -237,15 +248,15 @@ export class EmployeeController {
             const { roleId, password, moduleKeys: _ignoredModuleKeys, ...employeeData } = req.body;
             if ('allowedTenantIds' in employeeData) {
                 employeeData.allowedTenantIds =
-                    await this.normalizeAllowedTenantIds(employeeData.allowedTenantIds, req.user!.tenantId) ?? null;
+                    await this.normalizeAllowedTenantIds(employeeData.allowedTenantIds, req.user!.tenantId, req.user!.homeTenantId) ?? null;
             }
 
             // Ownership check before any write — the row must belong to the
-            // caller's company tree (prevents cross-company employee updates;
-            // personnel are shared across the tree's tenants).
+            // SELECTED company (prevents cross-company employee updates; a
+            // sister company's staff are not editable from here).
             const existing = await this.employeeRepository.findById(id);
-            const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
-            if (!existing || !treeTenantIds.includes(existing.tenantId)) {
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
+            if (!existing || !isEmployeeInScope(existing, scopeTenantIds)) {
                 return res.status(404).json({ error: 'Personel bulunamadı.' });
             }
 

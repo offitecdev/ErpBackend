@@ -153,6 +153,16 @@ router.post('/:id/positions/:positionId/calculate', AuthMiddleware_1.requireAuth
 router.post('/:id/version', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.createVersion(req, res));
 /**
  * @swagger
+ * /tenders/{id}/duplicate:
+ *   post:
+ *     tags: [Tender]
+ *     summary: Teklifi kopyala (yeni belge kodu, versiyon 1, taslak)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/:id/duplicate', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.duplicate(req, res));
+/**
+ * @swagger
  * /tenders/{id}/approve:
  *   patch:
  *     tags: [Tender]

@@ -9,6 +9,7 @@ const MailDispatchService_1 = require("./outlook/MailDispatchService");
 const calendarInviteMail_1 = require("./calendarInviteMail");
 const mailBrand_1 = require("./mailBrand");
 const mailKindIcons_1 = require("./mailKindIcons");
+const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 /**
  * AUFGABE → MAIL AN DIE VERANTWORTLICHE (19.08.2026, Vorgabe Samet).
  *
@@ -77,7 +78,7 @@ const recipientsOf = (task, skipEmployeeIds) => {
 };
 /** Eine Aufgabenmail an EINE Person. */
 const sendOne = async (task, recipient, employeeId) => {
-    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: task.tenantId } });
+    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(task.tenantId) } });
     if (!settings?.smtpHost?.trim() || !settings?.smtpPort)
         return false;
     const fromEmail = clean(settings.fromEmail);

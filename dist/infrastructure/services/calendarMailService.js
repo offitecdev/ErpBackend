@@ -10,6 +10,7 @@ const calendarInvite_1 = require("./calendarInvite");
 const calendarInviteMail_1 = require("./calendarInviteMail");
 const mailBrand_1 = require("./mailBrand");
 const mailKindIcons_1 = require("./mailKindIcons");
+const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 /**
  * TERMIN → EINLADUNGSMAIL (18.08.2026, Versand auf Befehl seit 19.08.2026).
  *
@@ -105,7 +106,7 @@ const sanitizeInviteAttachments = (raw) => {
 };
 exports.sanitizeInviteAttachments = sanitizeInviteAttachments;
 const sendInvite = async (context) => {
-    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: context.tenantId } });
+    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(context.tenantId) } });
     if (!settings?.smtpHost?.trim() || !settings?.smtpPort) {
         console.log(`[KALENDER] ${context.uid}: kein SMTP-Server eingerichtet, keine Einladung verschickt.`);
         return { sent: false, reason: "NO_SMTP" };
@@ -334,7 +335,7 @@ const collectAppointmentInvite = async (appointmentId, method) => {
     if (method === "CANCEL" && !appointment.icalUid)
         return null;
     const settings = await prisma_client_1.default.mailSetting.findUnique({
-        where: { tenantId: appointment.tenantId },
+        where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(appointment.tenantId) },
         select: { fromEmail: true },
     });
     const domain = appointmentDomain(settings?.fromEmail);
@@ -632,7 +633,7 @@ const collectMeetingInvite = async (meetingId, method) => {
     if (method === "CANCEL" && !meeting.icalUid)
         return null;
     const settings = await prisma_client_1.default.mailSetting.findUnique({
-        where: { tenantId: meeting.tenantId },
+        where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(meeting.tenantId) },
         select: { fromEmail: true },
     });
     const uid = meeting.icalUid || (0, calendarInvite_1.newIcalUid)(meeting.id, appointmentDomain(settings?.fromEmail));

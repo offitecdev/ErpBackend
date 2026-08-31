@@ -12,6 +12,7 @@ import { queueTaskAssignmentMail } from '../../infrastructure/services/taskMailS
 import { flipOverdueTasks } from '../../infrastructure/services/crmTaskMaintenance';
 import { GetUserPermissionsUseCase } from '../../application/use-cases/auth/GetUserPermissionsUseCase';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
+import { getPersonnelTenantScope, employeeScopeWhere } from '../controllers/serviceTenantScope';
 
 /* Aufgaben & Erinnerungen (mounted under /crm alongside crm.routes.ts).
 
@@ -270,10 +271,16 @@ const fastPatchStatus = async (
     };
 };
 
-/** Personen der Firma prüfen und die Verantwortlichen-Zeilen neu setzen. */
-const validateEmployees = async (ids: string[]) => {
+/** Personen der Firma prüfen und die Verantwortlichen-Zeilen neu setzen.
+    Der Mandant gehört zur Prüfung: sonst liesse sich eine Aufgabe mit einer
+    von Hand gesetzten Id an eine Person der Schwesterfirma hängen — genau die
+    Vermischung, die es seit dem 31.08.2026 nicht mehr geben darf. */
+const validateEmployees = async (ids: string[], tenantId: string) => {
     if (ids.length === 0) return [] as string[];
-    const rows = await prisma.employee.findMany({ where: { id: { in: ids } }, select: { id: true } });
+    const rows = await prisma.employee.findMany({
+        where: { id: { in: ids }, ...employeeScopeWhere(await getPersonnelTenantScope(tenantId)) },
+        select: { id: true },
+    });
     const found = new Set(rows.map((row) => row.id));
     return ids.filter((id) => found.has(id));
 };
@@ -683,7 +690,7 @@ router.post('/tasks', requireAuth, requirePermission('crm.activities.create'), a
             customerId ? prisma.customer.findFirst({ where: { id: customerId, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve(null),
             contactId && customerId ? prisma.customerContact.findFirst({ where: { id: contactId, customerId }, select: { id: true } }) : Promise.resolve(null),
             tenderId ? prisma.tender.findFirst({ where: { id: tenderId, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve(null),
-            validateEmployees(wantedAssignees),
+            validateEmployees(wantedAssignees, user.tenantId),
         ]);
         if (customerId && !customer) return res.status(404).json({ error: 'Müşteri bulunamadı.' });
         if (contactId && !contact) return res.status(400).json({ error: 'Ansprechpartner gehört nicht zu diesem Kunden.' });
@@ -764,7 +771,7 @@ router.post('/tasks/bulk', requireAuth, requirePermission('crm.activities.create
         const [customers, contacts, assignees, tenders] = await Promise.all([
             customerIds.length ? prisma.customer.findMany({ where: { id: { in: customerIds }, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve([]),
             contactIds.length ? prisma.customerContact.findMany({ where: { id: { in: contactIds }, tenantId: user.tenantId }, select: { id: true, customerId: true } }) : Promise.resolve([]),
-            assigneeIds.length ? prisma.employee.findMany({ where: { id: { in: assigneeIds } }, select: { id: true } }) : Promise.resolve([]),
+            assigneeIds.length ? prisma.employee.findMany({ where: { id: { in: assigneeIds }, ...employeeScopeWhere(await getPersonnelTenantScope(user.tenantId)) }, select: { id: true } }) : Promise.resolve([]),
             tenderIds.length ? prisma.tender.findMany({ where: { id: { in: tenderIds }, tenantId: user.tenantId }, select: { id: true } }) : Promise.resolve([]),
         ]);
         const allowedCustomers = new Set(customers.map((row) => row.id));
@@ -914,7 +921,7 @@ router.patch('/tasks/:id', requireAuth, async (req, res) => {
         const wantedAssignees = parseAssigneeIds(req.body);
         let assigneeIds: string[] | null = null;
         if (wantedAssignees !== undefined) {
-            assigneeIds = await validateEmployees(wantedAssignees);
+            assigneeIds = await validateEmployees(wantedAssignees, user.tenantId);
             if (assigneeIds.length !== wantedAssignees.length) return res.status(400).json({ error: 'Verantwortliche Person nicht gefunden.' });
         }
 

@@ -39,22 +39,34 @@ const hostOfWebsite = (website) => {
     }
 };
 const loadBook = async (tenantId) => {
-    const employeeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+    /* BAUMWEIT, NICHT JE FIRMA (13.09.2026). Das Postfach gehört dem Stamm des
+       Firmenbaums (getMailTenantId) und trägt die Post ALLER Firmen darin. Ein
+       Adressbuch, das nur die Kundschaft des Stamms kennt, hielte die Post der
+       Untergesellschaften für fremd: sie käme ohne Kunden, ohne Ansprech-
+       partner und ohne Etikett herein — genau die Zuordnung, für die es das
+       Adressbuch gibt. */
+    const recordTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId);
+    const scope = { tenantId: { in: recordTenantIds } };
     const [customers, contacts, employees] = await Promise.all([
         prisma_client_1.default.customer.findMany({
-            where: { tenantId, isActive: true },
-            select: { id: true, mainEmail: true, website: true },
+            where: { ...scope, isActive: true },
+            select: { id: true, tenantId: true, mainEmail: true, website: true },
         }),
         prisma_client_1.default.customerContact.findMany({
-            where: { tenantId, email: { not: null } },
+            where: { ...scope, email: { not: null } },
             select: { id: true, customerId: true, email: true },
         }),
-        // Registrierte Benutzer des ganzen Firmenbaums; ausgeschiedene und
-        // gesperrte Konten zählen nicht mehr als "bekannt".
-        employeeTenantIds.length
+        /* Hier bleibt es BAUMWEIT — anders als bei jeder Personenliste. Das
+           Postfach hängt am Stamm des Baums (getMailTenantId); die Frage ist
+           nicht "wen darf ich sehen", sondern "ist diese Absenderadresse eine
+           von uns". Würde die Liste auf die eine Firma verengt, hielte das
+           Postfach die Post der Schwesterfirmen für fremd und ordnete sie
+           falsch zu. Ausgeschiedene und gesperrte Konten zählen nicht mehr
+           als "bekannt". */
+        recordTenantIds.length
             ? prisma_client_1.default.employee.findMany({
-                where: { tenantId: { in: employeeTenantIds }, isActive: true, deletedAt: null },
-                select: { id: true, email: true },
+                where: { ...scope, isActive: true, deletedAt: null },
+                select: { id: true, tenantId: true, email: true },
             })
             : Promise.resolve([]),
     ]);
@@ -70,7 +82,9 @@ const loadBook = async (tenantId) => {
         }
         set.add(customerId);
     };
+    const customerTenantById = new Map();
     for (const customer of customers) {
+        customerTenantById.set(customer.id, customer.tenantId);
         const address = (0, exports.normalizeAddress)(customer.mainEmail);
         if (address.includes("@")) {
             byAddress.set(address, { customerId: customer.id, contactId: null });
@@ -88,14 +102,21 @@ const loadBook = async (tenantId) => {
         addDomain((0, exports.domainOf)(address), contact.customerId);
     }
     const byEmployee = new Map();
+    const employeeTenantById = new Map();
     for (const employee of employees) {
         const address = (0, exports.normalizeAddress)(employee.email);
-        if (address.includes("@"))
-            byEmployee.set(address, employee.id);
+        if (!address.includes("@"))
+            continue;
+        byEmployee.set(address, employee.id);
+        employeeTenantById.set(employee.id, employee.tenantId);
     }
-    return { byAddress, byDomain, byEmployee, loadedAt: Date.now() };
+    return { byAddress, byDomain, byEmployee, employeeTenantById, customerTenantById, loadedAt: Date.now() };
 };
-const getAddressBook = async (tenantId, { fresh = false } = {}) => {
+const getAddressBook = async (selectedTenantId, { fresh = false } = {}) => {
+    /* Ein Postfach, ein Adressbuch: der Schlüssel ist immer der Stamm des
+       Firmenbaums. Sonst hielte jede Firma ihre eigene (inhaltsgleiche) Kopie,
+       und `invalidateAddressBook` träfe nur eine davon. */
+    const tenantId = await (0, serviceTenantScope_1.getMailTenantId)(selectedTenantId);
     const cached = books.get(tenantId);
     if (cached && !fresh && Date.now() - cached.loadedAt < BOOK_TTL_MS)
         return cached;
@@ -109,7 +130,16 @@ const getAddressBook = async (tenantId, { fresh = false } = {}) => {
     return job;
 };
 exports.getAddressBook = getAddressBook;
-const invalidateAddressBook = (tenantId) => { books.delete(tenantId); };
+const invalidateAddressBook = (selectedTenantId) => {
+    /* Der Aufrufer hat den Mail-Mandanten in der Hand — den sofort, damit der
+       nächste Abruf im selben Zug schon neu lädt. Der aufgelöste Stamm kommt
+       einen Zug später hinterher, falls doch jemand eine Untergesellschaft
+       hereinreicht. */
+    books.delete(selectedTenantId);
+    void (0, serviceTenantScope_1.getMailTenantId)(selectedTenantId)
+        .then((tenantId) => { books.delete(tenantId); })
+        .catch(() => undefined);
+};
 exports.invalidateAddressBook = invalidateAddressBook;
 const matchAddresses = (book, addresses) => {
     const cleaned = addresses.map(exports.normalizeAddress).filter((address) => address.includes("@"));

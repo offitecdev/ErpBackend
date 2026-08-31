@@ -66,12 +66,12 @@ model MailAccount {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model MailCategory {
-  id       String  @id
-  tenantId String
+  id           String   @id
+  tenantId     String
   // STAFF | CUSTOMER | TENDER | ORDER | PROJECT | INVOICE | REQUESTS
-  kind     String  @db.VarChar(12)
-  entityId String?
-  name     String  @db.VarChar(160)
+  kind         String   @db.VarChar(12)
+  entityId     String?
+  name         String   @db.VarChar(160)
   // Randfarbe der Zuordnung (Sammelmodus) und Punkt in der Leiste.
   color        String   @db.VarChar(16)
   displayOrder Int      @default(0)
@@ -85,7 +85,7 @@ model MailCategory {
 }
 
 model MailMessage {
-  id                String   @id
+  id                String    @id
   tenantId          String
   // Postfach, aus dem die Nachricht stammt bzw. über das sie ging; null bei
   // ERP-Sendungen ohne verbundenes Postfach (SMTP-Transport).
@@ -94,46 +94,46 @@ model MailMessage {
   // der ERP-Mail).
   employeeId        String?
   // IN | OUT
-  direction         String   @db.VarChar(4)
+  direction         String    @db.VarChar(4)
   // OUTLOOK (per Sync gefunden) | ERP (aus dem ERP verschickt)
-  origin            String   @db.VarChar(8)
+  origin            String    @db.VarChar(8)
   // Graph-Nachrichten-Id (je Postfach eindeutig) und RFC-Message-ID (mandanten-
   // weit vergleichbar; verbindet die ERP-Sendung mit ihrer Kopie in "Gesendet").
-  providerMessageId String?  @db.VarChar(255)
-  internetMessageId String?  @db.VarChar(255)
-  conversationId    String?  @db.VarChar(255)
-  subject           String?  @db.VarChar(500)
-  fromName          String?  @db.VarChar(255)
-  fromAddress       String?  @db.VarChar(255)
+  providerMessageId String?   @db.VarChar(255)
+  internetMessageId String?   @db.VarChar(255)
+  conversationId    String?   @db.VarChar(255)
+  subject           String?   @db.VarChar(500)
+  fromName          String?   @db.VarChar(255)
+  fromAddress       String?   @db.VarChar(255)
   // [{ name, address }]
   toRecipients      Json
   ccRecipients      Json?
-  bodyPreview       String?  @db.VarChar(512)
+  bodyPreview       String?   @db.VarChar(512)
   // Reiner Text (HTML wird beim Sync in Text gewandelt); gedeckelt auf 60 000
   // Zeichen — Grunddaten, keine Archivkopie.
-  bodyText          String?  @db.Text
+  bodyText          String?   @db.Text
   // Bereinigtes HTML der Nachricht (nur Formatierung: fett, Listen, Tabellen,
   // Zitate — sanitizeMailHtml). Damit liest sich die Post wie im Mailprogramm;
   // `bodyText` bleibt die Grundlage für Vorschau und Suche.
-  bodyHtml          String?  @db.MediumText
+  bodyHtml          String?   @db.MediumText
   // Empfangs- (IN) bzw. Sendezeitpunkt (OUT).
   sentAt            DateTime
-  hasAttachments    Boolean  @default(false)
+  hasAttachments    Boolean   @default(false)
   // Nur Metadaten: [{ id, name, size, contentType }] — keine Inhalte.
   attachments       Json?
   // Link zur Nachricht in Outlook im Web.
-  webLink           String?  @db.Text
-  isRead            Boolean  @default(true)
+  webLink           String?   @db.Text
+  isRead            Boolean   @default(true)
   // Kundenzuordnung + wie sie zustande kam:
   //   AUTO_ADDRESS (Adresse eines Kunden/Ansprechpartners), AUTO_DOMAIN
   //   (eindeutige Firmendomain), MANUAL (vom Benutzer), ERP (Sendung aus dem ERP)
   customerId        String?
   contactId         String?
-  matchSource       String?  @db.VarChar(16)
+  matchSource       String?   @db.VarChar(16)
   // Beleg, aus dem die ERP-Sendung entstand: TENDER | ORDER | INVOICE | PROJECT …
-  entityType        String?  @db.VarChar(24)
+  entityType        String?   @db.VarChar(24)
   entityId          String?
-  entityLabel       String?  @db.VarChar(64)
+  entityLabel       String?   @db.VarChar(64)
   // Die CustomerActivity (OFFER_MAIL_SENT/ORDER_MAIL_SENT), die dieselbe
   // Sendung schon festhält — die Interaktionsliste blendet sie dann aus.
   activityId        String?
@@ -143,15 +143,15 @@ model MailMessage {
   // endgültig gelöscht wird nur aus dem Papierkorb heraus. Der Abruf erkennt
   // die Zeile weiterhin an der Message-ID — Gelöschtes kommt nicht wieder.
   deletedAt         DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  account  MailAccount?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  customer Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  contact  CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  category MailCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  account   MailAccount?     @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  customer  Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  contact   CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  category  MailCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   // Die Anfrage, die aus dieser Nachricht entstand (Kategorie «Anfragen»).
-  enquiries Enquiry[]       @relation("MailMessageEnquiries")
+  enquiries Enquiry[]        @relation("MailMessageEnquiries")
 
   @@unique([accountId, providerMessageId])
   @@index([tenantId, sentAt])

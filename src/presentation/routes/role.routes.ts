@@ -4,7 +4,7 @@ import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
 import { nanoid } from 'nanoid';
 import { CATALOG_PERMISSION_NAMES, MODULE_CATALOG, permissionsForModules, sanitizeModuleKeys } from '../../shared/moduleCatalog';
-import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
+import { getCompanyTreeTenantIds, getPersonnelTenantScope } from '../controllers/serviceTenantScope';
 
 const router = Router();
 
@@ -70,12 +70,15 @@ router.get('/', requireAuth, requirePermission('roles.manage'), async (req, res)
         // (moduleKeys) is entity-specific — it is reported for the SELECTED
         // company, and editing it only touches that company's config.
         const treeTenantIds = await getCompanyTreeTenantIds(tenantId);
+        const scopeTenantIds = await getPersonnelTenantScope(tenantId);
         const roles = await prisma.role.findMany({
             where: { tenantId: { in: treeTenantIds } },
             orderBy: { roleName: 'asc' },
             include: {
                 permissions: { include: { permission: true } },
-                employees: true,
+                // Die Rolle ist baumweit, die KOPFZAHL nicht — gezählt wird,
+                // wer sie in der ausgewählten Firma trägt.
+                employees: { where: { employee: { tenantId: { in: scopeTenantIds } } } },
                 moduleConfigs: true,
             }
         });

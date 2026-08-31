@@ -1,5 +1,5 @@
 import prisma from '../../infrastructure/database/prisma.client';
-import { getCompanyTreeTenantIds, getServiceTenantScope } from './serviceTenantScope';
+import { getPersonnelTenantScope, employeeScopeWhere, getServiceTenantScope } from './serviceTenantScope';
 
 /**
  * Shared technician scheduling rules for the project (montaj) and tender (teklif) modules.
@@ -28,12 +28,13 @@ export type TechnicianConflict = { type: "project" | "maintenance" | "offer"; me
 export async function validateTechnicians(technicianIds: string[], tenantId: string) {
     const ids = [...new Set(technicianIds.filter(Boolean))];
     if (!ids.length) return [] as any[];
-    // Personnel are shared company-wide -> technicians of the whole tree qualify.
-    const tenantIds = await getCompanyTreeTenantIds(tenantId);
+    // Personnel belong to the SELECTED company -> a sister company's
+    // technicians are not assignable here.
+    const tenantIds = await getPersonnelTenantScope(tenantId);
     const employees = await (prisma as any).employee.findMany({
         where: {
             id: { in: ids },
-            tenantId: { in: tenantIds },
+            ...employeeScopeWhere(tenantIds),
             isActive: true,
             OR: [
                 { roleName: "Teknisyen" },
@@ -63,11 +64,12 @@ export async function validateTechnicians(technicianIds: string[], tenantId: str
  * shaped identically for the project and tender option pickers.
  */
 export async function listTechnicianOptions(tenantId: string) {
-    // Personnel are shared company-wide -> offer the whole tree's technicians.
-    const tenantIds = await getCompanyTreeTenantIds(tenantId);
+    // Personnel belong to the SELECTED company -> the picker offers this
+    // company's technicians only.
+    const tenantIds = await getPersonnelTenantScope(tenantId);
     const technicians = await (prisma as any).employee.findMany({
         where: {
-            tenantId: { in: tenantIds },
+            ...employeeScopeWhere(tenantIds),
             isActive: true,
             OR: [
                 { roleName: "Teknisyen" },

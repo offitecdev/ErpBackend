@@ -44,22 +44,22 @@ model Tender {
   currency                  String?
 
   // Document-level direct discount (%) applied to the net total in the offer summary.
-  directDiscount       Float?                @default(0)
+  directDiscount        Float?                @default(0)
   // Optional custom display name for the direct discount (e.g. "Winteraktion").
-  directDiscountLabel  String?
+  directDiscountLabel   String?
   // Second document-level discount (%) applied SEQUENTIALLY after directDiscount
   // (100 → -20% → 80 → -10% → 72). Same factor scales net and VAT.
-  extraDiscount        Float?                @default(0)
-  extraDiscountLabel   String?
+  extraDiscount         Float?                @default(0)
+  extraDiscountLabel    String?
   // Belge düzeyi iskonto YIĞINI — JSON [{name, kind, value}] (kind: PERCENT |
   // AMOUNT), SIRAYLA uygulanır. Düzenlenebilir kaynak budur; `directDiscount`
   // bu listenin birleşik yüzdesini yansıtır (eski tüketiciler onu okumaya
   // devam eder) ve liste kullanıldığında `extraDiscount` 0'a çekilir.
-  totalDiscounts       String?               @db.Text
+  totalDiscounts        String?               @db.Text
   // Payment schedule as a JSON array of stage percents, e.g. "[30,20,10,40]".
   // Stages must sum to 100. Null = no schedule (free-form invoicing).
-  paymentStages        String?
-  salespersonName      String?
+  paymentStages         String?
+  salespersonName       String?
   // ── Manuell erfasster Kunde (OSP-Import, 04.09.2026) ──
   // Eine Offerte KANN ohne CRM-Kunden leben: Name/Adresse/E-Mail stehen dann
   // direkt hier (nichts wird im Kundenstamm angelegt). Ist customerId gesetzt,
@@ -67,51 +67,51 @@ model Tender {
   manualCustomerName    String?
   manualCustomerEmail   String?
   // Mehrzeilig (Strasse / PLZ Ort / Land) — wie die übrigen Adressfelder.
-  manualCustomerAddress String?             @db.Text
-  sourceStatus         String?
-  sourceCompany        String?
-  shippingTerms        String?
-  shippingWeight       Float?
-  fiscalPosition       String?
-  salesTeam            String?
-  onlineSignature      Boolean?
-  onlinePayment        Boolean?
+  manualCustomerAddress String?               @db.Text
+  sourceStatus          String?
+  sourceCompany         String?
+  shippingTerms         String?
+  shippingWeight        Float?
+  fiscalPosition        String?
+  salesTeam             String?
+  onlineSignature       Boolean?
+  onlinePayment         Boolean?
   // ── Optional PDF content blocks ──
   // Rich text (HTML: bold / italic / colour). All three are optional and the
   // document renders without them.
   // Intro text (Einleitungstext) printed on page 1, directly below the offer
   // title — not on a separate page. Usually applied from a TenderTextTemplate.
-  coverLetter          String?               @db.LongText
+  coverLetter           String?               @db.LongText
   // Note printed after the totals, at the end of the document.
-  closingNote          String?               @db.LongText
+  closingNote           String?               @db.LongText
   // Images printed after the closing note — a JSON array of data URIs.
-  closingImages        String?               @db.LongText
-  sourceTotal          Float?
-  sourceNetAmount      Float?
-  sourceTaxAmount      Float?
-  sourceRecurringTotal Float?
-  sourceMargin         Float?
-  status               TenderStatus          @default(Draft)
+  closingImages         String?               @db.LongText
+  sourceTotal           Float?
+  sourceNetAmount       Float?
+  sourceTaxAmount       Float?
+  sourceRecurringTotal  Float?
+  sourceMargin          Float?
+  status                TenderStatus          @default(Draft)
   // Kopya (CC) alıcıları — takvimdeki Appointment/MeetingActivity ile AYNI
   // biçim: JSON dizi (["planer@firma.ch"]). Teklifin bütün müşteri mailleri
   // (teklif maili ve otomatik sipariş bildirimi) bu listeyi CC'ler; alıcı (To)
   // her zaman müşterinin kendi adresidir.
-  ccEmails             Json?
-  offerMailSentAt      DateTime?
-  offerAcceptedAt      DateTime?
-  offerMailRecipient   String?
-  offerAcceptanceToken String?               @unique @db.VarChar(128)
-  createdAt            DateTime              @default(now())
-  createdByEmployeeId  String
-  tenant               Tenant                @relation(fields: [tenantId], references: [id])
-  customer             Customer?             @relation(fields: [customerId], references: [id])
-  createdBy            Employee              @relation(fields: [createdByEmployeeId], references: [id])
-  positions            Position[]
-  usedMaterials        TenderMaterialUsage[]
-  salesOrder           SalesOrder?
-  project              Project?
-  offerScheduleSlots   OfferScheduleSlot[]
-  crmTasks             CrmTask[]             @relation("CrmTaskTender")
+  ccEmails              Json?
+  offerMailSentAt       DateTime?
+  offerAcceptedAt       DateTime?
+  offerMailRecipient    String?
+  offerAcceptanceToken  String?               @unique @db.VarChar(128)
+  createdAt             DateTime              @default(now())
+  createdByEmployeeId   String
+  tenant                Tenant                @relation(fields: [tenantId], references: [id])
+  customer              Customer?             @relation(fields: [customerId], references: [id])
+  createdBy             Employee              @relation(fields: [createdByEmployeeId], references: [id])
+  positions             Position[]
+  usedMaterials         TenderMaterialUsage[]
+  salesOrder            SalesOrder?
+  project               Project?
+  offerScheduleSlots    OfferScheduleSlot[]
+  crmTasks              CrmTask[]             @relation("CrmTaskTender")
 
   @@index([tenantId])
   @@index([customerId])

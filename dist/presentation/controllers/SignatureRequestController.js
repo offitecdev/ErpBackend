@@ -8,6 +8,7 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const nanoid_1 = require("nanoid");
 const projectEventNotifications_1 = require("../../infrastructure/services/projectEventNotifications");
+const serviceTenantScope_1 = require("./serviceTenantScope");
 const smtp = new SmtpMailService_1.SmtpMailService();
 const VALID_TYPES = new Set(["FIELD", "DELIVERY", "GENERAL"]);
 function frontendUrl() {
@@ -139,7 +140,7 @@ class SignatureRequestController {
             let emailed = false;
             if (!inlineSignature && body.sendEmail && request.customerEmail) {
                 try {
-                    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId } });
+                    const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tenantId) } });
                     const fromEmail = String(body.fromEmail || settings?.fromEmail || req.user.email || "").trim();
                     const fromName = body.fromName || settings?.fromName || "Offitec ERP";
                     const subject = String(body.subject || `${request.title || "Rapor"} - imza talebi`).trim();

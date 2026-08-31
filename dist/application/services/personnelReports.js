@@ -24,17 +24,19 @@ exports.leaveWorkdays = exports.buildAccountingDetail = exports.buildAccountingR
  */
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 const personnel_1 = require("../../shared/personnel");
 const likeOrNull = (value) => {
     const text = (value ?? '').trim();
     return text ? `%${text}%` : null;
 };
-/** Die Personen des Firmenbaums, auf die die Namensfilter des Berichts passen. */
+/** Die Personen der ausgewaehlten Firma, auf die die Namensfilter des
+    Berichts passen (eigene Firma oder ausdrueckliche Zuteilung). */
 const loadStaffForReport = async (tenantIds, filters) => {
     if (tenantIds.length === 0)
         return [];
     const conditions = [
-        client_1.Prisma.sql `e.tenantId IN (${client_1.Prisma.join(tenantIds)})`,
+        (0, serviceTenantScope_1.employeeScopeSql)(tenantIds),
         client_1.Prisma.sql `e.deletedAt IS NULL`,
     ];
     const firstName = likeOrNull(filters.firstName);

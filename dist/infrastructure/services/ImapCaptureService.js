@@ -9,9 +9,12 @@ const nanoid_1 = require("nanoid");
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const mailCustomerMatcher_1 = require("./outlook/mailCustomerMatcher");
+const mailAutoCategory_1 = require("./outlook/mailAutoCategory");
 const mailText_1 = require("./outlook/mailText");
 const mailBodyParts_1 = require("./outlook/mailBodyParts");
 const calendarImportService_1 = require("./calendarImportService");
+const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
+const mailboxIdentity_1 = require("./mailboxIdentity");
 /**
  * POSTEINGANG DES EIGENEN MAILSERVERS → ERP (18.08.2026; umgebaut 08.09.2026).
  *
@@ -234,13 +237,24 @@ const buildImapClient = (settings) => {
 };
 exports.buildImapClient = buildImapClient;
 /**
- * Ein Durchgang für EINEN Mandanten. Wirft nicht: Fehler landen in
+ * Ein Durchgang für EIN POSTFACH. Wirft nicht: Fehler landen in
  * `MailSetting.imapLastError` und im Rückgabewert.
+ *
+ * EIN POSTFACH JE FIRMENBAUM (13.09.2026): der übergebene Mandant wird auf den
+ * Stamm seines Baums aufgelöst (`getMailTenantId`) — Zugangsdaten, Lesestand
+ * und Nachrichten gehören dorthin. Vorher lief der Abruf je Mandant: standen
+ * dieselben IMAP-Daten in zwei Firmen desselben Baums, holten ZWEI Abrufe
+ * dasselbe Serverpostfach in zwei getrennte Bestände, jeder mit eigenem,
+ * NUR VORWÄRTS laufendem Lesestand — der später gestartete zeigte für immer
+ * nur, was seit seinem Beginn ankam.
  */
-const captureInbox = async (tenantId, options = {}) => {
+const captureInbox = async (selectedTenantId, options = {}) => {
     const startedAt = Date.now();
     const dryRun = Boolean(options.dryRun);
-    const summary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, calendar: 0, skipped: 0, skippedRepliesOnly: 0, durationMs: 0 };
+    // Fällt die Auflösung aus (Mandantenbaum nicht lesbar), bleibt es bei der
+    // übergebenen Firma — der Abruf soll deswegen nicht ausfallen.
+    const tenantId = await (0, serviceTenantScope_1.getMailTenantId)(selectedTenantId).catch(() => selectedTenantId);
+    const summary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, labelled: 0, calendar: 0, skipped: 0, skippedRepliesOnly: 0, durationMs: 0 };
     if (dryRun)
         summary.preview = [];
     if (running.has(tenantId)) {
@@ -250,19 +264,33 @@ const captureInbox = async (tenantId, options = {}) => {
     running.add(tenantId);
     let client = null;
     try {
-        const settings = await prisma_client_1.default.mailSetting.findUnique({
-            where: { tenantId },
-            select: {
-                tenantId: true, imapHost: true, imapPort: true, imapSecure: true, imapUser: true, imapPassword: true,
-                smtpUser: true, smtpPassword: true, fromEmail: true, imapInboxFolder: true,
-                imapCaptureRepliesOnly: true, imapUidValidity: true, imapLastUid: true, imapWindowMonths: true,
-                sentFolder: true, imapSentUidValidity: true, imapSentLastUid: true,
-            },
-        });
+        const select = {
+            tenantId: true, imapHost: true, imapPort: true, imapSecure: true, imapUser: true, imapPassword: true,
+            smtpUser: true, smtpPassword: true, fromEmail: true, imapInboxFolder: true,
+            imapCaptureRepliesOnly: true, imapUidValidity: true, imapLastUid: true, imapWindowMonths: true,
+            sentFolder: true, imapSentUidValidity: true, imapSentLastUid: true,
+        };
+        /* DIE ZUGANGSDATEN STEHEN AM STAMM — aber nicht überall schon: eine
+           Einrichtung, die vor dem Umbau in einer Untergesellschaft eingetragen
+           wurde, liegt weiterhin dort. Dann wird SIE benutzt, und der Lesestand
+           bleibt in ihrer Zeile (`settingsTenantId`); die NACHRICHTEN gehen
+           trotzdem an den Stamm. Sonst stünde der Abruf still, ohne dass
+           irgendwo etwas anderes stünde als «Kein IMAP-Server hinterlegt». */
+        let settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId }, select });
+        if (!settings?.imapHost?.trim()) {
+            const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId).catch(() => []);
+            settings = await prisma_client_1.default.mailSetting.findFirst({
+                where: { tenantId: { in: treeTenantIds }, NOT: { imapHost: null } },
+                orderBy: { imapLastSyncAt: "desc" },
+                select,
+            });
+        }
         if (!settings?.imapHost?.trim()) {
             summary.error = "Kein IMAP-Server hinterlegt.";
             return summary;
         }
+        // Wessen Zeile den Lesestand führt: fast immer der Stamm selbst.
+        const settingsTenantId = settings.tenantId;
         // Der Ordner-Umweg gilt NUR im Probelauf: sonst liefe der Lesestand
         // eines fremden Ordners in die Einstellung des Posteingangs.
         const inboxFolder = (dryRun && options.folder?.trim()) || settings.imapInboxFolder?.trim() || "INBOX";
@@ -331,12 +359,15 @@ const captureInbox = async (tenantId, options = {}) => {
                 }
                 if (!uids.length && !dryRun && (resetCursor || job.uidValidity === null)) {
                     await prisma_client_1.default.mailSetting.update({
-                        where: { tenantId },
+                        where: { tenantId: settingsTenantId },
                         data: job.cursorFields(uidValidity, 0n),
                     });
                 }
                 const own = (0, mailCustomerMatcher_1.normalizeAddress)(settings.fromEmail);
-                const book = await (0, mailCustomerMatcher_1.getAddressBook)(tenantId);
+                /* Adressbuch = WEM die Nachricht gehört, Kategorienleiste = WOHIN
+                   sie gehört. Steht die erkannte Gegenstelle schon in der Leiste,
+                   trägt die Nachricht das Etikett gleich beim Speichern. */
+                const [book, categories] = await Promise.all([(0, mailCustomerMatcher_1.getAddressBook)(tenantId), (0, mailAutoCategory_1.getCategoryIndex)(tenantId)]);
                 /* In SCHÜBEN durcharbeiten, bis das Zeitbudget erschöpft ist: der
                    ERSTABRUF liest zwei volle Monate, und mit einem Schub je
                    Durchgang stünde das Postfach erst nach Stunden. Der Lesestand
@@ -368,12 +399,19 @@ const captureInbox = async (tenantId, options = {}) => {
                     // Schon vorhandene Nachrichten (z. B. nach UIDVALIDITY-Wechsel)
                     // und die von UNS verschickten Mails in EINEM Zug nachschlagen.
                     const ownIds = candidates.map((c) => c.messageId).filter(Boolean);
+                    const providerIds = candidates.map((c) => `${job.folder}:${uidValidity}:${c.uid}`);
                     const refIds = Array.from(new Set(candidates.flatMap((c) => c.refs)));
                     const [existing, parents] = await Promise.all([
-                        ownIds.length
+                        ownIds.length || providerIds.length
                             ? prisma_client_1.default.mailMessage.findMany({
-                                where: { tenantId, internetMessageId: { in: ownIds } },
-                                select: { internetMessageId: true },
+                                where: {
+                                    tenantId,
+                                    OR: [
+                                        ...(ownIds.length ? [{ internetMessageId: { in: ownIds } }] : []),
+                                        { providerMessageId: { in: providerIds } },
+                                    ],
+                                },
+                                select: { internetMessageId: true, providerMessageId: true },
                             })
                             : Promise.resolve([]),
                         refIds.length
@@ -382,11 +420,13 @@ const captureInbox = async (tenantId, options = {}) => {
                                 select: {
                                     internetMessageId: true, customerId: true, contactId: true,
                                     entityType: true, entityId: true, entityLabel: true, employeeId: true,
+                                    categoryId: true,
                                 },
                             })
                             : Promise.resolve([]),
                     ]);
-                    const known = new Set(existing.map((row) => row.internetMessageId));
+                    const known = new Set(existing.map((row) => row.internetMessageId).filter(Boolean));
+                    const knownProviders = new Set(existing.map((row) => row.providerMessageId).filter(Boolean));
                     const parentById = new Map(parents.map((row) => [row.internetMessageId, row]));
                     const keepers = [];
                     /* Nur im Probelauf: Absender, deren Adresse nicht im System
@@ -395,7 +435,13 @@ const captureInbox = async (tenantId, options = {}) => {
                        ohne Kundenzuordnung ankommen wird. */
                     const unknown = new Map();
                     for (const candidate of candidates) {
-                        if (candidate.messageId && known.has(candidate.messageId)) {
+                        const providerId = `${job.folder}:${uidValidity}:${candidate.uid}`;
+                        const alreadyStored = Boolean((candidate.messageId && known.has(candidate.messageId))
+                            || knownProviders.has(providerId));
+                        const calendarPart = findCalendarPart(candidate.bodyStructure)?.part ?? null;
+                        // A reset/backfill must revisit existing calendar mails so
+                        // their personal recipient ownership can be repaired.
+                        if (alreadyStored && !calendarPart) {
                             summary.skipped += 1;
                             continue;
                         }
@@ -413,7 +459,6 @@ const captureInbox = async (tenantId, options = {}) => {
                             const address = counterparts[0] || "(ohne Absender)";
                             unknown.set(address, (unknown.get(address) || 0) + 1);
                         }
-                        const calendarPart = findCalendarPart(candidate.bodyStructure)?.part ?? null;
                         // (1) Antwort auf eine ERP-Mail? Dann erbt sie deren
                         // Zuordnung — genauer als der reine Adresstreffer.
                         const parent = candidate.refs.map((id) => parentById.get(id)).find(Boolean);
@@ -427,7 +472,13 @@ const captureInbox = async (tenantId, options = {}) => {
                                 entityId: parent.entityId,
                                 entityLabel: parent.entityLabel,
                                 employeeId: parent.employeeId,
+                                /* Die Antwort bleibt im Fach des Gesprächs: erst das
+                                   Etikett der ERP-Mail, sonst das des Kunden. Die
+                                   Person aus `employeeId` zählt hier NICHT — bei
+                                   einer ERP-Sendung ist das unsere eigene Absenderin. */
+                                categoryId: parent.categoryId ?? (0, mailAutoCategory_1.autoCategoryId)(categories, { customerId: parent.customerId }),
                                 calendarPart,
+                                alreadyStored,
                             });
                             summary.replies += 1;
                             continue;
@@ -445,7 +496,11 @@ const captureInbox = async (tenantId, options = {}) => {
                             // Post einer registrierten Person: sie "gehört" ihr, damit
                             // sie im Postfach als eigene Zeile erkennbar ist.
                             employeeId: hit?.employeeId ?? null,
+                            // Kunde oder Person hat eine Kategorie? Dann liegt die
+                            // Nachricht ohne Zutun darin.
+                            categoryId: (0, mailAutoCategory_1.autoCategoryId)(categories, { customerId: hit?.customerId, employeeId: hit?.employeeId }),
                             calendarPart,
+                            alreadyStored,
                         });
                         if (hit)
                             summary.byAddress += 1;
@@ -462,12 +517,15 @@ const captureInbox = async (tenantId, options = {}) => {
                             .sort((a, b) => b.count - a.count)
                             .slice(0, 40);
                         summary.stored = keepers.length;
+                        summary.labelled = keepers.filter((keeper) => keeper.categoryId).length;
                         summary.durationMs = Date.now() - startedAt;
                         return summary;
                     }
                     // ── 2. Für jede Nachricht den Rumpf holen ─────────────────────
                     const inserts = [];
                     for (const keeper of keepers) {
+                        if (keeper.alreadyStored)
+                            continue;
                         let bodyText = null;
                         let bodyHtml = null;
                         const bodyParts = collectBodyParts(keeper.bodyStructure);
@@ -554,7 +612,10 @@ const captureInbox = async (tenantId, options = {}) => {
                             entityType: keeper.entityType,
                             entityId: keeper.entityId,
                             entityLabel: keeper.entityLabel,
+                            categoryId: keeper.categoryId,
                         });
+                        if (keeper.categoryId)
+                            summary.labelled += 1;
                     }
                     if (inserts.length) {
                         await prisma_client_1.default.mailMessage.createMany({ data: inserts, skipDuplicates: true });
@@ -578,11 +639,31 @@ const captureInbox = async (tenantId, options = {}) => {
                             const chunks = [];
                             for await (const chunk of download.content)
                                 chunks.push(chunk);
+                            /* DER TERMIN GEHÖRT DEM POSTFACH (31.08.2026).
+                               Bis hierher wurde er in die Firma der erkannten
+                               Person gelegt — der Kalender war streng je Firma.
+                               Das hatte zwei Folgen, die beide falsch waren: wer
+                               die Firma wechselte, sah einen anderen Kalender
+                               (obwohl es EIN Postfach ist), und die Termine eines
+                               abgelegten Kontos blieben in der Untergesellschaft
+                               stehen, weil das Aufräumen am Stamm ansetzte.
+    
+                               Jetzt liegt der Termin dort, wo auch das Postfach und
+                               die Nachrichten liegen: am Stamm. Den Urheber sucht
+                               `importCalendarEvent` im ganzen Firmenbaum — am Stamm
+                               allein ist oft niemand angestellt, und eine Suche nur
+                               dort verwürfe die Einladung wortlos. */
                             const result = await (0, calendarImportService_1.importCalendarObject)(tenantId, Buffer.concat(chunks).toString("utf8"), {
                                 senderEmail: partiesOf(keeper.envelope?.from)[0]?.address || null,
+                                recipientEmails: [
+                                    ...partiesOf(keeper.envelope?.to),
+                                    ...partiesOf(keeper.envelope?.cc),
+                                ].map((party) => party.address),
                                 customerId: keeper.customerId,
                                 employeeId: keeper.employeeId,
                                 direction: job.direction,
+                                mailbox: (0, mailboxIdentity_1.mailboxIdentityOf)(settings),
+                                source: "MAIL",
                             });
                             if (result.action !== "ignored") {
                                 summary.calendar += 1;
@@ -603,7 +684,8 @@ const captureInbox = async (tenantId, options = {}) => {
                        wo Post verloren geht — der Lesestand rückt gleich hinter
                        diesen Schub und sieht ihn nie wieder an. */
                     console.log(`[MAIL-IN] ${job.folder} Schub ${batch[0]}…${batch[batch.length - 1]}: ${batch.length} angefragt,`
-                        + ` ${candidates.length} geholt, ${keepers.length} neu, ${inserts.length} geschrieben`);
+                        + ` ${candidates.length} geholt, ${keepers.length} neu, ${inserts.length} geschrieben,`
+                        + ` ${inserts.filter((row) => row.categoryId).length} etikettiert`);
                     /* DER LESESTAND DARF NUR ÜBER TATSÄCHLICH ANGESEHENE POST
                        HINWEGRÜCKEN. Liefert der Server auf ein FETCH weniger
                        Nachrichten als angefragt (abgebrochener Strom, während des
@@ -641,7 +723,7 @@ const captureInbox = async (tenantId, options = {}) => {
                     }
                     lastUid = BigInt(highestUid);
                     await prisma_client_1.default.mailSetting.update({
-                        where: { tenantId },
+                        where: { tenantId: settingsTenantId },
                         data: job.cursorFields(uidValidity, lastUid),
                     });
                     // Der Schub blieb unvollständig: hier abbrechen, sonst liefe
@@ -665,7 +747,7 @@ const captureInbox = async (tenantId, options = {}) => {
         const text = `${summary.examined} geprüft, ${summary.stored} übernommen (${summary.replies} Antworten, ${summary.byAddress} bekannte Adressen, ${summary.calendar} Termine), ${summary.skipped} übersprungen`
             + (summary.skippedRepliesOnly > 0 ? ` — davon ${summary.skippedRepliesOnly} nur wegen «nur Antworten»` : "");
         await prisma_client_1.default.mailSetting.update({
-            where: { tenantId },
+            where: { tenantId: settingsTenantId },
             data: { imapLastSyncAt: new Date(), imapLastSummary: text.slice(0, 255), imapLastError: null },
         });
         if (summary.examined)
@@ -677,7 +759,7 @@ const captureInbox = async (tenantId, options = {}) => {
         console.error(`[MAIL-IN] ${tenantId} fehlgeschlagen:`, summary.error);
         if (dryRun)
             return summary;
-        await prisma_client_1.default.mailSetting.update({
+        await prisma_client_1.default.mailSetting.updateMany({
             where: { tenantId },
             data: { imapLastError: String(summary.error).slice(0, 1000), imapLastSyncAt: new Date() },
         }).catch(() => undefined);
@@ -697,7 +779,9 @@ exports.captureInbox = captureInbox;
 const isCaptureRunning = (tenantId) => running.has(tenantId);
 exports.isCaptureRunning = isCaptureRunning;
 /** Einen einzelnen Anhang vom Mailserver holen — NICHTS wird gespeichert. */
-const fetchImapAttachment = async (tenantId, providerMessageId, part) => {
+const fetchImapAttachment = async (selectedTenantId, providerMessageId, part) => {
+    // Der Anhang liegt in dem Postfach, aus dem die Nachricht stammt.
+    const tenantId = await (0, serviceTenantScope_1.getMailTenantId)(selectedTenantId).catch(() => selectedTenantId);
     const settings = await prisma_client_1.default.mailSetting.findUnique({
         where: { tenantId },
         select: {
@@ -743,7 +827,14 @@ const fetchImapAttachment = async (tenantId, providerMessageId, part) => {
     }
 };
 exports.fetchImapAttachment = fetchImapAttachment;
-/** Alle Mandanten mit eingeschaltetem Abruf, nacheinander. */
+/**
+ * Alle Postfächer mit eingeschaltetem Abruf, nacheinander.
+ *
+ * EIN POSTFACH JE FIRMENBAUM: mehrere Mandanten desselben Baums fallen auf
+ * denselben Abruf zusammen. Ohne dieses Zusammenlegen liefen zwei Durchgänge
+ * über dasselbe Serverpostfach — doppelte Last, zwei Lesestände, und in der
+ * zweiten Firma ein Bestand, der erst mit seinem ersten Lauf beginnt.
+ */
 const runPass = async () => {
     const tenants = await prisma_client_1.default.mailSetting.findMany({
         where: { imapCaptureEnabled: true, NOT: { imapHost: null } },
@@ -751,10 +842,13 @@ const runPass = async () => {
         orderBy: { imapLastSyncAt: "asc" },
         take: 50,
     });
+    const seen = new Set();
     for (const { tenantId } of tenants) {
-        if (running.has(tenantId))
+        const mailTenantId = await (0, serviceTenantScope_1.getMailTenantId)(tenantId).catch(() => tenantId);
+        if (seen.has(mailTenantId) || running.has(mailTenantId))
             continue;
-        await (0, exports.captureInbox)(tenantId);
+        seen.add(mailTenantId);
+        await (0, exports.captureInbox)(mailTenantId);
     }
 };
 let started = false;

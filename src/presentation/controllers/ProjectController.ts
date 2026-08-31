@@ -23,7 +23,7 @@ import {
     sendAppointmentInvite,
 } from '../../infrastructure/services/calendarMailService';
 import { appointmentDocumentStorage } from '../../infrastructure/services/LocalFileStorage';
-import { getCompanyTreeTenantIds } from './serviceTenantScope';
+import { getMailTenantId, getPersonnelTenantScope, employeeScopeWhere } from './serviceTenantScope';
 import { resolveNewLabelId, sanitizeLabelId } from '../../application/services/calendarLabelCatalog';
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import {
@@ -184,12 +184,13 @@ export class ProjectController {
     private async validateProjectTechnician(technicianId: string | null | undefined, tenantId: string) {
         const id = String(technicianId || "").trim();
         if (!id) return null;
-        // Personnel are shared company-wide -> technicians of the whole tree qualify.
-        const tenantIds = await getCompanyTreeTenantIds(tenantId);
+        // Personnel belong to the SELECTED company -> a sister company's
+        // technicians are not assignable here.
+        const tenantIds = await getPersonnelTenantScope(tenantId);
         const employee = await (prisma as any).employee.findFirst({
             where: {
                 id,
-                tenantId: { in: tenantIds },
+                ...employeeScopeWhere(tenantIds),
                 isActive: true,
                 OR: [
                     { roleName: "Teknisyen" },
@@ -1850,7 +1851,7 @@ export class ProjectController {
                 return res.status(400).json({ error: "Bu proje için randevu tokeni yok." });
             }
 
-            const settings = await prisma.mailSetting.findUnique({ where: { tenantId: req.user!.tenantId } });
+            const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(req.user!.tenantId) } });
             const frontendUrl = process.env.OFFITEC_FRONTEND_URL || 'http://localhost:5173';
             const bookingLink = `${frontendUrl}/booking/${project.bookingToken}`;
             const customerEmail = (project as any).customer?.mainEmail || "";
@@ -2514,7 +2515,7 @@ export class ProjectController {
             }
 
             if (channel === "mail" || channel === "both") {
-                const settings = await prisma.mailSetting.findUnique({ where: { tenantId: req.user!.tenantId } });
+                const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(req.user!.tenantId) } });
                 const to = String(req.body.to || report.project?.customer?.mainEmail || "").trim();
                 const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user!.email || "").trim();
                 const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";

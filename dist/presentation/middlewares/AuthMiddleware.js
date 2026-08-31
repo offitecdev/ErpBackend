@@ -5,6 +5,7 @@ const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService
 const authCookies_1 = require("../utils/authCookies");
 const tenantAccess_1 = require("../utils/tenantAccess");
 const authIdentityCache_1 = require("../../shared/authIdentityCache");
+const tenantSwitchAccess_1 = require("../../shared/tenantSwitchAccess");
 const tenantTree_1 = require("../../shared/tenantTree");
 /**
  * Şirket ağacındaki kök tenant. Zincir artık tenant tablosunun paylaşılan
@@ -13,46 +14,86 @@ const tenantTree_1 = require("../../shared/tenantTree");
  */
 exports.findTenantRootId = tenantTree_1.findTenantRootIdCached;
 /**
- * The employee's assigned companies, reduced to the ones that really sit in
- * their own company tree and are still active. An assignment may only ever
- * narrow the tree, never widen it. Empty result = no usable restriction.
+ * The employee's assigned companies, reduced to the ones that still exist and
+ * are active. Empty result = no usable assignment left.
+ *
+ * IT NO LONGER FILTERS BY COMPANY TREE (Vorgabe 31.08.2026). Until then an
+ * assignment could only ever NARROW the caller's own tree, so a company set up
+ * as its own root — a second company group in the same installation — was
+ * silently dropped here even after an administrator had explicitly ticked it.
+ * The tick IS the decision now; see getAssignableTenantIds. The tree wall
+ * stays exactly where it always was, one level down: it guards companies
+ * NOBODY assigned (see resolveTenantId).
  */
-const narrowAssignmentToTree = async (assigned, homeRootId) => {
-    const roots = await Promise.all(assigned.map((tenantId) => (0, exports.findTenantRootId)(tenantId)));
-    return assigned.filter((_, index) => roots[index] === homeRootId);
+const keepUsableAssignments = async (assigned) => {
+    const tenants = await (0, tenantTree_1.getAllTenants)();
+    const active = new Set(tenants.filter((tenant) => tenant.isActive).map((tenant) => tenant.id));
+    return assigned.filter((tenantId) => active.has(tenantId));
 };
-const resolveTenantId = async (homeTenantId, allowedTenantIds, requestedTenantId) => {
+/**
+ * A company of a FOREIGN tree is never served — that is the hard boundary.
+ * (An unassigned company of the caller's OWN tree is treated as a stale browser
+ * selection by the callers below, not as an attack.)
+ */
+const assertSameCompanyTree = async (homeTenantId, requestedTenantId) => {
+    const [homeRootId, requestedRootId] = await Promise.all([
+        (0, exports.findTenantRootId)(homeTenantId),
+        (0, exports.findTenantRootId)(requestedTenantId),
+    ]);
+    if (!homeRootId || homeRootId !== requestedRootId) {
+        throw new Error('Bu şirket için erişim yetkiniz yok.');
+    }
+};
+const resolveTenantId = async (employeeId, homeTenantId, allowedTenantIds, requestedTenantId) => {
     const requested = requestedTenantId?.trim();
-    // Fast path — no company assignment: the whole own tree stays accessible
-    // (the behaviour of every account before assignments existed).
+    // No company assignment saved = the OWN company, nothing else (31.08.2026).
+    // Until then an unassigned account reached its whole company tree, which is
+    // exactly how staff of one sub-company ended up seeing their sister
+    // companies. Reaching a second company is now a deliberate act: an admin
+    // ticks it under Personal → Person → Zugang.
     if (!allowedTenantIds?.length) {
         if (!requested || requested === homeTenantId)
             return homeTenantId;
-        const [homeRootId, requestedRootId] = await Promise.all([
-            (0, exports.findTenantRootId)(homeTenantId),
-            (0, exports.findTenantRootId)(requested),
-        ]);
-        if (!homeRootId || homeRootId !== requestedRootId) {
-            throw new Error('Bu şirket için erişim yetkiniz yok.');
-        }
-        return requested;
+        await assertSameCompanyTree(homeTenantId, requested);
+        // The ROLE may open the whole own tree (31.08.2026): administrators and
+        // every role carrying `canSwitchTenant` — the management and the
+        // project leads — reach every company of their group without being
+        // ticked into each one by hand. The tree boundary above still holds.
+        if (await (0, tenantSwitchAccess_1.mayReachWholeCompanyTree)(employeeId))
+            return requested;
+        // In the own tree but not assigned: a stale selection left in the
+        // browser. Serve the home company instead of failing every request —
+        // the switcher list corrects the stored id on the next session load.
+        return homeTenantId;
     }
     const homeRootId = await (0, exports.findTenantRootId)(homeTenantId);
     if (!homeRootId) {
         throw new Error('Bu şirket için erişim yetkiniz yok.');
     }
-    const allowed = await narrowAssignmentToTree(allowedTenantIds, homeRootId);
-    // Every assigned company vanished (deactivated / moved out of the tree):
-    // fall back to the unrestricted rules instead of locking the account out.
+    const allowed = await keepUsableAssignments(allowedTenantIds);
+    // Every assigned company vanished (deactivated / deleted): fall back to the
+    // unassigned rules instead of locking the account out.
     if (!allowed.length)
-        return resolveTenantId(homeTenantId, null, requestedTenantId);
+        return resolveTenantId(employeeId, homeTenantId, null, requestedTenantId);
     // Without a selection the home tenant wins, but only if it was assigned —
     // otherwise the first assigned company becomes the default one.
-    const target = requested || (allowed.includes(homeTenantId) ? homeTenantId : allowed[0]);
-    if (!allowed.includes(target)) {
-        throw new Error('Bu şirket için erişim yetkiniz yok.');
-    }
-    return target;
+    const fallback = allowed.includes(homeTenantId) ? homeTenantId : allowed[0];
+    if (!requested)
+        return fallback;
+    // An explicitly ticked company is served, whatever tree it sits in — an
+    // administrator picked it by hand on the access page, which is a stronger
+    // statement than the shape of the company tree (Vorgabe 31.08.2026).
+    if (allowed.includes(requested))
+        return requested;
+    // Not assigned. Same reasoning as above: a company of the own tree is a
+    // stale browser selection, a company of a FOREIGN group is refused outright.
+    await assertSameCompanyTree(homeTenantId, requested);
+    // … unless the role opens the whole tree. It OUTRANKS the assignment
+    // (Vorgabe 31.08.2026): a saved tick list narrows who counts as staff of a
+    // company, never where an administrator or project lead may look.
+    if (await (0, tenantSwitchAccess_1.mayReachWholeCompanyTree)(employeeId))
+        return requested;
+    return fallback;
 };
 const requireAuth = async (req, res, next) => {
     const authStartedAt = Date.now();
@@ -113,7 +154,7 @@ const requireAuth = async (req, res, next) => {
             return;
         }
         const homeTenantId = decoded.tenantId;
-        const tenantId = await resolveTenantId(homeTenantId, (0, tenantAccess_1.parseAllowedTenantIds)(employee.allowedTenantIds), req.header('x-tenant-id'));
+        const tenantId = await resolveTenantId(decoded.id, homeTenantId, (0, tenantAccess_1.parseAllowedTenantIds)(employee.allowedTenantIds), req.header('x-tenant-id'));
         req.user = {
             id: decoded.id,
             tenantId,

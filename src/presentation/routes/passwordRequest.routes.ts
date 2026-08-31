@@ -7,7 +7,7 @@ import { EmployeeRepository } from '../../infrastructure/repositories/EmployeeRe
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
 import { BcryptCryptoService } from '../../infrastructure/services/BcryptCryptoService';
 import { assertPasswordPolicy } from '../../application/validation/password';
-import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
+import { getPersonnelTenantScope } from '../controllers/serviceTenantScope';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
 
 /* ── KENNWORTWUNSCH (17.08.2026) ─────────────────────────────────────────────
@@ -162,7 +162,8 @@ router.get('/mine', requireAuth, async (req, res) => {
     führt. */
 router.get('/', requireAuth, requireAnyPermission(['roles.manage', 'employees.update']), async (req, res) => {
     try {
-        const treeTenantIds = await getCompanyTreeTenantIds(req.user!.tenantId);
+        // Kennwortwünsche gehören der Firma, unter der sie gestellt wurden.
+        const treeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
         const status = String(req.query.status || 'PENDING').toUpperCase();
         const rows = await (prisma as any).passwordChangeRequest.findMany({
             where: {
@@ -187,7 +188,7 @@ router.post('/:id/decide', requireAuth, requireAnyPermission(['roles.manage', 'e
         const user = req.user!;
         const id = String(req.params.id || '');
         const approve = Boolean(req.body?.approve);
-        const treeTenantIds = await getCompanyTreeTenantIds(user.tenantId);
+        const treeTenantIds = await getPersonnelTenantScope(user.tenantId);
 
         const request = await (prisma as any).passwordChangeRequest.findFirst({
             where: { id, tenantId: { in: treeTenantIds } },

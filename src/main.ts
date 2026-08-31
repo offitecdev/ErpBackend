@@ -62,6 +62,7 @@ import dashboardRoutes from './presentation/routes/dashboard.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { startReminderEngine } from './infrastructure/services/ReminderEngine';
 import { startImapCaptureService } from './infrastructure/services/ImapCaptureService';
+import { startCaldavCaptureService } from './infrastructure/services/caldavCalendarService';
 import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
 import prisma from './infrastructure/database/prisma.client';
 
@@ -211,6 +212,10 @@ app.listen(PORT, () => {
     startMaintenanceReminderService();
     startReminderEngine();
     startImapCaptureService();
+    // Der Kalender des Kontos (CalDAV) hat seinen eigenen Zeitplan: er
+    // liest keine Lesestände fort, sondern jedes Mal den ganzen Zeitraum,
+    // und darf deshalb seltener und unabhängig laufen.
+    startCaldavCaptureService();
     // Open the remote-DB connection pool now instead of on the first request,
     // which otherwise pays the connection handshakes itself. Several parallel
     // probes force several pool connections open: batch saves fire their

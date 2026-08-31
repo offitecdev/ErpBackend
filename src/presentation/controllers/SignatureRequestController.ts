@@ -3,6 +3,7 @@ import prisma from "../../infrastructure/database/prisma.client";
 import { SmtpMailService } from "../../infrastructure/services/SmtpMailService";
 import { nanoid } from "nanoid";
 import { notifyProjectEvent } from "../../infrastructure/services/projectEventNotifications";
+import { getMailTenantId } from "./serviceTenantScope";
 
 const smtp = new SmtpMailService();
 
@@ -137,7 +138,7 @@ export class SignatureRequestController {
             let emailed = false;
             if (!inlineSignature && body.sendEmail && request.customerEmail) {
                 try {
-                    const settings = await prisma.mailSetting.findUnique({ where: { tenantId } });
+                    const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
                     const fromEmail = String(body.fromEmail || settings?.fromEmail || req.user!.email || "").trim();
                     const fromName = body.fromName || settings?.fromName || "Offitec ERP";
                     const subject = String(body.subject || `${request.title || "Rapor"} - imza talebi`).trim();

@@ -15,10 +15,11 @@
  *   /holidays                 Die geführten Feiertage + der amtliche Katalog
  *   /leave-policy             Die Urlaubsregel des Hauses
  *
- * TENANT-BEREICH: wie im Personal-Router — Personal gehört dem GANZEN
- * Firmenbaum (getCompanyTreeTenantIds). Schichtplan, Urlaubsregel und
- * Feiertage hängen am STAMM des Baums: sie sind eine Regel des Hauses, keine
- * der einzelnen Firma, und dürfen sich beim Firmenumschalter nicht ändern.
+ * TENANT-BEREICH: wie im Personal-Router — Personal gehört der AUSGEWÄHLTEN
+ * Firma (getPersonnelTenantScope, seit 31.08.2026); Schwesterfirmen sehen
+ * einander nicht. Schichtplan, Urlaubsregel und Feiertage hängen weiterhin am
+ * STAMM des Baums: sie sind eine Regel des Hauses, keine der einzelnen Firma,
+ * und dürfen sich beim Firmenumschalter nicht ändern.
  */
 import { Router } from 'express';
 import multer from 'multer';
@@ -27,7 +28,8 @@ import prisma from '../../infrastructure/database/prisma.client';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
-import { getCompanyTreeTenantIds } from '../controllers/serviceTenantScope';
+import { getPersonnelTenantScope, employeeScopeWhere } from '../controllers/serviceTenantScope';
+import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { staffDocumentStorage } from '../../infrastructure/services/LocalFileStorage';
 import { invalidateStaffDirectory } from '../../shared/staffDirectoryCache';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
@@ -81,13 +83,14 @@ const staffDocumentUpload = multer({
 });
 
 const fail = (res: any, status: number, message: string) => res.status(status).json({ error: message });
-const treeOf = (req: any): Promise<string[]> => getCompanyTreeTenantIds(req.user!.tenantId);
+/** Die Firmen, aus denen PERSONEN gelesen werden: genau die ausgewählte. */
+const treeOf = (req: any): Promise<string[]> => getPersonnelTenantScope(req.user!.tenantId);
 
-/** Der Stamm des Firmenbaums — dort hängen Schichtplan, Feiertage, Urlaubsregel. */
-const houseTenantId = async (req: any): Promise<string> => {
-    const tenantIds = await treeOf(req);
-    return tenantIds[0] ?? req.user!.tenantId;
-};
+/** Der Stamm des Firmenbaums — dort hängen Schichtplan, Feiertage, Urlaubsregel.
+    Diese Regeln bleiben BAUMWEIT: sie gehören dem Haus, nicht der einzelnen
+    Firma, und dürfen sich beim Firmenumschalter nicht ändern. */
+const houseTenantId = async (req: any): Promise<string> =>
+    (await findTenantRootIdCached(req.user!.tenantId)) ?? req.user!.tenantId;
 
 const loadShiftPlan = async (tenantId: string): Promise<ShiftPlan> => {
     const row = await prisma.staffShiftPlan.findUnique({ where: { tenantId } });
@@ -321,7 +324,7 @@ router.get('/staff/:id/profile', requireAuth, async (req, res) => {
 
         const [person, documents, roles] = await Promise.all([
             prisma.employee.findFirst({
-                where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+                where: { id, ...employeeScopeWhere(tenantIds), deletedAt: null },
                 select: {
                     id: true, staffNumber: true, firstName: true, lastName: true,
                     email: true, phone: true, title: true, isActive: true,
@@ -344,6 +347,7 @@ router.get('/staff/:id/profile', requireAuth, async (req, res) => {
             // Die Auswahlliste der Systemrollen — nur die Verwaltung sieht sie.
             access.canManage
                 ? prisma.role.findMany({
+                    // Rollen bleiben baumweit sichtbar, siehe role.routes.ts.
                     where: { tenantId: { in: tenantIds } },
                     select: { id: true, roleName: true },
                     orderBy: { roleName: 'asc' },
@@ -399,7 +403,7 @@ router.patch('/staff/:id/profile', requireAuth, requireAnyPermission(['employees
         const id = String(req.params.id || '');
         const tenantIds = await treeOf(req);
         const existing = await prisma.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true, email: true },
         });
         if (!existing) return fail(res, 404, 'Person nicht gefunden.');
@@ -491,7 +495,7 @@ router.post(
             const id = String(req.params.id || '');
             const tenantIds = await treeOf(req);
             const person = await prisma.employee.findFirst({
-                where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+                where: { id, ...employeeScopeWhere(tenantIds), deletedAt: null },
                 select: { id: true, tenantId: true },
             });
             if (!person) return fail(res, 404, 'Person nicht gefunden.');
@@ -615,7 +619,7 @@ router.get('/staff/:id/leave-year', requireAuth, async (req, res) => {
         const year = Math.trunc(Number(req.query.year)) || new Date().getFullYear();
 
         const person = await prisma.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true, hireDate: true, createdAt: true },
         });
         if (!person) return fail(res, 404, 'Person nicht gefunden.');
@@ -699,7 +703,7 @@ router.get('/staff/:id/time-log', requireAuth, async (req, res) => {
         const plan = await loadShiftPlan(tenantId);
 
         const person = await prisma.employee.findFirst({
-            where: { id, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id, ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true, staffNumber: true, firstName: true, lastName: true, email: true, hireDate: true, createdAt: true },
         });
         if (!person) return fail(res, 404, 'Person nicht gefunden.');
@@ -910,7 +914,7 @@ router.post('/time-entries/bulk', requireAuth, requireAnyPermission(['attendance
 
         const tenantIds = await treeOf(req);
         const person = await prisma.employee.findFirst({
-            where: { id: employeeId, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: employeeId, ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true, tenantId: true, hireDate: true, createdAt: true },
         });
         if (!person) return fail(res, 404, 'Person nicht gefunden.');
@@ -1014,7 +1018,7 @@ router.post('/absences/manual', requireAuth, requireAnyPermission(['attendance.c
 
         const tenantIds = await treeOf(req);
         const person = await prisma.employee.findFirst({
-            where: { id: employeeId, tenantId: { in: tenantIds }, deletedAt: null },
+            where: { id: employeeId, ...employeeScopeWhere(tenantIds), deletedAt: null },
             select: { id: true, tenantId: true, hireDate: true, createdAt: true },
         });
         if (!person) return fail(res, 404, 'Person nicht gefunden.');

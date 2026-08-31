@@ -89,6 +89,17 @@ model MeetingActivity {
   externalOrigin      String?   @db.VarChar(16)
   externalOrganizer   String?   @db.VarChar(255)
   meetingUrl          String?   @db.VarChar(512)
+  // WESSEN TERMIN IST DAS? (31.08.2026) — die Postfachkennung (Server|Adresse)
+  // des Kontos, das den Termin hereingeholt hat. Ein uebernommener Termin
+  // gehoert NICHT der Firma, sondern dem POSTFACH: der Kalender zeigt nur, was
+  // aus dem gerade eingerichteten Konto stammt, und ein Kontowechsel raeumt
+  // den Rest weg. Ohne diese Spalte blieben die Termine des alten Kontos
+  // stehen und niemand konnte ihnen ansehen, woher sie kamen.
+  externalMailbox     String?   @db.VarChar(255)
+  // MAIL = aus einer Einladung im Postfach, CALDAV = direkt aus dem Kalender
+  // des Kontos. Trennt die beiden Wege beim Abgleich: verschwindet ein Termin
+  // im Outlook-Kalender, darf der Abgleich NUR die CalDAV-Zeilen entfernen.
+  externalSource      String?   @db.VarChar(16)
   // MEETING | TASK
   kind                String    @default("MEETING")
   // KALENDER-ETIKETT (25.08.2026) — siehe CalendarLabel. Leer = ohne Etikett.
@@ -112,6 +123,7 @@ model MeetingActivity {
 
   @@unique([tenantId, icalUid])
   @@index([tenantId, startTime])
+  @@index([externalMailbox, startTime])
   @@index([customerId])
   @@index([createdByEmployeeId])
   @@index([labelId])
@@ -152,34 +164,34 @@ model CustomerProductDiscount {
 }
 
 model SalesOrder {
-  id                  String    @id
-  tenantId            String
-  customerId          String?
-  tenderId            String?   @unique
-  projectId           String?
-  parentSalesOrderId  String?
-  revisionNumber      Int?
+  id                     String    @id
+  tenantId               String
+  customerId             String?
+  tenderId               String?   @unique
+  projectId              String?
+  parentSalesOrderId     String?
+  revisionNumber         Int?
   // Sipariş kodu — ana sipariş AB-2026-10001 (AUFTRAGSBESTÄTIGUNG; 29.08.2026'ya
   // kadar AU-), ek sipariş (Nachtrag/Zusatzauftrag) NT-2026-10001. Sunucuda
   // DocumentCounter'dan üretilir, her dilde aynıdır.
   // Ek siparişin kodu artık üst siparişten TÜRETİLMEZ (eskiden "…-N1"), kendi
   // NT- serisinden gelir; üst siparişe bağ `parentSalesOrderId` ile kurulur.
-  orderNumber         String
+  orderNumber            String
   // Yeni numaralandırmadan önceki kod (AUF-A-2026-4474, SO-…, …-N1 ve
   // AB- geçişinden önceki AU-2026-10001 kodları).
-  legacyNumber        String?
-  orderType           String
-  status              String    @default("ORDERED")
-  totalAmount         Float     @default(0)
+  legacyNumber           String?
+  orderType              String
+  status                 String    @default("ORDERED")
+  totalAmount            Float     @default(0)
   // Payment schedule copied from the tender at conversion (JSON percent array,
   // e.g. "[30,20,10,40]"); drives "bill next stage" suggestions. Null = free-form.
-  paymentStages       String?
+  paymentStages          String?
   // ⚠ STILLGELEGT (29.08.2026) — der Text des roten Verkaufsausdrucks.
   // Dieser zweite Beleg wurde abgeschafft: der Auftrag hat nur noch die
   // Auftragsbestätigung (`confirmationNote` unten), und NICHTS liest oder
   // schreibt diese Spalte mehr. Sie steht nur noch da, weil Texte darin
   // stehen — wer sie entfernt, löscht die.
-  salesPdfNote        String?   @db.Text
+  salesPdfNote           String?   @db.Text
   // ── AUFTRAGSBESTÄTIGUNG (29.08.2026) ──────────────────────────────────────
   // Der Beleg, den der Auftrag dem Kunden schickt: dasselbe Dokument wie das
   // Angebot (gleiche Zahlen, gleiches Gesicht), nur mit der AB-Nummer, dem
@@ -188,18 +200,18 @@ model SalesOrder {
   // Einleitungstext der Titelseite. NULL heisst "noch nicht bearbeitet" — das
   // Dokument druckt dann den Einleitungstext der OFFERTE (Tender.coverLetter),
   // denn genau von dort startet der Text, bevor jemand ihn ändert.
-  confirmationNote    String?   @db.LongText
+  confirmationNote       String?   @db.LongText
   // "Gültig bis" der Bestätigung. NULL = Auftragsdatum + 1 Monat (Standard);
   // ein gesetzter Wert stammt aus dem Bearbeiten-Fenster und schlägt ihn.
   confirmationValidUntil DateTime?
-  createdByEmployeeId String
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  createdByEmployeeId    String
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
   // Business date shown to the user. For addon (Zusatzauftrag) orders this is the
   // original appointment date the extra work belongs to, which may predate createdAt
   // when the entry is made days later. createdAt stays the internal "unbilled since"
   // slice boundary; orderDate is display-only. Null falls back to createdAt.
-  orderDate           DateTime?
+  orderDate              DateTime?
 
   tenant           Tenant                 @relation(fields: [tenantId], references: [id])
   customer         Customer?              @relation(fields: [customerId], references: [id])

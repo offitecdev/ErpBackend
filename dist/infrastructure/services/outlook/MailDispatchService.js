@@ -10,6 +10,8 @@ const prisma_client_1 = __importDefault(require("../../database/prisma.client"))
 const SmtpMailService_1 = require("../SmtpMailService");
 const mailText_1 = require("./mailText");
 const mailCustomerMatcher_1 = require("./mailCustomerMatcher");
+const mailAutoCategory_1 = require("./mailAutoCategory");
+const serviceTenantScope_1 = require("../../../presentation/controllers/serviceTenantScope");
 /**
  * EIN Versandweg für alles, was das ERP an Kunden schickt (Angebot, Auftrag,
  * Rechnung, freie Mail): der EIGENE MAILSERVER des Betriebs über SMTP
@@ -49,10 +51,25 @@ const recordMessage = async (ctx, mail, ccList, result, record) => {
         contactId = contact?.id || null;
     }
     const attachments = attachmentMeta(mail);
+    /* Steht der Kunde in der Kategorienleiste, liegt auch die eigene Sendung
+       gleich in seinem Fach — sonst stünde dort die Antwort ohne die Frage.
+       `ctx.employeeId` zählt hier NICHT: das ist unsere Absenderin, nicht die
+       Gegenstelle. */
+    const categoryId = record.customerId
+        ? (0, mailAutoCategory_1.autoCategoryId)(await (0, mailAutoCategory_1.getCategoryIndex)(ctx.tenantId), { customerId: record.customerId })
+        : null;
+    /* DIE ZEILE GEHÖRT INS POSTFACH, und das hängt am Stamm des Firmenbaums
+       (getMailTenantId) — nicht an der Firma, aus der heraus gerade gearbeitet
+       wird. Sonst läge die eigene Sendung in einem anderen Bestand als die
+       Antwort des Kunden, die der Abruf hereinholt: das Gespräch fiele
+       auseinander, und der Faden über die Message-ID risse. Alle Aufrufer
+       (Angebot, Auftrag, Rechnung, Kalender, Aufgaben) geben weiterhin ihre
+       eigene Firma mit — aufgelöst wird hier, an der einen Stelle. */
+    const mailTenantId = await (0, serviceTenantScope_1.getMailTenantId)(ctx.tenantId).catch(() => ctx.tenantId);
     const row = await prisma_client_1.default.mailMessage.create({
         data: {
             id: (0, nanoid_1.nanoid)(12),
-            tenantId: ctx.tenantId,
+            tenantId: mailTenantId,
             accountId: result.accountId,
             employeeId: ctx.employeeId,
             direction: "OUT",
@@ -80,6 +97,7 @@ const recordMessage = async (ctx, mail, ccList, result, record) => {
             entityId: record.entityId || null,
             entityLabel: record.entityLabel?.slice(0, 64) || null,
             activityId: record.activityId || null,
+            categoryId,
         },
         select: { id: true },
     });
