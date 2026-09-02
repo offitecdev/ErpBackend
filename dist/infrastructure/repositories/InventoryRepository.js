@@ -8,6 +8,9 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Inventory_1 = require("../../domain/entities/Inventory");
 const Article_1 = require("../../domain/entities/Article");
 const nanoid_1 = require("nanoid");
+// Produktbilder liegen in R2; die Spalte traegt nur den Verweis, der beim
+// Lesen zur festen Adresse am Eimer wird (assets.demo.offitec.ch).
+const ImageStore_1 = require("../services/ImageStore");
 const inboundCostMovementTypes = new Set(['IN', 'RETURN', 'ADJUSTMENT']);
 // Relations required to compute the weighted-average cost / stock totals shown in
 // the article summary. Shared by the full and paginated summary queries.
@@ -165,13 +168,15 @@ class InventoryRepository {
         const where = { tenantId };
         if (locationId)
             where.locationId = locationId;
-        return await prisma_client_1.default.stockBalance.findMany({
+        const balances = await prisma_client_1.default.stockBalance.findMany({
             where,
             include: {
                 article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, salePrice: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
                 location: { select: { locationName: true, locationType: true } }
             }
         });
+        await (0, ImageStore_1.resolveArticleImagesInPlace)(balances, (row) => row.article);
+        return balances;
     }
     // Kritik stok kontrolü için tek ürünün toplamı. Eskiden tüm tenant bakiyeleri
     // (article + location JOIN'leriyle) çekilip bellekte filtreleniyordu — toplu
@@ -194,7 +199,10 @@ class InventoryRepository {
             where: { tenantId, deletedAt: null },
             include: articleSummaryInclude,
         });
-        return articles.map((a) => mapArticleToSummary(a, includeImages));
+        const rows = articles.map((a) => mapArticleToSummary(a, includeImages));
+        if (includeImages)
+            await (0, ImageStore_1.resolveArticleImagesInPlace)(rows);
+        return rows;
     }
     // Tek ürünün yalın stok bilgisi: yalnızca toplam adet, stok eşikleri ve ağırlıklı
     // ortalama maliyet dökümü. Lokasyon/depo objeleri, tedarikçi listesi ve görsel
@@ -485,7 +493,7 @@ class InventoryRepository {
         });
         if (!data)
             return null;
-        return new Article_1.Article(data.id, data.tenantId, data.articleCode, data.name, data.baseCost, data.unit, data.description, data.systemBarcode, data.supplierBarcode, data.imageUrl, data.category, data.status ?? 'ACTIVE', data.isActive, data.minStockLevel, data.criticalStockLevel, data.maxStockLevel, data.lastPurchaseDate, data.salePrice ?? 0, data.defaultSupplierId ?? null);
+        return new Article_1.Article(data.id, data.tenantId, data.articleCode, data.name, data.baseCost, data.unit, data.description, data.systemBarcode, data.supplierBarcode, await (0, ImageStore_1.resolveArticleImage)(data.imageUrl), data.category, data.status ?? 'ACTIVE', data.isActive, data.minStockLevel, data.criticalStockLevel, data.maxStockLevel, data.lastPurchaseDate, data.salePrice ?? 0, data.defaultSupplierId ?? null);
     }
     async processMovement(movementData, articleId, sourceLocationId, destLocationId, quantity) {
         const result = await prisma_client_1.default.$transaction(async (tx) => {

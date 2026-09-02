@@ -20,6 +20,29 @@ const nanoid_1 = require("nanoid");
 const documentNumber_1 = require("../../shared/documentNumber");
 const smtp = new SmtpMailService_1.SmtpMailService();
 /**
+ * DIE ADRESSE, DIE DER BROWSER BEKOMMT (01.09.2026).
+ *
+ * Der Verweis in der Zeile ist eine Ablage-Adresse, nie die des Browsers —
+ * `displayUrl()` entscheidet, welcher Name hinausgeht. Zwei sind daran
+ * gescheitert: `pub-*.r2.dev` und der presignte S3-Endpunkt
+ * `*.r2.cloudflarestorage.com`. Beide kommen im Netz der Benutzerin nicht an;
+ * Name, Groesse und «2/4» standen da, das Blatt blieb weiss. Es geht die
+ * eigene Domain am Eimer hinaus (`assets.demo.offitec.ch`, R2_PUBLIC_URL).
+ *
+ * `downloadName` bleibt weg: damit setzt R2 `Content-Disposition: attachment`,
+ * und ein Rahmen, der herunterlaedt statt anzuzeigen, ist wieder weiss.
+ */
+const appointmentDocumentDto = async (document) => {
+    const { fileRef, ...metadata } = document;
+    const url = await LocalFileStorage_1.appointmentDocumentStorage.displayUrl(String(fileRef || ''), {
+        contentType: document?.contentType || undefined,
+    });
+    if (!url) {
+        throw Object.assign(new Error('Belge deposu yapılandırılmamış; belge için URL oluşturulamadı.'), { status: 503 });
+    }
+    return { ...metadata, url };
+};
+/**
  * DER AUFTRAG IST WEG → DIE OFFERTE IST WIEDER EIN ENTWURF (Benutzerregel
  * 29.08.2026: «wird das Projekt gelöscht, verschwindet es aus den Aufträgen und
  * wird wieder ein Entwurf»).
@@ -515,28 +538,106 @@ class ProjectController {
             },
         };
     }
-    // Trimmed include for the calendar grid: only the fields the month/week/day
-    // blocks render (title, technician names, order number, navigation ids). It
-    // deliberately drops the tender material trees, project reports/images,
-    // expenses and extra materials that projectInstallationInclude carries so the
-    // range query stays cheap even with many appointments. The popup fetches the
-    // richer detail on click via projectCalendarDetailInclude.
-    projectCalendarListInclude() {
-        return {
-            assignedTechnician: { select: { id: true, firstName: true, lastName: true } },
-            technicianAssignments: {
-                orderBy: { assignedAt: "asc" },
-                select: { technician: { select: { id: true, firstName: true, lastName: true } } },
-            },
-            salesOrder: { select: { id: true, orderNumber: true } },
-            project: {
-                select: {
-                    id: true,
-                    projectName: true,
-                    customer: { select: { id: true, companyName: true } },
-                },
-            },
-        };
+    /**
+     * Calendar grid projection in ONE database round-trip.
+     *
+     * Prisma's relation include loads the appointment, primary technician,
+     * assignments, order, project and customer as separate relation reads. On
+     * the remote database that turns a tiny response into several network
+     * round-trips. The grid needs only these labels and ids; notes, CC/iCal,
+     * reminders, series metadata and popup contact data are fetched lazily by
+     * getAppointmentDetail when a calendar block is opened.
+     */
+    async listCalendarAppointments(tenantId, start, end, technicianId) {
+        const technicianScope = technicianId
+            ? client_1.Prisma.sql `AND (
+                a.assignedTechId = ${technicianId}
+                OR EXISTS (
+                    SELECT 1
+                    FROM ProjectAppointmentAssignment ownAssignment
+                    WHERE ownAssignment.appointmentId = a.id
+                      AND ownAssignment.technicianId = ${technicianId}
+                )
+            )`
+            : client_1.Prisma.sql ``;
+        const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+            SELECT
+                a.id,
+                a.projectId,
+                a.salesOrderId,
+                a.assignedTechId,
+                a.startTime,
+                a.endTime,
+                a.status,
+                a.labelId,
+                primaryTech.id AS primaryTechId,
+                primaryTech.firstName AS primaryFirstName,
+                primaryTech.lastName AS primaryLastName,
+                assignment.technicianId AS assignmentTechId,
+                assignmentTech.firstName AS assignmentFirstName,
+                assignmentTech.lastName AS assignmentLastName,
+                salesOrder.id AS orderId,
+                salesOrder.orderNumber,
+                project.id AS joinedProjectId,
+                customer.id AS customerId,
+                customer.companyName
+            FROM Appointment a
+            LEFT JOIN Employee primaryTech ON primaryTech.id = a.assignedTechId
+            LEFT JOIN ProjectAppointmentAssignment assignment ON assignment.appointmentId = a.id
+            LEFT JOIN Employee assignmentTech ON assignmentTech.id = assignment.technicianId
+            LEFT JOIN SalesOrder salesOrder ON salesOrder.id = a.salesOrderId
+            LEFT JOIN Project project ON project.id = a.projectId
+            LEFT JOIN Customer customer ON customer.id = project.customerId
+            WHERE a.tenantId = ${tenantId}
+              AND a.projectId IS NOT NULL
+              AND a.status IN ('BOOKED', 'COMPLETED')
+              AND a.startTime >= ${start}
+              AND a.endTime <= ${end}
+              ${technicianScope}
+            ORDER BY a.startTime ASC, assignment.assignedAt ASC
+        `);
+        const byId = new Map();
+        for (const row of rows) {
+            let appointment = byId.get(row.id);
+            if (!appointment) {
+                appointment = {
+                    id: row.id,
+                    projectId: row.projectId,
+                    salesOrderId: row.salesOrderId,
+                    assignedTechId: row.assignedTechId,
+                    startTime: row.startTime,
+                    endTime: row.endTime,
+                    status: row.status,
+                    labelId: row.labelId,
+                    assignedTechnician: row.primaryTechId
+                        ? { id: row.primaryTechId, firstName: row.primaryFirstName, lastName: row.primaryLastName }
+                        : null,
+                    technicianAssignments: [],
+                    salesOrder: row.orderId
+                        ? { id: row.orderId, orderNumber: row.orderNumber }
+                        : null,
+                    project: row.joinedProjectId
+                        ? {
+                            id: row.joinedProjectId,
+                            customer: row.customerId
+                                ? { id: row.customerId, companyName: row.companyName }
+                                : null,
+                        }
+                        : null,
+                };
+                byId.set(row.id, appointment);
+            }
+            if (row.assignmentTechId) {
+                appointment.technicianAssignments.push({
+                    technician: {
+                        id: row.assignmentTechId,
+                        firstName: row.assignmentFirstName,
+                        lastName: row.assignmentLastName,
+                    },
+                });
+            }
+        }
+        return Array.from(byId.values());
     }
     // Single-appointment include for the calendar detail popup: customer contacts,
     // participants with contact details, order/tender numbers and the manager —
@@ -798,6 +899,10 @@ class ProjectController {
             if (String(req.query.view || "") === "montage-page") {
                 return this.listMontageOrdersPage(req, res, start, end);
             }
+            if (String(req.query.view || "") === "calendar") {
+                const appointments = await this.listCalendarAppointments(req.user.tenantId, start, end, req.user.id);
+                return res.status(200).json(appointments);
+            }
             const appointments = await prisma_client_1.default.appointment.findMany({
                 where: {
                     tenantId: req.user.tenantId,
@@ -814,11 +919,9 @@ class ProjectController {
                 // The calendar asks for the trimmed grid include, the montage list
                 // for the row-only include; the installation screens (which derive
                 // their detail from this list) keep the full one.
-                include: String(req.query.view || "") === "calendar"
-                    ? this.projectCalendarListInclude()
-                    : String(req.query.view || "") === "montage"
-                        ? this.projectMontageListInclude()
-                        : this.projectInstallationInclude(),
+                include: String(req.query.view || "") === "montage"
+                    ? this.projectMontageListInclude()
+                    : this.projectInstallationInclude(),
             });
             res.status(200).json(appointments);
         }
@@ -1416,6 +1519,10 @@ class ProjectController {
             // the full first/last day so single-day (day view) ranges are not empty.
             const start = startOfDay(rawStart);
             const end = endOfDay(rawEnd);
+            if (String(req.query.view || "") === "calendar") {
+                const appointments = await this.listCalendarAppointments(req.user.tenantId, start, end);
+                return res.status(200).json(appointments);
+            }
             const appointments = await prisma_client_1.default.appointment.findMany({
                 where: {
                     tenantId: req.user.tenantId,
@@ -1425,9 +1532,7 @@ class ProjectController {
                     endTime: { lte: end },
                 },
                 orderBy: { startTime: "asc" },
-                include: String(req.query.view || "") === "calendar"
-                    ? this.projectCalendarListInclude()
-                    : this.projectInstallationInclude(),
+                include: this.projectInstallationInclude(),
             });
             res.status(200).json(appointments);
         }
@@ -3319,6 +3424,15 @@ class ProjectController {
      *
      * Geprüft wird ALLES VORHER: ein halb angelegter Einsatz (Montag steht,
      * Mittwoch ist besetzt) wäre schlimmer als eine klare Absage.
+     *
+     * DER BESETZTE TAG (01.09.2026, Vorgabe Samet: «wenn der Tag schon belegt
+     * ist, soll der alte Eintrag gelöscht werden — mit einem Knopf, der löscht
+     * und speichert»). Die Absage nennt seit heute die Zeilen, die im Weg
+     * stehen (`replaceable`, siehe appointmentSeries.ts); schickt der Browser
+     * sie als `replaceAppointmentIds` zurück, verschwinden sie in DERSELBEN
+     * Transaktion, in der der neue Einsatz entsteht. Entweder beides oder
+     * nichts — ein gelöschter alter Termin ohne neuen wäre das schlechteste
+     * aller Ergebnisse.
      */
     async createAppointment(req, res) {
         try {
@@ -3336,6 +3450,30 @@ class ProjectController {
             const technicians = await this.validateProjectTechnicians(this.appointmentTechnicianIdsFromBody(req.body), req.user.tenantId);
             const technicianIds = technicians.map((technician) => technician.id);
             const responsibleTechnician = technicians[0] || null;
+            /* Die Termine, die dem neuen Platz machen sollen. Sie kommen aus
+               der vorigen Absage zurück — der Browser erfindet sie nicht. */
+            const replaceIds = normalizeIdList(req.body?.replaceAppointmentIds);
+            const replaced = replaceIds.length
+                ? await prisma_client_1.default.appointment.findMany({
+                    where: { id: { in: replaceIds }, tenantId: req.user.tenantId },
+                    orderBy: { startTime: "asc" },
+                    select: { id: true, projectId: true, salesOrderId: true, seriesId: true, startTime: true, endTime: true, status: true },
+                })
+                : [];
+            if (replaced.length !== replaceIds.length) {
+                return res.status(404).json({ error: "Ein zu ersetzender Termin wurde nicht gefunden." });
+            }
+            /* An einem abgeschlossenen Tag hängt geleistete Arbeit — Rapport,
+               Spesen, Material. Er weicht keinem neuen Termin. */
+            if (replaced.some((row) => row.status === "COMPLETED")) {
+                return res.status(409).json({ error: "Ein bereits abgeschlossener Termin kann nicht ersetzt werden." });
+            }
+            /* Und weichen darf nur, was auf den geplanten Tagen liegt: das
+               Anlegen eines Termins ist kein Weg, irgendeine andere Zeile
+               mitzunehmen. */
+            if (replaced.some((row) => !(0, appointmentSeries_1.blocksPlannedDays)(row, days))) {
+                return res.status(400).json({ error: "Ein zu ersetzender Termin liegt nicht an den geplanten Tagen." });
+            }
             await (0, appointmentSeries_1.assertDaysAvailable)({
                 tenantId: req.user.tenantId,
                 projectId: project.id,
@@ -3343,13 +3481,36 @@ class ProjectController {
                 salesOrderId,
                 technicianIds,
                 days,
+                // Was gleich weggeräumt wird, darf sich nicht selbst im Weg stehen.
+                excludeAppointmentIds: replaceIds,
             });
+            /* Die Absagen EINSAMMELN, solange die Zeilen noch da sind —
+               verschickt werden sie erst, wenn alles durchgelaufen ist
+               (dieselbe Reihenfolge wie beim Löschen eines Termins). */
+            const cancellations = replaced.length
+                ? await Promise.all(replaced.map((row) => (0, calendarMailService_1.buildAppointmentCancellation)(row.id)))
+                : [];
             /* Alle Tage in EINEM Durchgang: `createMany` statt einer Anlage je
                Tag — bei vier Tagen wären das sonst acht Wartezeiten auf einer
                entfernten Datenbank, und der Transaktionsdeckel (5 s) rückt
                näher, je länger der Einsatz ist. */
             const appointmentIds = days.map(() => (0, nanoid_1.nanoid)(10));
             const seriesId = await prisma_client_1.default.$transaction(async (tx) => {
+                /* ZUERST RÄUMEN, DANN SETZEN (01.09.2026). Der alte Termin geht
+                   mit allem, was an ihm hängt; bleibt seine Serie leer, geht
+                   die Klammer mit (und mit ihr die Terminunterlagen), sonst
+                   wird der Rest neu durchnummeriert — «Tag 2 von 4» heisst
+                   danach «Tag 2 von 3». */
+                for (const row of replaced) {
+                    await this.purgeAppointmentDay(tx, row, req.user.id, req.user.tenantId);
+                }
+                for (const oldSeriesId of [...new Set(replaced.map((row) => row.seriesId).filter(Boolean))]) {
+                    const left = await tx.appointment.count({ where: { seriesId: oldSeriesId } });
+                    if (left === 0)
+                        await tx.appointmentSeries.delete({ where: { id: oldSeriesId } }).catch(() => null);
+                    else
+                        await (0, appointmentSeries_1.renumberSeries)(tx, oldSeriesId);
+                }
                 const id = await (0, appointmentSeries_1.createSeries)(tx, project.tenantId, req.body?.coverNote);
                 await tx.appointment.createMany({
                     data: days.map((day, index) => ({
@@ -3384,6 +3545,13 @@ class ProjectController {
                 }
                 return id;
             });
+            /* Absage an alle Beteiligten des ERSETZTEN Termins: er verschwindet
+               damit auch aus deren Outlook. Erst NACH der Transaktion — und
+               mit den Daten, die vorher geladen wurden, denn die Zeile ist nun
+               fort. Die Aufbietung für den neuen Einsatz folgt weiter unten. */
+            for (const cancellation of cancellations) {
+                (0, calendarMailService_1.queueAppointmentCancellation)(cancellation, req.user.id);
+            }
             const appointments = await prisma_client_1.default.appointment.findMany({
                 where: { id: { in: appointmentIds } },
                 orderBy: { startTime: "asc" },
@@ -3418,10 +3586,16 @@ class ProjectController {
             /* Die Antwort ist der ERSTE Tag (daran hängen die Aufrufer, die
                einen einzelnen Termin erwarten) — plus die Serie und ihre Tage
                für alles, was den ganzen Einsatz meint. */
-            res.status(201).json({ ...appointments[0], seriesId, days: appointments });
+            res.status(201).json({ ...appointments[0], seriesId, days: appointments, replaced: replaced.length });
         }
         catch (error) {
-            res.status(error?.status || 400).json({ error: error.message });
+            /* `replaceable` reist MIT der Absage: es sind die Zeilen, die im Weg
+               stehen. Der Browser bietet damit «löschen und speichern» an und
+               schickt sie als `replaceAppointmentIds` zurück (01.09.2026). */
+            res.status(error?.status || 400).json({
+                error: error.message,
+                ...(error?.replaceable?.length ? { replaceable: error.replaceable } : {}),
+            });
         }
     }
     async updateAppointment(req, res) {
@@ -3707,7 +3881,7 @@ class ProjectController {
                 seriesId: appointment.seriesId,
                 coverNote: series?.coverNote ?? null,
                 days,
-                documents,
+                documents: await Promise.all(documents.map(appointmentDocumentDto)),
             });
         }
         catch (error) {
@@ -3896,7 +4070,11 @@ class ProjectController {
                 (0, appointmentSeries_1.ensureSeriesId)(appointment),
                 LocalFileStorage_1.appointmentDocumentStorage.store(req.user.tenantId, upload.body, upload.contentType),
             ]);
-            storedRef = stored;
+            storedRef = LocalFileStorage_1.appointmentDocumentStorage.publicReadUrl(stored);
+            if (!storedRef) {
+                await LocalFileStorage_1.appointmentDocumentStorage.remove(stored).catch(() => undefined);
+                throw Object.assign(new Error('R2_PUBLIC_URL ayarlanmamış; belge için kalıcı URL oluşturulamadı.'), { status: 503 });
+            }
             const total = await prisma_client_1.default.appointmentDocument.aggregate({
                 where: { seriesId },
                 _sum: { sizeBytes: true },
@@ -3914,13 +4092,13 @@ class ProjectController {
                     fileName: upload.fileName,
                     contentType: upload.contentType,
                     sizeBytes: upload.sizeBytes,
-                    fileRef: stored,
+                    fileRef: storedRef,
                     uploadedById: req.user.id,
                 },
                 select: appointmentSeries_1.documentListSelect,
             });
             storedRef = null;
-            res.status(201).json({ seriesId, document });
+            res.status(201).json({ seriesId, document: await appointmentDocumentDto(document) });
         }
         catch (error) {
             if (storedRef)
@@ -3980,7 +4158,13 @@ class ProjectController {
             // laufen. Die Referenzen werden sofort festgehalten, damit bei
             // einem Teilfehler alle schon geschriebenen Dateien wegkommen.
             const stored = await Promise.allSettled(uploads.map(async (upload, index) => {
-                storedRefs[index] = await LocalFileStorage_1.appointmentDocumentStorage.store(req.user.tenantId, upload.body, upload.contentType);
+                const stored = await LocalFileStorage_1.appointmentDocumentStorage.store(req.user.tenantId, upload.body, upload.contentType);
+                const url = LocalFileStorage_1.appointmentDocumentStorage.publicReadUrl(stored);
+                if (!url) {
+                    await LocalFileStorage_1.appointmentDocumentStorage.remove(stored).catch(() => undefined);
+                    throw Object.assign(new Error('R2_PUBLIC_URL ayarlanmamış; belge için kalıcı URL oluşturulamadı.'), { status: 503 });
+                }
+                storedRefs[index] = url;
             }));
             const storeFailure = stored.find((result) => result.status === "rejected");
             if (storeFailure?.status === "rejected")
@@ -4003,11 +4187,16 @@ class ProjectController {
             // BEGIN/SELECT/COMMIT-Netzrundgaenge addieren. Alle Felder fuer die
             // schlanke Antwort liegen bereits sicher im Speicher.
             await prisma_client_1.default.appointmentDocument.createMany({ data: rows });
-            const documents = rows.map((row) => ({
+            /* Die Antwort traegt dieselbe Adresse wie die Liste (01.09.2026):
+               der gespeicherte Verweis geht nie roh zum Browser, displayUrl()
+               macht daraus den Namen, der dort ankommt. */
+            const signedUrls = await Promise.all(rows.map((row) => (LocalFileStorage_1.appointmentDocumentStorage.displayUrl(row.fileRef, { contentType: row.contentType || undefined }))));
+            const documents = rows.map((row, index) => ({
                 id: row.id,
                 fileName: row.fileName,
                 contentType: row.contentType,
                 sizeBytes: row.sizeBytes,
+                url: signedUrls[index] || row.fileRef,
                 createdAt: row.createdAt,
                 uploadedBy: {
                     id: req.user.id,
@@ -4039,16 +4228,19 @@ class ProjectController {
             if (!document)
                 return res.status(404).json({ error: "Unterlage nicht gefunden." });
             await this.assertSeriesReadable(document.seriesId, req, opts);
-            // Die Bytes liegen auf der Platte; erst hier werden sie gelesen und
-            // als Daten-URI ausgeliefert (die Liste selbst bleibt federleicht).
-            const body = await LocalFileStorage_1.appointmentDocumentStorage.read(document.fileRef);
+            const url = await LocalFileStorage_1.appointmentDocumentStorage.displayUrl(document.fileRef, {
+                contentType: document.contentType || undefined,
+            });
+            if (!url) {
+                return res.status(409).json({ error: 'Bu belgenin dosyası okunabilir bir depoda değil.' });
+            }
             res.status(200).json({
                 id: document.id,
                 fileName: document.fileName,
                 contentType: document.contentType,
                 sizeBytes: document.sizeBytes,
                 createdAt: document.createdAt,
-                data: `data:${document.contentType};base64,${body.toString("base64")}`,
+                url,
             });
         }
         catch (error) {

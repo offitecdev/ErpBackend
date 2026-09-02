@@ -44,8 +44,65 @@ export interface PlannedDay {
     appointmentId?: string | undefined;
 }
 
-const fail = (message: string, status = 400) =>
-    Object.assign(new Error(message), { status });
+const fail = (message: string, status = 400, extra?: Record<string, unknown>) =>
+    Object.assign(new Error(message), { status, ...(extra || {}) });
+
+/**
+ * EIN BELEGTER TAG, DER WEICHEN DÜRFTE (01.09.2026).
+ *
+ * Vorgabe Samet: «Wenn der Tag schon besetzt ist, soll der alte Eintrag
+ * gelöscht werden — mit einem Knopf, der löscht und speichert.» Die Absage
+ * allein reichte nicht: sie nannte das Datum, aber nicht die Zeile, und wer
+ * den alten Termin loswerden wollte, musste das Fenster schliessen, ihn im
+ * Raster suchen, löschen und von vorn anfangen.
+ *
+ * Deshalb trägt die Absage jetzt MIT, WAS IM WEG STEHT. Der Browser bekommt
+ * die Zeilen und darf sie beim nächsten Versuch als `replaceAppointmentIds`
+ * zurückschicken — dann räumt der Server sie weg und legt den neuen Einsatz an
+ * (ProjectController.createAppointment).
+ *
+ * NICHT dabei ist ein bereits ABGESCHLOSSENER Tag: an ihm hängen Rapport,
+ * Spesen und Material einer geleisteten Arbeit. Er bleibt eine Absage ohne
+ * Ausweg — wer ihn wirklich streichen will, tut das ausdrücklich.
+ *
+ * Und nicht dabei ist der TECHNIKERKONFLIKT: die Zeile, die dort im Weg steht,
+ * gehört einem anderen Auftrag. Sie wegzuräumen, weil hier jemand denselben
+ * Monteur will, wäre das Löschen fremder Arbeit.
+ */
+export interface ReplaceableAppointment {
+    id: string;
+    startTime: Date;
+    endTime: Date;
+}
+
+const replaceableRows = (rows: any[]): ReplaceableAppointment[] => rows
+    .filter((row) => row.status !== "COMPLETED")
+    .map((row) => ({ id: String(row.id), startTime: row.startTime, endTime: row.endTime }));
+
+/**
+ * Steht diese Zeile den geplanten Tagen WIRKLICH im Weg?
+ *
+ * Der Riegel unter `replaceAppointmentIds`: gelöscht werden darf nur, was auf
+ * einem der geplanten Tage liegt. Ohne ihn könnte ein Aufruf beim Anlegen eines
+ * Termins irgendeine andere Zeile mitnehmen — die Kennungen kommen zwar aus der
+ * Absage des Servers, aber der Server soll sich darauf nicht verlassen müssen.
+ *
+ * Die zwei Fälle sind dieselben, die auch blockieren: derselbe ANFANGSTAG (die
+ * Kundenregel «ein Termin je Tag») oder eine echte ÜBERLAPPUNG (die Auftrags-
+ * regel). Jede blockierende Zeile erfüllt eines davon — der Riegel weist also
+ * nie einen berechtigten Fall ab.
+ */
+export const blocksPlannedDays = (
+    row: { startTime: Date | string; endTime: Date | string },
+    days: PlannedDay[],
+): boolean => {
+    const start = new Date(row.startTime);
+    const end = new Date(row.endTime);
+    return days.some((day) => (
+        localDayKey(start) === localDayKey(day.startTime)
+        || (start.getTime() < day.endTime.getTime() && end.getTime() > day.startTime.getTime())
+    ));
+};
 
 const startOfDay = (date: Date) => {
     const day = new Date(date);
@@ -151,11 +208,16 @@ export const assertDaysAvailable = async (input: {
         lte: endOfDay(day.startTime),
     }));
 
-    const [customerHit, projectHit, technicianHits] = await Promise.all([
+    /* ALLE belegten Zeilen, nicht nur die erste (01.09.2026): der Knopf
+       «löschen und speichern» muss den ganzen Weg freiräumen können. Bei vier
+       geplanten Tagen stehen sonst vier Absagen hintereinander an. */
+    const blockerSelect = { id: true, startTime: true, endTime: true, status: true } as const;
+
+    const [customerHits, projectHits, technicianHits] = await Promise.all([
         // Ein Kunde bekommt je Kalendertag EINEN Einsatztermin — dieselbe Regel
         // wie beim einzelnen Termin, nur für alle gewählten Tage zugleich.
         input.customerId
-            ? (prisma as any).appointment.findFirst({
+            ? (prisma as any).appointment.findMany({
                 where: {
                     customerId: input.customerId,
                     projectId: { not: null },
@@ -163,11 +225,12 @@ export const assertDaysAvailable = async (input: {
                     ...notSelf,
                     OR: dayWindows.map((window) => ({ startTime: window })),
                 },
-                select: { id: true, startTime: true },
+                orderBy: { startTime: "asc" },
+                select: blockerSelect,
             })
-            : Promise.resolve(null),
+            : Promise.resolve([]),
         // Derselbe Auftrag darf sich nicht selbst überlappen.
-        (prisma as any).appointment.findFirst({
+        (prisma as any).appointment.findMany({
             where: {
                 projectId: input.projectId,
                 ...(input.salesOrderId !== undefined ? { salesOrderId: input.salesOrderId } : {}),
@@ -177,7 +240,8 @@ export const assertDaysAvailable = async (input: {
                     endTime: { gt: day.startTime },
                 })),
             },
-            select: { id: true, startTime: true },
+            orderBy: { startTime: "asc" },
+            select: blockerSelect,
         }),
         Promise.all(input.days.map((day) =>
             findTechnicianScheduleConflict(input.technicianIds, day.startTime, day.endTime, input.tenantId, {
@@ -186,11 +250,19 @@ export const assertDaysAvailable = async (input: {
         )),
     ]);
 
-    if (customerHit) {
-        throw fail(`Für diesen Kunden besteht am ${formatDay(customerHit.startTime)} bereits ein Termin. Je Tag ist ein Termin möglich.`, 409);
+    if (customerHits.length) {
+        throw fail(
+            `Für diesen Kunden besteht am ${formatDay(customerHits[0].startTime)} bereits ein Termin. Je Tag ist ein Termin möglich.`,
+            409,
+            { replaceable: replaceableRows(customerHits) },
+        );
     }
-    if (projectHit) {
-        throw fail(`Der Zeitplan dieses Auftrags überschneidet sich am ${formatDay(projectHit.startTime)}.`, 409);
+    if (projectHits.length) {
+        throw fail(
+            `Der Zeitplan dieses Auftrags überschneidet sich am ${formatDay(projectHits[0].startTime)}.`,
+            409,
+            { replaceable: replaceableRows(projectHits) },
+        );
     }
     const technicianHit = technicianHits.find(Boolean);
     if (technicianHit) {
@@ -342,6 +414,7 @@ export const documentListSelect = {
     fileName: true,
     contentType: true,
     sizeBytes: true,
+    fileRef: true,
     createdAt: true,
     uploadedBy: { select: { id: true, firstName: true, lastName: true } },
 } as const;

@@ -3,6 +3,9 @@ import { IInventoryRepository } from "../../domain/repositories/IInventoryReposi
 import { Location, StockBalance, StockMovement, PurchaseProposal } from "../../domain/entities/Inventory";
 import { Article } from "../../domain/entities/Article";
 import { nanoid } from "nanoid";
+// Produktbilder liegen in R2; die Spalte traegt nur den Verweis, der beim
+// Lesen zur festen Adresse am Eimer wird (assets.demo.offitec.ch).
+import { resolveArticleImage, resolveArticleImagesInPlace } from "../services/ImageStore";
 
 const inboundCostMovementTypes = new Set(['IN', 'RETURN', 'ADJUSTMENT']);
 
@@ -182,13 +185,15 @@ export class InventoryRepository implements IInventoryRepository {
         const where: any = { tenantId };
         if (locationId) where.locationId = locationId;
 
-        return await (prisma as any).stockBalance.findMany({
+        const balances = await (prisma as any).stockBalance.findMany({
             where,
             include: {
                 article: { select: { id: true, articleCode: true, name: true, unit: true, baseCost: true, salePrice: true, minStockLevel: true, criticalStockLevel: true, imageUrl: true, systemBarcode: true } },
                 location: { select: { locationName: true, locationType: true } }
             }
         });
+        await resolveArticleImagesInPlace(balances, (row: any) => row.article);
+        return balances;
     }
 
     // Kritik stok kontrolü için tek ürünün toplamı. Eskiden tüm tenant bakiyeleri
@@ -214,7 +219,9 @@ export class InventoryRepository implements IInventoryRepository {
             where: { tenantId, deletedAt: null },
             include: articleSummaryInclude,
         });
-        return articles.map((a: any) => mapArticleToSummary(a, includeImages));
+        const rows = articles.map((a: any) => mapArticleToSummary(a, includeImages));
+        if (includeImages) await resolveArticleImagesInPlace(rows);
+        return rows;
     }
 
     // Tek ürünün yalın stok bilgisi: yalnızca toplam adet, stok eşikleri ve ağırlıklı
@@ -545,7 +552,7 @@ export class InventoryRepository implements IInventoryRepository {
             data.description,
             data.systemBarcode,
             data.supplierBarcode,
-            data.imageUrl,
+            await resolveArticleImage(data.imageUrl),
             (data as any).category,
             ((data as any).status as any) ?? 'ACTIVE',
             data.isActive,

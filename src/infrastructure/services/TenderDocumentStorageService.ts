@@ -1,6 +1,6 @@
 import path from 'path';
 
-import { LocalFileStorage } from './LocalFileStorage';
+import { DocumentStorage } from './LocalFileStorage';
 
 /**
  * Keeps attachment bytes out of MariaDB. The database stores only an opaque,
@@ -11,7 +11,7 @@ import { LocalFileStorage } from './LocalFileStorage';
  * `local:tender-document/` bleibt unverändert: er steht so in jeder Zeile, die
  * es schon gibt.
  */
-export const tenderDocumentStorageService = new LocalFileStorage({
+export const tenderDocumentStorageService = new DocumentStorage({
     prefix: 'local:tender-document/',
     directory: process.env.OFFITEC_TENDER_UPLOAD_DIR
         || path.join(process.cwd(), 'storage', 'tender-documents'),

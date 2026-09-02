@@ -10,6 +10,7 @@ const path_1 = __importDefault(require("path"));
 const sharp_1 = __importDefault(require("sharp"));
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const ImageStore_1 = require("./ImageStore");
 /**
  * Product images for the offer PDF, reduced to the size the PDF actually draws.
  *
@@ -84,16 +85,43 @@ const diskPut = async (key, dataUri) => {
     }
 };
 /**
- * Downscales one base64 data URI. Anything that is not a decodable raster image
- * (a plain http URL, an SVG, a corrupt upload) is returned untouched so the PDF
- * still gets whatever the record held.
+ * DIE BYTES ZUM QUELLWERT — Daten-URI ODER ABLAGEVERWEIS (01.09.2026).
+ *
+ * Seit die Bilder in R2 liegen, steht in der Spalte nicht mehr das Bild,
+ * sondern `r2:article-image/...`. Der PDF-Weg darf davon nichts merken: er
+ * braucht Bytes, und die holt er hier — aus der Zeichenkette selbst, oder aus
+ * der Ablage. Anders als der Browser darf der Server das direkt tun; die
+ * fehlenden CORS-Kopfzeilen am Eimer betreffen nur ihn.
  */
-const toThumbnailDataUri = async (source) => {
-    const comma = source.indexOf(',');
-    if (!source.startsWith('data:') || comma < 0)
+const sourceBytes = async (source, sourceType) => {
+    if (source.startsWith('data:')) {
+        const comma = source.indexOf(',');
+        if (comma < 0)
+            return null;
+        return Buffer.from(source.slice(comma + 1), 'base64');
+    }
+    if (!(0, ImageStore_1.isStoredReference)(source))
+        return null;
+    const storage = sourceType === 'POSITION' ? ImageStore_1.positionImageStorage : ImageStore_1.articleImageStorage;
+    try {
+        return await storage.read(source);
+    }
+    catch {
+        // Die Datei fehlt: das PDF entsteht ohne dieses Bild, nicht gar nicht.
+        return null;
+    }
+};
+/**
+ * Downscales one stored image — a base64 data URI or a storage reference.
+ * Anything that is not a decodable raster image (a plain http URL, an SVG, a
+ * corrupt upload) is returned untouched so the PDF still gets whatever the
+ * record held.
+ */
+const toThumbnailDataUri = async (source, sourceType) => {
+    const input = await sourceBytes(source, sourceType);
+    if (!input)
         return source;
     try {
-        const input = Buffer.from(source.slice(comma + 1), 'base64');
         if (input.length === 0)
             return source;
         const out = await (0, sharp_1.default)(input, { failOn: 'none' })
@@ -103,9 +131,13 @@ const toThumbnailDataUri = async (source) => {
             .flatten({ background: '#ffffff' })
             .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
             .toBuffer();
-        // A tiny original (already thumbnail-sized) can come out larger — keep
-        // whichever is smaller.
+        /* Ein winziges Original (schon in Vorschaugroesse) kann groesser
+         * herauskommen — dann bleibt das Original. Verglichen wird gegen die
+         * BYTES, nicht gegen die Zeichenkette: ein Ablageverweis ist 60 Zeichen
+         * lang und wuerde jeden Vergleich gewinnen, obwohl er gar kein Bild ist. */
         const thumb = JPEG_DATA_URI_PREFIX + out.toString('base64');
+        if (!source.startsWith('data:'))
+            return thumb;
         return thumb.length < source.length ? thumb : source;
     }
     catch {
@@ -131,6 +163,12 @@ const loadPersistedThumbnails = async (tenantId, sourceType, sourceIds) => {
 };
 const persistThumbnailValue = async (tenantId, sourceType, sourceId, imageUrl, sourceVersion) => {
     if (imageUrl.length > MAX_PERSISTED_URI_LENGTH)
+        return;
+    /* NUR ECHTE BILDER WERDEN GEMERKT. Schlaegt die Umwandlung fehl, gibt
+     * `toThumbnailDataUri` den Quellwert zurueck — seit dem Umzug also unter
+     * Umstaenden einen `r2:`-Verweis. Der waere als Vorschaubild wertlos und
+     * wuerde, einmal gespeichert, bei jedem PDF wieder herauskommen. */
+    if (!imageUrl.startsWith('data:'))
         return;
     try {
         await prisma_client_1.default.pdfImageThumbnail.upsert({
@@ -174,7 +212,7 @@ const persistPdfThumbnail = async (tenantId, sourceType, sourceId, source, sourc
         }
         return null;
     }
-    const thumbnail = await (0, exports.toThumbnailDataUri)(source);
+    const thumbnail = await (0, exports.toThumbnailDataUri)(source, sourceType);
     await persistThumbnailValue(tenantId, sourceType, sourceId, thumbnail, sourceVersion);
     return thumbnail;
 };
@@ -224,7 +262,7 @@ const getArticleThumbnails = async (tenantId, articles) => {
         await Promise.all(rows.map(async (row) => {
             if (!row.imageUrl)
                 return;
-            const thumbnail = await (0, exports.toThumbnailDataUri)(row.imageUrl);
+            const thumbnail = await (0, exports.toThumbnailDataUri)(row.imageUrl, 'ARTICLE');
             const article = versionById.get(row.id);
             if (article) {
                 const key = keyOf(article);
@@ -236,9 +274,11 @@ const getArticleThumbnails = async (tenantId, articles) => {
             resolved.set(row.id, thumbnail);
         }));
     }
+    // Was keine Daten-URI ist, kann das PDF nicht zeichnen — es faellt weg,
+    // statt als kaputtes Bild mitzureisen.
     return articles
         .map((article) => ({ id: article.id, imageUrl: resolved.get(article.id) || '' }))
-        .filter((row) => row.imageUrl !== '');
+        .filter((row) => row.imageUrl.startsWith('data:'));
 };
 exports.getArticleThumbnails = getArticleThumbnails;
 /**
@@ -267,11 +307,11 @@ const getPositionThumbnails = async (tenantId, tenderId, rows) => {
         select: { id: true, imageUrl: true },
     });
     const generated = await Promise.all(originals.map(async (row) => {
-        const imageUrl = await (0, exports.toThumbnailDataUri)(row.imageUrl);
+        const imageUrl = await (0, exports.toThumbnailDataUri)(row.imageUrl, 'POSITION');
         await persistThumbnailValue(tenantId, 'POSITION', row.id, imageUrl);
         return { id: row.id, imageUrl };
     }));
-    return [...resolved, ...generated];
+    return [...resolved, ...generated.filter((row) => row.imageUrl.startsWith('data:'))];
 };
 exports.getPositionThumbnails = getPositionThumbnails;
 //# sourceMappingURL=PdfImageThumbnailService.js.map

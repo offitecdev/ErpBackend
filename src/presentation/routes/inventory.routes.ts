@@ -12,6 +12,18 @@ import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
 import { composeAddressSnapshot } from '../../shared/postalAddress';
 import { parseArticleImage } from '../../shared/articleImage';
+// Produktbilder liegen in R2 und gehen ueber die eigene Domain am Eimer
+// hinaus (assets.demo.offitec.ch) — dieselbe Adresse wie die
+// Terminunterlagen im Kalender. Die Spalte traegt nur den Verweis.
+import {
+    articleImageAddress,
+    articleImageStorage,
+    forgetArticleImage,
+    isDataUri,
+    isStoredReference,
+    resolveArticleImagesInPlace,
+    storeArticleImage,
+} from '../../infrastructure/services/ImageStore';
 import { normalizeRichText } from '../../shared/richText';
 // Mengeneinheiten: der Artikel traegt den kurzen Code als Text, gewaehlt wird
 // aber aus der Liste des Mandanten (Einstellungen -> Module -> Lager).
@@ -65,8 +77,11 @@ const supplierInclude = {
     },
 } as const;
 
-const supplierWithStats = (supplier: any) => {
+const supplierWithStats = async (supplier: any) => {
     const rows = supplier.articleSuppliers || [];
+    // Ürün görselleri satırın içindeki `article` alanında gelir; verweis ->
+    // assets.demo.offitec.ch adresi (bkz. ImageStore).
+    await resolveArticleImagesInPlace(rows, (row: any) => row.article);
     const totalPurchaseAmount = rows.reduce((sum: number, row: any) => sum + (Number(row.purchasePrice || 0) * Number(row.quantity || 0)), 0);
     const totalPurchaseQuantity = rows.reduce((sum: number, row: any) => sum + Number(row.quantity || 0), 0);
     const articleCount = new Set(rows.map((row: any) => row.articleId)).size;
@@ -398,6 +413,7 @@ const buildArticleDetail = async (tenantId: string, id: string) => {
             description: true,
             salePrice: true,
             itemType: true,
+            imageUrl: true,
             updatedAt: true,
             stockBalances: { select: { currentQuantity: true } },
         },
@@ -412,6 +428,17 @@ const buildArticleDetail = async (tenantId: string, id: string) => {
         description: article.description,
         salePrice: article.salePrice ?? 0,
         itemType: article.itemType ?? 'PRODUCT',
+        /* GÖRSELİN ADRESİ — base64 değil (01.09.2026).
+         *
+         * Dosya R2'de duruyor; sütun yalnızca `r2:...` verisini taşır, yani
+         * birkaç düzine bayt. Buradan çıkan şey kalıcı, önbelleklenebilir bir
+         * adrestir (assets.demo.offitec.ch) ve doğrudan <img src> içine girer —
+         * ikinci bir istek yok, base64 şişmesi yok.
+         *
+         * Henüz taşınmamış eski bir satır (sütunda hâlâ data URI) `null` döner;
+         * o satır aşağıdaki binary uçtan okunmaya devam eder. İki yol yan yana
+         * çalışır, kesme tarihi yoktur. */
+        imageUrl: await articleImageAddress(article.imageUrl),
         // Görsel değişince Article.updatedAt değişir. Frontend bu sürümü URL'ye
         // eklediği için eski binary güvenle uzun süre önbellekte kalabilir.
         imageVersion: article.updatedAt.toISOString(),
@@ -500,6 +527,25 @@ router.get(
             res.removeHeader('Expires');
             res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
             if (!article.imageUrl) return res.status(204).end();
+
+            /* DEPODAKİ DOSYA: baytları sunucu okur, YÖNLENDİRME YAPMAZ.
+             *
+             * Bu uç XHR ile (Authorization başlığıyla) çağrılıyor. 302 ile
+             * assets.demo.offitec.ch'ye yönlendirmek tarayıcıda CORS ön
+             * kontrolüne takılır — eimer CORS başlığı göndermiyor. Adresi
+             * doğrudan <img src> içine koyan çağıran zaten buraya hiç uğramaz
+             * (bkz. buildArticleDetail.imageUrl); burası eski satırların ve
+             * doğrudan adres kullanamayan çağıranların yolu. */
+            if (isStoredReference(article.imageUrl)) {
+                const bytes = await articleImageStorage.read(article.imageUrl);
+                const extension = String(article.imageUrl).split('.').pop()?.toLowerCase();
+                res.setHeader('Content-Type', extension === 'png' ? 'image/png'
+                    : extension === 'webp' ? 'image/webp'
+                        : extension === 'gif' ? 'image/gif'
+                            : 'image/jpeg');
+                res.setHeader('Content-Length', String(bytes.length));
+                return res.status(200).send(bytes);
+            }
 
             const parsed = parseArticleImage(article.imageUrl);
             if (!parsed) return res.status(404).json({ error: 'Geçerli ürün görseli bulunamadı.' });
@@ -609,21 +655,41 @@ router.patch(
             // Açıklama biçimli metindir — dar beyaz listeden geçer.
             if (body.description !== undefined) data.description = normalizeRichText(body.description);
 
-            // Görsel: alan yoksa dokunulmaz, null ise silinir, doluysa doğrulanır.
+            /* GÖRSEL: alan yoksa dokunulmaz, null ise silinir, doluysa doğrulanır.
+             *
+             * DÖNEN ADRES YAZILMAZ (01.09.2026). Görsel artık R2'de duruyor ve
+             * okurken satıra `https://assets.demo.offitec.ch/article-image/...`
+             * konuyor — tarayıcı bir sonraki kayıtta onu masumca geri gönderir.
+             * Yazılsaydı sütunda dosyanın kendisi değil, adresi kalırdı. Bu yüzden
+             * yalnızca YENİ bir data URI yazılır; geri gelen adres sütunu hiç
+             * tutmaz (bkz. ImageStore.valueForWrite). */
+            let previousImage: string | null = null;
             if (body.imageUrl !== undefined) {
-                if (body.imageUrl === null || body.imageUrl === '') {
+                const incoming = body.imageUrl;
+                if (incoming === null || incoming === '') {
                     data.imageUrl = null;
-                } else {
-                    const parsed = parseArticleImage(body.imageUrl);
+                } else if (isDataUri(incoming)) {
+                    const parsed = parseArticleImage(incoming);
                     if (!parsed) {
                         return res.status(400).json({ error: 'Görsel geçersiz. En fazla 2 MB PNG, JPG, GIF veya WebP yükleyin.' });
                     }
-                    data.imageUrl = parsed.imageUrl;
+                    data.imageUrl = await storeArticleImage(tenantId, parsed.imageUrl);
+                } else if (!isStoredReference(incoming) && !articleImageStorage.isPublicReference(String(incoming))) {
+                    return res.status(400).json({ error: 'Görsel geçersiz. En fazla 2 MB PNG, JPG, GIF veya WebP yükleyin.' });
+                }
+                // Depodaki eski dosya yeni kayıttan sonra silinir — önce yazılır.
+                if (data.imageUrl !== undefined) {
+                    const before = await (prisma as any).article.findFirst({
+                        where: { id, tenantId },
+                        select: { imageUrl: true },
+                    });
+                    previousImage = before?.imageUrl ?? null;
                 }
             }
 
             if (Object.keys(data).length) {
                 await (prisma as any).article.update({ where: { id }, data });
+                await forgetArticleImage(previousImage, data.imageUrl ?? null);
             }
 
             const detail = await buildArticleDetail(tenantId, id);
@@ -801,7 +867,7 @@ router.post(
                 },
                 include: supplierInclude,
             });
-            res.status(201).json(supplierWithStats(supplier));
+            res.status(201).json(await supplierWithStats(supplier));
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -819,7 +885,7 @@ router.get(
                 include: supplierInclude,
             });
             if (!supplier) return res.status(404).json({ error: 'Tedarikçi bulunamadı.' });
-            res.status(200).json(supplierWithStats(supplier));
+            res.status(200).json(await supplierWithStats(supplier));
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -847,7 +913,7 @@ router.patch(
                 data: patch,
                 include: supplierInclude,
             });
-            res.status(200).json(supplierWithStats(supplier));
+            res.status(200).json(await supplierWithStats(supplier));
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -1205,7 +1271,7 @@ router.get(
                 orderBy: { name: 'asc' },
             });
 
-            res.status(200).json(articles.map((a: any) => ({
+            const rows = articles.map((a: any) => ({
                 kind: 'PRODUCT' as const,
                 id: a.id,
                 code: a.articleCode,
@@ -1219,7 +1285,9 @@ router.get(
                 minStockLevel: a.minStockLevel ?? 0,
                 criticalStockLevel: a.criticalStockLevel ?? 0,
                 maxStockLevel: a.maxStockLevel ?? null,
-            })));
+            }));
+            await resolveArticleImagesInPlace(rows);
+            res.status(200).json(rows);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -1691,6 +1759,33 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
             const movementCreates: any[] = [];
             const lotCreates: any[] = [];
 
+            /* GÖRSELLER ÖNCE DEPOYA, SONRA SATIR HAZIRLIĞI.
+             *
+             * Satırlar senkron bir döngüde kuruluyor; R2'ye yazmak ise ağ
+             * işidir. Bu yüzden bütün görseller burada, TEK SEFERDE ve paralel
+             * olarak yüklenir — 500 satırlık bir dosyada bu, 500 ardışık
+             * yükleme yerine tek bir dalga demektir. Döngü aşağıda yalnızca
+             * hazır `r2:` verisini okur.
+             *
+             * Doğrulama satır bazındadır: bozuk görselli satır kendi hatasını
+             * alır, dosyanın geri kalanı yazılmaya devam eder. */
+            const imageRefByIndex = new Map<number, string>();
+            const imageErrorByIndex = new Map<number, string>();
+            await Promise.all(items.map(async (item, index) => {
+                if (duplicateIndexes.has(index) || !item.imageUrl) return;
+                const parsedImage = parseArticleImage(item.imageUrl);
+                if (!parsedImage) {
+                    imageErrorByIndex.set(index, 'Görsel geçersiz. En fazla 2 MB PNG, JPG, GIF veya WebP yükleyin.');
+                    return;
+                }
+                try {
+                    const stored = await storeArticleImage(tenantId, parsedImage.imageUrl);
+                    if (stored) imageRefByIndex.set(index, stored);
+                } catch {
+                    imageErrorByIndex.set(index, 'Görsel yüklenemedi.');
+                }
+            }));
+
             items.forEach((item, index) => {
                 if (duplicateIndexes.has(index)) return;
                 const articleCode = String(item.articleCode || '').trim();
@@ -1707,12 +1802,10 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
                     // Açıklama ve görsel ürün KARTINA yazılır (hareket notu değil) —
                     // detay ekranındaki PATCH ile aynı doğrulamalardan geçer.
                     const description = item.description ? normalizeRichText(String(item.description)) : null;
-                    let imageUrl: string | null = null;
-                    if (item.imageUrl) {
-                        const parsedImage = parseArticleImage(item.imageUrl);
-                        if (!parsedImage) throw new Error('Görsel geçersiz. En fazla 2 MB PNG, JPG, GIF veya WebP yükleyin.');
-                        imageUrl = parsedImage.imageUrl;
-                    }
+                    const imageProblem = imageErrorByIndex.get(index);
+                    if (imageProblem) throw new Error(imageProblem);
+                    // Yukarıda depoya yazıldı; sütuna yalnızca verweis girer.
+                    const imageUrl: string | null = imageRefByIndex.get(index) ?? null;
                     if (item.supplierId && invalidSupplierIds.has(String(item.supplierId))) throw new Error('Tedarikçi bulunamadı.');
                     // Tedarikçiler yukarıda toplu çözüldü; burada yalnızca okunur.
                     const supplier = supplierCache.get(item.supplierId
@@ -1823,6 +1916,15 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
                     errors.push({ index, articleCode, error: error.message, ...(error?.rowCode ? { code: error.rowCode } : {}) });
                 }
             });
+
+            /* HATALI SATIRIN GÖRSELİ DEPODA KALMAZ. Görseller döngüden önce
+             * topluca yüklendi; o satır sonradan başka bir nedenle (ad boş,
+             * kod çakıştı) elendiyse dosyanın artık sahibi yoktur. */
+            await Promise.all(errors.map(({ index }) => {
+                const orphan = imageRefByIndex.get(index);
+                imageRefByIndex.delete(index);
+                return orphan ? forgetArticleImage(orphan, null) : Promise.resolve();
+            }));
 
             // YENİ kayıtlar tek transaction içinde toplu INSERT'lerle yazılır:
             // ürün kartı, bakiye, hareket ve parti satırları birbirini tutar.

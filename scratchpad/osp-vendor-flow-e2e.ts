@@ -14,6 +14,10 @@
  * Das Zugangsmerkmal stellt der EIGENE Dienst aus (Bearer, wie Swagger); kein
  * Kennwort wird angefasst. Die Zeile ist eine WEGWERF-Referenz und wird am Ende
  * entfernt — auch bei einem Abbruch.
+ *
+ * ⚠ ÜBERHOLT seit der vierten Vertragsfassung (20.09.2026): eine Anfrage ist
+ * ein PROJEKT, das Datenblatt hängt an der EINHEIT (OspUnit) und nicht mehr an
+ * der Zeile. Die gültige Prüfung ist `osp-contract-v4-e2e.ts`.
  */
 import dotenv from 'dotenv';
 dotenv.config();

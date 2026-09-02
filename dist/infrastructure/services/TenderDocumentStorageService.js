@@ -15,7 +15,7 @@ const LocalFileStorage_1 = require("./LocalFileStorage");
  * `local:tender-document/` bleibt unverändert: er steht so in jeder Zeile, die
  * es schon gibt.
  */
-exports.tenderDocumentStorageService = new LocalFileStorage_1.LocalFileStorage({
+exports.tenderDocumentStorageService = new LocalFileStorage_1.DocumentStorage({
     prefix: 'local:tender-document/',
     directory: process.env.OFFITEC_TENDER_UPLOAD_DIR
         || path_1.default.join(process.cwd(), 'storage', 'tender-documents'),

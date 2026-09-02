@@ -40,6 +40,11 @@ export interface TenderListRow {
     // Liste "sipariş / taslak" rozetini bu iki alandan türetir.
     projectId: string | null;
     sourceStatus: string | null;
+    /* Der KUNDE der Offerte, nicht nur sein Name (13.09.2026): Auswahlfelder,
+       die eine Offerte an etwas anderes hängen (die Aufgabe etwa), müssen
+       wissen, WESSEN Offerte sie eben gegriffen haben — sonst können sie den
+       Kunden weder übernehmen noch prüfen, ob er noch derselbe ist. */
+    customerId: string | null;
     customerName: string | null;
     createdByEmployeeId: string;
     createdByName: string | null;
@@ -68,6 +73,10 @@ export interface TenderListRow {
     ospReference: string | null;
     ospRevisedAt: Date | null;
     ospRevisionSeenAt: Date | null;
+    /* Der Aktivitätsstrom (§1c) hat gemeldet, dass die OSP ein Datenblatt
+       dieser Anfrage NEU GERENDERT hat — ohne dass jemand neu angefragt
+       hätte. Auch dann gilt das Blatt nicht mehr, aus dem offeriert wurde. */
+    ospFeedRevisedAt: Date | null;
 }
 
 export interface PaginatedResult<T> {

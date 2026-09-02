@@ -166,6 +166,35 @@ class SalesOrderController {
     async myOrders(req, res) {
         try {
             const tenantId = req.user.tenantId;
+            // Project-list read model: one row per main order, with only the
+            // fields used for technical/billing percentages and the addon badge.
+            // In particular this skips customer/project relations and the entire
+            // parallel invoice-summary query used by the My Orders page.
+            if (String(req.query.view || '') === 'project-list') {
+                const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                    SELECT
+                        mainOrder.id,
+                        mainOrder.orderNumber,
+                        mainOrder.totalAmount,
+                        mainOrder.projectId,
+                        COUNT(addon.id) AS addonCount
+                    FROM SalesOrder mainOrder
+                    LEFT JOIN SalesOrder addon
+                      ON addon.parentSalesOrderId = mainOrder.id
+                     AND addon.tenantId = mainOrder.tenantId
+                    WHERE mainOrder.tenantId = ${tenantId}
+                      AND mainOrder.parentSalesOrderId IS NULL
+                    GROUP BY mainOrder.id, mainOrder.orderNumber, mainOrder.totalAmount, mainOrder.projectId, mainOrder.createdAt
+                    ORDER BY mainOrder.createdAt DESC
+                `);
+                return res.status(200).json(rows.map((row) => ({
+                    id: row.id,
+                    orderNumber: row.orderNumber,
+                    totalAmount: Number(row.totalAmount || 0),
+                    projectId: row.projectId ?? null,
+                    addonCount: Number(row.addonCount || 0),
+                })));
+            }
             const where = { tenantId, parentSalesOrderId: null };
             if (req.query.search) {
                 const search = String(req.query.search);

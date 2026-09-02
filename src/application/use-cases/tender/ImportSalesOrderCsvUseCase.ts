@@ -1,6 +1,8 @@
 import { nanoid } from "nanoid";
 import prisma from "../../../infrastructure/database/prisma.client";
 import { nextDocumentNumber } from "../../../shared/documentNumber";
+// Produktbilder liegen in R2; die Spalte traegt nur den Verweis.
+import { storeArticleImage } from "../../../infrastructure/services/ImageStore";
 
 type CsvRow = string[];
 
@@ -504,7 +506,15 @@ export class ImportSalesOrderCsvUseCase {
                     const quantity = parseNumber(valueAt(headers, row, "quantity"));
                     const unitPrice = parseNumber(valueAt(headers, row, "unitPrice"));
                     const unit = valueAt(headers, row, "unit") || "pcs";
-                    const imageUrl = valueAt(headers, row, "imageUrl") || null;
+                    /* Ein Bild aus der Datei geht in die Ablage, nicht in die
+                     * Spalte. Steht dort etwas anderes als eine Daten-URI (in
+                     * der Regel eine fremde http-Adresse), bleibt es
+                     * unveraendert stehen — `storeArticleImage` fasst nur
+                     * frische Daten-URIs an. */
+                    const imageUrl = await storeArticleImage(
+                        input.tenantId,
+                        valueAt(headers, row, "imageUrl") || null,
+                    );
 
                     if (!product && !description && !quantity && !unitPrice) continue;
 

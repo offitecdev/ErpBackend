@@ -179,6 +179,7 @@ class TenderRepository {
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT
                     t.id, t.tenderNumber, t.version, t.projectId, t.sourceStatus,
+                    t.customerId,
                     t.createdByEmployeeId, t.currency, t.createdAt, t.offerMailSentAt,
                     t.validUntil, t.offerAcceptedAt, t.commissionNumber,
                     COALESCE(NULLIF(TRIM(t.manualCustomerName), ''), c.companyName) AS customerName,
@@ -193,6 +194,7 @@ class TenderRepository {
                     (SELECT o.reference FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospReference,
                     (SELECT o.revisedAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisedAt,
                     (SELECT o.revisionSeenAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisionSeenAt,
+                    (SELECT o.feedRevisedAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospFeedRevisedAt,
                     (
                         SELECT COALESCE(SUM(
                             CASE
@@ -228,6 +230,7 @@ class TenderRepository {
             version: Number(row.version),
             projectId: row.projectId ?? null,
             sourceStatus: row.sourceStatus ?? null,
+            customerId: row.customerId ?? null,
             customerName: row.customerName ?? null,
             createdByEmployeeId: row.createdByEmployeeId,
             createdByName: row.creatorFirstName || row.creatorLastName
@@ -245,6 +248,7 @@ class TenderRepository {
             ospReference: row.ospReference ?? null,
             ospRevisedAt: row.ospRevisedAt ?? null,
             ospRevisionSeenAt: row.ospRevisionSeenAt ?? null,
+            ospFeedRevisedAt: row.ospFeedRevisedAt ?? null,
         }));
         return { items, total: Number(countRows[0]?.total ?? 0) };
     }

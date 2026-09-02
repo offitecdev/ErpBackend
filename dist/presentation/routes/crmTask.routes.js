@@ -348,6 +348,25 @@ const noteRow = (note) => ({
 router.get('/reminders/due', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const user = req.user;
+        if (String(req.query.view || '').trim() === 'count') {
+            const countRows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                SELECT COUNT(*) AS total
+                FROM CrmTask tk
+                WHERE tk.tenantId = ${user.tenantId}
+                  AND tk.kind = 'REMINDER'
+                  AND tk.status = 'OPEN'
+                  AND tk.dueDate IS NOT NULL
+                  AND tk.dueDate <= NOW(3)
+                  AND (
+                        EXISTS (SELECT 1 FROM CrmTaskAssignee ta
+                                 WHERE ta.taskId = tk.id AND ta.employeeId = ${user.id} AND ta.notifiedAt IS NULL)
+                     OR (tk.notifiedAt IS NULL
+                         AND tk.createdByEmployeeId = ${user.id}
+                         AND NOT EXISTS (SELECT 1 FROM CrmTaskAssignee ta2 WHERE ta2.taskId = tk.id))
+                  )
+            `);
+            return res.status(200).json({ count: Number(countRows[0]?.total ?? 0) });
+        }
         const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
             SELECT tk.id, tk.title, tk.dueDate, tk.customerId, tk.linkUrl, tk.meta,
                    cu.companyName AS customerName
@@ -521,6 +540,19 @@ router.get('/tasks', AuthMiddleware_1.requireAuth, async (req, res) => {
         const whereSql = client_1.Prisma.join(conditions, ' AND ');
         if (kind !== 'REMINDER' && status !== 'DONE')
             await (0, crmTaskMaintenance_1.flipOverdueTasks)(user.tenantId);
+        // The app launcher needs only the badge total. Do not execute the wide
+        // row query, its joins/subqueries, or the follow-up assignee query for it.
+        if (String(req.query.view || '').trim() === 'count') {
+            const countRows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                SELECT COUNT(*) AS total FROM CrmTask tk WHERE ${whereSql}
+            `);
+            return res.status(200).json({
+                data: [],
+                total: Number(countRows[0]?.total ?? 0),
+                page,
+                pageSize,
+            });
+        }
         const [rows, countRows] = await Promise.all([
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT tk.id, tk.kind, tk.title, tk.labelId, tk.customerId, tk.contactId, tk.assigneeEmployeeId,

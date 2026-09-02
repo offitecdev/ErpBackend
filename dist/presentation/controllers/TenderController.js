@@ -25,6 +25,18 @@ const serviceTenantScope_1 = require("./serviceTenantScope");
 // sonst SMTP des Mandanten; jede Kundenmail landet zudem als MailMessage in der
 // Kundenkommunikation (siehe outlook/MailDispatchService.ts).
 void SmtpMailService_1.SmtpMailService;
+/**
+ * Die Adresse fuer den Browser wird beim LESEN unterschrieben (01.09.2026).
+ * Gespeichert bleibt die feste oeffentliche Adresse; erreichbar ist sie aber
+ * nicht ueberall (`r2.dev` wird in der Tuerkei beim Handschlag abgebrochen —
+ * die Vorschau blieb weiss). Siehe DocumentStorage.presignRead().
+ */
+const tenderDocumentForClient = async (document) => {
+    const displayUrl = await TenderDocumentStorageService_1.tenderDocumentStorageService.displayUrl(String(document?.fileUrl || ''), {
+        contentType: document?.fileType || undefined,
+    });
+    return displayUrl ? { ...document, fileUrl: displayUrl } : document;
+};
 // Prisma şeması Position'ın bağımlı tablolarını (CalculationItem, article/
 // material mapping) onDelete: Cascade ilan ediyor; bu bayrak canlı FK'ların
 // gerçekten cascade edip etmediğini İLK FK hatasında bir kez öğrenir. Cascade
@@ -2807,9 +2819,6 @@ class TenderController {
             if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
-            if (!tender.customerId) {
-                return res.status(400).json({ error: "Müşterisi olmayan teklif için mail gönderilemez." });
-            }
             const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tender.tenantId) } });
             // A date/time plan is optional — the proposal mail can be sent without any
             // appointment. When slots exist they are still included in the mail below.
@@ -2820,11 +2829,14 @@ class TenderController {
             // Recipient allow-list: the tender customer's main e-mail plus that
             // customer's own contacts. The request may only pick from this set — it
             // can never send to an arbitrary address, so the endpoint is not usable
-            // as an open mail relay.
-            const contacts = await prisma_client_1.default.customerContact.findMany({
-                where: { customerId: tender.customerId },
-                select: { email: true }
-            });
+            // as an open mail relay. A tender WITHOUT a linked customer has no such
+            // set: there the typed recipient is accepted (format-validated below).
+            const contacts = tender.customerId
+                ? await prisma_client_1.default.customerContact.findMany({
+                    where: { customerId: tender.customerId },
+                    select: { email: true }
+                })
+                : [];
             const allowedRecipients = new Map(); // lowercased -> canonical
             const registerEmail = (value) => {
                 const trimmed = String(value || "").trim();
@@ -2833,19 +2845,28 @@ class TenderController {
             };
             registerEmail(tender.customerEmail);
             contacts.forEach((contact) => registerEmail(contact.email));
-            if (allowedRecipients.size === 0) {
+            if (allowedRecipients.size === 0 && tender.customerId) {
                 return res.status(400).json({ error: "Bu müşteri için tanımlı geçerli bir e-posta adresi yok." });
             }
             const defaultTo = allowedRecipients.get(String(tender.customerEmail || "").trim().toLowerCase())
-                || Array.from(allowedRecipients.values())[0];
+                || Array.from(allowedRecipients.values())[0]
+                || "";
             let to = defaultTo;
             if (req.body.to !== undefined && String(req.body.to).trim() !== "") {
                 const requestedTo = stripHeaderValue(String(req.body.to));
                 const canonical = allowedRecipients.get(requestedTo.toLowerCase());
-                if (!canonical) {
+                if (canonical) {
+                    to = canonical;
+                }
+                else if (!tender.customerId && isValidEmail(requestedTo)) {
+                    to = requestedTo;
+                }
+                else {
                     return res.status(403).json({ error: "Alıcı yalnızca teklifin müşterisine ait bir e-posta adresi olabilir." });
                 }
-                to = canonical;
+            }
+            if (!to || !isValidEmail(to)) {
+                return res.status(400).json({ error: "Geçerli bir alıcı e-posta adresi girin." });
             }
             // Sender is taken from the tenant MailSetting (never from the request
             // body), so the From address cannot be spoofed. fromName may be supplied
@@ -3057,25 +3078,25 @@ class TenderController {
             if (!tender) {
                 return res.status(404).json({ error: "Teklif bulunamadı." });
             }
-            if (!tender.customerId) {
-                return res.status(400).json({ error: "Müşterisi olmayan teklif için mail gönderilemez." });
-            }
             const [settings, salesOrder, contacts] = await Promise.all([
                 prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tender.tenantId) } }),
                 prisma_client_1.default.salesOrder.findFirst({
                     where: { tenderId },
                     select: { orderNumber: true, totalAmount: true, orderDate: true, createdAt: true },
                 }),
-                prisma_client_1.default.customerContact.findMany({
-                    where: { customerId: tender.customerId },
-                    select: { email: true },
-                }),
+                tender.customerId
+                    ? prisma_client_1.default.customerContact.findMany({
+                        where: { customerId: tender.customerId },
+                        select: { email: true },
+                    })
+                    : Promise.resolve([]),
             ]);
             if (!salesOrder) {
                 return res.status(400).json({ error: "Bu teklife bağlı bir sipariş bulunamadı." });
             }
             // Alıcı: teklif mailindeki kuralın aynısı — yalnızca müşterinin
-            // kendi adresleri.
+            // kendi adresleri. Müşterisiz teklifte korunacak bir adres kümesi
+            // yoktur; elle yazılan alıcı biçim denetiminden geçip kabul edilir.
             const allowedRecipients = new Map();
             const registerEmail = (value) => {
                 const trimmed = String(value || "").trim();
@@ -3084,19 +3105,28 @@ class TenderController {
             };
             registerEmail(tender.customerEmail);
             contacts.forEach((contact) => registerEmail(contact.email));
-            if (allowedRecipients.size === 0) {
+            if (allowedRecipients.size === 0 && tender.customerId) {
                 return res.status(400).json({ error: "Bu müşteri için tanımlı geçerli bir e-posta adresi yok." });
             }
             const defaultTo = allowedRecipients.get(String(tender.customerEmail || "").trim().toLowerCase())
-                || Array.from(allowedRecipients.values())[0];
+                || Array.from(allowedRecipients.values())[0]
+                || "";
             let to = defaultTo;
             if (req.body.to !== undefined && String(req.body.to).trim() !== "") {
                 const requestedTo = stripHeaderValue(String(req.body.to));
                 const canonical = allowedRecipients.get(requestedTo.toLowerCase());
-                if (!canonical) {
+                if (canonical) {
+                    to = canonical;
+                }
+                else if (!tender.customerId && isValidEmail(requestedTo)) {
+                    to = requestedTo;
+                }
+                else {
                     return res.status(403).json({ error: "Alıcı yalnızca teklifin müşterisine ait bir e-posta adresi olabilir." });
                 }
-                to = canonical;
+            }
+            if (!to || !isValidEmail(to)) {
+                return res.status(400).json({ error: "Geçerli bir alıcı e-posta adresi girin." });
             }
             const cc = tenderCcForSend(tender.ccEmails, to);
             const fromEmail = stripHeaderValue(String(settings?.fromEmail || req.user.email || ""));
@@ -3191,8 +3221,9 @@ class TenderController {
                 inlineImages: signature.inlineImages,
             }, { record: { customerId: tender.customerId, entityType: "ORDER", entityId: tender.id, entityLabel: salesOrder.orderNumber } });
             // SMTP yapılandırılmamışsa gerçek gönderim yoktur (preview); müşteri
-            // geçmişine yalnızca gerçekten giden mail yazılır.
-            if (!result.preview) {
+            // geçmişine yalnızca gerçekten giden mail yazılır — ve yalnızca
+            // yazılacak bir müşteri kartı varsa.
+            if (!result.preview && tender.customerId) {
                 const activity = await this.customerActivityRepo.create({
                     customerId: tender.customerId,
                     employeeId: req.user.id,
@@ -3578,6 +3609,7 @@ class TenderController {
                         relatedEntityId: true,
                         entityType: true,
                         fileName: true,
+                        fileUrl: true,
                         fileType: true,
                         category: true,
                         uploadedByEmployeeId: true,
@@ -3586,7 +3618,7 @@ class TenderController {
             ]);
             res.status(200).json({
                 logs,
-                documents,
+                documents: await Promise.all(documents.map(tenderDocumentForClient)),
             });
         }
         catch (error) {
@@ -3678,12 +3710,13 @@ class TenderController {
                     relatedEntityId: true,
                     entityType: true,
                     fileName: true,
+                    fileUrl: true,
                     fileType: true,
                     category: true,
                     uploadedByEmployeeId: true,
                 },
             });
-            res.status(200).json(documents);
+            res.status(200).json(await Promise.all(documents.map(tenderDocumentForClient)));
         }
         catch (error) {
             res.status(400).json({ error: error.message });
@@ -3729,10 +3762,15 @@ class TenderController {
             if (!document)
                 return res.status(404).json({ error: "Dosya bulunamadı." });
             if (TenderDocumentStorageService_1.tenderDocumentStorageService.isManagedReference(document.fileUrl)) {
-                const file = await TenderDocumentStorageService_1.tenderDocumentStorageService.read(document.fileUrl);
+                const fileUrl = await TenderDocumentStorageService_1.tenderDocumentStorageService.displayUrl(document.fileUrl, {
+                    contentType: document.fileType || undefined,
+                });
+                if (!fileUrl) {
+                    return res.status(409).json({ error: "Bu belgenin dosyası okunabilir bir depoda değil." });
+                }
                 return res.status(200).json({
                     ...document,
-                    fileUrl: `data:${document.fileType};base64,${file.toString('base64')}`,
+                    fileUrl,
                 });
             }
             res.status(200).json(document);
@@ -3771,8 +3809,14 @@ class TenderController {
             if (approximateBytes > 5 * 1024 * 1024) {
                 return res.status(400).json({ error: "Dosya boyutu 5 MB sınırını aşamaz." });
             }
-            if (uploadedFile) {
-                storedFileReference = await TenderDocumentStorageService_1.tenderDocumentStorageService.store(tenantId, uploadedFile.buffer, fileType);
+            if (uploadedFile || !/^https?:\/\//i.test(fileUrl)) {
+                const body = uploadedFile?.buffer || Buffer.from(dataPayload.replace(/\s+/g, ''), 'base64');
+                const stored = await TenderDocumentStorageService_1.tenderDocumentStorageService.store(tenantId, body, fileType);
+                storedFileReference = TenderDocumentStorageService_1.tenderDocumentStorageService.publicReadUrl(stored);
+                if (!storedFileReference) {
+                    await TenderDocumentStorageService_1.tenderDocumentStorageService.remove(stored).catch(() => undefined);
+                    throw Object.assign(new Error('R2_PUBLIC_URL ayarlanmamış; belge için kalıcı URL oluşturulamadı.'), { status: 503 });
+                }
                 fileUrl = storedFileReference;
             }
             const normalizedRef = this.normalizeTenderRef(tenderRef);
@@ -3803,15 +3847,13 @@ class TenderController {
                         newValue: fileName,
                         description: `Ek dosya eklendi: ${fileName}`,
                     }).catch((error) => console.error('[TenderController.addDocument] audit log failed:', error));
-                    // Do not echo the base64 file back to the browser. Preview
-                    // content is fetched only when the user opens the document.
                     return res.status(201).json({
                         id: documentId,
                         tenantId,
                         relatedEntityId: normalizedRef,
                         entityType: "TENDER",
                         fileName,
-                        fileUrl: "",
+                        fileUrl,
                         fileType,
                         category,
                         uploadedByEmployeeId: employeeId,

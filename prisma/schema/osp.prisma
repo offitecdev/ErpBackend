@@ -27,9 +27,17 @@ model OspSetting {
   updatedAt  DateTime @updatedAt
 }
 
-/// EIN Dokument der OSP = eine Einheit mit eigener Berechnung und eigenem
-/// Datenblatt ("<projectNumber>-<documentId>", z. B. 4820193-57). Der Status
-/// lebt je Dokument; die Referenz ist über die Lebensdauer stabil.
+/// EINE Anfrage der OSP = EIN PROJEKT (Vertragsfassung 4, 20.09.2026). Wer
+/// drüben "Get Offer" drückt, fragt nicht eine Einheit an, sondern sein ganzes
+/// Projekt — und bekommt darauf EINE Antwort. Der Stand lebt deshalb am
+/// PROJEKT, und `reference` ist seither schlicht die 7-stellige Projektnummer.
+/// Die angefragten Einheiten hängen als `units` darunter (OspUnit).
+///
+/// Ältere Zeilen tragen noch die zusammengesetzte Referenz "4820193-57" einer
+/// einzelnen Einheit. Sie bleiben gültig: die OSP nimmt diese Form auf den
+/// Statuswegen weiter an und meint damit das Projekt (§0). Die Migration
+/// `20260920090000_osp_contract_v4` hat sie, wo es eindeutig war, zu einer
+/// Projektzeile mit einer Einheit zusammengelegt.
 ///
 /// ⚠ OSP-Zeilen legen NIE Artikel oder Bestand an: der Import erzeugt eine
 /// Offerte mit reinen Textpositionen (rowType CUSTOM) — nur für diese Offerte.
@@ -37,12 +45,20 @@ model OspDocument {
   id                  String    @id
   /// Wurzel-Mandant (Eigentümer des Feeds) — siehe OspSetting.
   tenantId            String
-  /// Volle Belegreferenz "4820193-57" — Schlüssel jeder Statusmeldung.
+  /// Der Schlüssel jeder Statusmeldung: die PROJEKTNUMMER (§0). Alte Zeilen
+  /// tragen hier noch die zusammengesetzte Form "4820193-57" — auch die
+  /// adressiert drüben das Projekt.
   reference           String
-  /// Die 7-stellige Projektnummer (linke Hälfte der Referenz).
+  /// Die 7-stellige Projektnummer.
   projectNumber       String
-  /// Dokument-Id (rechte Hälfte) — OSP-weit eindeutig.
+  /// VERALTET (20.09.2026): die Dokument-Id der einen angefragten Einheit.
+  /// Seit der vierten Vertragsfassung hängen die Einheiten als `units`
+  /// darunter; die Spalte bleibt stehen, damit alte Zeilen ihre Herkunft
+  /// behalten.
   documentId          String?
+  /// Die eigene Projekt-Id der OSP (§1 `projectId`) — für immer stabil und
+  /// für sich eindeutig, anders als die Projektnummer nicht sprechend.
+  ospProjectId        Int?
   projectName         String    @default("")
   /// Anfragende Person (OSP-Konto) — wird beim Import als manueller Kunde
   /// vorgeschlagen, aber NIE als CRM-Kunde gespeichert.
@@ -111,11 +127,12 @@ model OspDocument {
   /// Die aus dem Import entstandene Offerte (Belegspalte der Liste).
   tenderId            String?
   tenderNumber        String?
-  /// ── DATENBLATT (07.09.2026) ───────────────────────────────────────────
-  /// Die OSP schickt im Webhook die Adresse des ECHTEN Datenblatt-PDF der
-  /// Einheit — nicht den Link auf die Offerte drüben. Die Datei wird einmal
-  /// geholt und liegt danach bei uns (LocalFileStorage-Verweis), damit sie
-  /// auch dann noch da ist, wenn die OSP-Adresse abläuft.
+  /// ── DATENBLATT (07.09.2026) — VERALTET (20.09.2026) ───────────────────
+  /// Solange eine Anfrage EINE Einheit war, hing ihr Datenblatt hier. Seit der
+  /// vierten Vertragsfassung hat jede Einheit ihr eigenes (OspUnit); die
+  /// Migration hat den Inhalt dieser Spalten dorthin gehoben. Gelesen werden
+  /// sie nicht mehr — stehen bleiben sie, damit alte Zeilen erzählen können,
+  /// woher ihre Offerte kam.
   datasheetUrl        String?   @db.Text
   datasheetFile       String?
   datasheetFetchedAt  DateTime?
@@ -152,6 +169,21 @@ model OspDocument {
   /// alte Datenblatt gilt dann nicht mehr, und niemand soll aus ihm heraus
   /// weiterofferieren, ohne es gesehen zu haben.
   revisionSeenAt      DateTime?
+  /// Was die letzte Überarbeitung am PROJEKT bewegt hat (§1a `changes`):
+  /// ["project name","phone","city"]. Genau diese Liste hat die anfragende
+  /// Person drüben auch zu sehen bekommen — beides kommt aus demselben
+  /// Änderungsprotokoll und kann darum nicht auseinanderlaufen. Ein
+  /// unbekannter Eintrag heisst "sonst etwas hat sich geändert", nie ein
+  /// Fehler: die Liste ist eine Beschreibung, kein geschlossener Wortschatz.
+  changes             Json?
+  /// ── AKTIVITÄTSSTROM (§1c) ─────────────────────────────────────────────
+  /// Der Strom meldet auch Einheiten, die zu einer Anfrage gehören, die wir
+  /// halten: dann ist das Datenblatt hier überholt UND seine alte Adresse
+  /// drüben gelöscht. Das ist KEINE neue Anfrage und kein Stand — nur der
+  /// Hinweis, dass die Datei neu gerendert wurde.
+  feedRevisedAt       DateTime?
+  /// Warum (RECALCULATED, PROJECT_INFO_CHANGED …) — die Wortliste des §1c.
+  feedRevisedSource   String?
   /// Letzte erfolgreich an die OSP gemeldete Statusform (created/under
   /// review/offer has been sent) + Zeitpunkt/Fehler der letzten Meldung.
   lastReportedStatus  String?
@@ -159,9 +191,120 @@ model OspDocument {
   lastReportError     String?   @db.Text
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
+  /// Die angefragten Einheiten des Projekts (§1 `projectDetails`).
+  units               OspUnit[]
 
   @@unique([tenantId, reference])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, projectNumber])
   @@index([tenderId])
+}
+
+/// ── DIE ANGEFRAGTE EINHEIT (§1 `projectDetails`, 20.09.2026) ────────────────
+/// Ein Projekt hält mehrere Einheiten, und jede bringt ihr eigenes Datenblatt
+/// und ihre eigenen berechneten Zahlen mit. Angefragt werden sie NIE einzeln:
+/// die Anfrage ist das Projekt (OspDocument), diese Zeilen sind das, was darin
+/// zu offerieren ist — eine Offertposition je Einheit.
+///
+/// Die Zahlen sind BERECHNETE Werte am eingegebenen Betriebspunkt, aus
+/// derselben Momentaufnahme gelesen, aus der das PDF gerendert wurde. Sie
+/// gelten deshalb vor dem, was aus dem PDF-Text zu lesen wäre; das Auslesen
+/// füllt nur noch auf, was der Vertrag nicht kennt (das Medium).
+model OspUnit {
+  id                 String      @id
+  /// Wurzel-Mandant — wie an der Anfrage (Eigentümer des Feeds).
+  tenantId           String
+  /// Die Anfrage (das Projekt), zu der diese Einheit gehört.
+  requestId          String
+  request            OspDocument @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  /// Die eigene Dokument-Id der OSP (§1 `projectDetails[].id`) — über alle
+  /// Projekte eindeutig und über die Lebensdauer der Einheit stabil.
+  ospDocumentId      String
+  /// Name und Modell der Einheit. §1 nennt sie NICHT; sie kommen aus dem
+  /// Aktivitätsstrom (§1c), sobald derselbe Beleg dort auftaucht — sonst
+  /// bleibt der Positionstitel der Projektname.
+  unitName           String?
+  unitModel          String?
+  /// Adresse des Datenblatt-PDF drüben. Sie ist NICHT dauerhaft: jede
+  /// Neuberechnung rendert neu und LÖSCHT die alte Datei (§1c) — deshalb
+  /// liegt die Datei bei uns.
+  pdfUrl             String?     @db.Text
+  datasheetFile      String?
+  datasheetFetchedAt DateTime?
+  datasheetError     String?     @db.Text
+  /// Die berechneten Angaben (Leistung, COP/EER, Technologie, Schalldruck,
+  /// Abmessungen, Gewicht) — Grundlage der Positionsbeschreibung.
+  datasheetSpecs     Json?
+  /// Was die letzte Überarbeitung an DIESER Einheit bewegt hat (§1a):
+  /// ["recalculated"], ["unit options"] … Eine LEERE Liste ist eine Aussage:
+  /// das Datenblatt wurde durch eine Änderung am PROJEKT neu gerendert, an
+  /// der Einheit selbst hat sich nichts bewegt.
+  changes            Json?
+  /// Wann die Einheit zuletzt mit einer Anfrage kam (§1/§1a). Eine
+  /// Überarbeitung schickt nur die Einheiten, die sich geändert haben — an
+  /// den übrigen bleibt dieser Stempel stehen.
+  receivedAt         DateTime?
+  /// Der unveränderte Eintrag aus dem Webhook.
+  rawPayload         Json?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  @@unique([requestId, ospDocumentId])
+  @@index([tenantId, ospDocumentId])
+}
+
+/// ── DER AKTIVITÄTSSTROM (§1c, 20.09.2026) ──────────────────────────────────
+/// Was drüben gerechnet wird, sobald es gerechnet wird — gebündelt alle 30
+/// Sekunden. Das ist AUSDRÜCKLICH KEINE Anfrage: niemand hat um eine Offerte
+/// gebeten, es hängt kein Stand daran, und die OSP erwartet keine Antwort.
+/// Diese Zeilen dürfen deshalb NIE in der Anfrageliste landen, aus der der
+/// Verkauf arbeitet — sie stehen in ihrem eigenen Reiter.
+///
+/// Der Strom ist "mindestens einmal": bleibt unsere Quittung unterwegs, kommt
+/// derselbe Beleg noch einmal. Darum ist (tenantId, ospDocumentId) eindeutig
+/// und jede Lieferung ein Upsert.
+model OspFeedEntry {
+  id                 String    @id
+  /// Wurzel-Mandant (Eigentümer des Feeds).
+  tenantId           String
+  /// Die eigene Dokument-Id der OSP — der Schlüssel dieser Zeile.
+  ospDocumentId      String
+  ospProjectId       Int?
+  projectNumber      String?
+  projectName        String?
+  projectCreatedAt   DateTime?
+  /// Das OSP-Konto, dem das Projekt gehört. `email` ist das einzige Feld, das
+  /// je Person eindeutig ist — darauf wird verglichen, wer da rechnet.
+  requesterFirstName String?
+  requesterLastName  String?
+  requesterEmail     String?
+  company            String?
+  unitName           String?
+  unitModel          String?
+  pdfUrl             String?   @db.Text
+  /// Warum der Beleg im Bündel liegt: CALCULATION / ADDED_TO_PROJECT (NEU)
+  /// oder RECALCULATED / OPTIONS_CHANGED / CUSTOM_VALUES_CHANGED /
+  /// PROJECT_INFO_CHANGED / LANGUAGE_CHANGED (Änderung an einem Beleg, den
+  /// wir schon kennen). Jeder dieser Werte heisst: die PDF-Adresse hat sich
+  /// bewegt und die alte ist gelöscht.
+  source             String    @default("CALCULATION")
+  filedAt            DateTime?
+  /// Die berechneten Zahlen, so wie der Strom sie nennt (Zeichenketten mit
+  /// Punkt als Dezimaltrenner; `null` heisst "gibt es an dieser Einheit
+  /// nicht", nie 0).
+  coolingCapacityKw  String?
+  heatingCapacityKw  String?
+  eer                String?
+  cop                String?
+  /// Wann wir den Beleg zum ersten Mal gesehen haben — der Strom sagt selbst
+  /// NICHT, ob ein Projekt für uns neu ist ("das ist eine Tatsache über eure
+  /// Aufzeichnungen, nicht über unsere").
+  firstSeenAt        DateTime  @default(now())
+  rawPayload         Json?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([tenantId, ospDocumentId])
+  @@index([tenantId, filedAt])
+  @@index([tenantId, projectNumber])
 }

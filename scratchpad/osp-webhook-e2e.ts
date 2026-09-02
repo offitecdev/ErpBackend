@@ -8,6 +8,10 @@ import { ospDatasheetStorage } from '../src/infrastructure/services/LocalFileSto
  * GANZE Strecke gegen den LAUFENDEN Backend (localhost:3000): Webhook mit
  * datasheetUrl herein → Hintergrundjob holt das PDF → Angaben stehen an der
  * Zeile. Wegwerf-Referenz, danach wird aufgeräumt.
+ *
+ * ⚠ ÜBERHOLT seit der vierten Vertragsfassung (20.09.2026): eine Anfrage ist
+ * ein PROJEKT, das Datenblatt hängt an der EINHEIT (OspUnit) und nicht mehr an
+ * der Zeile. Die gültige Prüfung ist `osp-contract-v4-e2e.ts`.
  */
 const REF = '0000000-99';
 

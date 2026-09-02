@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.documentListSelect = exports.sanitizeDocumentUpload = exports.SERIES_DOCUMENT_LIMIT_BYTES = exports.DOCUMENT_LIMIT_BYTES = exports.DOCUMENT_TYPES = exports.renumberSeries = exports.seriesDays = exports.ensureSeriesId = exports.createSeries = exports.assertDaysAvailable = exports.parseAppointmentDays = exports.localDayKey = exports.MAX_SERIES_DAYS = void 0;
+exports.documentListSelect = exports.sanitizeDocumentUpload = exports.SERIES_DOCUMENT_LIMIT_BYTES = exports.DOCUMENT_LIMIT_BYTES = exports.DOCUMENT_TYPES = exports.renumberSeries = exports.seriesDays = exports.ensureSeriesId = exports.createSeries = exports.assertDaysAvailable = exports.parseAppointmentDays = exports.localDayKey = exports.blocksPlannedDays = exports.MAX_SERIES_DAYS = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const nanoid_1 = require("nanoid");
 const technicianSchedule_1 = require("./technicianSchedule");
@@ -32,7 +32,30 @@ const technicianSchedule_1 = require("./technicianSchedule");
  */
 /** Mehr als ein Monat am Stück ist kein Einsatz mehr, sondern ein Versehen. */
 exports.MAX_SERIES_DAYS = 31;
-const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+const fail = (message, status = 400, extra) => Object.assign(new Error(message), { status, ...(extra || {}) });
+const replaceableRows = (rows) => rows
+    .filter((row) => row.status !== "COMPLETED")
+    .map((row) => ({ id: String(row.id), startTime: row.startTime, endTime: row.endTime }));
+/**
+ * Steht diese Zeile den geplanten Tagen WIRKLICH im Weg?
+ *
+ * Der Riegel unter `replaceAppointmentIds`: gelöscht werden darf nur, was auf
+ * einem der geplanten Tage liegt. Ohne ihn könnte ein Aufruf beim Anlegen eines
+ * Termins irgendeine andere Zeile mitnehmen — die Kennungen kommen zwar aus der
+ * Absage des Servers, aber der Server soll sich darauf nicht verlassen müssen.
+ *
+ * Die zwei Fälle sind dieselben, die auch blockieren: derselbe ANFANGSTAG (die
+ * Kundenregel «ein Termin je Tag») oder eine echte ÜBERLAPPUNG (die Auftrags-
+ * regel). Jede blockierende Zeile erfüllt eines davon — der Riegel weist also
+ * nie einen berechtigten Fall ab.
+ */
+const blocksPlannedDays = (row, days) => {
+    const start = new Date(row.startTime);
+    const end = new Date(row.endTime);
+    return days.some((day) => ((0, exports.localDayKey)(start) === (0, exports.localDayKey)(day.startTime)
+        || (start.getTime() < day.endTime.getTime() && end.getTime() > day.startTime.getTime())));
+};
+exports.blocksPlannedDays = blocksPlannedDays;
 const startOfDay = (date) => {
     const day = new Date(date);
     day.setHours(0, 0, 0, 0);
@@ -119,11 +142,15 @@ const assertDaysAvailable = async (input) => {
         gte: startOfDay(day.startTime),
         lte: endOfDay(day.startTime),
     }));
-    const [customerHit, projectHit, technicianHits] = await Promise.all([
+    /* ALLE belegten Zeilen, nicht nur die erste (01.09.2026): der Knopf
+       «löschen und speichern» muss den ganzen Weg freiräumen können. Bei vier
+       geplanten Tagen stehen sonst vier Absagen hintereinander an. */
+    const blockerSelect = { id: true, startTime: true, endTime: true, status: true };
+    const [customerHits, projectHits, technicianHits] = await Promise.all([
         // Ein Kunde bekommt je Kalendertag EINEN Einsatztermin — dieselbe Regel
         // wie beim einzelnen Termin, nur für alle gewählten Tage zugleich.
         input.customerId
-            ? prisma_client_1.default.appointment.findFirst({
+            ? prisma_client_1.default.appointment.findMany({
                 where: {
                     customerId: input.customerId,
                     projectId: { not: null },
@@ -131,11 +158,12 @@ const assertDaysAvailable = async (input) => {
                     ...notSelf,
                     OR: dayWindows.map((window) => ({ startTime: window })),
                 },
-                select: { id: true, startTime: true },
+                orderBy: { startTime: "asc" },
+                select: blockerSelect,
             })
-            : Promise.resolve(null),
+            : Promise.resolve([]),
         // Derselbe Auftrag darf sich nicht selbst überlappen.
-        prisma_client_1.default.appointment.findFirst({
+        prisma_client_1.default.appointment.findMany({
             where: {
                 projectId: input.projectId,
                 ...(input.salesOrderId !== undefined ? { salesOrderId: input.salesOrderId } : {}),
@@ -145,17 +173,18 @@ const assertDaysAvailable = async (input) => {
                     endTime: { gt: day.startTime },
                 })),
             },
-            select: { id: true, startTime: true },
+            orderBy: { startTime: "asc" },
+            select: blockerSelect,
         }),
         Promise.all(input.days.map((day) => (0, technicianSchedule_1.findTechnicianScheduleConflict)(input.technicianIds, day.startTime, day.endTime, input.tenantId, {
             appointmentIds: exclude,
         }).then((conflict) => (conflict ? { day, conflict } : null)))),
     ]);
-    if (customerHit) {
-        throw fail(`Für diesen Kunden besteht am ${formatDay(customerHit.startTime)} bereits ein Termin. Je Tag ist ein Termin möglich.`, 409);
+    if (customerHits.length) {
+        throw fail(`Für diesen Kunden besteht am ${formatDay(customerHits[0].startTime)} bereits ein Termin. Je Tag ist ein Termin möglich.`, 409, { replaceable: replaceableRows(customerHits) });
     }
-    if (projectHit) {
-        throw fail(`Der Zeitplan dieses Auftrags überschneidet sich am ${formatDay(projectHit.startTime)}.`, 409);
+    if (projectHits.length) {
+        throw fail(`Der Zeitplan dieses Auftrags überschneidet sich am ${formatDay(projectHits[0].startTime)}.`, 409, { replaceable: replaceableRows(projectHits) });
     }
     const technicianHit = technicianHits.find(Boolean);
     if (technicianHit) {
@@ -297,6 +326,7 @@ exports.documentListSelect = {
     fileName: true,
     contentType: true,
     sizeBytes: true,
+    fileRef: true,
     createdAt: true,
     uploadedBy: { select: { id: true, firstName: true, lastName: true } },
 };

@@ -7,6 +7,8 @@ exports.ImportSalesOrderCsvUseCase = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 const documentNumber_1 = require("../../../shared/documentNumber");
+// Produktbilder liegen in R2; die Spalte traegt nur den Verweis.
+const ImageStore_1 = require("../../../infrastructure/services/ImageStore");
 const CANONICAL_HEADERS = {
     orderReference: ["Auftragsreferenz"],
     createdAt: ["Erstellungsdatum"],
@@ -456,7 +458,12 @@ class ImportSalesOrderCsvUseCase {
                     const quantity = parseNumber(valueAt(headers, row, "quantity"));
                     const unitPrice = parseNumber(valueAt(headers, row, "unitPrice"));
                     const unit = valueAt(headers, row, "unit") || "pcs";
-                    const imageUrl = valueAt(headers, row, "imageUrl") || null;
+                    /* Ein Bild aus der Datei geht in die Ablage, nicht in die
+                     * Spalte. Steht dort etwas anderes als eine Daten-URI (in
+                     * der Regel eine fremde http-Adresse), bleibt es
+                     * unveraendert stehen — `storeArticleImage` fasst nur
+                     * frische Daten-URIs an. */
+                    const imageUrl = await (0, ImageStore_1.storeArticleImage)(input.tenantId, valueAt(headers, row, "imageUrl") || null);
                     if (!product && !description && !quantity && !unitPrice)
                         continue;
                     const articleCode = safeArticleCode(product, description, index);

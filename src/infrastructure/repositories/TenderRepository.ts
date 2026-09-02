@@ -202,6 +202,7 @@ export class TenderRepository implements ITenderRepository {
             prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
                 SELECT
                     t.id, t.tenderNumber, t.version, t.projectId, t.sourceStatus,
+                    t.customerId,
                     t.createdByEmployeeId, t.currency, t.createdAt, t.offerMailSentAt,
                     t.validUntil, t.offerAcceptedAt, t.commissionNumber,
                     COALESCE(NULLIF(TRIM(t.manualCustomerName), ''), c.companyName) AS customerName,
@@ -216,6 +217,7 @@ export class TenderRepository implements ITenderRepository {
                     (SELECT o.reference FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospReference,
                     (SELECT o.revisedAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisedAt,
                     (SELECT o.revisionSeenAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospRevisionSeenAt,
+                    (SELECT o.feedRevisedAt FROM OspDocument o WHERE o.tenderId = t.id LIMIT 1) AS ospFeedRevisedAt,
                     (
                         SELECT COALESCE(SUM(
                             CASE
@@ -252,6 +254,7 @@ export class TenderRepository implements ITenderRepository {
             version: Number(row.version),
             projectId: row.projectId ?? null,
             sourceStatus: row.sourceStatus ?? null,
+            customerId: row.customerId ?? null,
             customerName: row.customerName ?? null,
             createdByEmployeeId: row.createdByEmployeeId,
             createdByName: row.creatorFirstName || row.creatorLastName
@@ -269,6 +272,7 @@ export class TenderRepository implements ITenderRepository {
             ospReference: row.ospReference ?? null,
             ospRevisedAt: row.ospRevisedAt ?? null,
             ospRevisionSeenAt: row.ospRevisionSeenAt ?? null,
+            ospFeedRevisedAt: row.ospFeedRevisedAt ?? null,
         }));
 
         return { items, total: Number(countRows[0]?.total ?? 0) };

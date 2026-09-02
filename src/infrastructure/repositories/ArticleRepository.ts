@@ -5,6 +5,15 @@ import { IArticleRepository, IArticleFilter } from "../../domain/repositories/IA
 import { Article, PositionArticleMapping, ArticleStatus } from "../../domain/entities/Article";
 import { nanoid } from "nanoid";
 import { persistPdfThumbnail } from "../services/PdfImageThumbnailService";
+// Das Produktbild liegt in R2. Die Spalte traegt den Verweis, der Browser
+// bekommt die feste Adresse am Eimer (assets.demo.offitec.ch) — dieselbe
+// Bauart wie die Terminunterlagen im Kalender.
+import {
+    articleImageStorage,
+    resolveArticleImagesInPlace,
+    storeArticleImage,
+    valueForWrite,
+} from "../services/ImageStore";
 
 const mappingArticleSelect = {
     id: true,
@@ -89,7 +98,10 @@ export class ArticleRepository implements IArticleRepository {
     }
 
     async createArticle(articleData: Partial<Article>): Promise<Article> {
-        const imageUrl = articleData.imageUrl ?? null;
+        // Eine frische Daten-URI wandert nach R2; die Spalte bekommt den
+        // Verweis. Alles andere (schon abgelegt, leer) bleibt, wie es ist.
+        const incomingImage = articleData.imageUrl ?? null;
+        const imageUrl = await storeArticleImage(articleData.tenantId!, incomingImage);
         const data = await prisma.article.create({
             data: {
                 id: articleData.id || nanoid(10),
@@ -114,14 +126,18 @@ export class ArticleRepository implements IArticleRepository {
                 lastPurchaseDate: articleData.lastPurchaseDate ?? null,
             } as any
         });
+        // Das Vorschaubild entsteht aus den Bytes, die ohnehin schon hier
+        // liegen — der Verweis muesste dafuer erst wieder gelesen werden.
         await persistPdfThumbnail(
             data.tenantId,
             'ARTICLE',
             data.id,
-            imageUrl,
+            incomingImage || imageUrl,
             String(data.updatedAt.getTime()),
         );
-        return this.mapToEntity(data);
+        const entity = this.mapToEntity(data);
+        await resolveArticleImagesInPlace([entity]);
+        return entity;
     }
 
     async updateArticle(id: string, patch: Partial<Article>): Promise<Article> {
@@ -136,17 +152,36 @@ export class ArticleRepository implements IArticleRepository {
         for (const f of fields) {
             if (patch[f] !== undefined) updateData[f] = patch[f];
         }
-        const data = await prisma.article.update({ where: { id }, data: updateData });
+        /* DIE ZURUECKGESCHICKTE ADRESSE WIRD NICHT GESCHRIEBEN.
+         *
+         * Beim Lesen steht in `imageUrl` die Adresse am Eimer; der Browser
+         * schickt sie beim naechsten Speichern arglos mit. Wuerde sie in die
+         * Spalte wandern, stuende dort die Adresse statt des Verweises auf die
+         * Datei — und ein Domainwechsel machte sie unbrauchbar. `valueForWrite`
+         * ist die Regel, hier ihre Anwendung: nur eine NEUE Daten-URI oder ein
+         * ausdrueckliches `null` fassen die Spalte an. */
         if (patch.imageUrl !== undefined) {
+            const owner = await prisma.article.findUnique({ where: { id }, select: { tenantId: true } });
+            const next = await valueForWrite(articleImageStorage, owner?.tenantId ?? '', patch.imageUrl);
+            if (next === undefined) delete updateData.imageUrl;
+            else updateData.imageUrl = next;
+        }
+        const data = await prisma.article.update({ where: { id }, data: updateData });
+        if (updateData.imageUrl !== undefined) {
             await persistPdfThumbnail(
                 data.tenantId,
                 'ARTICLE',
                 data.id,
-                patch.imageUrl,
+                // Die frische Daten-URI, solange sie hier noch liegt.
+                (typeof patch.imageUrl === 'string' && patch.imageUrl.startsWith('data:'))
+                    ? patch.imageUrl
+                    : updateData.imageUrl,
                 String(data.updatedAt.getTime()),
             );
         }
-        return this.mapToEntity(data);
+        const entity = this.mapToEntity(data);
+        await resolveArticleImagesInPlace([entity]);
+        return entity;
     }
 
     async deleteArticle(id: string): Promise<void> {
@@ -204,7 +239,9 @@ export class ArticleRepository implements IArticleRepository {
             where,
             orderBy: { name: 'asc' }
         });
-        return data.map(d => this.mapToEntity(d));
+        const entities = data.map(d => this.mapToEntity(d));
+        await resolveArticleImagesInPlace(entities);
+        return entities;
     }
 
     async findArticleById(id: string, options?: { includeImages?: boolean }): Promise<Article | null> {
@@ -214,7 +251,10 @@ export class ArticleRepository implements IArticleRepository {
             // column, not merely remove it from the JSON response afterwards.
             select: this.articleSelect(options?.includeImages !== false),
         });
-        return data ? this.mapToEntity(data) : null;
+        if (!data) return null;
+        const entity = this.mapToEntity(data);
+        await resolveArticleImagesInPlace([entity]);
+        return entity;
     }
 
     async findArticleByCode(tenantId: string, codeOrBarcode: string): Promise<Article | null> {
@@ -229,7 +269,10 @@ export class ArticleRepository implements IArticleRepository {
                 ]
             }
         });
-        return data ? this.mapToEntity(data) : null;
+        if (!data) return null;
+        const entity = this.mapToEntity(data);
+        await resolveArticleImagesInPlace([entity]);
+        return entity;
     }
 
     async mapArticleToPosition(mapping: Partial<PositionArticleMapping>): Promise<PositionArticleMapping> {

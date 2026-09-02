@@ -79,6 +79,29 @@ export class DeliveryReportController {
     async list(req: Request, res: Response) {
         try {
             const tenantId = req.user!.tenantId;
+
+            // Project-list progress needs one bit per project/order group: a row
+            // exists (ongoing) and whether any such row is signed (completed).
+            // No joins and none of the report/document columns are needed.
+            if (String(req.query.view || '') === 'project-list') {
+                const rows = await prisma.$queryRaw<Array<{
+                    projectId: string | null;
+                    salesOrderId: string | null;
+                    isSigned: number | bigint | boolean | null;
+                }>>(Prisma.sql`
+                    SELECT dr.projectId, dr.salesOrderId, MAX(dr.isSigned) AS isSigned
+                    FROM DeliveryReport dr
+                    WHERE dr.tenantId = ${tenantId}
+                      AND dr.projectId IS NOT NULL
+                    GROUP BY dr.projectId, dr.salesOrderId
+                `);
+                return res.status(200).json(rows.map((row) => ({
+                    projectId: row.projectId ?? null,
+                    salesOrderId: row.salesOrderId ?? null,
+                    isSigned: Boolean(row.isSigned),
+                })));
+            }
+
             const conditions: Prisma.Sql[] = [Prisma.sql`dr.tenantId = ${tenantId}`];
             if (req.query.appointmentId) conditions.push(Prisma.sql`dr.appointmentId = ${String(req.query.appointmentId)}`);
             if (req.query.projectId) conditions.push(Prisma.sql`dr.projectId = ${String(req.query.projectId)}`);

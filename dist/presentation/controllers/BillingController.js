@@ -1,6 +1,11 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingController = void 0;
+const client_1 = require("@prisma/client");
+const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const INVOICE_CATEGORIES = ['PROJECT', 'DELIVERY', 'DIRECT'];
 class BillingController {
     createInvoiceUseCase;
@@ -30,6 +35,26 @@ class BillingController {
     }
     async list(req, res) {
         try {
+            // The project table needs only billing progress, not invoice rows,
+            // line items, customer/order labels or PDF metadata. Aggregate active
+            // percentages in one statement so this view never executes the full
+            // two-query invoice-list path.
+            if (String(req.query.view || '') === 'project-list') {
+                const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                    SELECT i.projectId, i.salesOrderId, SUM(i.billedPercent) AS billedPercent
+                    FROM Invoice i
+                    WHERE i.tenantId = ${req.user.tenantId}
+                      AND i.status <> 'CANCELLED'
+                      AND (i.projectId IS NOT NULL OR i.salesOrderId IS NOT NULL)
+                    GROUP BY i.projectId, i.salesOrderId
+                `);
+                return res.status(200).json(rows.map((row) => ({
+                    projectId: row.projectId ?? null,
+                    salesOrderId: row.salesOrderId ?? null,
+                    billedPercent: Number(row.billedPercent || 0),
+                    status: 'ISSUED',
+                })));
+            }
             // Der Rechnungstyp ist abgeleitet; ein unbekannter Wert wird still
             // fallen gelassen statt die Liste leer zu lassen.
             const rawCategory = req.query.category ? String(req.query.category) : '';

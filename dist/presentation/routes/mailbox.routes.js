@@ -254,13 +254,24 @@ router.get("/messages", AuthMiddleware_1.requireAuth, READ, async (req, res) => 
 });
 router.get("/messages/stats", AuthMiddleware_1.requireAuth, READ, async (req, res) => {
     try {
+        const tenantId = await mailTenantOf(req);
+        if (String(req.query.view || '').trim() === 'unread-count') {
+            const countRows = await prisma_client_1.default.$queryRaw `
+                SELECT COUNT(*) AS unreadInbox
+                FROM MailMessage m
+                WHERE m.tenantId = ${tenantId}
+                  AND m.deletedAt IS NULL
+                  AND m.direction = 'IN'
+                  AND m.isRead = 0`;
+            return res.json({ unreadInbox: Number(countRows[0]?.unreadInbox || 0) });
+        }
         const rows = await prisma_client_1.default.$queryRaw `
             SELECT
                 SUM(m.deletedAt IS NULL AND m.direction = 'IN' AND m.isRead = 0) AS unreadInbox,
                 SUM(m.deletedAt IS NULL AND m.direction = 'IN') AS inbox,
                 SUM(m.deletedAt IS NULL AND m.direction = 'OUT') AS sent,
                 SUM(m.deletedAt IS NOT NULL) AS bin
-            FROM MailMessage m WHERE m.tenantId = ${await mailTenantOf(req)}`;
+            FROM MailMessage m WHERE m.tenantId = ${tenantId}`;
         const row = rows[0] || {};
         res.json({
             unreadInbox: Number(row.unreadInbox || 0),

@@ -9,6 +9,7 @@ const nanoid_1 = require("nanoid");
 const Position_1 = require("../../domain/entities/Position");
 const CalculationItem_1 = require("../../domain/entities/CalculationItem");
 const PdfImageThumbnailService_1 = require("../services/PdfImageThumbnailService");
+const ImageStore_1 = require("../services/ImageStore");
 class PositionRepository {
     articleSelect(includeImages = false) {
         return {
@@ -128,8 +129,12 @@ class PositionRepository {
         if (!positions || positions.length === 0) {
             return;
         }
-        const data = positions.map((p) => {
-            const imageUrl = p.imageUrl ?? null;
+        // Das Bild wandert VOR dem Einfuegen in die Ablage; in die Spalte
+        // kommt nur der Verweis. Der Miniaturdienst bekommt weiter das
+        // Original — er rechnet auf den Bytes, nicht auf dem Verweis.
+        const storedImages = await Promise.all(positions.map((p) => (0, ImageStore_1.storeIfDataUri)(ImageStore_1.positionImageStorage, p.tenantId, p.imageUrl ?? null)));
+        const data = positions.map((p, index) => {
+            const imageUrl = storedImages[index] ?? null;
             return {
                 id: p.id,
                 tenantId: p.tenantId,
@@ -161,11 +166,31 @@ class PositionRepository {
             await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(position.tenantId, 'POSITION', position.id, imageUrl);
         }));
     }
+    /**
+     * Verweise werden zu Adressen, die der Browser anzeigen kann. Zeilen, in
+     * denen noch eine Daten-URI steht, bleiben unveraendert — alt und neu
+     * stehen nebeneinander, solange der Umzug laeuft.
+     */
+    async resolveImages(rows) {
+        await Promise.all(rows.map(async (row) => {
+            if (!row || typeof row !== 'object')
+                return;
+            if (row.imageUrl !== undefined) {
+                row.imageUrl = await (0, ImageStore_1.resolveForClient)(ImageStore_1.positionImageStorage, row.imageUrl);
+            }
+            if (row.article && row.article.imageUrl !== undefined) {
+                row.article.imageUrl = await (0, ImageStore_1.resolveForClient)(ImageStore_1.articleImageStorage, row.article.imageUrl);
+            }
+        }));
+    }
     async findById(positionId, options) {
-        return await prisma_client_1.default.position.findUnique({
+        const position = await prisma_client_1.default.position.findUnique({
             where: { id: positionId },
             select: this.positionSelect(!!options?.includeImages),
         });
+        if (position)
+            await this.resolveImages([position]);
+        return position;
     }
     async findByTenderId(tenderId, options) {
         // Bu metod artık raporlamaya veri sağlamak için calculation ve bağlı ürünleri include ediyor.
@@ -177,6 +202,7 @@ class PositionRepository {
                 { positionNumber: 'asc' }
             ]
         });
+        await this.resolveImages(data);
         return data;
     }
     async saveCalculation(calculationItem) {
@@ -264,7 +290,24 @@ class PositionRepository {
         if (patch.taxRate !== undefined)
             data.taxRate = patch.taxRate;
         if (patch.imageUrl !== undefined) {
-            data.imageUrl = patch.imageUrl;
+            // Kommt die presignte Adresse vom letzten Laden zurueck, liefert
+            // valueForWrite `undefined` und die Spalte bleibt unangetastet —
+            // sonst stuende dort eine Adresse, die in 15 Minuten ins Leere
+            // zeigt, und der Verweis auf die echte Datei waere verloren.
+            //
+            // Den Mandanten braucht nur der Ablageweg; er wird deshalb erst
+            // nachgeschlagen, wenn tatsaechlich ein neues Bild ankommt.
+            let owningTenantId = '';
+            if ((0, ImageStore_1.isDataUri)(patch.imageUrl)) {
+                const owner = await prisma_client_1.default.position.findUnique({
+                    where: { id: positionId },
+                    select: { tenantId: true },
+                });
+                owningTenantId = owner?.tenantId || '';
+            }
+            const next = await (0, ImageStore_1.valueForWrite)(ImageStore_1.positionImageStorage, owningTenantId, patch.imageUrl);
+            if (next !== undefined)
+                data.imageUrl = next;
         }
         if (patch.npkCode !== undefined)
             data.npkCode = patch.npkCode;

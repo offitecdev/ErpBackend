@@ -5,6 +5,13 @@
  * (`GET /integration/offer-status/{reference}`). Authentifiziert wird mit dem
  * gemeinsamen Schlüssel im Kopf `X-OSP-Integration-Key` — nie mit dem JWT.
  *
+ * Der Schlüssel ist seit der vierten Vertragsfassung die PROJEKTNUMMER: ein
+ * Stand gehört dem Projekt, nicht der einzelnen Einheit (§0). Die
+ * zusammengesetzte Form "4820193-57" nimmt die OSP weiterhin an und meint
+ * damit dasselbe Projekt — alte Zeilen bleiben also gültig, ohne dass hier
+ * unterschieden werden müsste. Geantwortet wird auf allen drei Wegen mit EINEM
+ * Objekt (oder `null`), nicht mehr mit einer Liste.
+ *
  * Alles hier ist BEST-EFFORT: eine nicht erreichbare OSP darf keinen
  * Speichervorgang bei uns scheitern lassen. Der Aufrufer bekommt {ok, error}
  * und schreibt beides an die Dokumentzeile (lastReport*).
@@ -46,10 +53,13 @@ export interface OspSalesmanDto {
 }
 
 export interface OspStatusRow {
+    /** Die Projektnummer, auf die der Stand lautet. */
     reference: string;
     status: string;
     updatedAt?: string;
     salesman?: OspSalesmanDto | null;
+    /** Die OSP sagt selbst, dass ein Datenblatt des Projekts überholt ist. */
+    documentOutdated?: boolean;
 }
 
 export interface OspCallResult {
@@ -61,8 +71,27 @@ export interface OspCallResult {
         kein Fehler, sondern das Ziel — drüben steht schon nichts mehr. */
     notFound?: boolean;
     error?: string;
+    /**
+     * Die Antwort — seit der vierten Vertragsfassung EIN Objekt je Projekt
+     * (oder `null`, wenn das Projekt gar keine Anfrage trägt). Als Feld bleibt
+     * es eine Liste: so verstehen dieselben Aufrufer auch die Antworten der
+     * dritten Fassung, die je Beleg eine Zeile schickte.
+     */
     rows?: OspStatusRow[];
 }
+
+/**
+ * Der Antwortkörper der drei Statuswege. `null` ist eine ANTWORT und kein
+ * Fehler: das Projekt trägt keine Anfrage (mehr) — genau das quittiert §4b
+ * nach einem Rückzug. Eine Liste kommt nur noch von einer OSP, die auf der
+ * dritten Vertragsfassung steht; beides ergibt hier dieselbe Form.
+ */
+const readStatusRows = async (response: Response): Promise<OspStatusRow[]> => {
+    const body = await response.json().catch(() => null);
+    if (Array.isArray(body)) return body as OspStatusRow[];
+    if (body && typeof body === 'object') return [body as OspStatusRow];
+    return [];
+};
 
 const OSP_TIMEOUT_MS = 8000;
 
@@ -157,8 +186,7 @@ export const reportOspOfferStatus = async (
             const message = await response.text().catch(() => '');
             return { ok: false, error: `OSP ${response.status}: ${message.slice(0, 300)}` };
         }
-        const rows = (await response.json().catch(() => [])) as OspStatusRow[];
-        return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+        return { ok: true, rows: await readStatusRows(response) };
     } catch (error: any) {
         return { ok: false, error: describeFetchFailure(error, url) };
     }
@@ -193,16 +221,16 @@ export const withdrawOspOfferStatus = async (
                 error: `OSP ${response.status}: ${message.slice(0, 300)}`,
             };
         }
-        const rows = (await response.json().catch(() => [])) as OspStatusRow[];
-        return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+        return { ok: true, rows: await readStatusRows(response) };
     } catch (error: any) {
         return { ok: false, error: describeFetchFailure(error, url) };
     }
 };
 
 /**
- * Den Stand eines Belegs (oder ALLER Belege eines Projekts, bei nackter
- * Projektnummer) zurücklesen — zum Abgleich statt blinder Wiederholung (§4).
+ * Den Stand eines PROJEKTS zurücklesen — zum Abgleich statt blinder
+ * Wiederholung (§4). Die Antwort ist ein Objekt oder `null`: `null` heisst,
+ * dass für dieses Projekt nie eine Offerte angefragt wurde.
  */
 export const fetchOspOfferStatus = async (
     endpoint: OspEndpoint,
@@ -222,8 +250,7 @@ export const fetchOspOfferStatus = async (
             const message = await response.text().catch(() => '');
             return { ok: false, error: `OSP ${response.status}: ${message.slice(0, 300)}` };
         }
-        const rows = (await response.json().catch(() => [])) as OspStatusRow[];
-        return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+        return { ok: true, rows: await readStatusRows(response) };
     } catch (error: any) {
         return { ok: false, error: describeFetchFailure(error, url) };
     }

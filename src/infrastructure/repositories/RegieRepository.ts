@@ -22,6 +22,14 @@ const customerSelect = {
     mainPhone: true,
 };
 
+/* Das Produktbild wird hier NICHT gelesen (01.09.2026).
+ *
+ * Kein Rapport zeigt es an — die Spalte reiste nur mit. Frueher war das
+ * teuer (eine LONGTEXT-Daten-URI je Materialzeile), inzwischen waere es
+ * ausserdem falsch: die Spalte traegt jetzt einen `r2:`-Verweis, den
+ * niemand aufloest, also stuende in der Antwort eine Zeichenkette, die
+ * kein <img> anzeigen kann. Wer das Bild braucht, loest es ueber
+ * ImageStore.resolveArticleImage auf. */
 const materialInclude = {
     article: {
         select: {
@@ -30,7 +38,6 @@ const materialInclude = {
             name: true,
             unit: true,
             baseCost: true,
-            imageUrl: true,
         }
     }
 };

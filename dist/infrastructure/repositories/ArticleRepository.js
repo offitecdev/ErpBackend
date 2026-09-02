@@ -8,6 +8,10 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Article_1 = require("../../domain/entities/Article");
 const nanoid_1 = require("nanoid");
 const PdfImageThumbnailService_1 = require("../services/PdfImageThumbnailService");
+// Das Produktbild liegt in R2. Die Spalte traegt den Verweis, der Browser
+// bekommt die feste Adresse am Eimer (assets.demo.offitec.ch) — dieselbe
+// Bauart wie die Terminunterlagen im Kalender.
+const ImageStore_1 = require("../services/ImageStore");
 const mappingArticleSelect = {
     id: true,
     tenantId: true,
@@ -58,7 +62,10 @@ class ArticleRepository {
         return new Article_1.PositionArticleMapping(data.id, data.positionId, data.articleId, data.quantityMultiplier, data.discount, articleEntity);
     }
     async createArticle(articleData) {
-        const imageUrl = articleData.imageUrl ?? null;
+        // Eine frische Daten-URI wandert nach R2; die Spalte bekommt den
+        // Verweis. Alles andere (schon abgelegt, leer) bleibt, wie es ist.
+        const incomingImage = articleData.imageUrl ?? null;
+        const imageUrl = await (0, ImageStore_1.storeArticleImage)(articleData.tenantId, incomingImage);
         const data = await prisma_client_1.default.article.create({
             data: {
                 id: articleData.id || (0, nanoid_1.nanoid)(10),
@@ -83,8 +90,12 @@ class ArticleRepository {
                 lastPurchaseDate: articleData.lastPurchaseDate ?? null,
             }
         });
-        await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(data.tenantId, 'ARTICLE', data.id, imageUrl, String(data.updatedAt.getTime()));
-        return this.mapToEntity(data);
+        // Das Vorschaubild entsteht aus den Bytes, die ohnehin schon hier
+        // liegen — der Verweis muesste dafuer erst wieder gelesen werden.
+        await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(data.tenantId, 'ARTICLE', data.id, incomingImage || imageUrl, String(data.updatedAt.getTime()));
+        const entity = this.mapToEntity(data);
+        await (0, ImageStore_1.resolveArticleImagesInPlace)([entity]);
+        return entity;
     }
     async updateArticle(id, patch) {
         const updateData = {};
@@ -99,11 +110,33 @@ class ArticleRepository {
             if (patch[f] !== undefined)
                 updateData[f] = patch[f];
         }
-        const data = await prisma_client_1.default.article.update({ where: { id }, data: updateData });
+        /* DIE ZURUECKGESCHICKTE ADRESSE WIRD NICHT GESCHRIEBEN.
+         *
+         * Beim Lesen steht in `imageUrl` die Adresse am Eimer; der Browser
+         * schickt sie beim naechsten Speichern arglos mit. Wuerde sie in die
+         * Spalte wandern, stuende dort die Adresse statt des Verweises auf die
+         * Datei — und ein Domainwechsel machte sie unbrauchbar. `valueForWrite`
+         * ist die Regel, hier ihre Anwendung: nur eine NEUE Daten-URI oder ein
+         * ausdrueckliches `null` fassen die Spalte an. */
         if (patch.imageUrl !== undefined) {
-            await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(data.tenantId, 'ARTICLE', data.id, patch.imageUrl, String(data.updatedAt.getTime()));
+            const owner = await prisma_client_1.default.article.findUnique({ where: { id }, select: { tenantId: true } });
+            const next = await (0, ImageStore_1.valueForWrite)(ImageStore_1.articleImageStorage, owner?.tenantId ?? '', patch.imageUrl);
+            if (next === undefined)
+                delete updateData.imageUrl;
+            else
+                updateData.imageUrl = next;
         }
-        return this.mapToEntity(data);
+        const data = await prisma_client_1.default.article.update({ where: { id }, data: updateData });
+        if (updateData.imageUrl !== undefined) {
+            await (0, PdfImageThumbnailService_1.persistPdfThumbnail)(data.tenantId, 'ARTICLE', data.id, 
+            // Die frische Daten-URI, solange sie hier noch liegt.
+            (typeof patch.imageUrl === 'string' && patch.imageUrl.startsWith('data:'))
+                ? patch.imageUrl
+                : updateData.imageUrl, String(data.updatedAt.getTime()));
+        }
+        const entity = this.mapToEntity(data);
+        await (0, ImageStore_1.resolveArticleImagesInPlace)([entity]);
+        return entity;
     }
     async deleteArticle(id) {
         // Keep stock history and references intact; deletion moves the product card
@@ -161,7 +194,9 @@ class ArticleRepository {
             where,
             orderBy: { name: 'asc' }
         });
-        return data.map(d => this.mapToEntity(d));
+        const entities = data.map(d => this.mapToEntity(d));
+        await (0, ImageStore_1.resolveArticleImagesInPlace)(entities);
+        return entities;
     }
     async findArticleById(id, options) {
         const data = await prisma_client_1.default.article.findFirst({
@@ -170,7 +205,11 @@ class ArticleRepository {
             // column, not merely remove it from the JSON response afterwards.
             select: this.articleSelect(options?.includeImages !== false),
         });
-        return data ? this.mapToEntity(data) : null;
+        if (!data)
+            return null;
+        const entity = this.mapToEntity(data);
+        await (0, ImageStore_1.resolveArticleImagesInPlace)([entity]);
+        return entity;
     }
     async findArticleByCode(tenantId, codeOrBarcode) {
         const data = await prisma_client_1.default.article.findFirst({
@@ -184,7 +223,11 @@ class ArticleRepository {
                 ]
             }
         });
-        return data ? this.mapToEntity(data) : null;
+        if (!data)
+            return null;
+        const entity = this.mapToEntity(data);
+        await (0, ImageStore_1.resolveArticleImagesInPlace)([entity]);
+        return entity;
     }
     async mapArticleToPosition(mapping) {
         const data = await prisma_client_1.default.positionArticleMapping.create({

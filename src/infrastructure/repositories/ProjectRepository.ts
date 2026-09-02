@@ -83,6 +83,56 @@ const appointmentSummarySelect = {
     installationReminderSentAt: true,
 };
 
+// GET /projects is a table projection, not a project-detail response. Keep this
+// contract deliberately small: every selected field is rendered by the project
+// list (or is needed by one of the lightweight project pickers that shares the
+// endpoint). In particular, never add sales-order/tender trees or technician
+// assignments here; those belong to findById and the dedicated detail views.
+const projectListSelect = {
+    id: true,
+    customerId: true,
+    tenderId: true,
+    managerId: true,
+    projectNumber: true,
+    projectName: true,
+    status: true,
+    plannedBudget: true,
+    createdAt: true,
+    customer: {
+        select: {
+            id: true,
+            companyName: true,
+        },
+    },
+    manager: {
+        select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+        },
+    },
+    tender: {
+        select: {
+            id: true,
+            tenderNumber: true,
+        },
+    },
+    appointments: {
+        where: { status: "BOOKED" },
+        orderBy: { startTime: "asc" as const },
+        select: {
+            id: true,
+            startTime: true,
+            status: true,
+        },
+    },
+    _count: {
+        select: {
+            reports: true,
+        },
+    },
+};
+
 export class ProjectRepository {
     async createProject(data: Partial<Project>): Promise<Project> {
         return await prisma.$transaction(async (tx) => {
@@ -473,38 +523,7 @@ export class ProjectRepository {
         return await (prisma as any).project.findMany({
             where,
             orderBy: { createdAt: 'desc' },
-            include: {
-                customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true } },
-                manager: { select: { id: true, firstName: true, lastName: true, email: true } },
-                tender: { select: { id: true, tenderNumber: true, status: true } },
-                salesOrders: {
-                    orderBy: { createdAt: 'asc' },
-                    select: {
-                        id: true,
-                        orderNumber: true,
-                        orderType: true,
-                        status: true,
-                        totalAmount: true,
-                        parentSalesOrderId: true,
-                        revisionNumber: true,
-                        createdAt: true,
-                        orderDate: true,
-                        parentSalesOrder: { select: { id: true, orderNumber: true } },
-                        tender: { select: { id: true, tenderNumber: true, status: true, projectId: true, commissionNumber: true, salespersonName: true, createdBy: { select: { firstName: true, lastName: true } }, installationAddress: true } },
-                    },
-                },
-                appointments: {
-                    orderBy: { startTime: 'asc' },
-                    include: {
-                        assignedTechnician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } },
-                        technicianAssignments: {
-                            orderBy: { assignedAt: 'asc' },
-                            include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } },
-                        },
-                    },
-                },
-                _count: { select: { reports: true, expenses: true, projectVariations: true, salesOrders: true } }
-            }
+            select: projectListSelect,
         }) as unknown as Project[];
     }
 

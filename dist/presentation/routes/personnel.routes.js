@@ -1101,6 +1101,15 @@ router.get('/leaves/counts', AuthMiddleware_1.requireAuth, async (req, res) => {
         const tenantIds = await treeOf(req);
         const scope = { employee: (0, serviceTenantScope_1.employeeScopeWhere)(tenantIds.length ? tenantIds : [req.user.tenantId]) };
         const amPurser = await isPurserEmployee(req.user.id);
+        if (String(req.query.view || '').trim() === 'incoming') {
+            const [approver, accounting] = await Promise.all([
+                prisma_client_1.default.staffLeaveRequest.count({ where: { ...scope, approverId: req.user.id, status: 'PENDING_MANAGER' } }),
+                amPurser
+                    ? prisma_client_1.default.staffLeaveRequest.count({ where: { ...scope, kind: 'LEAVE', status: 'PENDING_ACCOUNTING' } })
+                    : Promise.resolve(0),
+            ]);
+            return res.status(200).json({ incoming: approver + accounting });
+        }
         const [approver, accounting, mine] = await Promise.all([
             prisma_client_1.default.staffLeaveRequest.count({ where: { ...scope, approverId: req.user.id, status: 'PENDING_MANAGER' } }),
             amPurser

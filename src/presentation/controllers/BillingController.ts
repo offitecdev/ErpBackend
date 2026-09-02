@@ -6,6 +6,8 @@ import { ListInvoicesUseCase } from '../../application/use-cases/billing/ListInv
 import { UpdateInvoiceStatusUseCase } from '../../application/use-cases/billing/UpdateInvoiceStatusUseCase';
 import { DeleteInvoiceUseCase } from '../../application/use-cases/billing/DeleteInvoiceUseCase';
 import { InvoiceCategory, InvoiceStatus } from '../../domain/entities/Invoice';
+import { Prisma } from '@prisma/client';
+import prisma from '../../infrastructure/database/prisma.client';
 
 const INVOICE_CATEGORIES: InvoiceCategory[] = ['PROJECT', 'DELIVERY', 'DIRECT'];
 
@@ -32,6 +34,31 @@ export class BillingController {
 
     async list(req: Request, res: Response) {
         try {
+            // The project table needs only billing progress, not invoice rows,
+            // line items, customer/order labels or PDF metadata. Aggregate active
+            // percentages in one statement so this view never executes the full
+            // two-query invoice-list path.
+            if (String(req.query.view || '') === 'project-list') {
+                const rows = await prisma.$queryRaw<Array<{
+                    projectId: string | null;
+                    salesOrderId: string | null;
+                    billedPercent: number | string | null;
+                }>>(Prisma.sql`
+                    SELECT i.projectId, i.salesOrderId, SUM(i.billedPercent) AS billedPercent
+                    FROM Invoice i
+                    WHERE i.tenantId = ${req.user!.tenantId}
+                      AND i.status <> 'CANCELLED'
+                      AND (i.projectId IS NOT NULL OR i.salesOrderId IS NOT NULL)
+                    GROUP BY i.projectId, i.salesOrderId
+                `);
+                return res.status(200).json(rows.map((row) => ({
+                    projectId: row.projectId ?? null,
+                    salesOrderId: row.salesOrderId ?? null,
+                    billedPercent: Number(row.billedPercent || 0),
+                    status: 'ISSUED',
+                })));
+            }
+
             // Der Rechnungstyp ist abgeleitet; ein unbekannter Wert wird still
             // fallen gelassen statt die Liste leer zu lassen.
             const rawCategory = req.query.category ? String(req.query.category) : '';
