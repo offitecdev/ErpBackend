@@ -6,7 +6,7 @@ const loginThrottle_1 = require("../../services/loginThrottle");
 const bcryptGate_1 = require("../../services/bcryptGate");
 const MfaUseCases_1 = require("./MfaUseCases");
 /**
- * Seit dem 29.09.2026 endet die richtige Kennworteingabe NICHT mehr in einer
+ * Seit dem 09.09.2026 endet die richtige Kennworteingabe NICHT mehr in einer
  * Sitzung, sondern in der zweiten Hälfte der Anmeldung: dem sechsstelligen
  * Code aus der Authenticator-App (siehe MfaUseCases). Ausgestellt wird hier
  * nur noch das Zwischentoken; Zugangs- und Erneuerungstoken folgen erst, wenn

@@ -18,7 +18,7 @@ import { issueEmployeeSession, SessionEmployee } from './sessionIssuer';
 /**
  * ── DER ZWEITE FAKTOR ───────────────────────────────────────────────────────
  *
- * Die Anmeldung zerfällt seit dem 29.09.2026 in zwei Hälften:
+ * Die Anmeldung zerfällt seit dem 09.09.2026 in zwei Hälften:
  *
  *   1. E-Mail + Kennwort  →  KEINE Sitzung, sondern ein Zwischentoken
  *      (`mfa`, eigenes Geheimnis, zehn Minuten) im Keks `ofi_mfa`.
