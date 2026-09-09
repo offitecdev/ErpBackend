@@ -402,7 +402,7 @@ export class MailController {
             const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
             const body = req.body || {};
             const fromEmail = body.fromEmail || settings?.fromEmail || req.user!.email;
-            const fromName = body.fromName || settings?.fromName || "Offitec ERP";
+            const fromName = body.fromName || settings?.fromName || "Offitec Control Center";
             const to = String(body.to || "").trim();
             // CC dizi ya da virgüllü tek satır olabilir; boşlar ayıklanır.
             const cc = (Array.isArray(body.cc) ? body.cc : String(body.cc || "").split(","))

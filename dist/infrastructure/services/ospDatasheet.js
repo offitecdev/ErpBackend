@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fetchOspDatasheet = exports.mergeSpecs = exports.specsFromOfferEntry = exports.parseDatasheetSpecs = exports.pickDatasheetUrl = void 0;
+exports.fetchOspMarkdown = exports.fetchOspDatasheet = exports.mergeSpecs = exports.specsFromOfferEntry = exports.parseDatasheetSpecs = exports.pickMarkdownUrl = exports.pickDatasheetUrl = void 0;
 const LocalFileStorage_1 = require("./LocalFileStorage");
+const ospDatasheetDocument_1 = require("./ospDatasheetDocument");
 /**
  * ── OSP-DATENBLATT (07.09.2026) ─────────────────────────────────────────────
  * Zu jeder angefragten Einheit gehört ein Datenblatt-PDF. Die OSP nennt seine
@@ -116,6 +117,29 @@ const pickDatasheetUrl = (entry) => {
     return best ? best.url : null;
 };
 exports.pickDatasheetUrl = pickDatasheetUrl;
+/**
+ * Die Adresse einer MARKDOWN-Fassung des Blattes, falls der Eintrag eine
+ * nennt. Der Vertrag kennt sie heute nicht — die OSP schickt `pdfUrl` und
+ * sonst nichts. Sollte sie eine liefern (`markdownUrl`, `mdUrl`, `.md`), ist
+ * sie die BESSERE Quelle für die Angaben: dort steht das Blatt bereits
+ * gegliedert, statt dass es aus dem Textlayer eines PDF gelesen werden muss.
+ */
+const pickMarkdownUrl = (entry) => {
+    if (!entry || typeof entry !== 'object')
+        return null;
+    const row = entry;
+    for (const key of ['markdownUrl', 'mdUrl', 'markdown_url', 'datasheetMarkdownUrl']) {
+        const url = asHttpUrl(row[key]);
+        if (url)
+            return url;
+    }
+    /* GERATEN wird nicht. Die Ablage der OSP hat zu einem `…/x.pdf` KEIN
+       `…/x.md` (nachgesehen am 21.09.2026: 404). Eine geratene Adresse würde
+       bei jedem Holen einen Fehlschlag an die Einheit schreiben, der keiner
+       ist — und die Markdown-Fassung entsteht ohnehin aus dem PDF. */
+    return null;
+};
+exports.pickMarkdownUrl = pickMarkdownUrl;
 /* ── 2) Das PDF holen ────────────────────────────────────────────────────── */
 const sameHost = (a, b) => {
     try {
@@ -327,7 +351,9 @@ exports.mergeSpecs = mergeSpecs;
  * OSP-Strecke ist auch diese BEST-EFFORT: ein fehlendes Datenblatt darf weder
  * den Webhook noch den Import scheitern lassen.
  */
-const fetchOspDatasheet = async (endpoint, tenantId, url) => {
+const fetchOspDatasheet = async (endpoint, tenantId, url, 
+/** Projekt und Beleg — sie stehen als Herkunft über der Markdown-Fassung. */
+meta = {}) => {
     const base = (endpoint.ospBaseUrl || '').trim();
     const key = (endpoint.ospApiKey || '').trim();
     // Der Schlüssel gehört der OSP — er geht an keinen anderen Rechner.
@@ -370,11 +396,63 @@ const fetchOspDatasheet = async (endpoint, tenantId, url) => {
         const pdf = await getDocumentProxy(new Uint8Array(body));
         const extracted = await extractText(pdf, { mergePages: true });
         const text = String(extracted.text || '');
-        return { ok: true, file, text, specs: (0, exports.parseDatasheetSpecs)(text) };
+        /* Das Blatt wird als DOKUMENT gelesen — Abschnitte und Zeilen —, nicht
+           mehr mit Suchmustern über den ganzen Text. Der Unterschied ist kein
+           Feinschliff: aus dem Hinweissatz «differing medium concentrations …»
+           wurde vorher das Medium „concentrations", weil ein Suchmuster nicht
+           weiss, ob es gerade in einer Angabe oder in einem Satz steht. */
+        const doc = (0, ospDatasheetDocument_1.parseDatasheetDocument)(text);
+        const specs = (0, ospDatasheetDocument_1.specsFromDocument)(doc);
+        const markdown = (0, ospDatasheetDocument_1.buildDatasheetMarkdown)(doc, specs, meta);
+        /* Hat das Blatt keinen brauchbaren Aufbau (ein gescanntes PDF, ein
+           fremdes Formular), bleiben die alten Suchmuster als Rückfall — lieber
+           eine unsichere Angabe als gar keine. */
+        const fallback = Object.keys(specs).length ? {} : (0, exports.parseDatasheetSpecs)(text);
+        return { ok: true, file, text, markdown, specs: { ...fallback, ...specs } };
     }
     catch (error) {
         return { ok: true, file, error: `Datenblatt gespeichert, aber nicht lesbar: ${error?.message || error}` };
     }
 };
 exports.fetchOspDatasheet = fetchOspDatasheet;
+/**
+ * Eine MARKDOWN-Fassung des Blattes holen und auslesen.
+ *
+ * Sie ist die bessere Quelle, wo es sie gibt: dort steht das Blatt bereits
+ * gegliedert, statt dass die Gliederung aus dem Textlayer eines PDF
+ * zurückgewonnen werden müsste. Heute liefert die OSP keine — der Weg steht
+ * trotzdem, weil er sonst am Tag, an dem sie eine liefert, erst gebaut werden
+ * müsste (und weil eine von Hand gepflegte Fassung denselben Weg nimmt).
+ *
+ * Best-Effort wie alles hier: wirft nie.
+ */
+const fetchOspMarkdown = async (endpoint, url) => {
+    const base = (endpoint.ospBaseUrl || '').trim();
+    const key = (endpoint.ospApiKey || '').trim();
+    // Der Schlüssel gehört der OSP — er geht an keinen anderen Rechner.
+    const headers = (key && base && sameHost(url, base))
+        ? { 'X-OSP-Integration-Key': key }
+        : {};
+    try {
+        const response = await fetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        if (!response.ok)
+            return { ok: false, error: `Markdown ${response.status}` };
+        const type = (response.headers.get('content-type') || '').toLowerCase();
+        const markdown = await response.text();
+        // Eine HTML-Fehlerseite kommt mit 200 zurück und sähe sonst wie ein
+        // Treffer aus — dasselbe Missverständnis wie beim PDF.
+        if (type.includes('text/html') || /^\s*<(!doctype|html)/i.test(markdown)) {
+            return { ok: false, error: 'Die Adresse liefert kein Markdown (HTML-Seite).' };
+        }
+        if (!markdown.trim())
+            return { ok: false, error: 'Markdown ist leer.' };
+        if (markdown.length > MAX_BYTES)
+            return { ok: false, error: 'Markdown ist zu gross.' };
+        return { ok: true, markdown, specs: (0, ospDatasheetDocument_1.specsFromDocument)((0, ospDatasheetDocument_1.parseMarkdownDocument)(markdown)) };
+    }
+    catch (error) {
+        return { ok: false, error: describeFailure(error, url) };
+    }
+};
+exports.fetchOspMarkdown = fetchOspMarkdown;
 //# sourceMappingURL=ospDatasheet.js.map

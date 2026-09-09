@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GetMeUseCase = void 0;
+const AuthErrors_1 = require("../../errors/AuthErrors");
 class GetMeUseCase {
     employeeRepo;
     constructor(employeeRepo) {
@@ -9,7 +10,7 @@ class GetMeUseCase {
     async execute(employeeId) {
         const employee = await this.employeeRepo.findById(employeeId);
         if (!employee)
-            throw new Error("Kullanıcı bulunamadı.");
+            throw new AuthErrors_1.PublicError("Kullanıcı bulunamadı.");
         const { passwordHash, ...safeEmployee } = employee;
         return safeEmployee;
     }

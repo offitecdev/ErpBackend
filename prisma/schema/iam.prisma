@@ -81,12 +81,32 @@ model Employee {
   /// Set on every password change; JWTs carry it as the `pwdAt` claim so all
   /// tokens issued before the change become invalid.
   passwordChangedAt             DateTime?
+  /// ── ZWEITER FAKTOR (TOTP / Aegis, RFC 6238) ──────────────────────────────
+  /// Das gemeinsame Geheimnis mit der Authenticator-App. Ruht VERSCHLÜSSELT
+  /// (`enc:v1:…`, siehe infrastructure/services/totpCrypto.ts) — eine
+  /// ausgelesene Tabelle ist damit nicht zugleich der zweite Faktor aller.
+  totpSecret                    String?                        @db.VarChar(255)
+  /// Gesetzt, sobald der ERSTE Code bestätigt wurde. null = noch nicht
+  /// eingerichtet; die Anmeldung führt dann durch die Einrichtung, statt sie
+  /// zu überspringen. Der zweite Faktor gilt für jede Anmeldung.
+  totpEnabledAt                 DateTime?
+  /// Das zuletzt angenommene Zeitfenster (Unixsekunden / 30). Ein Code gilt
+  /// genau EINMAL: derselbe Sechser wird innerhalb seiner dreissig Sekunden
+  /// kein zweites Mal angenommen.
+  totpLastStep                  Int?
   isActive                      Boolean                        @default(true)
   /// Soft delete: a non-null value blocks login, refresh and every authorized request.
   /// Recoverable by an admin for 30 days (restore endpoint), then considered final.
   deletedAt                     DateTime?
   /// Admin ban: blocks login/refresh/restore permanently; the e-mail cannot re-register.
   bannedAt                      DateTime?
+  /// Gesetzt, sobald ein Konto von der VERWALTUNG stillgelegt wurde (pasif
+  /// gesetzt, gesperrt, gelöscht). Es unterscheidet das von einem Konto, das
+  /// noch nie aktiviert wurde — und nur DAS darf sich per Aktivierungslink
+  /// selbst freischalten. Ohne diese Unterscheidung konnte eine ausgetretene
+  /// Person über /auth/activation/request ihr eigenes Konto wieder öffnen.
+  /// Wird geleert, sobald die Verwaltung das Konto wieder aktiv setzt.
+  deactivatedAt                 DateTime?
   hireDate                      DateTime?
   terminationDate               DateTime?
   annualLeaveEntitlement        Int                            @default(0)
@@ -127,6 +147,8 @@ model Employee {
   staffLeaveAccounting          StaffLeaveRequest[]            @relation("StaffLeaveAccounting")
   /// Arbeitsvertrag und Unterlagen der Personalakte (26.08.2026).
   staffDocuments                StaffDocument[]                @relation("StaffDocuments")
+  /// Die offenen Anmeldungen dieser Person (siehe RefreshSession).
+  refreshSessions               RefreshSession[]               @relation("EmployeeRefreshSessions")
   createdAt                     DateTime                       @default(now())
   updatedAt                     DateTime                       @default(now()) @updatedAt
   /// LEGACY — Altdaten des abgelösten Personalmoduls. Die Tabellen bleiben
@@ -354,4 +376,51 @@ model AttendanceLog {
   employee         Employee  @relation(fields: [employeeId], references: [id])
 
   @@index([employeeId], map: "AttendanceLog_employeeId_fkey")
+}
+
+/// ── EINE OFFENE ANMELDUNG ───────────────────────────────────────────────────
+///
+/// Die Erneuerungstoken waren zustandslos: 30 Tage gültig, bei jeder Erneuerung
+/// gegen ein neues getauscht — aber das alte blieb ebenso gültig, und das
+/// Abmelden löschte nur die Keks im Browser. Ein einmal abgegriffenes
+/// Erneuerungstoken war damit einen Monat lang eine Sitzung, die niemand
+/// beenden konnte; die einzige Handhabe war ein Kennwortwechsel (`pwdAt`).
+///
+/// Jede Anmeldung legt jetzt eine Zeile an. Das Erneuerungstoken trägt deren
+/// Kennung (`jti`) und die Kennung der ANMELDUNG (`familyId`, über alle
+/// Erneuerungen hinweg dieselbe). Damit gilt:
+///
+///   * Abmelden beendet die Sitzung wirklich (revokedAt).
+///   * Wird ein BEREITS GETAUSCHTES Token noch einmal vorgelegt, ist es
+///     entweder gestohlen oder wiedereingespielt — dann fällt die GANZE
+///     Anmeldefamilie (`familyId`), nicht nur diese Zeile.
+///   * Sperre, Löschung, Stilllegung und Kennwortwechsel beenden alle
+///     Sitzungen der Person auf einen Schlag.
+///
+/// Abgelaufene Zeilen räumt `startRefreshSessionCleanup` regelmässig ab.
+model RefreshSession {
+  /// = der `jti` des Erneuerungstokens, das gerade auf diese Zeile passt.
+  id            String    @id
+  /// Die Anmeldung, zu der diese Zeile gehört: bleibt über alle Erneuerungen
+  /// hinweg dieselbe. Der Wiedereinspielschutz sperrt sie als Ganzes.
+  familyId      String
+  employeeId    String
+  tenantId      String
+  createdAt     DateTime  @default(now())
+  expiresAt     DateTime
+  /// Gesetzt beim Abmelden, beim Tausch (das alte Token stirbt sofort) und bei
+  /// jeder Sperre. Eine Zeile wird nie gelöscht, nur entwertet — sonst wäre ein
+  /// wiedereingespieltes Token nicht von einem unbekannten zu unterscheiden.
+  revokedAt     DateTime?
+  /// Warum die Zeile entwertet wurde: rotated | logout | reuse | account.
+  revokedReason String?   @db.VarChar(32)
+  /// Beim Tausch: die Zeile, die an ihre Stelle getreten ist.
+  replacedById  String?
+  userAgent     String?   @db.VarChar(512)
+  ipAddress     String?   @db.VarChar(64)
+  employee      Employee  @relation("EmployeeRefreshSessions", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([familyId])
+  @@index([expiresAt])
 }

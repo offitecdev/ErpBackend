@@ -6,8 +6,20 @@ import { MaintenanceRepository } from '../../infrastructure/repositories/Mainten
 import { InventoryRepository } from '../../infrastructure/repositories/InventoryRepository';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
+import { rateLimit } from '../middlewares/RateLimitMiddleware';
 
 const router = Router();
+
+/**
+ * Die drei Terminwege sind ohne Anmeldung erreichbar und waren ungebremst —
+ * ein Skript konnte Schlüssel durchprobieren. Grosszügig genug für eine
+ * Kundin, die die Seite mehrfach öffnet.
+ */
+const publicBookingLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    message: 'Zu viele Anfragen. Bitte versuchen Sie es später erneut.',
+});
 
 const maintenanceRepo = new MaintenanceRepository();
 const inventoryRepo = new InventoryRepository();
@@ -24,18 +36,43 @@ const serviceOptionPermissions = [
     'regie.reports.manage',
 ];
 
+// Der Schlüssel reist im Kopf `X-Public-Token`, nicht mehr im Pfad — ein Pfad
+// landet wörtlich im Zugriffsprotokoll und im Verlauf. Siehe publicToken.ts.
+router.get(
+    '/public/booking',
+    publicBookingLimiter,
+    (req, res) => controller.getPublicAppointmentOptions(req, res)
+);
+
+router.post(
+    '/public/booking/confirm',
+    publicBookingLimiter,
+    (req, res) => controller.confirmPublicAppointment(req, res)
+);
+
+router.post(
+    '/public/booking/disapprove',
+    publicBookingLimiter,
+    (req, res) => controller.disapprovePublicAppointment(req, res)
+);
+
+// Rückfallweg mit dem Schlüssel im Pfad (verschickte Verweise, alte
+// Oberfläche). `main.ts` schwärzt ihn im Protokoll.
 router.get(
     '/public/booking/:token',
+    publicBookingLimiter,
     (req, res) => controller.getPublicAppointmentOptions(req, res)
 );
 
 router.post(
     '/public/booking/:token/confirm',
+    publicBookingLimiter,
     (req, res) => controller.confirmPublicAppointment(req, res)
 );
 
 router.post(
     '/public/booking/:token/disapprove',
+    publicBookingLimiter,
     (req, res) => controller.disapprovePublicAppointment(req, res)
 );
 

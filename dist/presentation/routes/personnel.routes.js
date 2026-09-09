@@ -40,6 +40,7 @@ const staffDirectoryCache_1 = require("../../shared/staffDirectoryCache");
 const leaveRequestMailService_1 = require("../../infrastructure/services/leaveRequestMailService");
 const personnel_1 = require("../../shared/personnel");
 const personnelReports_1 = require("../../application/services/personnelReports");
+const AuthErrors_1 = require("../../application/errors/AuthErrors");
 const router = (0, express_1.Router)();
 const cryptoService = new BcryptCryptoService_1.BcryptCryptoService();
 const roleRepo = new RoleRepository_1.RoleRepository();
@@ -89,7 +90,7 @@ router.get('/shift-plan', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(200).json({ plan: await loadShiftPlan(req) });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 router.put('/shift-plan', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('attendance.update'), async (req, res) => {
@@ -125,7 +126,7 @@ router.put('/shift-plan', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
         res.status(200).json({ plan });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,7 +157,7 @@ router.get('/staff', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireP
         const [rows, countRows] = await Promise.all([
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT e.id, e.staffNumber, e.firstName, e.lastName, e.email, e.createdAt,
-                       e.isActive, e.qrToken, e.staffRole, e.workLocation,
+                       e.isActive, e.staffRole, e.workLocation,
                        (
                            SELECT r.roleName
                            FROM EmployeeRole er
@@ -182,7 +183,6 @@ router.get('/staff', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireP
                 email: String(row.email ?? ''),
                 createdAt: row.createdAt,
                 isActive: Boolean(row.isActive),
-                qrToken: row.qrToken == null ? null : String(row.qrToken),
                 staffRole: String(row.staffRole ?? 'STAFF'),
                 workLocation: String(row.workLocation ?? 'OFFICE'),
                 /* Die Rolle aus den Einstellungen — sie hat die Personalrolle
@@ -195,7 +195,7 @@ router.get('/staff', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireP
         });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -290,7 +290,7 @@ router.post('/staff/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
             },
             select: {
                 id: true, staffNumber: true, firstName: true, lastName: true,
-                email: true, createdAt: true, isActive: true, qrToken: true,
+                email: true, createdAt: true, isActive: true,
                 staffRole: true, workLocation: true,
             },
         })));
@@ -306,7 +306,46 @@ router.post('/staff/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
         res.status(201).json({ created });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
+    }
+});
+/**
+ * GET /personnel/staff/:id/qr — den Schlüssel EINER Person herausgeben, damit
+ * ihr Ausweis gedruckt werden kann.
+ *
+ * ── WARUM DAS EIN EIGENER WEG IST (Sicherheitskorrektur) ────────────────────
+ * `Employee.qrToken` ist eine ZUGANGSANGABE: `POST /auth/qr-login` tauscht ihn
+ * ohne Kennwort gegen eine Sitzung. Trotzdem trug ihn bis hierher jede Zeile
+ * der Personalliste, die Personenseite und `/personnel/me` mit — wer
+ * `employees.view` hatte (Büro, Personalwesen), las damit den Schlüssel der
+ * Geschäftsleitung vom Bildschirm ab und meldete sich als sie an.
+ *
+ * Jetzt verlässt der Schlüssel den Server nur noch hier und beim Neuausgeben:
+ * einzeln, unter demselben Recht wie das Rotieren (`employees.update` — wer
+ * einen neuen Ausweis ausgeben darf, darf auch den bestehenden drucken), und
+ * jeder Abruf steht im Protokoll.
+ */
+router.get('/staff/:id/qr', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('employees.update'), async (req, res) => {
+    try {
+        const tenantIds = await treeOf(req);
+        const person = await prisma_client_1.default.employee.findFirst({
+            where: { id: String(req.params.id), ...(0, serviceTenantScope_1.employeeScopeWhere)(tenantIds), deletedAt: null },
+            select: { id: true, qrToken: true },
+        });
+        if (!person)
+            return fail(res, 404, 'Person nicht gefunden.');
+        AuditLogService_1.auditLog.log({
+            action: 'personnel.staff.qrRead',
+            tenantId: req.user.tenantId,
+            employeeId: req.user.id,
+            entityType: 'Employee',
+            entityId: person.id,
+            ...AuditLogService_1.auditLog.context(req),
+        });
+        res.status(200).json({ qrToken: person.qrToken ?? null });
+    }
+    catch (error) {
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -335,7 +374,7 @@ router.post('/staff/:id/qr', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
         res.status(200).json({ qrToken });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -416,7 +455,7 @@ router.get('/approvers', AuthMiddleware_1.requireAuth, async (req, res) => {
         })));
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /** Prüfung derselben Regel für EINE Person (beim Anlegen eines Antrags). */
@@ -538,7 +577,7 @@ router.post('/clock/scan', AuthMiddleware_1.requireAuth, async (req, res) => {
         });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -609,7 +648,7 @@ router.get('/clock/activity', AuthMiddleware_1.requireAuth, async (req, res) => 
         res.status(200).json({ date: (0, personnel_1.toDateKey)(day), events: events.slice(0, 60) });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -662,7 +701,7 @@ router.get('/clock/week', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(200).json({ weekStart: (0, personnel_1.toDateKey)(monday), days });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 // ─────────────────────────────────────────────────────────────────────────────
@@ -679,7 +718,7 @@ router.get('/reports/detailed', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
         res.status(200).json(report);
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 router.get('/reports/accounting', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('attendance.read'), async (req, res) => {
@@ -693,7 +732,7 @@ router.get('/reports/accounting', AuthMiddleware_1.requireAuth, (0, RbacMiddlewa
         res.status(200).json(await (0, personnelReports_1.buildAccountingReport)(tenantIds, filters, plan, holidays));
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 router.get('/reports/accounting/:employeeId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('attendance.read'), async (req, res) => {
@@ -710,7 +749,7 @@ router.get('/reports/accounting/:employeeId', AuthMiddleware_1.requireAuth, (0, 
         res.status(200).json({ ...detail, plan });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /** Zeile des Detailberichts korrigieren (Beginn/Ende). */
@@ -754,7 +793,7 @@ router.patch('/time-entries/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddlewa
         res.status(200).json(updated);
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 router.delete('/time-entries/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('attendance.update'), async (req, res) => {
@@ -778,7 +817,7 @@ router.delete('/time-entries/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddlew
         res.status(204).end();
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 // ─────────────────────────────────────────────────────────────────────────────
@@ -922,7 +961,7 @@ router.get('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(200).json(rows);
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -996,7 +1035,7 @@ router.post('/leaves', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(201).json(created);
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -1081,7 +1120,7 @@ router.patch('/leaves/:id/decision', AuthMiddleware_1.requireAuth, async (req, r
         return fail(res, 400, 'Dieser Antrag ist bereits abgeschlossen.');
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -1122,7 +1161,7 @@ router.get('/leaves/counts', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(200).json({ approver, accounting, mine, incoming: approver + accounting });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -1133,14 +1172,14 @@ router.get('/me', AuthMiddleware_1.requireAuth, async (req, res) => {
     try {
         const me = await prisma_client_1.default.employee.findUnique({
             where: { id: req.user.id },
-            select: { id: true, firstName: true, lastName: true, staffRole: true, workLocation: true, staffNumber: true, qrToken: true },
+            select: { id: true, firstName: true, lastName: true, staffRole: true, workLocation: true, staffNumber: true },
         });
         if (!me)
             return fail(res, 404, 'Person nicht gefunden.');
         res.status(200).json(me);
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -1178,7 +1217,7 @@ router.patch('/staff/:id/role', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
         res.status(200).json(updated);
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -1212,7 +1251,7 @@ router.get('/staff/:id/overview', AuthMiddleware_1.requireAuth, async (req, res)
             select: {
                 id: true, tenantId: true, staffNumber: true, firstName: true, lastName: true,
                 email: true, phone: true, title: true, isActive: true, staffRole: true,
-                workLocation: true, hireDate: true, createdAt: true, qrToken: true,
+                workLocation: true, hireDate: true, createdAt: true,
                 profilePictureUrl: true, roleName: true,
                 employeeRoles: { take: 1, select: { role: { select: { id: true, roleName: true, isSystemAdmin: true } } } },
             },
@@ -1326,7 +1365,6 @@ router.get('/staff/:id/overview', AuthMiddleware_1.requireAuth, async (req, res)
                 workLocation: person.workLocation,
                 hireDate: person.hireDate ?? null,
                 createdAt: person.createdAt,
-                qrToken: person.qrToken ?? null,
                 profilePictureUrl: person.profilePictureUrl ?? null,
                 roleId: assignedRole?.id ?? null,
                 roleName: assignedRole?.roleName ?? person.roleName ?? null,
@@ -1404,7 +1442,7 @@ router.get('/staff/:id/overview', AuthMiddleware_1.requireAuth, async (req, res)
         });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -1482,7 +1520,7 @@ router.put('/staff/:id/photo', AuthMiddleware_1.requireAuth, async (req, res) =>
         res.status(200).json({ profilePictureUrl: photo, profilePictureThumb: thumb });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 /**
@@ -1530,7 +1568,7 @@ router.get('/photos', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(200).json({ photos });
     }
     catch (error) {
-        fail(res, 400, error.message);
+        fail(res, 400, (0, AuthErrors_1.toPublicMessage)(error, 'personnel'));
     }
 });
 exports.default = router;

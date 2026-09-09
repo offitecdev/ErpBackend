@@ -27,11 +27,29 @@ class Employee {
     bannedAt;
     moduleKeys;
     allowedTenantIds;
+    deactivatedAt;
+    totpSecret;
+    totpEnabledAt;
+    totpLastStep;
     constructor(id, tenantId, firstName, lastName, email, passwordHash, isActive, title, departmentId, roleName, phone, address, hireDate, terminationDate, annualLeaveEntitlement, profilePictureUrl, notes, createdAt, updatedAt, roleId, passwordChangedAt, deletedAt, bannedAt, 
     /// Personal module package; null = no restriction.
     moduleKeys, 
     /// Companies of the tree the employee may work in; null = no restriction.
-    allowedTenantIds) {
+    allowedTenantIds, 
+    /// Gesetzt, sobald die VERWALTUNG das Konto stillgelegt hat (pasif,
+    /// gesperrt, gelöscht). Nur ein Konto OHNE diese Marke darf sich per
+    /// Aktivierungslink selbst freischalten — siehe AccountActivationUseCases.
+    deactivatedAt, 
+    /// ── ZWEITER FAKTOR (TOTP / Aegis) ───────────────────────────────────
+    /// Das gemeinsame Geheimnis mit der Authenticator-App — VERSCHLÜSSELT,
+    /// so wie es in der Spalte steht (siehe totpCrypto.ts); wer damit
+    /// rechnen will, muss es erst entschlüsseln.
+    totpSecret, 
+    /// Zeitpunkt der ersten bestätigten Codeeingabe. null = noch nicht
+    /// eingerichtet, die Anmeldung führt dann durch die Einrichtung.
+    totpEnabledAt, 
+    /// Zuletzt angenommenes Zeitfenster — ein Code gilt genau einmal.
+    totpLastStep) {
         this.id = id;
         this.tenantId = tenantId;
         this.firstName = firstName;
@@ -57,6 +75,10 @@ class Employee {
         this.bannedAt = bannedAt;
         this.moduleKeys = moduleKeys;
         this.allowedTenantIds = allowedTenantIds;
+        this.deactivatedAt = deactivatedAt;
+        this.totpSecret = totpSecret;
+        this.totpEnabledAt = totpEnabledAt;
+        this.totpLastStep = totpLastStep;
     }
 }
 exports.Employee = Employee;

@@ -60,7 +60,7 @@ const extractRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
    der Datenbank. */
 /** Die drei Berechnungsarten des Hauses — mehr gibt es nicht. */
 const CALC_MODES = new Set(['AUTO', 'DIRECT', 'SUPPLIER']);
-const TEMPLATE_DOCUMENT_TYPES = new Set(['ORDER', 'PRICE_REQUEST']);
+const TEMPLATE_DOCUMENT_TYPES = new Set(['ORDER', 'PRICE_REQUEST', 'GOODS_RECEIPT']);
 const templateDocumentType = (value) => TEMPLATE_DOCUMENT_TYPES.has(String(value).toUpperCase())
     ? String(value).toUpperCase()
     : 'ORDER';
@@ -114,6 +114,10 @@ const normalizeConfig = (raw) => {
             ...column,
             width: Math.round(Math.min(240, Math.max(80, Number(raw?.extraColumns?.[index]?.width) || 120))),
         })),
+        hiddenColumnKeys: (Array.isArray(raw?.hiddenColumnKeys) ? raw.hiddenColumnKeys : [])
+            .map((key) => String(key).trim())
+            .filter((key, index, list) => /^[a-zA-Z][a-zA-Z0-9]{0,15}$/.test(key) && list.indexOf(key) === index)
+            .slice(0, gptExtract_1.TEMPLATE_MAX_COLUMNS),
         withTiers: Boolean(raw?.withTiers),
         roles,
         discounts,
@@ -217,7 +221,8 @@ const emptyUsage = () => ({
  */
 const IMAGE_MIME = /^image\//i;
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i;
-const pickImageInput = (body) => {
+const MAX_IMAGE_COUNT = 6;
+const parseImageInput = (body) => {
     const raw = typeof body?.data === 'string' ? body.data.trim() : '';
     if (!raw)
         return undefined;
@@ -238,6 +243,17 @@ const pickImageInput = (body) => {
     /* Das Modell braucht einen echten Typ im `data:`-Kopf; fehlt er, ist JPEG
        die vertraeglichste Annahme (jedes Telefonfoto ist eines). */
     return { data, mimeType: mimeType || 'image/jpeg' };
+};
+/** Legacy single-image bodies and the new ordered multi-image body share one path. */
+const pickImageInputs = (body) => {
+    if (!Array.isArray(body?.images)) {
+        const single = parseImageInput(body);
+        return single ? [single] : [];
+    }
+    return body.images
+        .slice(0, MAX_IMAGE_COUNT)
+        .map((entry) => parseImageInput(entry))
+        .filter((entry) => Boolean(entry));
 };
 /**
  * @swagger
@@ -265,10 +281,24 @@ const pickImageInput = (body) => {
  *           schema:
  *             type: object
  *             properties:
- *               data: { type: string, description: "data:…;base64,… oder reiner Base64-Inhalt (max. 12 MB)" }
+ *               data: { type: string, description: "data:…;base64,… oder reiner Base64-Inhalt (max. 11 MB)" }
  *               text: { type: string, description: "Fertiger Text — der Weg für xlsx/csv, die der Browser bereits liest" }
  *               fileName: { type: string }
  *               mimeType: { type: string }
+ *               images:
+ *                 type: array
+ *                 maxItems: 6
+ *                 description: "Ordered photos; each is transcribed separately and all transcripts share one extraction request"
+ *                 items:
+ *                   type: object
+ *                   required: [data]
+ *                   properties:
+ *                     data: { type: string }
+ *                     fileName: { type: string }
+ *                     mimeType: { type: string }
+ *               documentType:
+ *                 type: string
+ *                 enum: [ORDER, PRICE_REQUEST, GOODS_RECEIPT]
  *               language: { type: string, description: "de | en | tr — die Sprache, in der die Textwerte zurückkommen" }
  *               fields:
  *                 type: array
@@ -298,6 +328,8 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
             });
         }
         const withTiers = Boolean(req.body?.withTiers);
+        const documentType = templateDocumentType(req.body?.documentType);
+        const includeDocumentHeader = documentType !== 'GOODS_RECEIPT';
         /* ── Schritt 1: WORAUS gelesen wird ─────────────────────────────
            EIN FOTO GEHT UNGELESEN WEITER. Genau das stand seit dem
            08.09.2026 in den Beschreibungen dieses Moduls, war aber nie
@@ -313,20 +345,70 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
            nicht mehr steht, und riet sie.
 
            Jetzt sieht es die Seite selbst, mit ihren Spalten. */
-        const image = pickImageInput(req.body);
-        if (image && (image.data.length * 3) / 4 > documentText_1.DOCUMENT_MAX_BYTES) {
+        if (Array.isArray(req.body?.images) && req.body.images.length > MAX_IMAGE_COUNT) {
+            return res.status(400).json({
+                error: `Es koennen hoechstens ${MAX_IMAGE_COUNT} Bilder gemeinsam gelesen werden.`,
+                code: 'DOCUMENT_TOO_MANY_IMAGES',
+            });
+        }
+        const images = pickImageInputs(req.body);
+        const imageBytes = images.reduce((sum, image) => sum + (image.data.length * 3) / 4, 0);
+        if (images.length && imageBytes > documentText_1.DOCUMENT_MAX_BYTES) {
             return res.status(413).json({
-                error: 'Der Beleg ist zu gross (max. 12 MB).',
+                error: 'Die Bilder sind zusammen zu gross (max. 11 MB).',
                 code: 'DOCUMENT_TOO_LARGE',
             });
         }
-        const read = image
+        /* ── ZUERST ABSCHREIBEN, DANN ZUORDNEN ──────────────────────────
+           Vorgabe Samet (08.09.2026): «Es muss zuerst eine ORDENTLICHE
+           Umwandlung geben, und danach geht es an das Modell — nicht
+           direkt an das Modell.»
+
+           Eine Aufnahme wird darum in zwei Schritten gelesen:
+             1. `transcribeImage` — dasselbe sehende Modell schreibt die
+                Tabelle ab, Zeile fuer Zeile, Zellen mit Tabulator,
+                leere Zelle bleibt leer. Mehr tut es nicht.
+             2. Diese Abschrift geht als TEXT durch denselben Weg wie
+                eine Excel-Datei — mit der Kopfzeile davor, an der sich
+                die Zuordnung ausrichtet.
+
+           Der Gewinn ist nicht nur die Genauigkeit: die Zwischenstufe
+           ist LESBAR. Was das Modell gesehen hat, steht als Tabelle in
+           der Antwort (`transcript`) und laesst sich mit dem Blatt
+           vergleichen. Vorher war zwischen Aufnahme und fertiger
+           Bestellung nichts zu sehen. */
+        /* Each photo is transcribed independently, preserving page boundaries.
+           Only after that are the page texts assembled into ONE structured
+           extraction prompt, in capture order. */
+        const transcripts = images.length
+            ? await Promise.all(images.map((image) => (0, gptExtract_1.transcribeImage)(image)))
+            : [];
+        const transcriptText = transcripts.length
+            ? [
+                'The following sections are consecutive images of ONE document.',
+                'Each image was transcribed independently. Process every section in image order; do not merge neighbouring rows.',
+                ...transcripts.map((transcript, index) => [
+                    `=== IMAGE ${index + 1} OF ${transcripts.length} ===`,
+                    transcript.header ? `HEADER\t${transcript.header}` : 'HEADER\t',
+                    ...transcript.lines,
+                    `=== END IMAGE ${index + 1} ===`,
+                ].join('\n')),
+            ].join('\n')
+            : '';
+        if (transcripts.length && transcripts.every((transcript) => transcript.lines.length === 0)) {
+            return res.status(422).json({
+                error: 'Auf dem Beleg wurde keine Tabelle gefunden.',
+                code: 'GPT_NO_TABLE',
+            });
+        }
+        const read = images.length
             ? {
                 source: 'image',
                 engine: 'gpt-vision',
-                // Ein Bild hat keine Zeichen: die Textzähler der Antwort
-                // bleiben leer, statt eine erfundene Zahl zu tragen.
-                text: '', rawChars: 0, chars: 0, truncated: false,
+                text: transcriptText,
+                rawChars: transcriptText.length,
+                chars: transcriptText.length,
+                truncated: false,
             }
             : await (0, documentText_1.readDocumentText)({
                 data: req.body?.data,
@@ -334,24 +416,51 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
                 fileName: req.body?.fileName,
                 mimeType: req.body?.mimeType,
             });
-        /* ── Schritt 2: Beleg → Positionen ──────────────────────────────
-           Ein Text wird in Stücke geschnitten, ein Bild ist EIN Durchgang:
-           eine halbe Seite ans Modell zu schicken hiesse, die Tabelle
-           mitten in der Zeile zu zerteilen. */
-        const chunks = image ? [] : (0, documentText_1.chunkText)(read.text, CHUNK_CHARS);
+        /* ── Schritt 2: Tabelle → Positionen ────────────────────────────
+           Ab hier gibt es nur noch EINEN Weg: Text. Die Abschrift einer
+           Aufnahme wird genauso behandelt wie eine Excel-Tabelle, nur
+           dass sie in einem Stueck bleibt — eine halbe Tabelle ans
+           Modell zu schicken hiesse, sie mitten in der Zeile zu
+           zerteilen. */
+        const chunks = images.length ? [] : (0, documentText_1.chunkText)(read.text, CHUNK_CHARS);
         const used = chunks.slice(0, MAX_CHUNKS);
-        const passes = image
-            ? [{ text: '', image }]
+        const passes = images.length
+            ? [{ text: transcriptText }]
             : used.map((chunk) => ({ text: chunk }));
         const usage = emptyUsage();
+        /* Die erste Stufe kostet auch — sie gehoert in die Rechnung. */
+        if (transcripts.length) {
+            for (const transcript of transcripts) {
+                usage.promptTokens += transcript.usage.promptTokens;
+                usage.completionTokens += transcript.usage.completionTokens;
+                usage.totalTokens += transcript.usage.totalTokens;
+                if (usage.estimatedUsd !== null && transcript.usage.estimatedUsd !== null) {
+                    usage.estimatedUsd = Math.round((usage.estimatedUsd + transcript.usage.estimatedUsd) * 1e6) / 1e6;
+                }
+                else {
+                    usage.estimatedUsd = null;
+                }
+                usage.chunks += 1;
+            }
+        }
         const merged = [];
         const seen = new Set();
         let document = {
             supplierName: null, documentNumber: null, documentDate: null,
             currency: null, vatRate: null, totalNet: null,
         };
+        /* Was auf dem Weg hierher WEGFIEL. Frueher fiel es still weg;
+           jetzt steht die Zahl in der Antwort, damit die Oberflaeche
+           sagen kann, dass die Liste kuerzer ist als der Beleg. */
+        let dropped = 0;
         for (const pass of passes) {
-            const result = await (0, gptExtract_1.extractWithGpt)({ ...pass, columns, language, withTiers });
+            const result = await (0, gptExtract_1.extractWithGpt)({
+                ...pass,
+                columns,
+                language,
+                withTiers,
+                includeDocumentHeader,
+            });
             usage.promptTokens += result.usage.promptTokens;
             usage.completionTokens += result.usage.completionTokens;
             usage.totalTokens += result.usage.totalTokens;
@@ -376,10 +485,34 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
             for (const row of result.rows) {
                 if (!row || typeof row !== 'object')
                     continue;
-                // Eine Zeile, in der KEINE Spalte etwas trägt, ist keine Position.
-                const hasContent = columns.some((column) => String(row[column.key] ?? '').trim());
-                if (!hasContent)
+                /* ── EINE LEERE ZELLE IST KEINE LEERE ZEILE ──────────
+                   Fehlerbild Samet (08.09.2026): «Es koennen leere
+                   Zellen dabei sein oder Zeilen, die trotzdem mit
+                   muessen.»
+
+                   Hier stand die Pruefung ueber die SPALTEN allein: eine
+                   Zeile, deren Zellen das Modell nicht zuordnen konnte,
+                   fiel weg — und mit ihr rutschte alles darunter um eine
+                   Zeile herauf. Genau das Fehlerbild, das die Anzahl
+                   nicht mehr stimmen liess.
+
+                   Der Zeilenanker zaehlt jetzt mit. Er traegt die
+                   gedruckte Zeile im Wortlaut: steht er, gab es die
+                   Zeile, und sie bleibt — auch wenn keine einzige Spalte
+                   zugeordnet werden konnte. Weg faellt nur, was
+                   ueberhaupt nichts traegt. */
+                const cellValue = (key) => {
+                    const value = row[key];
+                    // 0 ist ein Wert. `String(0)` ist «0» und damit gefuellt;
+                    // null/undefined werden zur leeren Zeichenkette.
+                    return value === null || value === undefined ? '' : String(value).trim();
+                };
+                const hasContent = Boolean(cellValue(gptExtract_1.SOURCE_LINE_FIELD))
+                    || columns.some((column) => cellValue(column.key));
+                if (!hasContent) {
+                    dropped += 1;
                     continue;
+                }
                 /* Die zwei Zeilen Überlappung zwischen den Stücken (siehe
                    `chunkText`) dürfen keine Position verdoppeln — aber NUR
                    dort. Bei einem einzigen Durchgang gibt es keine
@@ -389,8 +522,10 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
                    genau das Fehlerbild, das hier abgestellt wird. */
                 if (passes.length > 1) {
                     const key = rowKey(row, columns);
-                    if (seen.has(key))
+                    if (seen.has(key)) {
+                        dropped += 1;
                         continue;
+                    }
                     seen.add(key);
                 }
                 merged.push(row);
@@ -404,6 +539,37 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
             columns: columns.map((column) => column.key),
             document,
             rows: merged,
+            /* ── DIE ABRECHNUNG DER ZEILEN ──────────────────────────
+               Die Zahl wird nicht mehr angesagt und nicht mehr
+               geschaetzt, sie wird GEZAEHLT: die Abschrift hat so viele
+               Zeilen, wie sie hat, und dagegen steht, was die Zuordnung
+               daraus gemacht hat. Stimmen die beiden nicht ueberein,
+               ist unterwegs etwas verloren gegangen — und das steht dann
+               auf dem Bildschirm.
+
+               `table` bleibt null, wo es keine Abschrift gibt (Excel und
+               PDF kommen schon als Text und tragen Kopfzeilen, Summen
+               und Anschriften mit — deren Zeilen zu zaehlen ergaebe eine
+               Zahl, die nichts bedeutet). */
+            rowCount: {
+                returned: merged.length,
+                table: transcripts.length
+                    ? transcripts.reduce((sum, transcript) => sum + transcript.lines.length, 0)
+                    : null,
+                dropped,
+            },
+            /* DIE ORDENTLICHE UMWANDLUNG, zum Nachsehen. */
+            transcript: transcripts.length
+                ? {
+                    header: transcripts[0]?.header ?? null,
+                    lines: transcripts.flatMap((transcript) => transcript.lines),
+                    pages: transcripts.map((transcript, index) => ({
+                        index: index + 1,
+                        header: transcript.header,
+                        lines: transcript.lines,
+                    })),
+                }
+                : null,
             usage,
             text: {
                 rawChars: read.rawChars,

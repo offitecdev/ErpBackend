@@ -8,6 +8,8 @@ const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const serviceTenantScope_1 = require("./serviceTenantScope");
+const publicToken_1 = require("../utils/publicToken");
+const AuthErrors_1 = require("../../application/errors/AuthErrors");
 const smtp = new SmtpMailService_1.SmtpMailService();
 const startOfDay = (date) => {
     const d = new Date(date);
@@ -637,7 +639,7 @@ class MaintenanceController {
             const customerEmail = task.contract?.customer?.mainEmail || "";
             const to = String(req.body.to || customerEmail || "").trim();
             const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user.email || "").trim();
-            const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";
+            const fromName = req.body.fromName || settings?.fromName || "Offitec Control Center";
             const subject = String(req.body.subject || `${task.contract?.contractCode || ""} Bakim randevusu`).trim();
             const message = String(req.body.message || "Lutfen size uygun bakim randevusunu secin.").trim();
             if (!to)
@@ -683,9 +685,10 @@ class MaintenanceController {
     }
     async getPublicAppointmentOptions(req, res) {
         try {
-            const token = String(req.params.token || "");
+            // Schlüssel aus dem Kopf `X-Public-Token` (Pfad nur als Rückfallweg).
+            const token = (0, publicToken_1.readPublicToken)(req);
             const task = await this.maintenanceRepo.getTaskByBookingToken(token);
-            if (!task) {
+            if (!task || (0, publicToken_1.isBookingLinkExpired)(task.plannedDate)) {
                 res.status(404).json({ error: "Randevu linki bulunamadi." });
                 return;
             }
@@ -712,19 +715,21 @@ class MaintenanceController {
             });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            // Unangemeldet erreichbar — kein roher Fehlertext nach draussen.
+            res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'maintenance.getPublicAppointmentOptions') });
         }
     }
     async confirmPublicAppointment(req, res) {
         try {
-            const token = String(req.params.token || "");
+            // Schlüssel aus dem Kopf `X-Public-Token` (Pfad nur als Rückfallweg).
+            const token = (0, publicToken_1.readPublicToken)(req);
             const optionId = String(req.body.optionId || "");
             if (!token || !optionId) {
                 res.status(400).json({ error: "Token ve randevu secimi zorunludur." });
                 return;
             }
             const task = await this.maintenanceRepo.getTaskByBookingToken(token);
-            if (!task) {
+            if (!task || (0, publicToken_1.isBookingLinkExpired)(task.plannedDate)) {
                 res.status(404).json({ error: "Randevu linki bulunamadi." });
                 return;
             }
@@ -763,18 +768,19 @@ class MaintenanceController {
             res.status(200).json({ message: "Randevunuz onaylandi.", task: updated });
         }
         catch (error) {
-            res.status(409).json({ error: error.message });
+            res.status(409).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'maintenance.confirmPublicAppointment') });
         }
     }
     async disapprovePublicAppointment(req, res) {
         try {
-            const token = String(req.params.token || "");
+            // Schlüssel aus dem Kopf `X-Public-Token` (Pfad nur als Rückfallweg).
+            const token = (0, publicToken_1.readPublicToken)(req);
             if (!token) {
                 res.status(400).json({ error: "Randevu linki zorunludur." });
                 return;
             }
             const task = await this.maintenanceRepo.getTaskByBookingToken(token);
-            if (!task) {
+            if (!task || (0, publicToken_1.isBookingLinkExpired)(task.plannedDate)) {
                 res.status(404).json({ error: "Randevu linki bulunamadi." });
                 return;
             }
@@ -797,7 +803,7 @@ class MaintenanceController {
             });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'maintenance.disapprovePublicAppointment') });
         }
     }
     async approveAppointmentOption(req, res) {
@@ -932,7 +938,7 @@ class MaintenanceController {
                 const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(reportTenantId) } });
                 const to = String(req.body.to || report.task?.contract?.customer?.mainEmail || "").trim();
                 const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user.email || "").trim();
-                const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";
+                const fromName = req.body.fromName || settings?.fromName || "Offitec Control Center";
                 const subject = String(req.body.subject || `${report.task?.contract?.contractCode || "Bakim"} - bakim raporu imzasi`).trim();
                 const message = String(req.body.message || "Bakim raporunuz imza icin hazir. Lutfen Offitec ekibiyle birlikte raporu kontrol edip imzalayin.").trim();
                 if (!to) {

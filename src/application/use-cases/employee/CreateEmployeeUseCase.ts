@@ -2,6 +2,7 @@ import { IEmployeeRepository } from "../../../domain/repositories/IEmployeeRepos
 import { ICryptoService } from "../../interfaces/ICryptoService";
 import { Employee } from "../../../domain/entities/Employee";
 import { assertPasswordPolicy } from "../../validation/password";
+import { PublicError } from "../../errors/AuthErrors";
 
 export class CreateEmployeeUseCase {
     constructor(
@@ -10,21 +11,21 @@ export class CreateEmployeeUseCase {
      )  {}
     
      async execute(data: any): Promise<Employee> {
-        if (!data.tenantId) throw new Error("Tenant ID gereklidir.");
-        if (!data.firstName) throw new Error("Ad alanı gereklidir.");
-        if (!data.lastName) throw new Error("Soyad alanı gereklidir.");
-        if (!data.email) throw new Error("E-posta alanı gereklidir.");
-        if (!data.password) throw new Error("Şifre alanı gereklidir.");
+        if (!data.tenantId) throw new PublicError("Tenant ID gereklidir.");
+        if (!data.firstName) throw new PublicError("Ad alanı gereklidir.");
+        if (!data.lastName) throw new PublicError("Soyad alanı gereklidir.");
+        if (!data.email) throw new PublicError("E-posta alanı gereklidir.");
+        if (!data.password) throw new PublicError("Şifre alanı gereklidir.");
         assertPasswordPolicy(data.password);
 
         const existing = await this.employeeRepository.findByEmail(data.email);
         // Banned accounts keep their row forever, so a banned e-mail can never
         // re-register (soft-deleted rows also keep the address occupied).
         if (existing?.bannedAt) {
-            throw new Error("Bu e-posta adresi engellenmiş; bu adresle kayıt yapılamaz.");
+            throw new PublicError("Bu e-posta adresi engellenmiş; bu adresle kayıt yapılamaz.");
         }
         if (existing) {
-            throw new Error("Bu e-posta adresi zaten kullanımda.");
+            throw new PublicError("Bu e-posta adresi zaten kullanımda.");
         }
 
         const hashedPassword = await this.cryptoService.hashPassword(data.password);

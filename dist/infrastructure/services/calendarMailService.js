@@ -122,7 +122,7 @@ const sendInvite = async (context) => {
         return { sent: false, reason: "NO_RECIPIENT" };
     }
     /* ABSENDERNAME (19.08.2026, Vorgabe Samet: "statt des Namens soll dort
-       Offitec Verwaltungspanel stehen, in der Sprache der Nachricht").
+       Offitec Control Center stehen, in der Sprache der Nachricht").
        Im Postfach steht bei diesen Karten das SYSTEM, nicht eine Person:
        in den Mail-Einstellungen ist ein Menschenname hinterlegt, gemeint
        ist aber das Programm, das die Karte verschickt. Es ist derselbe

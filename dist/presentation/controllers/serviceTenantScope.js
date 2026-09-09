@@ -14,6 +14,10 @@ const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const tenantAccess_1 = require("../utils/tenantAccess");
 const tenantTree_1 = require("../../shared/tenantTree");
+const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
+/** Nur für `getAssignableTenantIds`: die Administratorrolle des Zuteilenden.
+    Liest aus demselben zwischengespeicherten Eintrag wie die Rechteprüfung. */
+const roleRepositoryForAssignment = new RoleRepository_1.RoleRepository();
 // Tenant tablosu artık istek başına değil, paylaşılan önbellekten okunuyor —
 // aşağıdaki iki yardımcı her CRM/servis isteğinde çağrıldığı için bu tek başına
 // istek başına ~170 ms'lik bir ağ turunu kaldırıyor.
@@ -158,17 +162,57 @@ exports.isTenantInServiceTenantScope = isTenantInServiceTenantScope;
  *    Anwendung steht und dieselbe Verwaltung sie führt.
  *
  * Die Grenze ist damit nicht mehr die Form des Baums, sondern die AUSDRÜCKLICHE
- * Zuteilung: sichtbar wird eine Firma erst, wenn sie hier angehakt wurde. Wer
- * die Zugangsfläche überhaupt öffnen darf, entscheidet weiterhin
- * `requirePermission('roles.manage')` — das trägt nur die Administratorrolle.
+ * Zuteilung: sichtbar wird eine Firma erst, wenn sie hier angehakt wurde.
  *
- * Die beiden Argumente bleiben in der Signatur: jede Aufrufstelle nennt damit
- * weiterhin, WER zuteilt, und eine spätere Einschränkung (etwa «nur die eigene
- * Gruppe, ausser der Stamm») braucht keine Umbauten an den Aufrufen.
+ * ── WER SO WEIT ZUTEILEN DARF (Sicherheitskorrektur) ────────────────────────
+ * Der Absatz oben stand unter einer Annahme, die die Daten nicht hergeben:
+ * «`roles.manage` trägt nur die Administratorrolle». Tatsächlich lässt sich
+ * das Recht jeder selbstgebauten Rolle anhaken — und damit konnte die
+ * Verwaltung EINER Firmengruppe einer beliebigen Person (auch sich selbst)
+ * eine Firma der ZWEITEN Gruppe anhaken. `resolveTenantId` bedient einen
+ * ausdrücklich angehakten Mandanten ohne weitere Prüfung, also war das der
+ * volle Zugriff auf die Daten einer fremden Gruppe.
+ *
+ * Die Vorgabe bleibt, sie wird nur an die Person gebunden, die zuteilt:
+ *
+ *  • Die feste Administratorrolle (`Role.isSystemAdmin`) führt die ganze
+ *    Anwendung — sie teilt weiterhin JEDE aktive Firma zu, quer über die
+ *    Gruppen. Genau das war am 31.08.2026 gemeint («dieselbe Verwaltung
+ *    führt sie»).
+ *  • Jede andere Rolle mit `roles.manage` teilt nur zu, was sie SELBST
+ *    erreicht: den eigenen Firmenbaum (Heimatfirma und ausgewählte Firma,
+ *    jeweils Wurzel samt Töchtern). Eine Untergesellschaft bekommt damit
+ *    weiterhin ihre ganze Gruppe angeboten — der erste Missstand oben bleibt
+ *    behoben —, eine fremde Gruppe aber nie.
+ *
+ * Ohne `employeeId` (Altaufrufe) gilt die engere Regel; eine Zuteilung darf
+ * nicht daran weit werden, dass eine Aufrufstelle den Zuteilenden vergisst.
  */
-async function getAssignableTenantIds(_selectedTenantId, _homeTenantId) {
+async function getAssignableTenantIds(selectedTenantId, homeTenantId, employeeId) {
     const tenants = await (0, tenantTree_1.getAllTenants)();
-    return tenants.filter((tenant) => tenant.isActive).map((tenant) => tenant.id);
+    const active = tenants.filter((tenant) => tenant.isActive);
+    // Die feste Administratorrolle: ganze Anwendung (Vorgabe 31.08.2026).
+    if (employeeId && (await roleRepositoryForAssignment.getEmployeeRoleInfo(employeeId)).isSystemAdmin) {
+        return active.map((tenant) => tenant.id);
+    }
+    // Alle anderen: nur der eigene Baum. Heimat- UND ausgewählte Firma, damit
+    // eine zugeteilte zweite Gruppe weiterhin von innen verwaltet werden kann.
+    const roots = new Set();
+    for (const tenantId of [homeTenantId, selectedTenantId]) {
+        if (!tenantId)
+            continue;
+        const rootId = await (0, tenantTree_1.findTenantRootIdCached)(tenantId);
+        if (rootId)
+            roots.add(rootId);
+    }
+    if (!roots.size)
+        return [];
+    const reachable = new Set();
+    for (const rootId of roots) {
+        for (const tenantId of (0, tenantTree_1.collectDescendantIds)(active, rootId))
+            reachable.add(tenantId);
+    }
+    return active.filter((tenant) => reachable.has(tenant.id)).map((tenant) => tenant.id);
 }
 /** Prisma-Bedingung. Zum Hineinstreuen: `where: { id, ...employeeScopeWhere(ids), deletedAt: null }`. */
 const employeeScopeWhere = (tenantIds) => ({

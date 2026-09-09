@@ -7,11 +7,15 @@ import { RefreshTokenUseCase } from "../../application/use-cases/auth/RefreshTok
 import { RequestAccountActivationUseCase, ActivateAccountUseCase } from "../../application/use-cases/auth/AccountActivationUseCases";
 import { RequestPasswordResetUseCase, ResetPasswordUseCase } from "../../application/use-cases/auth/PasswordResetUseCases";
 import { RequestAccountDeletionUseCase, ConfirmAccountDeletionUseCase } from "../../application/use-cases/auth/AccountDeletionUseCases";
-import { setAuthCookies, clearAuthCookies, REFRESH_COOKIE } from "../utils/authCookies";
+import { VerifyMfaCodeUseCase, MfaError } from "../../application/use-cases/auth/MfaUseCases";
+import { setAuthCookies, clearAuthCookies, setMfaCookie, clearMfaCookie, REFRESH_COOKIE, MFA_COOKIE } from "../utils/authCookies";
 import { auditLog } from "../../infrastructure/services/AuditLogService";
 import prisma from "../../infrastructure/database/prisma.client";
 import { Prisma } from "@prisma/client";
 import { RoleRepository } from "../../infrastructure/repositories/RoleRepository";
+import { jwtTokenService } from "../../infrastructure/services/JwtTokenService";
+import { revokeRefreshFamily } from "../../infrastructure/services/RefreshSessionService";
+import { TooManyAttemptsError, toPublicMessage } from "../../application/errors/AuthErrors";
 
 /** Seitenstufen hängen an derselben Rollenzeile wie die Rechte; der Zugriff
     läuft über dieselbe zwischenspeichernde Ablage (siehe RoleRepository). */
@@ -30,12 +34,20 @@ export class AuthController {
         private requestAccountDeletionUseCase: RequestAccountDeletionUseCase,
         private confirmAccountDeletionUseCase: ConfirmAccountDeletionUseCase,
         private qrLoginUseCase: QrLoginUseCase,
+        private verifyMfaCodeUseCase: VerifyMfaCodeUseCase,
     ){}
+
+    /** Woher die Anmeldung kam — steht in der Sitzungszeile, damit man eine
+        fremde Sitzung an Adresse und Browser erkennt. */
+    private sessionContext(req: Request) {
+        const context = auditLog.context(req);
+        return { ipAddress: context.ipAddress, userAgent: context.userAgent };
+    }
 
     /** Anmeldung mit dem Personal-QR-Code (siehe QrLoginUseCase). */
     async qrLogin(req:Request , res:Response){
         try{
-            const result = await this.qrLoginUseCase.execute(String(req.body?.token ?? ''));
+            const result = await this.qrLoginUseCase.execute(String(req.body?.token ?? ''), this.sessionContext(req));
             setAuthCookies(res, { accessToken: result.accessToken, refreshToken: result.refreshToken });
             auditLog.log({
                 action: 'auth.qrLogin.success',
@@ -49,17 +61,87 @@ export class AuthController {
         }catch(error:any){
             // Der Code selbst wird NICHT protokolliert — er ist ein Geheimnis.
             auditLog.log({ action: 'auth.qrLogin.failed', ...auditLog.context(req) });
-            res.status(400).json({error:error.message});
+            res.status(400).json({ error: toPublicMessage(error, 'auth.qrLogin') });
         }
     }
 
+    /**
+     * ERSTE HÄLFTE der Anmeldung: E-Mail und Kennwort.
+     *
+     * Die Antwort ist bewusst KEINE Sitzung mehr, sondern die Aufforderung zum
+     * zweiten Faktor (siehe MfaUseCases). Das Zwischentoken geht als HttpOnly-
+     * Keks hinaus — im Körper steht nur, WAS die Oberfläche jetzt zeigen soll:
+     * das Codefeld, und bei der ersten Anmeldung zusätzlich das QR-Bild zum
+     * Einrichten.
+     */
     async login(req:Request , res:Response){
         const {email,password} = req.body;
         try{
-            const result = await this.loginUseCase.execute(email,password);
-            // Tokens travel only as HttpOnly cookies — never in the JSON body,
-            // so XSS can't exfiltrate them.
+            const challenge = await this.loginUseCase.execute(email,password,this.sessionContext(req));
+            setMfaCookie(res, challenge.challengeToken);
+            auditLog.log({
+                action: challenge.stage === 'enroll' ? 'auth.login.password_ok.enroll' : 'auth.login.password_ok',
+                metadata: { email: String(email || '') },
+                ...auditLog.context(req),
+            });
+            // Das Zwischentoken selbst bleibt im Keks — hier steht nur, was auf
+            // den Bildschirm gehört. Bei `enroll` gehört das vorgeschlagene
+            // Geheimnis ausdrücklich dazu: es soll ja gescannt werden.
+            res.status(200).json({
+                mfaRequired: true,
+                stage: challenge.stage,
+                issuer: challenge.issuer,
+                account: challenge.account,
+                digits: challenge.digits,
+                periodSeconds: challenge.periodSeconds,
+                setup: challenge.setup,
+            });
+        }catch(error:any){
+            // Ein misslungener Anlauf darf keinen alten Zwischenkeks stehen
+            // lassen — sonst hinge an der Anmeldeseite die halbe Anmeldung von
+            // vorhin.
+            clearMfaCookie(res);
+            auditLog.log({
+                action: 'auth.login.failed',
+                metadata: { email: String(email || '') },
+                ...auditLog.context(req),
+            });
+            // Kontosperre (loginThrottle) ist kein Anmeldefehler, sondern ein
+            // "zu viel" — eigener Statuscode, damit die Oberfläche es als
+            // Wartezeit zeigen kann und nicht als falsches Kennwort.
+            if (error instanceof TooManyAttemptsError) {
+                res.setHeader('Retry-After', String(error.retryAfterSeconds));
+                return res.status(429).json({ error: error.message });
+            }
+            res.status(400).json({ error: toPublicMessage(error, 'auth.login') });
+        }
+    }
+
+    /**
+     * ZWEITE HÄLFTE der Anmeldung: der sechsstellige Code aus der
+     * Authenticator-App. Stimmt er, entstehen hier die Sitzungskeks — vorher
+     * gibt es keine Sitzung.
+     */
+    async verifyMfa(req:Request , res:Response){
+        const challengeToken = String(req.cookies?.[MFA_COOKIE] || '');
+        try{
+            const result = await this.verifyMfaCodeUseCase.execute(
+                challengeToken,
+                String(req.body?.code ?? ''),
+                this.sessionContext(req),
+            );
+            // setAuthCookies räumt den Zwischenkeks selbst weg.
             setAuthCookies(res, { accessToken: result.accessToken, refreshToken: result.refreshToken });
+            if (result.enrolled) {
+                auditLog.log({
+                    action: 'auth.mfa.enrolled',
+                    tenantId: result.employee.tenantId,
+                    employeeId: result.employee.id,
+                    entityType: 'Employee',
+                    entityId: result.employee.id,
+                    ...auditLog.context(req),
+                });
+            }
             auditLog.log({
                 action: 'auth.login.success',
                 tenantId: result.employee.tenantId,
@@ -68,14 +150,27 @@ export class AuthController {
                 entityId: result.employee.id,
                 ...auditLog.context(req),
             });
-            res.status(200).json({ employee: result.employee });
+            res.status(200).json({ employee: result.employee, enrolled: result.enrolled });
         }catch(error:any){
-            auditLog.log({
-                action: 'auth.login.failed',
-                metadata: { email: String(email || '') },
-                ...auditLog.context(req),
+            // Der eingegebene Code wird NICHT protokolliert — er ist eine
+            // Zugangsangabe, wie das Kennwort und der QR-Schlüssel.
+            auditLog.log({ action: 'auth.mfa.failed', ...auditLog.context(req) });
+
+            if (error instanceof TooManyAttemptsError) {
+                res.setHeader('Retry-After', String(error.retryAfterSeconds));
+                return res.status(429).json({ error: error.message, code: 'mfa_too_many_attempts' });
+            }
+            /* Ein falscher Code lässt die halbe Anmeldung STEHEN (man tippt sich
+               vertippt), alles andere — abgelaufen, Konto gesperrt, Kennwort
+               gewechselt — fängt von vorne an. Der Keks fällt entsprechend. */
+            const code = error instanceof MfaError ? error.code : undefined;
+            const retryable = code === 'mfa_code_invalid' || code === 'mfa_code_reused';
+            if (!retryable) clearMfaCookie(res);
+
+            res.status(retryable ? 400 : 401).json({
+                error: toPublicMessage(error, 'auth.mfa.verify', 'Oturum geçersiz. Lütfen tekrar giriş yapın.'),
+                code: code ?? 'mfa_challenge_expired',
             });
-            res.status(400).json({error:error.message});
         }
     }
 
@@ -86,18 +181,39 @@ export class AuthController {
                 clearAuthCookies(res);
                 return res.status(401).json({ error: 'Oturum bulunamadı. Lütfen giriş yapın.' });
             }
-            const result = await this.refreshTokenUseCase.execute(refreshToken);
+            const result = await this.refreshTokenUseCase.execute(refreshToken, this.sessionContext(req));
             setAuthCookies(res, { accessToken: result.accessToken, refreshToken: result.refreshToken });
             res.status(200).json({ message: 'Token yenilendi.' });
         }catch(error:any){
             // Invalid session → the server clears the cookies itself.
             clearAuthCookies(res);
-            res.status(401).json({error:error.message});
+            res.status(401).json({ error: toPublicMessage(error, 'auth.refresh', 'Oturum geçersiz. Lütfen tekrar giriş yapın.') });
         }
     }
 
+    /**
+     * Abmelden beendet die Anmeldung WIRKLICH.
+     *
+     * Vorher wurden nur die Keks gelöscht — das Erneuerungstoken blieb bis zu
+     * 30 Tage gültig, und wer es in der Hand hatte, war nach dem "Abmelden"
+     * unverändert angemeldet. Jetzt fällt die ganze Familie (alle Zeilen dieser
+     * Anmeldung, siehe RefreshSessionService).
+     *
+     * Ein unlesbares oder abgelaufenes Token ist kein Fehler: die Keks werden
+     * in jedem Fall gelöscht und die Antwort bleibt 200 — Abmelden darf nie
+     * scheitern.
+     */
     async logout(req:Request , res:Response){
-        // Stateless JWTs: logout = the server clearing its HttpOnly cookies.
+        const refreshToken = String(req.cookies?.[REFRESH_COOKIE] || '');
+        if (refreshToken) {
+            try {
+                const decoded = jwtTokenService.verifyToken('refresh', refreshToken);
+                if (decoded.sid) await revokeRefreshFamily(decoded.sid, 'logout');
+            } catch {
+                // Nicht mehr lesbar (abgelaufen, alt, verfälscht): dann gibt es
+                // auch nichts zu entwerten.
+            }
+        }
         clearAuthCookies(res);
         auditLog.log({ action: 'auth.logout', ...auditLog.context(req) });
         res.status(200).json({ message: 'Çıkış yapıldı.' });
@@ -123,7 +239,7 @@ export class AuthController {
             auditLog.log({ action: 'auth.activation.confirm', ...auditLog.context(req) });
             res.status(200).json({ message: 'Hesabınız etkinleştirildi. Giriş yapabilirsiniz.' });
         }catch(error:any){
-            res.status(400).json({error:error.message});
+            res.status(400).json({ error: toPublicMessage(error, 'auth.activation.confirm') });
         }
     }
 
@@ -148,7 +264,7 @@ export class AuthController {
             auditLog.log({ action: 'auth.password_reset.confirm', ...auditLog.context(req) });
             res.status(200).json({ message: 'Parolanız güncellendi. Yeni parolanızla giriş yapabilirsiniz.' });
         }catch(error:any){
-            res.status(400).json({error:error.message});
+            res.status(400).json({ error: toPublicMessage(error, 'auth.password_reset.confirm') });
         }
     }
 
@@ -167,7 +283,7 @@ export class AuthController {
             });
             res.status(200).json({ message: 'Hesap silme onay bağlantısı e-posta adresinize gönderildi.' });
         }catch(error:any){
-            res.status(400).json({error:error.message});
+            res.status(400).json({ error: toPublicMessage(error, 'auth.account_deletion.request') });
         }
     }
 
@@ -180,7 +296,7 @@ export class AuthController {
             auditLog.log({ action: 'auth.account_deletion.confirm', ...auditLog.context(req) });
             res.status(200).json({ message: 'Hesabınız silindi.' });
         }catch(error:any){
-            res.status(400).json({error:error.message});
+            res.status(400).json({ error: toPublicMessage(error, 'auth.account_deletion.confirm') });
         }
     }
 
@@ -209,7 +325,7 @@ export class AuthController {
                 isSystemAdmin: roleInfo.isSystemAdmin,
             });
         }catch(error:any){
-            res.status(500).json({error: error.message});
+            res.status(500).json({ error: toPublicMessage(error, 'auth.permissions') });
         }
     }
 
@@ -304,7 +420,7 @@ export class AuthController {
             });
 
         }catch(error : any){
-            res.status(500).json({error: error.message});
+            res.status(500).json({ error: toPublicMessage(error, 'auth.me') });
         }
 }
 }

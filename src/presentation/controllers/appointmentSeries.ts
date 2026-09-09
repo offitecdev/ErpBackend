@@ -62,8 +62,11 @@ const fail = (message: string, status = 400, extra?: Record<string, unknown>) =>
  * (ProjectController.createAppointment).
  *
  * NICHT dabei ist ein bereits ABGESCHLOSSENER Tag: an ihm hängen Rapport,
- * Spesen und Material einer geleisteten Arbeit. Er bleibt eine Absage ohne
- * Ausweg — wer ihn wirklich streichen will, tut das ausdrücklich.
+ * Spesen und Material einer geleisteten Arbeit. Er weicht keinem neuen Termin
+ * — er steht seit dem 03.09.2026 aber auch keinem mehr im Weg (siehe
+ * `assertDaysAvailable`), taucht also gar nicht mehr unter den Blockierern auf.
+ * Der Filter bleibt als Riegel stehen: was hier durchkäme, dürfte gelöscht
+ * werden, und geleistete Arbeit darf das nie.
  *
  * Und nicht dabei ist der TECHNIKERKONFLIKT: die Zeile, die dort im Weg steht,
  * gehört einem anderen Auftrag. Sie wegzuräumen, weil hier jemand denselben
@@ -214,14 +217,35 @@ export const assertDaysAvailable = async (input: {
     const blockerSelect = { id: true, startTime: true, endTime: true, status: true } as const;
 
     const [customerHits, projectHits, technicianHits] = await Promise.all([
-        // Ein Kunde bekommt je Kalendertag EINEN Einsatztermin — dieselbe Regel
-        // wie beim einzelnen Termin, nur für alle gewählten Tage zugleich.
+        /* Ein Kunde bekommt je Kalendertag EINEN GEPLANTEN Einsatztermin —
+           dieselbe Regel wie beim einzelnen Termin, nur für alle gewählten Tage
+           zugleich.
+
+           NUR NOCH `BOOKED` (03.09.2026, Vorgabe Samet: «neben einem
+           abgeschlossenen Termin soll man einen weiteren anlegen können»).
+           Vorher zählte ein ABGESCHLOSSENER Tag mit — und das war eine Sackgasse:
+           die Regel wehrte ab, der Knopf «löschen und speichern» durfte einen
+           abgeschlossenen Tag aber nicht wegräumen (`replaceableRows`), also
+           blieb dem Benutzer gar nichts. Sachlich war die Sperre auch falsch:
+           die Regel soll die PLANUNG ordnen, nicht geleistete Arbeit. Ist der
+           Vormittag abgearbeitet und muss am Nachmittag nachgebessert werden,
+           ist das ein zweiter Einsatz und kein Doppeleintrag. Dieselbe
+           Unterscheidung trifft die Technikerplanung längst
+           (findTechnicianScheduleConflict: nur `BOOKED` bindet den Monteur).
+
+           Und ein VERGANGENER Tag ist ein abgeschlossener — der Tag
+           entscheidet (shared/appointmentDay.ts): beim Anlegen sofort, für
+           den Bestand um Mitternacht (MaintenanceReminderService,
+           runAutoFinishInstallationPass). Diese Regel muss also nicht selbst
+           auf die Uhr schauen — der Status ist die einzige Quelle, hier wie
+           in ProjectController. Ein für gestern NACHGETRAGENER Termin kommt
+           deshalb schon als abgeschlossener an und sperrt nichts. */
         input.customerId
             ? (prisma as any).appointment.findMany({
                 where: {
                     customerId: input.customerId,
                     projectId: { not: null },
-                    status: { in: ["BOOKED", "COMPLETED"] },
+                    status: "BOOKED",
                     ...notSelf,
                     OR: dayWindows.map((window) => ({ startTime: window })),
                 },
@@ -229,10 +253,15 @@ export const assertDaysAvailable = async (input: {
                 select: blockerSelect,
             })
             : Promise.resolve([]),
-        // Derselbe Auftrag darf sich nicht selbst überlappen.
+        /* Derselbe Auftrag darf sich nicht selbst überlappen — ausser mit einem
+           bereits ABGESCHLOSSENEN Tag (03.09.2026). Sonst wäre die Lockerung
+           oben wirkungslos: der abgeschlossene Vormittag hätte den neuen Termin
+           gleich in der nächsten Frage wieder abgewiesen, und wieder ohne
+           Ausweg. Was vergangen ist, belegt keine Zeit mehr. */
         (prisma as any).appointment.findMany({
             where: {
                 projectId: input.projectId,
+                status: { not: "COMPLETED" },
                 ...(input.salesOrderId !== undefined ? { salesOrderId: input.salesOrderId } : {}),
                 ...notSelf,
                 OR: input.days.map((day) => ({

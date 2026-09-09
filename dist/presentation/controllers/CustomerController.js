@@ -97,6 +97,10 @@ class CustomerController {
                 filter.vatNumber = req.query.vatNumber;
             if (req.query.email)
                 filter.email = req.query.email;
+            if (req.query.phone)
+                filter.phone = req.query.phone;
+            if (req.query.contact)
+                filter.contact = req.query.contact;
             if (req.query.sortBy === 'companyName' || req.query.sortBy === 'vatNumber' || req.query.sortBy === 'status')
                 filter.sortBy = req.query.sortBy;
             if (req.query.sortDirection)

@@ -85,7 +85,7 @@ export class CustomerController {
         try {
             const filter: {
                 tenantId: string; isActive?: boolean; segment?: string; status?: string; search?: string;
-                companyName?: string; vatNumber?: string; email?: string;
+                companyName?: string; vatNumber?: string; email?: string; phone?: string; contact?: string;
                 sortBy?: 'companyName' | 'vatNumber' | 'status'; sortDirection?: 'asc' | 'desc';
                 page?: number; pageSize?: number; fields?: 'list' | 'full';
             } = {
@@ -99,6 +99,8 @@ export class CustomerController {
             if (req.query.companyName) filter.companyName = req.query.companyName as string;
             if (req.query.vatNumber) filter.vatNumber = req.query.vatNumber as string;
             if (req.query.email) filter.email = req.query.email as string;
+            if (req.query.phone) filter.phone = req.query.phone as string;
+            if (req.query.contact) filter.contact = req.query.contact as string;
             if (req.query.sortBy === 'companyName' || req.query.sortBy === 'vatNumber' || req.query.sortBy === 'status') filter.sortBy = req.query.sortBy;
             if (req.query.sortDirection) filter.sortDirection = req.query.sortDirection === 'asc' ? 'asc' : 'desc';
             if (req.query.page) filter.page = Math.max(1, Number(req.query.page) || 1);

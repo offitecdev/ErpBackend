@@ -3,12 +3,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.armedWebhookKeys = exports.invalidateOspWebhookKeys = void 0;
 const express_1 = require("express");
 const crypto_1 = __importDefault(require("crypto"));
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const RateLimitMiddleware_1 = require("../middlewares/RateLimitMiddleware");
 const tenantTree_1 = require("../../shared/tenantTree");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 const documentNumber_1 = require("../../shared/documentNumber");
@@ -132,18 +134,40 @@ const salesmanProfileOf = (employee) => ({
  */
 const storeUnitDatasheet = async (setting, unitId, url, 
 // Die Angaben, die §1 zu DIESER Lieferung selbst mitgeschickt hat. Sie
-// gelten vor dem, was im PDF steht (dieselbe Momentaufnahme, aber ohne
-// Umweg über den Fliesstext); das PDF füllt nur noch auf, was der Vertrag
-// nicht kennt — vor allem das Medium.
+// gelten vor dem, was im Blatt steht (dieselbe Momentaufnahme, aber ohne
+// Umweg über das Auslesen); das Blatt füllt nur noch auf, was der Vertrag
+// nicht kennt — Medium, Modell, Kategorie, Listenpreis.
 webhookSpecs) => {
     if (!setting)
-        return;
+        return { ok: false, error: 'OSP ist noch nicht konfiguriert.' };
     const previous = await prisma_client_1.default.ospUnit.findUnique({
         where: { id: unitId },
-        select: { datasheetFile: true, datasheetSpecs: true },
+        select: {
+            datasheetFile: true, datasheetSpecs: true, ospDocumentId: true,
+            markdownUrl: true, unitName: true, unitModel: true,
+            request: { select: { reference: true } },
+        },
     }).catch(() => null);
-    const result = await (0, ospDatasheet_1.fetchOspDatasheet)(setting, setting.tenantId, url);
-    const specs = (0, ospDatasheet_1.mergeSpecs)((0, ospDatasheet_1.mergeSpecs)(previous?.datasheetSpecs, result.specs), webhookSpecs);
+    const result = await (0, ospDatasheet_1.fetchOspDatasheet)(setting, setting.tenantId, url, {
+        projectNumber: previous?.request?.reference ?? null,
+        documentId: previous?.ospDocumentId ?? null,
+    });
+    /* Liefert die OSP eine MARKDOWN-Fassung, ist SIE die Quelle der Angaben:
+       dort steht das Blatt bereits gegliedert. Heute gibt es keine — dann
+       bleibt die Fassung, die beim Auslesen des PDF entstanden ist. */
+    const declaredMarkdown = previous?.markdownUrl || null;
+    const remote = declaredMarkdown ? await (0, ospDatasheet_1.fetchOspMarkdown)(setting, declaredMarkdown) : null;
+    /* EIN GELUNGENES LESEN ERSETZT, ES ERGÄNZT NICHT.
+       Die alten Angaben stammen aus dem Suchmuster-Lesen von früher und sind
+       teilweise FALSCH — an einem Chiller stand ein COP, der in Wahrheit der
+       EER war. Legte man die neue, saubere Lesung darüber, bliebe der falsche
+       Wert stehen, weil die neue ihn gar nicht nennt. Also gilt: hat das Blatt
+       sich lesen lassen, ist SEINE Lesung der Stand; das Frühere bleibt nur,
+       wenn diesmal nichts zu lesen war. */
+    const fresh = result.specs && Object.keys(result.specs).length ? result.specs : null;
+    const base = fresh ?? previous?.datasheetSpecs;
+    const specs = (0, ospDatasheet_1.mergeSpecs)((0, ospDatasheet_1.mergeSpecs)(base, remote?.ok ? remote.specs : null), webhookSpecs);
+    const markdown = (remote?.ok ? remote.markdown : null) || result.markdown || null;
     await prisma_client_1.default.ospUnit.update({
         where: { id: unitId },
         data: result.ok
@@ -151,6 +175,14 @@ webhookSpecs) => {
                 datasheetFile: result.file ?? null,
                 datasheetSpecs: (Object.keys(specs).length ? specs : null),
                 datasheetFetchedAt: new Date(),
+                ...(markdown ? { datasheetMarkdown: markdown, markdownFetchedAt: new Date() } : {}),
+                /* §1 nennt weder Name noch Modell der Einheit — das Blatt tut
+                   es. Damit trägt die Offertposition ihren richtigen Titel,
+                   statt den Projektnamen tragen zu müssen. Überschrieben wird
+                   nur, was leer ist: was der Aktivitätsstrom (§1c) schon
+                   gesagt hat, gilt weiter. */
+                ...(previous?.unitModel ? {} : (specs.model ? { unitModel: specs.model } : {})),
+                ...(previous?.unitName ? {} : (specs.category ? { unitName: specs.category } : {})),
                 // Ein unlesbares, aber abgelegtes PDF behält seinen Hinweis.
                 datasheetError: result.error ?? null,
             }
@@ -161,6 +193,58 @@ webhookSpecs) => {
     if (result.ok && old && old !== result.file) {
         await LocalFileStorage_1.ospDatasheetStorage.remove(old).catch(() => undefined);
     }
+    return result.ok ? { ok: true } : { ok: false, error: result.error || 'Datenblatt konnte nicht geholt werden.' };
+};
+/**
+ * ── DAS DATENBLATT MUSS DA SEIN, WENN JEMAND ES ÖFFNET (21.09.2026) ─────────
+ *
+ * Der Verweis an der Einheit und die BYTES sind zweierlei. Bis zum R2-Umzug
+ * lagen die Bytes auf der Platte DES RECHNERS, der sie geholt hat — die
+ * Datenbank teilen sich aber alle. Wer den Beleg auf einem anderen Rechner
+ * öffnete, bekam deshalb einen Serverfehler: die Zeile sagte „Datei da", die
+ * Platte kannte sie nicht.
+ *
+ * Darum wird beim Öffnen nicht mehr geglaubt, sondern nachgesehen:
+ *
+ *  • Die Datei ist lesbar   → sie wird ausgeliefert.
+ *  • Sie fehlt              → sie wird EINMAL neu geholt (die Adresse der OSP
+ *                             steht ja an der Einheit) und liegt danach dort,
+ *                             wo alle sie lesen können.
+ *  • Auch das misslingt     → der Grund steht an der Einheit und wird gesagt.
+ *                             Eine 404 heisst dabei etwas Bestimmtes: die OSP
+ *                             hat das Blatt neu gerendert und das alte
+ *                             gelöscht (§1c). Dann hilft nur eine neue
+ *                             Adresse — und die kommt von drüben.
+ */
+const readUnitDatasheet = async (setting, unit) => {
+    if (unit.datasheetFile) {
+        try {
+            return { ok: true, body: await LocalFileStorage_1.ospDatasheetStorage.read(unit.datasheetFile) };
+        }
+        catch {
+            // Der Verweis steht, die Bytes fehlen — kein Grund aufzugeben.
+        }
+    }
+    if (!unit.pdfUrl) {
+        return { ok: false, status: 404, error: 'Zu dieser Einheit liegt kein Datenblatt.' };
+    }
+    const fetched = await storeUnitDatasheet(setting, unit.id, unit.pdfUrl, (0, ospDatasheet_1.specsFromOfferEntry)(unit.rawPayload));
+    if (!fetched.ok) {
+        return {
+            ok: false,
+            status: 502,
+            error: /404/.test(fetched.error || '')
+                ? 'Die OSP hat dieses Datenblatt ersetzt und die alte Datei gelöscht. Es kommt mit der nächsten Meldung neu — oder über „Dokumente holen".'
+                : (fetched.error || 'Datenblatt konnte nicht geholt werden.'),
+        };
+    }
+    const fresh = await prisma_client_1.default.ospUnit.findUnique({
+        where: { id: unit.id }, select: { datasheetFile: true, datasheetError: true },
+    });
+    if (!fresh?.datasheetFile) {
+        return { ok: false, status: 502, error: fresh?.datasheetError || 'Datenblatt konnte nicht geholt werden.' };
+    }
+    return { ok: true, body: await LocalFileStorage_1.ospDatasheetStorage.read(fresh.datasheetFile) };
 };
 /**
  * Der Stand FOLGT der Arbeit, er wird nicht gewählt (Vertrag, "Required
@@ -201,21 +285,75 @@ const withoutEmpty = (row) => {
  * Ist nirgends ein Schlüssel hinterlegt, wird alles abgelehnt (503) — genau
  * wie die OSP es umgekehrt hält: NIE offen durchfallen.
  */
+/* ── DIE SCHLÜSSELLISTE LIEGT IM SPEICHER ────────────────────────────────────
+ *
+ * Hier stand ein `ospSetting.findMany()` ganz am Anfang — VOR jeder Prüfung des
+ * Schlüssels. Die fünf Webhook-Adressen sind ohne Anmeldung erreichbar und
+ * waren ungebremst: jeder anonyme POST, auch ein völlig leerer, kostete damit
+ * eine Abfrage an die ferne Datenbank (~100 ms und eine Verbindung aus dem
+ * Pool). Wer die Adressen kennt, konnte die Datenbank beschäftigen, ohne je
+ * einen Schlüssel zu besitzen.
+ *
+ * Zwischengespeichert werden NUR die Schlüssel — das ist alles, was für die
+ * Entscheidung "kenne ich dich?" gebraucht wird. Die vollständige Zeile holt
+ * der Weg unten erst, wenn der Schlüssel gestimmt hat: dann ist der Aufruf
+ * berechtigt, die Abfrage gerechtfertigt, und das Einlesen arbeitet mit dem
+ * AKTUELLEN Stand statt mit einer womöglich veralteten Kopie.
+ *
+ * Geleert wird beim Speichern der Einstellungen (siehe PUT /settings), die
+ * Lebensdauer ist nur die Obergrenze für Änderungen von aussen. */
+const WEBHOOK_KEY_CACHE_TTL_MS = 60_000;
+let webhookKeyCache = null;
+const invalidateOspWebhookKeys = () => {
+    webhookKeyCache = null;
+};
+exports.invalidateOspWebhookKeys = invalidateOspWebhookKeys;
+const armedWebhookKeys = async () => {
+    if (webhookKeyCache && webhookKeyCache.expiresAt > Date.now())
+        return webhookKeyCache.keys;
+    const rows = await prisma_client_1.default.ospSetting.findMany({
+        where: { NOT: { webhookKey: null } },
+        select: { id: true, webhookKey: true },
+    });
+    const keys = rows
+        .map((row) => ({ id: String(row.id), webhookKey: asTrimmed(row.webhookKey) || '' }))
+        .filter((row) => row.webhookKey);
+    webhookKeyCache = { expiresAt: Date.now() + WEBHOOK_KEY_CACHE_TTL_MS, keys };
+    return keys;
+};
+exports.armedWebhookKeys = armedWebhookKeys;
 const authenticateWebhook = async (req, res) => {
     const key = asTrimmed(req.header('x-osp-integration-key'));
-    const settings = await prisma_client_1.default.ospSetting.findMany({ where: { NOT: { webhookKey: null } } });
-    const armed = settings.filter((row) => asTrimmed(row.webhookKey));
+    const armed = await (0, exports.armedWebhookKeys)();
     if (!armed.length) {
         res.status(503).json({ message: 'OSP integration key is not configured.' });
         return null;
     }
-    const setting = key ? armed.find((row) => keysMatch(asTrimmed(row.webhookKey) || '', key)) : null;
-    if (!setting) {
+    const match = key ? armed.find((row) => keysMatch(row.webhookKey, key)) : null;
+    if (!match) {
+        res.status(401).json({ message: 'Missing or wrong X-OSP-Integration-Key.' });
+        return null;
+    }
+    // Erst jetzt zur Datenbank: der Aufruf ist berechtigt.
+    const setting = await prisma_client_1.default.ospSetting.findUnique({ where: { id: match.id } });
+    if (!setting || !asTrimmed(setting.webhookKey)) {
+        // Zeile ist seit dem Zwischenspeichern weg oder entwaffnet.
+        (0, exports.invalidateOspWebhookKeys)();
         res.status(401).json({ message: 'Missing or wrong X-OSP-Integration-Key.' });
         return null;
     }
     return setting;
 };
+/* Bremse für die fünf unangemeldeten Webhook-Adressen. Grosszügig, denn hier
+   ruft eine Maschine an — und ein GELUNGENER Aufruf kostet nichts, sodass der
+   echte Betrieb den Zähler nie ausschöpft. Gezählt wird also praktisch nur, wer
+   ohne gültigen Schlüssel anklopft. */
+const webhookRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 120,
+    message: 'Too many requests.',
+    skipSuccessfulRequests: true,
+});
 /** Eine Nummer der OSP als Zeichenkette — `projectNumber` kommt als ZAHL. */
 const asKey = (value) => {
     if (typeof value === 'number' && Number.isFinite(value))
@@ -260,6 +398,7 @@ const normalizeOfferPayload = (body) => {
                 .map((detail) => ({
                 ospDocumentId: asKey(detail.id) || '',
                 pdfUrl: (0, ospDatasheet_1.pickDatasheetUrl)(detail),
+                markdownUrl: (0, ospDatasheet_1.pickMarkdownUrl)(detail),
                 changes: asChangeList(detail.changes),
                 specs: (0, ospDatasheet_1.specsFromOfferEntry)(detail),
                 raw: detail,
@@ -271,6 +410,7 @@ const normalizeOfferPayload = (body) => {
                 ? [{
                         ospDocumentId: documentId,
                         pdfUrl: (0, ospDatasheet_1.pickDatasheetUrl)(entry),
+                        markdownUrl: (0, ospDatasheet_1.pickMarkdownUrl)(entry),
                         changes: asChangeList(entry.changes),
                         specs: (0, ospDatasheet_1.specsFromOfferEntry)(entry),
                         raw: entry,
@@ -491,6 +631,10 @@ const ingestUnits = async (setting, row, project, mode) => {
         };
         if (unit.pdfUrl)
             data.pdfUrl = unit.pdfUrl;
+        // Nennt die OSP eine Markdown-Fassung, ist sie die bessere Quelle —
+        // heute tut sie es nicht, der Weg steht trotzdem.
+        if (unit.markdownUrl)
+            data.markdownUrl = unit.markdownUrl;
         let saved;
         if (existing) {
             saved = await prisma_client_1.default.ospUnit.update({ where: { id: existing.id }, data });
@@ -576,7 +720,7 @@ const finishIngest = (setting, res, result) => {
    Datenblätter darunter. Es gibt keine Auswahl — die anfragende Person wird
    nicht gefragt, welche Einheiten mitsollen, denn eine Offerte gilt dem
    Projekt. Weggelassen wird nur, was noch gar kein Datenblatt hat. */
-router.post('/webhook', async (req, res) => {
+router.post('/webhook', webhookRateLimiter, async (req, res) => {
     try {
         const setting = await authenticateWebhook(req, res);
         if (!setting)
@@ -609,7 +753,7 @@ router.post('/webhook', async (req, res) => {
    Für ein bereits beantwortetes Projekt ("offer has been sent") kommt hier NIE
    etwas an — das schliesst die OSP für weitere Anfragen. Wieder zu öffnen ist
    es nur über §4b (Anfrage zurückziehen). */
-router.post('/webhook/revision', async (req, res) => {
+router.post('/webhook/revision', webhookRateLimiter, async (req, res) => {
     try {
         const setting = await authenticateWebhook(req, res);
         if (!setting)
@@ -627,7 +771,7 @@ router.post('/webhook/revision', async (req, res) => {
    bleibt bestehen, solange die OSP sie noch eingetragen hat: dort hiess die
    Überarbeitung "Änderung" und kam als EINZELNES Objekt. Beide Formen landen
    auf derselben Auswertung — ein Feld ebenso wie ein einzelnes Objekt. */
-router.post('/webhook/change', async (req, res) => {
+router.post('/webhook/change', webhookRateLimiter, async (req, res) => {
     try {
         const setting = await authenticateWebhook(req, res);
         if (!setting)
@@ -657,7 +801,7 @@ router.post('/webhook/change', async (req, res) => {
    Gelöscht wird hier nichts. Die Zeile behält Offerte, Datenblätter und
    Zuständigkeit und wechselt auf WITHDRAWN — sichtbar, damit niemand
    weiterarbeitet, und rückholbar, falls neu angefragt wird. */
-router.post('/webhook/withdrawal', async (req, res) => {
+router.post('/webhook/withdrawal', webhookRateLimiter, async (req, res) => {
     try {
         const setting = await authenticateWebhook(req, res);
         if (!setting)
@@ -725,7 +869,7 @@ router.post('/webhook/withdrawal', async (req, res) => {
       Datenblatt damit überholt und sein Link tot: die Einheit bekommt die neue
       Adresse, das PDF wird erneut geholt, und an der Anfrage steht, dass die
       OSP es neu gerendert hat. Ein Stand ändert sich dadurch nicht. */
-router.post('/webhook/project', async (req, res) => {
+router.post('/webhook/project', webhookRateLimiter, async (req, res) => {
     try {
         const setting = await authenticateWebhook(req, res);
         if (!setting)
@@ -1166,15 +1310,15 @@ router.get('/units/:unitId/datasheet', AuthMiddleware_1.requireAuth, (0, RbacMid
         const unit = await findUnit(feed.rootId, String(req.params.unitId));
         if (!unit)
             return res.status(404).json({ error: 'OSP-Einheit nicht gefunden.' });
-        if (!unit.datasheetFile)
-            return res.status(404).json({ error: 'Zu dieser Einheit liegt kein Datenblatt.' });
-        const body = await LocalFileStorage_1.ospDatasheetStorage.read(unit.datasheetFile);
+        const read = await readUnitDatasheet(feed.setting, unit);
+        if (!read.ok)
+            return res.status(read.status).json({ error: read.error });
         res.setHeader('Content-Type', 'application/pdf');
         // `inline`: das Datenblatt gehört angeschaut, nicht heruntergeladen.
         const name = [unit.request?.reference, unit.ospDocumentId].filter(Boolean).join('-');
         res.setHeader('Content-Disposition', `inline; filename="Datenblatt-${name}.pdf"`);
-        res.setHeader('Content-Length', String(body.length));
-        res.end(body);
+        res.setHeader('Content-Length', String(read.body.length));
+        res.end(read.body);
     }
     catch (error) {
         res.status(500).json({ error: error?.message || 'Datenblatt konnte nicht geladen werden.' });
@@ -1228,13 +1372,15 @@ router.get('/documents/:id/datasheet', AuthMiddleware_1.requireAuth, (0, RbacMid
         if (!feed?.visible)
             return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
         const unit = await firstUnitOf(feed.rootId, String(req.params.id));
-        if (!unit?.datasheetFile)
+        if (!unit)
             return res.status(404).json({ error: 'Zu diesem Beleg liegt kein Datenblatt.' });
-        const body = await LocalFileStorage_1.ospDatasheetStorage.read(unit.datasheetFile);
+        const read = await readUnitDatasheet(feed.setting, unit);
+        if (!read.ok)
+            return res.status(read.status).json({ error: read.error });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="Datenblatt-${unit.request?.reference || unit.id}.pdf"`);
-        res.setHeader('Content-Length', String(body.length));
-        res.end(body);
+        res.setHeader('Content-Length', String(read.body.length));
+        res.end(read.body);
     }
     catch (error) {
         res.status(500).json({ error: error?.message || 'Datenblatt konnte nicht geladen werden.' });
@@ -1263,6 +1409,117 @@ router.post('/documents/:id/datasheet', AuthMiddleware_1.requireAuth, (0, RbacMi
     }
     catch (error) {
         res.status(500).json({ error: error?.message || 'Datenblatt konnte nicht geholt werden.' });
+    }
+});
+/**
+ * Das Blatt als MARKDOWN — die lesbare Fassung und die Quelle der
+ * Produktangaben. Sie steht in der Datenbank und braucht darum weder Datei
+ * noch Ablage: wer eine Zahl auf der Offerte nachprüfen will, liest hier nach,
+ * auch wenn das PDF drüben längst ersetzt wurde.
+ */
+router.get('/units/:unitId/markdown', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext(req.user.tenantId);
+        if (!feed?.visible)
+            return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+        const unit = await prisma_client_1.default.ospUnit.findFirst({
+            where: { id: String(req.params.unitId), tenantId: feed.rootId },
+            select: {
+                id: true, ospDocumentId: true, unitName: true, unitModel: true,
+                datasheetMarkdown: true, markdownFetchedAt: true, datasheetSpecs: true,
+                datasheetError: true, pdfUrl: true, datasheetFile: true,
+                request: { select: { reference: true, projectName: true } },
+            },
+        });
+        if (!unit)
+            return res.status(404).json({ error: 'OSP-Einheit nicht gefunden.' });
+        res.json(unit);
+    }
+    catch (error) {
+        res.status(500).json({ error: error?.message || 'Datenblatt konnte nicht geladen werden.' });
+    }
+});
+/* ── 3f) DIE DOKUMENTE EINES PROJEKTS HOLEN (21.09.2026) ─────────────────────
+   Eine Anfrage ist ein Projekt, und ein Projekt hat MEHRERE Datenblätter. Sie
+   einzeln nachzuholen, wenn eines fehlt, ist Handarbeit an der falschen Stelle:
+   gefragt ist „hol mir die Unterlagen zu diesem Projekt".
+
+   Genau das tut diese Adresse — für jede Einheit des Projekts, der Reihe nach:
+   Datei holen (oder neu holen, wenn der Verweis ins Leere zeigt), Blatt lesen,
+   Markdown und Produktangaben ablegen. Geantwortet wird EINZELN je Einheit,
+   denn ein totes Blatt unter fünf lebenden darf nicht wie ein Gesamtfehler
+   aussehen.
+
+   Eine Einheit ohne Adresse ist kein Fehler: die OSP lässt Belege ohne
+   gerendertes Datenblatt aus einer Anfrage weg (§1), und ältere Zeilen kamen
+   aus einer Zeit, in der der Vertrag die Adresse noch gar nicht kannte. */
+router.post('/documents/:id/datasheets', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), async (req, res) => {
+    try {
+        const feed = await loadFeedContext(req.user.tenantId);
+        if (!feed?.visible)
+            return res.status(403).json({ error: 'OSP ist für diese Firma nicht freigeschaltet.' });
+        if (!feed.setting)
+            return res.status(400).json({ error: 'OSP ist noch nicht konfiguriert.' });
+        const doc = await prisma_client_1.default.ospDocument.findFirst({
+            where: { id: String(req.params.id), tenantId: feed.rootId },
+            select: { id: true, reference: true },
+        });
+        if (!doc)
+            return res.status(404).json({ error: 'OSP-Beleg nicht gefunden.' });
+        const units = await prisma_client_1.default.ospUnit.findMany({
+            where: { requestId: doc.id },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, ospDocumentId: true, pdfUrl: true, datasheetFile: true, rawPayload: true },
+        });
+        /* Nur was fehlt, wird geholt — es sei denn, es wird ausdrücklich alles
+           verlangt (`force`). Ein Blatt, das bei uns liegt, noch einmal zu
+           holen, kostet nur Zeit und riskiert, eine gültige Kopie gegen eine
+           tote Adresse zu tauschen. */
+        const force = req.body?.force === true;
+        const results = [];
+        for (const unit of units) {
+            if (!unit.pdfUrl) {
+                results.push({
+                    unitId: unit.id, ospDocumentId: unit.ospDocumentId, ok: false, skipped: true,
+                    error: 'Die OSP hat zu dieser Einheit nie eine Datenblatt-Adresse geliefert.',
+                });
+                continue;
+            }
+            if (unit.datasheetFile && !force) {
+                // Liegt die Datei wirklich? Der Verweis allein ist keine Zusage.
+                const readable = await LocalFileStorage_1.ospDatasheetStorage.read(unit.datasheetFile).then(() => true).catch(() => false);
+                if (readable) {
+                    results.push({ unitId: unit.id, ospDocumentId: unit.ospDocumentId, ok: true, skipped: true });
+                    continue;
+                }
+            }
+            const outcome = await storeUnitDatasheet(feed.setting, unit.id, unit.pdfUrl, (0, ospDatasheet_1.specsFromOfferEntry)(unit.rawPayload));
+            results.push({
+                unitId: unit.id,
+                ospDocumentId: unit.ospDocumentId,
+                ok: outcome.ok,
+                ...(outcome.ok ? {} : {
+                    error: /404/.test(outcome.error || '')
+                        ? 'Die OSP hat dieses Datenblatt ersetzt und die alte Datei gelöscht.'
+                        : outcome.error,
+                }),
+            });
+        }
+        res.json({
+            reference: doc.reference,
+            total: units.length,
+            fetched: results.filter((row) => row.ok && !row.skipped).length,
+            kept: results.filter((row) => row.ok && row.skipped).length,
+            failed: results.filter((row) => !row.ok).length,
+            results,
+            document: await prisma_client_1.default.ospDocument.findUnique({
+                where: { id: doc.id },
+                include: { units: { orderBy: { createdAt: 'asc' } } },
+            }),
+        });
+    }
+    catch (error) {
+        res.status(500).json({ error: error?.message || 'Die Dokumente konnten nicht geholt werden.' });
     }
 });
 /* ── 3e) Der Aktivitätsstrom (§1c) — ein eigener Reiter, keine Anfrageliste ──
@@ -1704,6 +1961,8 @@ router.put('/settings', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requi
             create: { id: (0, nanoid_1.nanoid)(12), tenantId: rootId, ...data },
             update: data,
         });
+        // Ein geänderter Schlüssel gilt sofort, nicht erst nach der Lebensdauer.
+        (0, exports.invalidateOspWebhookKeys)();
         res.json({
             rootTenantId: rootId,
             tenantIds: parseTenantIds(setting.tenantIds),

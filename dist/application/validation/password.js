@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.assertPasswordPolicy = exports.isPasswordCompliant = exports.PASSWORD_POLICY_MESSAGE = exports.PASSWORD_REGEX = void 0;
+const AuthErrors_1 = require("../errors/AuthErrors");
 /**
  * Central password policy — the single source of truth for every place a NEW
  * password is accepted (employee create/update, password reset). Login is
@@ -17,7 +18,7 @@ exports.isPasswordCompliant = isPasswordCompliant;
 /** Throws with the user-facing policy message when the password is too weak. */
 const assertPasswordPolicy = (password) => {
     if (!(0, exports.isPasswordCompliant)(password)) {
-        throw new Error(exports.PASSWORD_POLICY_MESSAGE);
+        throw new AuthErrors_1.PublicError(exports.PASSWORD_POLICY_MESSAGE);
     }
 };
 exports.assertPasswordPolicy = assertPasswordPolicy;

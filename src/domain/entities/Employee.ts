@@ -28,5 +28,19 @@ export class Employee {
         public moduleKeys?: string[] | null,
         /// Companies of the tree the employee may work in; null = no restriction.
         public allowedTenantIds?: string[] | null,
+        /// Gesetzt, sobald die VERWALTUNG das Konto stillgelegt hat (pasif,
+        /// gesperrt, gelöscht). Nur ein Konto OHNE diese Marke darf sich per
+        /// Aktivierungslink selbst freischalten — siehe AccountActivationUseCases.
+        public deactivatedAt?: Date | null,
+        /// ── ZWEITER FAKTOR (TOTP / Aegis) ───────────────────────────────────
+        /// Das gemeinsame Geheimnis mit der Authenticator-App — VERSCHLÜSSELT,
+        /// so wie es in der Spalte steht (siehe totpCrypto.ts); wer damit
+        /// rechnen will, muss es erst entschlüsseln.
+        public totpSecret?: string | null,
+        /// Zeitpunkt der ersten bestätigten Codeeingabe. null = noch nicht
+        /// eingerichtet, die Anmeldung führt dann durch die Einrichtung.
+        public totpEnabledAt?: Date | null,
+        /// Zuletzt angenommenes Zeitfenster — ein Code gilt genau einmal.
+        public totpLastStep?: number | null,
     )  {}
 }

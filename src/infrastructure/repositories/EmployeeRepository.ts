@@ -1,8 +1,10 @@
 import prisma from '../database/prisma.client';
 import { Prisma } from '@prisma/client';
+import { nanoid } from 'nanoid';
 import { IEmployeeRepository, IEmployeeFilter } from '../../domain/repositories/IEmployeeRepository';
 import { Employee } from '../../domain/entities/Employee';
 import { invalidateAuthIdentity } from '../../shared/authIdentityCache';
+import { revokeAllRefreshSessions } from '../services/RefreshSessionService';
 import { invalidateStaffDirectory } from '../../shared/staffDirectoryCache';
 
 export class EmployeeRepository implements IEmployeeRepository {
@@ -19,6 +21,10 @@ export class EmployeeRepository implements IEmployeeRepository {
             data.passwordChangedAt, data.deletedAt, data.bannedAt,
             Array.isArray(data.moduleKeys) ? data.moduleKeys : null,
             Array.isArray(data.allowedTenantIds) ? data.allowedTenantIds : null,
+            data.deactivatedAt ?? null,
+            data.totpSecret ?? null,
+            data.totpEnabledAt ?? null,
+            data.totpLastStep ?? null,
         );
         return emp;
     }
@@ -86,7 +92,12 @@ export class EmployeeRepository implements IEmployeeRepository {
         const { roleId, ...coreData } = employeeData as any;
 
         const createData: Prisma.EmployeeUncheckedCreateInput = {
-            id: coreData.id,
+            // Die Kennung wird HIER vergeben, nie aus der Anfrage übernommen:
+            // `Employee.id` hat keinen Vorgabewert im Schema, und eine selbst
+            // gewählte Kennung ist ein Einfallstor (sie taucht in jeder
+            // Fremdschlüssel-Beziehung wieder auf). Dieselbe Form wie im
+            // Personalmodul, das `prisma.employee.create` unmittelbar ruft.
+            id: nanoid(),
             tenantId: coreData.tenantId!,
             firstName: coreData.firstName!,
             lastName: coreData.lastName!,
@@ -125,11 +136,43 @@ export class EmployeeRepository implements IEmployeeRepository {
         return this.mapToEntity(data);
     }
 
+    /**
+     * VERTRAUTER WEG: die Aufrufer geben ausgewählte Felder herein, nie einen
+     * Anfragekörper (siehe WRITABLE_EMPLOYEE_FIELDS im EmployeeController). Die
+     * Zugangsfelder — `passwordHash`, `passwordChangedAt`, `deletedAt`,
+     * `bannedAt` — müssen hier durchkommen, weil genau diese Stelle sie für den
+     * Kennwortweg, die Sperre und das Löschen schreibt.
+     *
+     * Abgestreift wird, was NIEMAND über diesen Weg zu ändern hat: die Kennung
+     * und die Firma (sie bestimmen, wem der Datensatz gehört), die Rolle (sie
+     * hängt an EmployeeRole), sowie der QR-Schlüssel und die Personalnummer —
+     * beide werden ausschliesslich im Personalmodul vergeben, und der QR-Schlüssel
+     * ist eine Zugangsangabe (er meldet ohne Kennwort an).
+     */
     async update(id: string, updateData: Partial<Employee>): Promise<Employee> {
-        const { id: _id, tenantId: _tid, roleId: _roleId, ...safeData } = updateData as any;
+        const {
+            id: _id,
+            tenantId: _tid,
+            roleId: _roleId,
+            qrToken: _qrToken,
+            staffNumber: _staffNumber,
+            ...safeData
+        } = updateData as any;
         // Json? columns cannot be cleared with plain null.
         if (safeData.moduleKeys === null) safeData.moduleKeys = Prisma.DbNull;
         if (safeData.allowedTenantIds === null) safeData.allowedTenantIds = Prisma.DbNull;
+
+        /* ── STILLGELEGT ODER NOCH NIE FREIGESCHALTET? ───────────────────────
+           Die Marke wird HIER gepflegt und nirgends sonst: jeder Weg, der ein
+           Konto stilllegt (Pasif setzen, Sperren, Löschen) und jeder, der es
+           wieder öffnet, läuft durch diese Methode. An den Endpunkten einzeln
+           gesetzt wäre sie beim nächsten neuen Endpunkt vergessen — und ein
+           vergessenes `deactivatedAt` heisst: die ausgetretene Person schaltet
+           sich per Aktivierungslink selbst wieder frei. */
+        if (safeData.deactivatedAt === undefined) {
+            if (safeData.isActive === false) safeData.deactivatedAt = new Date();
+            else if (safeData.isActive === true) safeData.deactivatedAt = null;
+        }
         const data = await prisma.employee.update({
             where: { id },
             data: safeData as any,
@@ -139,6 +182,23 @@ export class EmployeeRepository implements IEmployeeRepository {
         // buradan geçer. Önbelleği hemen düşür ki oturum kontrolü bir sonraki
         // istekte güncel durumu görsün.
         invalidateAuthIdentity(id);
+
+        /* Und dieselben Ereignisse beenden die offenen ANMELDUNGEN. Das
+           Zugangstoken stirbt ohnehin binnen 15 Minuten an der Zustandsprüfung
+           in `requireAuth`; ohne diesen Aufruf bliebe aber die Zeile des
+           Erneuerungstokens offen stehen, und eine gesperrte Person hätte beim
+           Entsperren ihre alte Sitzung zurück. Fehlschläge dürfen den
+           Schreibvorgang nicht umwerfen — sie werden protokolliert. */
+        if (
+            safeData.bannedAt
+            || safeData.deletedAt
+            || safeData.passwordChangedAt
+            || safeData.passwordHash
+            || safeData.isActive === false
+        ) {
+            void revokeAllRefreshSessions(id, 'account').catch((error) =>
+                console.error('[EmployeeRepository] Sitzungen konnten nicht beendet werden:', error?.message || error));
+        }
         // Name, Rolle, aktiv/gesperrt — all das steht in der Kurzliste der
         // Auswahlfelder. Jeder Schreibweg läuft hier durch, deshalb genügt
         // dieser eine Ort statt eines Aufrufs je Endpunkt.

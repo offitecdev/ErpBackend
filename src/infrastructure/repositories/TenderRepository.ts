@@ -204,7 +204,7 @@ export class TenderRepository implements ITenderRepository {
                     t.id, t.tenderNumber, t.version, t.projectId, t.sourceStatus,
                     t.customerId,
                     t.createdByEmployeeId, t.currency, t.createdAt, t.offerMailSentAt,
-                    t.validUntil, t.offerAcceptedAt, t.commissionNumber,
+                    t.validUntil, t.offerAcceptedAt, t.commissionNumber, t.cancelledAt,
                     COALESCE(NULLIF(TRIM(t.manualCustomerName), ''), c.companyName) AS customerName,
                     e.firstName AS creatorFirstName,
                     e.lastName AS creatorLastName,
@@ -267,6 +267,7 @@ export class TenderRepository implements ITenderRepository {
             validUntil: row.validUntil ?? null,
             offerAcceptedAt: row.offerAcceptedAt ?? null,
             commissionNumber: row.commissionNumber ?? null,
+            cancelledAt: row.cancelledAt ?? null,
             positionCount: Number(row.positionCount ?? 0),
             grandTotal: Number(row.grandTotal ?? 0),
             ospReference: row.ospReference ?? null,
@@ -618,7 +619,7 @@ export class TenderRepository implements ITenderRepository {
         });
     }
 
-    async updateStatus(id: string, status: 'Draft' | 'Approved' | 'Exported', tenantId: string): Promise<Tender> {
+    async updateStatus(id: string, status: 'Draft' | 'Approved' | 'Exported' | 'Cancelled', tenantId: string): Promise<Tender> {
         // Update only the row matching id + tenantId; if nothing matched the
         // tender either doesn't exist or belongs to another tenant.
         const result = await prisma.tender.updateMany({

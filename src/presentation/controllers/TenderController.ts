@@ -23,6 +23,13 @@ import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { withdrawOspOfferStatus } from '../../infrastructure/services/OspClient';
 import { markOspOfferSent } from '../../infrastructure/services/ospStatusSync';
 import { nextDocumentNumber } from '../../shared/documentNumber';
+import {
+    assertTenderCancellable,
+    assertTenderDeletable,
+    cancelTenderWithin,
+    readTenderLifecycle,
+    uncancelTenderWithin,
+} from '../../shared/documentLifecycle';
 import { tenderDocumentStorageService } from '../../infrastructure/services/TenderDocumentStorageService';
 import { getMailTenantId } from "./serviceTenantScope";
 
@@ -416,7 +423,7 @@ export class TenderController {
             const tenantId = (req as any).user!.tenantId;
             const filter: any = { tenantId };
             if (req.query.customerId) filter.customerId = req.query.customerId as string;
-            if (req.query.status) filter.status = req.query.status as 'Draft' | 'Approved' | 'Exported';
+            if (req.query.status) filter.status = req.query.status as 'Draft' | 'Approved' | 'Exported' | 'Cancelled';
             if (req.query.search) filter.search = req.query.search as string;
             // Kolon bazlı filtreler + sıralama (Ürünler listesindeki desenle aynı).
             if (req.query.tenderNumber) filter.tenderNumber = req.query.tenderNumber as string;
@@ -966,8 +973,32 @@ export class TenderController {
                     && (input.discounts === undefined || input.discounts === null),
                 );
             if (canUseFastSave) {
+                // A product row created without a description of its own inherits
+                // the article's catalogue text, exactly like the validated path
+                // below. Without this a picker that served a lean article (no
+                // description) left the line empty for good — nothing to open in
+                // the quote and nothing on the order later.
+                const describeArticleIds = [...new Set<string>(
+                    entries
+                        .filter(({ position, safeRowType }) =>
+                            safeRowType === 'PRODUCT'
+                            && position.sourceArticleId
+                            && !String(position.longDescription || '').trim())
+                        .map(({ position }) => String(position.sourceArticleId)),
+                )];
+                const fastArticleDescriptions = new Map<string, string | null>(
+                    describeArticleIds.length > 0
+                        ? (await (prisma as any).article.findMany({
+                            where: { id: { in: describeArticleIds }, tenantId },
+                            select: { id: true, description: true },
+                        })).map((article: any) => [article.id, article.description || null])
+                        : [],
+                );
                 const fastCreated = entries.map(({ clientId, position, safeRowType }) => {
                     const isPricedRow = safeRowType === 'PRODUCT' || safeRowType === 'CUSTOM';
+                    const inheritedDescription = safeRowType === 'PRODUCT' && position.sourceArticleId
+                        ? fastArticleDescriptions.get(String(position.sourceArticleId)) || null
+                        : null;
                     const row = {
                         id: nanoid(10),
                         tenantId,
@@ -981,7 +1012,7 @@ export class TenderController {
                         npkCode: position.npkCode ? String(position.npkCode) : null,
                         positionNumber: String(position.positionNumber).trim(),
                         shortDescription: String(position.shortDescription || (safeRowType === 'PRODUCT' ? 'Ürün' : 'Yeni satır')).trim(),
-                        longDescription: position.longDescription || null,
+                        longDescription: position.longDescription || inheritedDescription,
                         quantity: isPricedRow ? Number(position.quantity ?? (safeRowType === 'PRODUCT' ? 1 : 0)) : 0,
                         unit: isPricedRow ? (position.unit || null) : null,
                         hierarchyLevel: 0,
@@ -1380,9 +1411,12 @@ export class TenderController {
                 const resolvedShortDescription = isProduct
                     ? (cleanedShortDescription || sourceArticle?.name || defaults.PRODUCT)
                     : (hasExplicitShortDescription ? cleanedShortDescription : defaults[safeRowType]);
+                // A new product line never carries an intentionally empty
+                // description — the browser sends '' when its picker had none —
+                // so blank falls through to the article's text as well.
                 const resolvedLongDescription = isProduct
-                    ? (position.longDescription !== undefined
-                        ? (position.longDescription || null)
+                    ? (String(position.longDescription || '').trim()
+                        ? position.longDescription
                         : (sourceArticle?.description || null))
                     : (position.longDescription !== undefined ? (position.longDescription || null) : null);
                 const resolvedUnit = isPricedRow
@@ -2341,14 +2375,103 @@ export class TenderController {
         }
     }
 
+    /**
+     * Was mit dieser Offerte geschehen darf — löschen, stornieren, oder weder
+     * noch. Die Oberfläche fragt das beim Öffnen einmal und weiss dann, welche
+     * Einträge das Zahnrad zeigt; die Regeln selbst stehen in
+     * `shared/documentLifecycle`, damit Knopf und Server nie auseinanderlaufen.
+     */
+    async lifecycle(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tender = await this.getAccessibleTender(tenderId, (req as any).user!, { omitPdfContent: true });
+            if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
+            const lifecycle = await readTenderLifecycle(prisma as any, tender as any);
+            res.json({
+                ...lifecycle,
+                status: (tender as any).status,
+                cancelledAt: (tender as any).cancelledAt ?? null,
+                cancelReason: (tender as any).cancelReason ?? null,
+            });
+        } catch (error: any) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * OFFERTE STORNIEREN (Vorgabe Samet 06.09.2026). Die Zeile bleibt stehen —
+     * sie wird nur gesperrt und als storniert gekennzeichnet. Aufträge und
+     * Projekte fallen NICHT mit: lebt noch ein Auftrag auf dieser Offerte,
+     * verweist die Meldung dorthin, denn dort gehört die Rücknahme hin.
+     */
+    async cancel(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tender = await this.getAccessibleTender(tenderId, (req as any).user!, { omitPdfContent: true });
+            if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
+
+            const lifecycle = await readTenderLifecycle(prisma as any, tender as any);
+            assertTenderCancellable(lifecycle);
+
+            const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
+            await (prisma as any).$transaction(async (tx: any) => cancelTenderWithin(tx, {
+                tenderId,
+                tenantId: (tender as any).tenantId,
+                employeeId: (req as any).user!.id,
+                reason,
+                previousStatus: String((tender as any).status || ''),
+            }));
+
+            res.json({ message: 'Offerte storniert.', cancelled: true });
+        } catch (error: any) {
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
+        }
+    }
+
+    /** Storno der Offerte aufheben — sie lebt wieder in dem Zustand von vorher. */
+    async uncancel(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tender = await this.getAccessibleTender(tenderId, (req as any).user!, { omitPdfContent: true });
+            if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
+
+            const lifecycle = await readTenderLifecycle(prisma as any, tender as any);
+            if (!lifecycle.cancelled) {
+                return res.status(400).json({ error: 'Diese Offerte ist nicht storniert.' });
+            }
+            // Ein stornierter Auftrag darf nicht auf einer lebenden Offerte
+            // stehen: dann führt der Weg zurück über den AUFTRAG.
+            if (lifecycle.salesOrderId && lifecycle.salesOrderCancelled) {
+                return res.status(400).json({
+                    error: `Diese Offerte gehoert zum stornierten Auftrag ${lifecycle.salesOrderNumber || ''}. Heben Sie dessen Storno auf — die Offerte folgt.`,
+                    blockers: ['SALES_ORDER'],
+                });
+            }
+
+            await (prisma as any).$transaction(async (tx: any) => uncancelTenderWithin(tx, {
+                tenderId,
+                tenantId: (tender as any).tenantId,
+                employeeId: (req as any).user!.id,
+                restoreTo: lifecycle.salesOrderId ? 'Approved' : 'Draft',
+            }));
+
+            res.json({ message: 'Storno aufgehoben.', cancelled: false });
+        } catch (error: any) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+
     async delete(req: Request, res: Response) {
         try {
             const tenderId = req.params.id as string;
             const tender = await this.getAccessibleTender(tenderId, (req as any).user!);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
-            if (tender.status !== 'Draft') {
-                return res.status(403).json({ error: "Sadece taslak (Draft) teklifler silinebilir." });
-            }
+            // GELÖSCHT wird nur ein Entwurf, an dem NICHTS hängt (Vorgabe Samet
+            // 06.09.2026). Auftrag, Projekt oder ein bereits gesetztes Storno
+            // machen die Offerte zu einem Beleg — der wird storniert, nicht
+            // entfernt. Die Meldung sagt, welcher Weg offensteht.
+            const lifecycle = await readTenderLifecycle(prisma as any, tender as any);
+            assertTenderDeletable(lifecycle);
             // Aus OSP entstandene Offerte? Die Zeilen VOR dem Löschen merken —
             // danach ist die Verknüpfung (absichtlich) weg.
             const ospRows = await (prisma as any).ospDocument.findMany({
@@ -2393,7 +2516,7 @@ export class TenderController {
                 }
             })().catch(() => undefined);
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
         }
     }
 
@@ -2530,6 +2653,11 @@ export class TenderController {
 
             const tender = await this.getAccessibleTender(tenderId, (req as any).user!);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
+            // Eine STORNIERTE Offerte wird nicht bestaetigt — erst das Storno
+            // aufheben (Vorgabe Samet 06.09.2026).
+            if (tender.status === 'Cancelled' || (tender as any).cancelledAt) {
+                return res.status(400).json({ error: 'Eine stornierte Offerte kann nicht bestaetigt werden.' });
+            }
 
             const approvedTender = await this.tenderRepository.updateStatus(tenderId, 'Approved', tender.tenantId);
             
@@ -3002,8 +3130,8 @@ export class TenderController {
             }
             const rawFromName = settings?.fromName
                 || (req.body.fromName !== undefined ? String(req.body.fromName) : "")
-                || "Offitec ERP";
-            const fromName = stripHeaderValue(rawFromName).slice(0, 100) || "Offitec ERP";
+                || "Offitec Control Center";
+            const fromName = stripHeaderValue(rawFromName).slice(0, 100) || "Offitec Control Center";
 
             const subject = stripHeaderValue(String(req.body.subject || `${tender.tenderNumber} teklifiniz`));
             if (!subject) return res.status(400).json({ error: "Konu boş olamaz." });
@@ -3276,7 +3404,7 @@ export class TenderController {
             if (!fromEmail || !isValidEmail(fromEmail)) {
                 return res.status(400).json({ error: "Gönderici e-posta adresi yapılandırılmamış." });
             }
-            const fromName = stripHeaderValue(String(settings?.fromName || "Offitec ERP")).slice(0, 100) || "Offitec ERP";
+            const fromName = stripHeaderValue(String(settings?.fromName || "Offitec Control Center")).slice(0, 100) || "Offitec Control Center";
 
             const subject = stripHeaderValue(String(req.body.subject || `Auftragsbestätigung ${salesOrder.orderNumber}`));
             if (!subject) return res.status(400).json({ error: "Konu boş olamaz." });
@@ -3522,6 +3650,31 @@ export class TenderController {
             ]);
             if (!tender) return res.status(404).json({ error: "İhale bulunamadı." });
 
+            // A product line that never got a description of its own (older
+            // quotes, lean pickers) still has one in the catalogue. It rides
+            // along as a SEPARATE field so a read-only quote (sales order) can
+            // open it, while the stored longDescription — and with it the PDF —
+            // stays exactly what the salesperson wrote.
+            if (!light) {
+                const undescribed = positions.filter((position: any) =>
+                    position.rowType === 'PRODUCT'
+                    && position.sourceArticleId
+                    && !String(position.longDescription || '').trim());
+                if (undescribed.length > 0) {
+                    const articleIds = [...new Set<string>(undescribed.map((position: any) => String(position.sourceArticleId)))];
+                    const articles = await (prisma as any).article.findMany({
+                        where: { id: { in: articleIds } },
+                        select: { id: true, description: true },
+                    });
+                    const descriptionById = new Map<string, string | null>(
+                        articles.map((article: any) => [article.id, article.description || null]),
+                    );
+                    for (const position of undescribed) {
+                        position.sourceArticleDescription = descriptionById.get(String(position.sourceArticleId)) || null;
+                    }
+                }
+            }
+
             res.status(200).json({ tender, positions, activities });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
@@ -3614,7 +3767,7 @@ export class TenderController {
             ]);
             if (!owned) return res.status(404).json({ error: "İhale bulunamadı." });
 
-            // Downscaled to the 24 mm square the PDF draws them into — see
+            // Downscaled to the 36 × 20 mm frame the PDF fits them into — see
             // PdfImageThumbnailService for why the originals never travel.
             const [articleThumbs, positionThumbs] = await Promise.all([
                 getArticleThumbnails(tenantId, articleVersions),

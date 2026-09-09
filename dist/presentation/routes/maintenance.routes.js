@@ -8,7 +8,18 @@ const MaintenanceRepository_1 = require("../../infrastructure/repositories/Maint
 const InventoryRepository_1 = require("../../infrastructure/repositories/InventoryRepository");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const RateLimitMiddleware_1 = require("../middlewares/RateLimitMiddleware");
 const router = (0, express_1.Router)();
+/**
+ * Die drei Terminwege sind ohne Anmeldung erreichbar und waren ungebremst —
+ * ein Skript konnte Schlüssel durchprobieren. Grosszügig genug für eine
+ * Kundin, die die Seite mehrfach öffnet.
+ */
+const publicBookingLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    message: 'Zu viele Anfragen. Bitte versuchen Sie es später erneut.',
+});
 const maintenanceRepo = new MaintenanceRepository_1.MaintenanceRepository();
 const inventoryRepo = new InventoryRepository_1.InventoryRepository();
 const createContractUseCase = new CreateMaintenanceContract_1.CreateMaintenanceContractUseCase(maintenanceRepo);
@@ -20,9 +31,16 @@ const serviceOptionPermissions = [
     'regie.calls.manage',
     'regie.reports.manage',
 ];
-router.get('/public/booking/:token', (req, res) => controller.getPublicAppointmentOptions(req, res));
-router.post('/public/booking/:token/confirm', (req, res) => controller.confirmPublicAppointment(req, res));
-router.post('/public/booking/:token/disapprove', (req, res) => controller.disapprovePublicAppointment(req, res));
+// Der Schlüssel reist im Kopf `X-Public-Token`, nicht mehr im Pfad — ein Pfad
+// landet wörtlich im Zugriffsprotokoll und im Verlauf. Siehe publicToken.ts.
+router.get('/public/booking', publicBookingLimiter, (req, res) => controller.getPublicAppointmentOptions(req, res));
+router.post('/public/booking/confirm', publicBookingLimiter, (req, res) => controller.confirmPublicAppointment(req, res));
+router.post('/public/booking/disapprove', publicBookingLimiter, (req, res) => controller.disapprovePublicAppointment(req, res));
+// Rückfallweg mit dem Schlüssel im Pfad (verschickte Verweise, alte
+// Oberfläche). `main.ts` schwärzt ihn im Protokoll.
+router.get('/public/booking/:token', publicBookingLimiter, (req, res) => controller.getPublicAppointmentOptions(req, res));
+router.post('/public/booking/:token/confirm', publicBookingLimiter, (req, res) => controller.confirmPublicAppointment(req, res));
+router.post('/public/booking/:token/disapprove', publicBookingLimiter, (req, res) => controller.disapprovePublicAppointment(req, res));
 /**
  * @swagger
  * /maintenance/options/customers:

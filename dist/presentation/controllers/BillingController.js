@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingController = void 0;
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
+const PdfImageThumbnailService_1 = require("../../infrastructure/services/PdfImageThumbnailService");
+const documentNumber_1 = require("../../shared/documentNumber");
 const INVOICE_CATEGORIES = ['PROJECT', 'DELIVERY', 'DIRECT'];
 class BillingController {
     createInvoiceUseCase;
@@ -14,13 +16,15 @@ class BillingController {
     updateStatusUseCase;
     deleteInvoiceUseCase;
     createDirectInvoiceUseCase;
-    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase, deleteInvoiceUseCase, createDirectInvoiceUseCase) {
+    updateDirectInvoiceUseCase;
+    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase, deleteInvoiceUseCase, createDirectInvoiceUseCase, updateDirectInvoiceUseCase) {
         this.createInvoiceUseCase = createInvoiceUseCase;
         this.getSummaryUseCase = getSummaryUseCase;
         this.listInvoicesUseCase = listInvoicesUseCase;
         this.updateStatusUseCase = updateStatusUseCase;
         this.deleteInvoiceUseCase = deleteInvoiceUseCase;
         this.createDirectInvoiceUseCase = createDirectInvoiceUseCase;
+        this.updateDirectInvoiceUseCase = updateDirectInvoiceUseCase;
     }
     async getSummary(req, res) {
         try {
@@ -100,6 +104,22 @@ class BillingController {
         }
     }
     /**
+     * Die Nummer, die die NÄCHSTE Rechnung bekäme — für die Vorschau der
+     * Erfassungsmaske, damit dort nicht «Entwurf» steht (Vorgabe Samet
+     * 05.09.2026). Der Zähler wird dabei NICHT bewegt: vergeben wird die Nummer
+     * erst beim Erstellen, und wer in derselben Minute eine Rechnung stellt,
+     * bekommt sie. Die Vorschau ist eine Auskunft, keine Reservierung.
+     */
+    async nextInvoiceNumber(req, res) {
+        try {
+            const invoiceNumber = await (0, documentNumber_1.peekDocumentNumber)(req.user.tenantId, 'INVOICE');
+            res.status(200).json({ invoiceNumber, preview: true });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /**
      * Direktrechnung — die selbst ausgefüllte Vorlage: kein Auftrag, kein
      * Projekt, die Positionen sind der Betrag. Die Zeilen kommen so an, wie sie
      * auf dem Beleg stehen; die Reihenfolge ist ihre Reihenfolge im Feld.
@@ -120,6 +140,13 @@ class BillingController {
                 vatRate: req.body.vatRate ?? null,
                 notes: req.body.notes ?? null,
                 lines: Array.isArray(req.body.lines) ? req.body.lines : [],
+                // Die drei Abschnitte des Belegs (Positionen · Rabatt ·
+                // Schlusstext), der Rabattstapel und die eigene Absenderzeile.
+                sections: req.body.sections ?? null,
+                discounts: req.body.discounts ?? null,
+                closingText: req.body.closingText ?? null,
+                senderAddress: req.body.senderAddress ?? null,
+                paymentStages: req.body.paymentStages ?? null,
             });
             res.status(201).json({ message: 'Rechnung erstellt.', invoice });
         }
@@ -127,10 +154,79 @@ class BillingController {
             res.status(400).json({ error: error.message });
         }
     }
+    /**
+     * Eine Direktrechnung ändern (Vorgabe Samet 05.09.2026: «für die direkt
+     * erzeugten Rechnungen ein Bearbeiten-Knopf»). Der Körper ist derselbe wie
+     * beim Erstellen — der Beleg wird als GANZES neu geschrieben; Nummer und
+     * Zahlungsstand bleiben, siehe `UpdateDirectInvoiceUseCase`.
+     */
+    async updateDirect(req, res) {
+        try {
+            const invoice = await this.updateDirectInvoiceUseCase.execute(String(req.params.id), {
+                tenantId: req.user.tenantId,
+                issuedByEmployeeId: req.user.id,
+                customerId: req.body.customerId ?? null,
+                recipientName: String(req.body.recipientName || ''),
+                recipientAddress: req.body.recipientAddress ?? null,
+                introText: req.body.introText ?? null,
+                invoiceDate: req.body.invoiceDate ?? null,
+                dueDate: req.body.dueDate ?? null,
+                salespersonName: req.body.salespersonName ?? null,
+                commissionNumber: req.body.commissionNumber ?? null,
+                vatRate: req.body.vatRate ?? null,
+                notes: req.body.notes ?? null,
+                lines: Array.isArray(req.body.lines) ? req.body.lines : [],
+                sections: req.body.sections ?? null,
+                discounts: req.body.discounts ?? null,
+                closingText: req.body.closingText ?? null,
+                senderAddress: req.body.senderAddress ?? null,
+                paymentStages: req.body.paymentStages ?? null,
+            });
+            res.status(200).json({ message: 'Rechnung gespeichert.', invoice });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async updateStatus(req, res) {
         try {
-            const invoice = await this.updateStatusUseCase.execute(req.params.id, req.user.tenantId, String(req.body.status || ''));
+            const invoice = await this.updateStatusUseCase.execute(req.params.id, req.user.tenantId, String(req.body.status || ''), 
+            // Zahlungseingang — die Liste schickt ihn beim Markieren als
+            // bezahlt mit; fehlt er, nimmt der Server "jetzt".
+            req.body.paidAt ? String(req.body.paidAt) : null);
             res.status(200).json({ message: 'Fatura durumu güncellendi.', invoice });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+    /**
+     * ── PRODUKTBILDER DER DIREKTRECHNUNG ─────────────────────────────────────
+     *
+     * Die Rechnung druckt DIESELBE Positionstabelle wie das Angebot, also auch
+     * dessen Produktbilder. Die Offerte holt sie über `/tenders/:id/
+     * product-images` — eine Direktrechnung hat aber keine Offerte, an der ein
+     * solcher Weg hängen könnte. Darum hier derselbe Dienst noch einmal, nur
+     * über die ARTIKEL-Kennungen: `getArticleThumbnails` liefert die auf den
+     * 36 × 20 mm-Rahmen des PDF verkleinerten Bilder (die Originale reisen
+     * nie, siehe PdfImageThumbnailService).
+     *
+     * Wie dort werden Artikel OHNE Bild gar nicht erst gelesen: sie stehen mit
+     * leerer Zeichenkette statt NULL in der Spalte, und ohne den `notIn`-Filter
+     * kämen sie als Bildzeilen zurück, die das PDF sofort wegwirft.
+     */
+    async getProductImages(req, res) {
+        try {
+            const raw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+            const ids = [...new Set(raw.map((value) => String(value || '').trim()).filter(Boolean))];
+            if (ids.length === 0)
+                return res.status(200).json([]);
+            const tenantId = req.user.tenantId;
+            const articles = await prisma_client_1.default.article.findMany({
+                where: { tenantId, id: { in: ids }, imageUrl: { not: null, notIn: [''] } },
+                select: { id: true, updatedAt: true },
+            });
+            res.status(200).json(await (0, PdfImageThumbnailService_1.getArticleThumbnails)(tenantId, articles));
         }
         catch (error) {
             res.status(400).json({ error: error.message });

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requireAnyPermission } from '../middlewares/RbacMiddleware';
+import { denyTechnicianOnly } from '../middlewares/TechnicianGuard';
 import { FormController } from '../controllers/FormController';
 
 /* Checklisten / Formulare / Vorlagen (Modul im CRM).
@@ -9,7 +10,13 @@ import { FormController } from '../controllers/FormController';
    crm.routes.ts / dashboard.routes.ts). Lesen ist für jede angemeldete Person
    des Mandanten offen (Techniker brauchen die Formulare am Termin), Schreiben
    verlangt eine der Rollen, die im CRM, im Verkauf, im Projekt oder im Feld
-   arbeiten. Vorlagen pflegt das Büro (CRM/Projekt/Admin-Rechte). */
+   arbeiten. Vorlagen pflegt das Büro (CRM/Projekt/Admin-Rechte).
+
+   ANLEGEN und LÖSCHEN einer Checkliste ist seit dem 02.09.2026 Sache des
+   Büros (Vorgabe Samet: «Techniker sollen keine Checklisten anlegen, nur
+   ausfüllen oder ansehen»): eine Technikerrolle — «Montage» als einzige
+   Arbeitsfläche, siehe TechnicianGuard — wird an diesen beiden Wegen
+   abgewiesen, das AUSFÜLLEN (PUT) und die Einsatz-Hinweise bleiben ihr offen. */
 
 const router = Router();
 const controller = new FormController();
@@ -44,9 +51,9 @@ router.get('/context/:kind/:id', requireAuth, (req, res) => controller.getContex
 router.get('/submissions', requireAuth, (req, res) => controller.listSubmissions(req, res));
 router.get('/submissions/:id', requireAuth, (req, res) => controller.getSubmission(req, res));
 router.get('/submissions/:id/visibility', requireAuth, (req, res) => controller.getSubmissionVisibility(req, res));
-router.post('/submissions', requireAuth, canWriteSubmissions, (req, res) => controller.createSubmission(req, res));
+router.post('/submissions', requireAuth, canWriteSubmissions, denyTechnicianOnly, (req, res) => controller.createSubmission(req, res));
 router.put('/submissions/:id', requireAuth, canWriteSubmissions, (req, res) => controller.updateSubmission(req, res));
-router.delete('/submissions/:id', requireAuth, canWriteSubmissions, (req, res) => controller.deleteSubmission(req, res));
+router.delete('/submissions/:id', requireAuth, canWriteSubmissions, denyTechnicianOnly, (req, res) => controller.deleteSubmission(req, res));
 
 // Einsatz-Hinweise
 router.get('/notes', requireAuth, (req, res) => controller.listNotes(req, res));

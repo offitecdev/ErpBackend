@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.mayReachWholeCompanyTree = exports.clearTenantSwitchAccessCache = exports.invalidateTenantSwitchAccess = void 0;
+exports.mayReachWholeCompanyTree = exports.clearTenantSwitchAccessCache = exports.invalidateTenantSwitchAccess = exports.tenantSwitchAccessCacheStats = void 0;
 /**
  * ── WER DEN GANZEN KONZERNBAUM ERREICHT (31.08.2026, Vorgabe) ────────────────
  *
@@ -39,9 +39,13 @@ exports.mayReachWholeCompanyTree = exports.clearTenantSwitchAccessCache = export
  */
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../infrastructure/database/prisma.client"));
+const ttlCache_1 = require("./ttlCache");
 const TENANT_SWITCH_CACHE_TTL_MS = 60_000;
-const cache = new Map();
+/* Begrenzt und selbstkehrend — siehe ttlCache.ts. */
+const cache = new ttlCache_1.TtlCache({ name: 'tenantSwitchAccess', ttlMs: TENANT_SWITCH_CACHE_TTL_MS });
 const inFlight = new Map();
+const tenantSwitchAccessCacheStats = () => cache.stats();
+exports.tenantSwitchAccessCacheStats = tenantSwitchAccessCacheStats;
 const invalidateTenantSwitchAccess = (employeeId) => {
     cache.delete(employeeId);
     inFlight.delete(employeeId);
@@ -59,10 +63,10 @@ exports.clearTenantSwitchAccessCache = clearTenantSwitchAccessCache;
 const mayReachWholeCompanyTree = async (employeeId) => {
     const cached = cache.get(employeeId);
     if (cached && cached.expiresAt > Date.now())
-        return cached.allowed;
+        return cached.value;
     const pending = inFlight.get(employeeId);
     if (pending)
-        return cached ? cached.allowed : pending;
+        return cached ? cached.value : pending;
     // Eine Anweisung, ein Join: die verschachtelte include-Kette
     // (EmployeeRole → Role) kostete hier einen zweiten Rundgang zur fernen
     // Datenbank — siehe RoleRepository, gleiche Ueberlegung.
@@ -76,7 +80,7 @@ const mayReachWholeCompanyTree = async (employeeId) => {
             LIMIT 1
         `);
         const allowed = rows.length > 0;
-        cache.set(employeeId, { expiresAt: Date.now() + TENANT_SWITCH_CACHE_TTL_MS, allowed });
+        cache.set(employeeId, allowed);
         return allowed;
     })().finally(() => {
         inFlight.delete(employeeId);
@@ -86,7 +90,7 @@ const mayReachWholeCompanyTree = async (employeeId) => {
     // sofort zurueck, die Auffrischung laeuft dahinter (stale-while-revalidate).
     // Ein ENTZOGENES Recht wirkt trotzdem sofort, weil jede Rollenaenderung den
     // Eintrag LOESCHT statt ihn auslaufen zu lassen.
-    return cached ? cached.allowed : request;
+    return cached ? cached.value : request;
 };
 exports.mayReachWholeCompanyTree = mayReachWholeCompanyTree;
 //# sourceMappingURL=tenantSwitchAccess.js.map

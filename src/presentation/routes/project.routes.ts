@@ -147,8 +147,18 @@ router.delete('/:id/sales-orders/:salesOrderId', requirePermission('projects.man
 router.post('/:id/addon-order-requests', requireAnyPermission(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.requestAddonOrder(req, res));
 router.patch('/addon-order-requests/:requestId', requirePermission('projects.createAddonOrder'), (req, res) => controller.resolveAddonRequest(req, res));
 
-// Projeyi tüm operasyonel kayıtlarıyla siler (faturalanmış proje silinemez).
-// Daha özgül DELETE yolları üstte kayıtlı olduğundan '/:id' onları GÖLGELEMEZ.
+/* ── LÖSCHEN / STORNO (Vorgabe Samet 06.09.2026) ──────────────────────────────
+   `GET  /:id/lifecycle` — was an diesem Projekt erlaubt ist, und warum nicht.
+   `POST /:id/cancel`    — stornieren (nur ohne aktiven Auftrag; sonst fällt das
+                           Projekt von selbst mit seinem letzten Auftrag).
+   `POST /:id/uncancel`  — Storno aufheben. */
+router.get('/:id/lifecycle', requirePermission('projects.view'), (req, res) => controller.projectLifecycle(req, res));
+router.post('/:id/cancel', requirePermission('projects.manage'), (req, res) => controller.cancelProject(req, res));
+router.post('/:id/uncancel', requirePermission('projects.manage'), (req, res) => controller.uncancelProject(req, res));
+
+// Projeyi siler — YALNIZCA hiçbir bağlı kayıt kalmadıysa (sipariş, fatura,
+// rapor, stok hareketi). Daha özgül DELETE yolları üstte kayıtlı olduğundan
+// '/:id' onları GÖLGELEMEZ.
 router.delete('/:id', requirePermission('projects.manage'), (req, res) => controller.deleteProject(req, res));
 
 export default router;

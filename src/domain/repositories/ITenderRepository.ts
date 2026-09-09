@@ -3,7 +3,7 @@ import {Tender} from "../entities/Tender";
 export interface ITenderFilter{
     tenantId?: string;
     customerId?: string;
-    status?: 'Draft' | 'Approved' | 'Exported';
+    status?: 'Draft' | 'Approved' | 'Exported' | 'Cancelled';
     search?: string;
     // Kolon bazlı filtreler (liste başlığı altındaki filtre satırı) — sunucuda daraltır.
     tenderNumber?: string;
@@ -58,6 +58,9 @@ export interface TenderListRow {
     offerAcceptedAt: Date | null;
     // "Kommission" — Freitext des Kunden; die Liste zeigt ihn als eigene Spalte.
     commissionNumber: string | null;
+    // STORNO (06.09.2026): eine stornierte Offerte bleibt in der Liste stehen —
+    // sie traegt nur ihren eigenen Status statt "Entwurf"/"Auftrag".
+    cancelledAt: Date | null;
     positionCount: number;
     grandTotal: number;
     /* ── Herkunft aus der OSP (19.09.2026) ──────────────────────────────────
@@ -99,7 +102,7 @@ export interface ITenderRepository{
     findAll(
         filter: ITenderFilter
     ): Promise<TenderListItem[] | PaginatedResult<TenderListItem> | TenderListRow[] | PaginatedResult<TenderListRow>>;
-    updateStatus(id:string , status:'Draft' | 'Approved' | 'Exported', tenantId:string): Promise<Tender>;
+    updateStatus(id:string , status:'Draft' | 'Approved' | 'Exported' | 'Cancelled', tenantId:string): Promise<Tender>;
     createNextVersion(tenderId:string , newCreatedBy:string, tenantId:string): Promise<Tender>;
     /** Kopie als EIGENER Beleg: frische AN-Nummer, Version 1, Entwurf. */
     duplicate(tenderId: string, newCreatedBy: string, tenantId: string): Promise<Tender>;

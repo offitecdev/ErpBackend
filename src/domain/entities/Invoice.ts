@@ -31,6 +31,15 @@ export interface InvoiceLineItem {
     unit?: string | null;
     /** Platz auf dem Beleg. */
     sortOrder?: number;
+    /**
+     * ── WIE AUF DER OFFERTE ────────────────────────────────────────────────
+     * Die Positionstabelle des Belegs IST die des Angebots, also traegt die
+     * Zeile dieselben Felder: die Beschreibung unter der Bezeichnung und den
+     * Zeilenrabatt (Stapel + abgeleiteter Prozentwert).
+     */
+    longDescription?: string | null;
+    discounts?: string | null;
+    discount?: number | null;
 }
 
 export interface Invoice {
@@ -56,6 +65,22 @@ export interface Invoice {
     recipientAddress?: string | null;
     introText?: string | null;
     vatRate?: number | null;
+    /**
+     * ── DIE DREI ABSCHNITTE DES BELEGS (05.09.2026) ────────────────────────
+     * Positionen · Rabatt · Schlusstext. Jeder darf entfernt werden und ist
+     * dann AUCH nicht mehr im PDF. Gespeichert als JSON-Objekt; NULL heisst
+     * "alle drei" (so bleiben aeltere Rechnungen unveraendert).
+     */
+    sections?: string | null;
+    /** Rabattstapel des Belegs — Form wie `Tender.totalDiscounts`. */
+    discounts?: string | null;
+    /** Absatz unter der Summe. Leer = der Satz aus den Firmeneinstellungen. */
+    closingText?: string | null;
+    /** Gedruckte Absenderzeile; der QR-Glaeubiger bleibt aus den Einstellungen. */
+    senderAddress?: string | null;
+    paymentStages?: string | null;
+    /** Zahlungseingang — gesetzt beim Markieren als bezahlt. */
+    paidAt?: Date | null;
     issuedByEmployeeId: string;
     createdAt: Date;
     updatedAt: Date;

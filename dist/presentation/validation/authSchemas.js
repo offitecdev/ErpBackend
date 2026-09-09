@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.passwordResetConfirmSchema = exports.tokenConfirmSchema = exports.emailRequestSchema = exports.loginSchema = exports.strongPasswordSchema = void 0;
+exports.mfaVerifySchema = exports.passwordResetConfirmSchema = exports.tokenConfirmSchema = exports.emailRequestSchema = exports.loginSchema = exports.strongPasswordSchema = void 0;
 const zod_1 = require("zod");
 const password_1 = require("../../application/validation/password");
 /** New passwords must satisfy the central policy (see application/validation/password). */
@@ -32,5 +32,18 @@ exports.tokenConfirmSchema = zod_1.z.object({
 exports.passwordResetConfirmSchema = zod_1.z.object({
     token: tokenSchema,
     newPassword: exports.strongPasswordSchema,
+});
+/**
+ * Der Einmalcode des zweiten Faktors. Absichtlich grosszügig entgegengenommen:
+ * Menschen tippen "482 193" mit Leerzeichen ab, und Aegis' Zwischenablage gibt
+ * den Code je nach Einstellung mit Trennzeichen heraus. Geprüft wird nach dem
+ * Aufräumen — genau sechs Ziffern (siehe shared/totp.ts).
+ */
+exports.mfaVerifySchema = zod_1.z.object({
+    code: zod_1.z
+        .string({ error: 'Kod zorunludur.' })
+        .max(32, 'Kod çok uzun.')
+        .transform((value) => value.replace(/\D/g, ''))
+        .refine((value) => value.length === 6, 'Kod 6 haneli olmalıdır.'),
 });
 //# sourceMappingURL=authSchemas.js.map

@@ -5,12 +5,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.toPwdAtClaim = exports.jwtTokenService = exports.JwtTokenService = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
+const AuthErrors_1 = require("../../application/errors/AuthErrors");
 const SECRET_ENV_VARS = {
     access: 'OFFITEC_JWT_ACCESS_SECRET',
     refresh: 'OFFITEC_JWT_REFRESH_SECRET',
     activation: 'OFFITEC_JWT_ACTIVATION_SECRET',
     password_reset: 'OFFITEC_JWT_PASSWORD_RESET_SECRET',
     account_deletion: 'OFFITEC_JWT_ACCOUNT_DELETION_SECRET',
+    mfa: 'OFFITEC_JWT_MFA_SECRET',
 };
 const TOKEN_TTL = {
     access: '15m',
@@ -18,6 +20,10 @@ const TOKEN_TTL = {
     activation: '24h',
     password_reset: '1h',
     account_deletion: '15m',
+    /* Der Sprung von der Kennwort- zur Codeeingabe. Grosszügig genug, um in
+       Ruhe die App zu installieren und einen Eintrag anzulegen — kurz genug,
+       dass ein liegengelassenes Zwischentoken nichts mehr wert ist. */
+    mfa: '10m',
 };
 class JwtTokenService {
     secretCache = new Map();
@@ -27,6 +33,9 @@ class JwtTokenService {
      * byte-identical to another purpose's secret, so purpose isolation can't be
      * silently broken by a copy-paste in .env.
      */
+    /* ACHTUNG: die Sätze hier sind KEINE PublicError. Sie nennen die Namen der
+       Umgebungsvariablen — bis zur Fehlerbereinigung antwortete die
+       unangemeldete Anmeldung genau damit, wenn ein Geheimnis fehlte. */
     getSecret(purpose) {
         const cached = this.secretCache.get(purpose);
         if (cached)
@@ -64,9 +73,9 @@ class JwtTokenService {
         }
         catch (error) {
             if (error instanceof jsonwebtoken_1.default.TokenExpiredError) {
-                throw new Error('Token süresi dolmuş.');
+                throw new AuthErrors_1.PublicError('Token süresi dolmuş.');
             }
-            throw new Error('Geçersiz token.');
+            throw new AuthErrors_1.PublicError('Geçersiz token.');
         }
         // Defense-in-depth: the purpose-specific secret already rejects foreign
         // tokens, but the typ claim is checked as well.
@@ -77,7 +86,15 @@ class JwtTokenService {
             typeof decoded.tenantId !== 'string' ||
             typeof decoded.email !== 'string' ||
             typeof decoded.pwdAt !== 'number') {
-            throw new Error('Geçersiz token içeriği.');
+            throw new AuthErrors_1.PublicError('Geçersiz token içeriği.');
+        }
+        /* Ein Erneuerungstoken MUSS auf eine offene Anmeldung zeigen
+           (RefreshSessionService). Ohne diese Kennungen ist es eines aus der
+           Zeit vor der Sitzungsführung — es gilt nicht mehr, denn genau seine
+           Unwiderrufbarkeit war der Mangel. Beim Aufspielen meldet sich jede
+           angemeldete Person deshalb einmal neu an. */
+        if (purpose === 'refresh' && (typeof decoded.jti !== 'string' || typeof decoded.sid !== 'string')) {
+            throw new AuthErrors_1.PublicError('Oturum sonlandırılmış. Lütfen tekrar giriş yapın.');
         }
         return decoded;
     }

@@ -1,5 +1,6 @@
 import { IEmployeeRepository } from "../../../domain/repositories/IEmployeeRepository";
 import { Employee } from "../../../domain/entities/Employee";
+import { PublicError } from "../../errors/AuthErrors";
 
 export class UpdateEmployeeUseCase {
     constructor(private employeeRepository: IEmployeeRepository) {}
@@ -7,7 +8,7 @@ export class UpdateEmployeeUseCase {
     async execute(id: string, data: Partial<Employee>): Promise<Employee> {
         const existing = await this.employeeRepository.findById(id);
         if (!existing) {
-            throw new Error("Personel bulunamadı.");
+            throw new PublicError("Personel bulunamadı.");
         }
 
         if (data.terminationDate && !data.isActive) {

@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ResetPasswordUseCase = exports.RequestPasswordResetUseCase = void 0;
 const JwtTokenService_1 = require("../../../infrastructure/services/JwtTokenService");
 const password_1 = require("../../validation/password");
+const AuthErrors_1 = require("../../errors/AuthErrors");
 /**
  * Sends a password-reset link. Always resolves silently so the endpoint can't
  * be used to probe which e-mail addresses exist.
@@ -46,13 +47,13 @@ class ResetPasswordUseCase {
         const decoded = this.tokenService.verifyToken('password_reset', token);
         const employee = await this.employeeRepo.findById(decoded.id);
         if (!employee || employee.deletedAt)
-            throw new Error("Hesap bulunamadı veya silinmiş.");
+            throw new AuthErrors_1.PublicError("Hesap bulunamadı veya silinmiş.");
         if (!employee.isActive)
-            throw new Error("Hesabınız pasif durumdadır.");
+            throw new AuthErrors_1.PublicError("Hesabınız pasif durumdadır.");
         // pwdAt binding makes a reset link effectively single-use: as soon as the
         // password changes, every link issued before it stops validating.
         if (decoded.pwdAt !== (0, JwtTokenService_1.toPwdAtClaim)(employee.passwordChangedAt)) {
-            throw new Error("Parola sıfırlama bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
+            throw new AuthErrors_1.PublicError("Parola sıfırlama bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
         }
         const passwordHash = await this.cryptoService.hashPassword(newPassword);
         await this.employeeRepo.update(employee.id, {

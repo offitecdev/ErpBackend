@@ -22,7 +22,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.readDocumentText = exports.approxTokens = exports.chunkText = exports.compactText = exports.DocumentReadError = exports.DOCUMENT_MAX_CHARS = exports.DOCUMENT_MAX_BYTES = void 0;
 const ocrSpaceOcr_1 = require("./ocrSpaceOcr");
 /** Ein Beleg ist eine Seite oder ein paar — alles darüber ist ein Versehen. */
-exports.DOCUMENT_MAX_BYTES = 12 * 1024 * 1024;
+/**
+ * ⚠ DIE ZAHL HAENGT AN `express.json({ limit: '15mb' })` IN main.ts.
+ * Ein Beleg reist als Base64, und Base64 ist ein Drittel groesser als die
+ * Datei: 12 MB wurden auf dem Weg zu 16 MB und damit von Express
+ * abgewiesen, BEVOR diese Pruefung ueberhaupt lief — der Anwender bekam
+ * eine nackte 413-Seite statt des Satzes «Der Beleg ist zu gross».
+ * 11 MB * 4/3 = 14.7 MB und passen darunter. Wer die Grenze hebt, muss
+ * beide Zahlen heben.
+ */
+exports.DOCUMENT_MAX_BYTES = 11 * 1024 * 1024;
 /**
  * Obergrenze der Zeichen, die ans Modell gehen. 60'000 Zeichen sind grob
  * 15'000 Token. Wer eine dickere Preisliste hochlädt, bekommt sie in Stücken
@@ -62,12 +71,50 @@ const compactText = (raw) => {
         .replace(/\r\n?/g, '\n')
         .split('\n')
         .map((line) => line
-        // Punktführungen («Artikel .......... 12.50») tragen keine Bedeutung.
-        .replace(/[.·•]{4,}/g, ' ')
-        .replace(/[-_=]{6,}/g, ' ')
-        // Alles an Leerraum wird ein einzelnes Leerzeichen.
-        .replace(/[^\S\n]+/g, ' ')
-        .trim());
+        /* ── DER LEERRAUM IST DIE SPALTE ────────────────────────────────
+           Fehlerbild Samet (08.09.2026): «Alles ist durcheinander — ob
+           Excel oder PNG, die Werte müssen zu ihren Spalten passen.
+           Leerstellen dürfen die Angaben nicht verschieben.»
+
+           Hier stand `.replace(/[^\S\n]+/g, ' ')`: JEDER Lauf von
+           Leerraum wurde EIN Leerzeichen — auch der Tabulator, mit dem
+           die Bestellseite eine Tabelle herschickt, und auch die
+           Kolonnenabstände einer PDF-Textlage.
+
+               «LC1D09BD⇥TeSys Deca…⇥⇥⇥78.10»
+             → «LC1D09BD TeSys Deca… 78.10»
+
+           Die beiden LEEREN Zellen waren damit spurlos fort, und das
+           Modell konnte nicht mehr wissen, in welche Spalte 78.10
+           gehört — es riet, und ab da stand alles eine Spalte zu weit
+           links. Genau die Verschiebung, die gemeldet wurde.
+
+           Jetzt trennt EIN Leerzeichen weiterhin zwei Wörter, aber
+           jeder GRÖSSERE Abstand — zwei Leerzeichen oder ein Tabulator
+           — wird ein Tabulator und bleibt als Spaltengrenze stehen.
+           Eine leere Zelle ist dann zwei Tabulatoren hintereinander,
+           und das lässt sich lesen. Gespart wird trotzdem: aus vierzig
+           Ausrichtungszeichen wird ein einziges. */
+        // Punktführungen («Artikel .......... 12.50») trennen Spalten —
+        // sie tragen keinen Inhalt, aber sehr wohl eine Grenze.
+        .replace(/[.·•]{4,}/g, '\t')
+        .replace(/[-_=]{6,}/g, '\t')
+        /* ⚠ ZWEI TABULATOREN HINTEREINANDER SIND EINE LEERE ZELLE und
+           dürfen NICHT zu einem werden. Darum steht in den beiden
+           Klassen hier KEIN `\t`: geputzt wird der Leerraum NEBEN jedem
+           Tabulator, der Tabulator selbst bleibt jedes Mal stehen. */
+        .replace(/[ \u00a0]*\t[ \u00a0]*/g, '\t')
+        // Ein Abstand ab zwei Zeichen ist eine Spaltengrenze (PDF-Textlage).
+        .replace(/[ \u00a0]{2,}/g, '\t')
+        // Einzelne Leerzeichen bleiben, was sie sind: Worttrenner.
+        .replace(/[ \u00a0]/g, ' ')
+        /* ⚠ NUR RECHTS KÜRZEN. Ein Tabulator am ZEILENANFANG heisst,
+           dass die erste Spalte leer ist — nähme man ihn weg, rückte
+           die ganze Zeile eine Spalte nach links, und das ist genau
+           die Verschiebung, die hier abgestellt wird. Rechts ist es
+           gefahrlos: hinter der letzten Zelle steht nichts mehr. */
+        .replace(/[\t ]+$/g, '')
+        .replace(/^ +/, ''));
     /* WIEDERHOLUNGEN: Was auf jeder Seite gleich dasteht, ist der Briefkopf des
        Lieferanten — einmal reicht. Zeilen MIT Ziffern bleiben unangetastet:
        darunter stehen Preise, Mengen und Artikelnummern, und eine Preiszeile

@@ -12,24 +12,38 @@
 // `requireDates: false` and stores the dates as null (`stripStageDates`); the
 // order's own endpoint keeps demanding a date per instalment.
 //
+// Each instalment may also carry a free text of its own (`label`), so a plan
+// reads as the sentence the customer expects: «50% vor Montage, 50% nach
+// Fertigstellung». It is printed, never calculated, and never validated.
+//
 // Legacy rows hold a bare percent array (`[30,20,10,40]`) from before dates
-// existed. They still parse — the dates come back null.
+// existed. They still parse — dates and texts come back null.
 //
 // Frontend mirror: offitec-frontend/src/lib/paymentSchedule.ts — keep in sync.
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.nextStageInfo = exports.serializePaymentStages = exports.validatePaymentStages = exports.stripStageDates = exports.parsePaymentStages = exports.normalizePaymentStages = exports.isValidStageDate = exports.MAX_PAYMENT_STAGES = void 0;
+exports.nextStageInfo = exports.serializePaymentStages = exports.validatePaymentStages = exports.stripStageDates = exports.parsePaymentStages = exports.normalizePaymentStages = exports.normalizeStageLabel = exports.isValidStageDate = exports.MAX_STAGE_LABEL = exports.MAX_PAYMENT_STAGES = void 0;
 const EPSILON = 0.005;
 exports.MAX_PAYMENT_STAGES = 12;
+/** Freitext einer Rate — gekappt, damit die PDF-Spalte nie überläuft. */
+exports.MAX_STAGE_LABEL = 120;
 const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** True for a complete ISO day that is also a real calendar date. */
 const isValidStageDate = (date) => typeof date === 'string' && ISO_DAY.test(date) && !Number.isNaN(new Date(`${date}T00:00:00`).getTime());
 exports.isValidStageDate = isValidStageDate;
-/** One stored entry — a bare percent (legacy) or a `{ percent, date }` object. */
+/** Getrimmter, gekappter Freitext — Leerstring zählt als «kein Text». */
+const normalizeStageLabel = (value) => {
+    if (typeof value !== 'string')
+        return null;
+    const text = value.trim().slice(0, exports.MAX_STAGE_LABEL);
+    return text || null;
+};
+exports.normalizeStageLabel = normalizeStageLabel;
+/** One stored entry — a bare percent (legacy) or a `{ percent, date, label }` object. */
 const toStage = (entry) => {
     if (typeof entry === 'number' || typeof entry === 'string') {
         const percent = Number(entry);
-        return Number.isFinite(percent) ? { percent, date: null } : null;
+        return Number.isFinite(percent) ? { percent, date: null, label: null } : null;
     }
     if (entry && typeof entry === 'object') {
         const record = entry;
@@ -37,7 +51,11 @@ const toStage = (entry) => {
         if (!Number.isFinite(percent))
             return null;
         const date = typeof record.date === 'string' ? record.date : null;
-        return { percent, date: (0, exports.isValidStageDate)(date) ? date : null };
+        return {
+            percent,
+            date: (0, exports.isValidStageDate)(date) ? date : null,
+            label: (0, exports.normalizeStageLabel)(record.label),
+        };
     }
     return null;
 };
@@ -87,7 +105,11 @@ const validatePaymentStages = (stages, { requireDates = true } = {}) => {
     return null;
 };
 exports.validatePaymentStages = validatePaymentStages;
-const serializePaymentStages = (stages) => JSON.stringify(stages.map((stage) => ({ percent: round2(stage.percent), date: stage.date ?? null })));
+const serializePaymentStages = (stages) => JSON.stringify(stages.map((stage) => ({
+    percent: round2(stage.percent),
+    date: stage.date ?? null,
+    label: (0, exports.normalizeStageLabel)(stage.label),
+})));
 exports.serializePaymentStages = serializePaymentStages;
 const nextStageInfo = (stages, billedPercent, remainingPercent) => {
     let cumulative = 0;

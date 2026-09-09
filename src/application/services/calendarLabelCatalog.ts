@@ -107,3 +107,44 @@ export const resolveNewLabelId = async (
     await listLabels(tenantId);
     return roleLabelId(tenantId, role);
 };
+
+/**
+ * DAS STATUS-ETIKETT FOLGT DEM TAG (03.09.2026).
+ *
+ * Vorgabe Samet: «Auf dem Kalender muss man SEHEN, was ein Termin ist — ein
+ * vergangener ist abgeschlossen, einer von heute laufend, einer von morgen
+ * geplant.» Die Farbe einer Karte ist ihr Etikett (CalendarPage, 25.08.2026);
+ * also trägt ein Termin das Etikett der Rolle, die zu seinem Tag passt
+ * (shared/appointmentDay.ts, labelRoleForAppointmentDay), und wechselt es,
+ * wenn der Tag weitergeht.
+ *
+ * Aber nur, wenn er bis dahin ein STATUS-Etikett trug — «geplant», «laufend»
+ * oder «abgeschlossen» — oder gar keines. Ein von Hand gewähltes Farbetikett
+ * und die Besprechung bleiben, was sie sind: die Rolle sperrt nichts, und
+ * eine bewusste Wahl wird nicht überschrieben. Ist das Etikett der Zielrolle
+ * ausgeblendet, bleibt ebenfalls alles.
+ *
+ * Rückgabe: ein Teil von `data` für `appointment.update` — leer, wenn nichts
+ * zu ändern ist. Der Tagesabschluss (MaintenanceReminderService) wendet
+ * dieselbe Regel gebündelt auf den Bestand an.
+ */
+export const STATUS_LABEL_ROLES: ReadonlyArray<CalendarLabelRole> = ['PLANNED', 'ONGOING', 'DONE'];
+
+export const dayLabelPatch = async (
+    tenantId: string,
+    currentLabelId: string | null | undefined,
+    role: CalendarLabelRole,
+): Promise<{ labelId?: string }> => {
+    const target = await roleLabelId(tenantId, role);
+    if (!target || target === currentLabelId) return {};
+    if (currentLabelId) {
+        const current = await prisma.calendarLabel.findFirst({ where: { id: currentLabelId, tenantId }, select: { role: true } });
+        // Ein fremdes oder gelöschtes Etikett zählt wie keines.
+        if (current && !(STATUS_LABEL_ROLES as ReadonlyArray<string>).includes(current.role || '')) return {};
+    }
+    return { labelId: target };
+};
+
+/** Der Abschluss durch Monteur oder Verantwortlichen: Etikett «abgeschlossen». */
+export const completedLabelPatch = (tenantId: string, currentLabelId: string | null | undefined) =>
+    dayLabelPatch(tenantId, currentLabelId, 'DONE');

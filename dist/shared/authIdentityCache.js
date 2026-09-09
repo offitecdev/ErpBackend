@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getAuthIdentity = exports.clearAuthIdentityCache = exports.invalidateAuthIdentity = void 0;
+exports.getAuthIdentity = exports.clearAuthIdentityCache = exports.invalidateAuthIdentity = exports.authIdentityCacheStats = void 0;
 /**
  * `requireAuth`'ın her istekte okuduğu hesap durumunun kısa ömürlü önbelleği.
  *
@@ -19,9 +19,14 @@ exports.getAuthIdentity = exports.clearAuthIdentityCache = exports.invalidateAut
  * 60 sn ile aynı ödünleşimi yapıyor; burada daha kısa bir pencere seçildi.
  */
 const prisma_client_1 = __importDefault(require("../infrastructure/database/prisma.client"));
+const ttlCache_1 = require("./ttlCache");
 const AUTH_IDENTITY_TTL_MS = 30_000;
-const cache = new Map();
+/* Begrenzt und selbstkehrend (siehe ttlCache.ts): vorher wuchs diese Map bis
+   zum Neustart, weil die Lebensdauer nur gelesen und nie durchgesetzt wurde. */
+const cache = new ttlCache_1.TtlCache({ name: 'authIdentity', ttlMs: AUTH_IDENTITY_TTL_MS });
 const inFlight = new Map();
+const authIdentityCacheStats = () => cache.stats();
+exports.authIdentityCacheStats = authIdentityCacheStats;
 const invalidateAuthIdentity = (employeeId) => {
     cache.delete(employeeId);
     inFlight.delete(employeeId);
@@ -35,10 +40,10 @@ exports.clearAuthIdentityCache = clearAuthIdentityCache;
 const getAuthIdentity = async (employeeId) => {
     const cached = cache.get(employeeId);
     if (cached && cached.expiresAt > Date.now())
-        return cached.identity;
+        return cached.value;
     const pending = inFlight.get(employeeId);
     if (pending)
-        return cached ? cached.identity : pending;
+        return cached ? cached.value : pending;
     const request = prisma_client_1.default.employee
         .findUnique({
         where: { id: employeeId },
@@ -58,10 +63,7 @@ const getAuthIdentity = async (employeeId) => {
         // negatif bir kayda takılmamalı. Eski kaydı da düşür ki bayat
         // kimlik süresiz servis edilmesin.
         if (employee) {
-            cache.set(employeeId, {
-                expiresAt: Date.now() + AUTH_IDENTITY_TTL_MS,
-                identity: employee,
-            });
+            cache.set(employeeId, employee);
         }
         else {
             cache.delete(employeeId);
@@ -77,7 +79,7 @@ const getAuthIdentity = async (employeeId) => {
     // `invalidateAuthIdentity` ile kaydı SİLDİĞİ için bir sonraki istek bloklu
     // taze okumaya düşer — anında etki bozulmaz; TTL yalnızca süreç dışı
     // değişikliklerde ~tazeleme süresi kadar esner.
-    return cached ? cached.identity : request;
+    return cached ? cached.value : request;
 };
 exports.getAuthIdentity = getAuthIdentity;
 //# sourceMappingURL=authIdentityCache.js.map

@@ -13,6 +13,30 @@ import { ProjectReportRepository } from '../../infrastructure/repositories/Proje
 import prisma from '../../infrastructure/database/prisma.client';
 import { notifyProjectEvent } from '../../infrastructure/services/projectEventNotifications';
 import { adjustArticleStock, articleStockTotal } from '../../shared/articleStock';
+// Auftrag/Projekt zurücknehmen — die Regeln stehen EINMAL in `shared`, weil
+// sie auch von `DELETE /sales-orders/:id` (Lieferauftrag) gebraucht werden.
+import {
+    assertSalesOrderDeletable,
+    deleteSalesOrderWithin,
+    purgeProjectWithin,
+    revertTendersToDraft,
+} from '../../shared/salesOrderDeletion';
+// Löschen / Storno / zurück in den Entwurf — WAS erlaubt ist, entscheidet
+// `documentLifecycle`; die Projektseite handelt damit an genau denselben
+// Regeln wie die Auftragsansicht.
+// Die Absagen der Termine einer Auftragsfamilie sammelt die Auftragsansicht —
+// beide Wege benutzen denselben Helfer, sonst blieben Einladungen stehen.
+import { collectFamilyAppointmentCancellations } from './SalesOrderController';
+import {
+    assertProjectCancellable,
+    assertProjectDeletable,
+    assertSalesOrderRevertible,
+    cancelProjectWithin,
+    readProjectLifecycle,
+    readSalesOrderLifecycle,
+    revertSalesOrderToDraftWithin,
+    uncancelProjectWithin,
+} from '../../shared/documentLifecycle';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { dispatchMail } from '../../infrastructure/services/outlook/MailDispatchService';
 import {
@@ -24,7 +48,7 @@ import {
 } from '../../infrastructure/services/calendarMailService';
 import { appointmentDocumentStorage } from '../../infrastructure/services/LocalFileStorage';
 import { getMailTenantId, getPersonnelTenantScope, employeeScopeWhere } from './serviceTenantScope';
-import { resolveNewLabelId, sanitizeLabelId } from '../../application/services/calendarLabelCatalog';
+import { resolveNewLabelId, sanitizeLabelId, completedLabelPatch, dayLabelPatch } from '../../application/services/calendarLabelCatalog';
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import {
     assertDaysAvailable,
@@ -40,6 +64,7 @@ import {
 } from './appointmentSeries';
 import { nanoid } from 'nanoid';
 import { nextDocumentNumber } from '../../shared/documentNumber';
+import { statusForAppointmentDay, labelRoleForAppointmentDay } from '../../shared/appointmentDay';
 
 const smtp = new SmtpMailService();
 
@@ -65,68 +90,6 @@ const appointmentDocumentDto = async (document: any) => {
         throw Object.assign(new Error('Belge deposu yapılandırılmamış; belge için URL oluşturulamadı.'), { status: 503 });
     }
     return { ...metadata, url };
-};
-
-/**
- * DER AUFTRAG IST WEG → DIE OFFERTE IST WIEDER EIN ENTWURF (Benutzerregel
- * 29.08.2026: «wird das Projekt gelöscht, verschwindet es aus den Aufträgen und
- * wird wieder ein Entwurf»).
- *
- * `createFromTender` stempelt beim Eröffnen DREI Dinge auf die Offerte —
- * `status: 'Approved'`, `sourceStatus: 'Verkaufsauftrag'` und `projectId` —,
- * und genau diese drei werden hier zurückgenommen. Alle drei müssen weg:
- *
- *  • `status` sperrt die Offerte gegen jede Bearbeitung (überall im
- *    TenderController steht `if (tender.status !== 'Draft')`), sie wäre also
- *    unbrauchbar und trotzdem auftragslos.
- *  • `projectId` UND `sourceStatus` entscheiden zusammen, in welchem Topf die
- *    Offertliste die Zeile zeigt (`TenderRepository.buildLeanWhere`:
- *    `orderState = 'draft'` verlangt `projectId IS NULL` UND einen
- *    sourceStatus ausserhalb von ORDER_SOURCE_VALUES). Bliebe eines von
- *    beiden stehen, stünde die Offerte weiter unter «Auftrag» — bei einem
- *    Auftrag, den es nicht mehr gibt.
- *
- * `Tender.projectId` ist übrigens KEIN Fremdschlüssel (die Beziehung hängt an
- * `Project.tenderId`), das Löschen des Projekts räumt die Spalte also NICHT
- * von selbst auf — sie zeigt danach auf eine Zeile, die es nicht mehr gibt.
- */
-const revertTendersToDraft = async (
-    tx: any,
-    tenantId: string,
-    employeeId: string,
-    tenderIds: Array<string | null | undefined>,
-    description: string,
-): Promise<void> => {
-    const ids = [...new Set(tenderIds.filter(Boolean) as string[])];
-    if (!ids.length) return;
-
-    // Die alten Zustände für das Protokoll — vor dem Überschreiben gelesen.
-    const before: any[] = await tx.tender.findMany({
-        where: { id: { in: ids }, tenantId },
-        select: { id: true, status: true },
-    });
-    if (!before.length) return;
-
-    await tx.tender.updateMany({
-        where: { id: { in: before.map((row: any) => row.id) }, tenantId },
-        data: { status: 'Draft', sourceStatus: null, projectId: null },
-    });
-
-    // Die Offerte darf nicht stillschweigend zurückfallen: ihr Verlauf trägt
-    // die Eröffnung des Auftrags, also auch dessen Rücknahme.
-    await tx.tenderActivityLog.createMany({
-        data: before.map((row: any) => ({
-            id: nanoid(12),
-            tenantId,
-            tenderId: row.id,
-            employeeId,
-            actionType: 'SALES_ORDER_DELETED',
-            fieldName: 'status',
-            oldValue: row.status,
-            newValue: 'Draft',
-            description,
-        })),
-    });
 };
 
 type NotificationPayload = {
@@ -1995,7 +1958,7 @@ export class ProjectController {
             const customerEmail = (project as any).customer?.mainEmail || "";
             const to = String(req.body.to || customerEmail || "").trim();
             const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user!.email || "").trim();
-            const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";
+            const fromName = req.body.fromName || settings?.fromName || "Offitec Control Center";
             const subject = String(req.body.subject || `${project.projectName} - Montaj randevusu`).trim();
             const message = req.body.message || "Lütfen size uygun montaj saatini seçin.";
 
@@ -2656,7 +2619,7 @@ export class ProjectController {
                 const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(req.user!.tenantId) } });
                 const to = String(req.body.to || report.project?.customer?.mainEmail || "").trim();
                 const fromEmail = String(req.body.fromEmail || settings?.fromEmail || req.user!.email || "").trim();
-                const fromName = req.body.fromName || settings?.fromName || "Offitec ERP";
+                const fromName = req.body.fromName || settings?.fromName || "Offitec Control Center";
                 const subject = String(req.body.subject || `${report.project?.projectName || "Proje"} - saha raporu imzası`).trim();
                 const message = String(req.body.message || "Saha raporunuz imza için hazır. Lütfen Offitec ekibiyle birlikte raporu kontrol edip imzalayın.").trim();
                 if (!to) return res.status(400).json({ error: "Müşteri e-posta adresi bulunamadı." });
@@ -2864,7 +2827,8 @@ export class ProjectController {
 
             await (prisma as any).appointment.update({
                 where: { id: appointment.id },
-                data: { status: "COMPLETED" },
+                // Mit dem Abschluss wechselt die Karte auf «abgeschlossen» (03.09.2026).
+                data: { status: "COMPLETED", ...(await completedLabelPatch(req.user!.tenantId, appointment.labelId)) },
             });
 
             // Finishing as administrator also approves the report's worked-hours / overtime.
@@ -3154,6 +3118,94 @@ export class ProjectController {
      * Faturalanmış proje silinemez (iptal edilmiş fatura dahil) — sipariş
      * silmedeki kuralın aynısı.
      */
+    /**
+     * Was mit diesem Projekt geschehen darf — löschen, stornieren, oder weder
+     * noch. Die Projektseite fragt beim Öffnen einmal und zeigt danach nur die
+     * Einträge, die auch durchgehen.
+     */
+    async projectLifecycle(req: Request, res: Response) {
+        try {
+            const projectId = req.params.id as string;
+            const tenantId = req.user!.tenantId;
+            const project: any = await (prisma as any).project.findFirst({
+                where: { id: projectId, tenantId },
+                select: { id: true, tenantId: true, status: true, cancelledAt: true, cancelReason: true },
+            });
+            if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
+
+            const lifecycle = await readProjectLifecycle(prisma as any, project);
+            res.json({ ...lifecycle, status: project.status, cancelReason: project.cancelReason ?? null });
+        } catch (error: any) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * PROJEKT STORNIEREN. Von oben geht das nur, wenn kein AKTIVER Auftrag mehr
+     * darin steht (leere Planung, oder alle Aufträge schon storniert) — im
+     * Normalfall fällt das Projekt von selbst, sobald sein letzter aktiver
+     * Auftrag storniert wird. So kann ein Projekt nie stornierte Aufträge
+     * überleben und umgekehrt (Vorgabe Samet 06.09.2026).
+     */
+    async cancelProject(req: Request, res: Response) {
+        try {
+            const projectId = req.params.id as string;
+            const tenantId = req.user!.tenantId;
+            const project: any = await (prisma as any).project.findFirst({
+                where: { id: projectId, tenantId },
+                select: { id: true, tenantId: true, status: true, cancelledAt: true },
+            });
+            if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
+
+            const lifecycle = await readProjectLifecycle(prisma as any, project);
+            assertProjectCancellable(lifecycle);
+
+            const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
+            await (prisma as any).$transaction(async (tx: any) => cancelProjectWithin(tx, {
+                projectId, tenantId, employeeId: req.user!.id, reason,
+            }));
+
+            res.json({ projectId, cancelled: true });
+        } catch (error: any) {
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
+        }
+    }
+
+    /** Storno des Projekts aufheben. */
+    async uncancelProject(req: Request, res: Response) {
+        try {
+            const projectId = req.params.id as string;
+            const tenantId = req.user!.tenantId;
+            const project: any = await (prisma as any).project.findFirst({
+                where: { id: projectId, tenantId },
+                select: { id: true, tenantId: true, status: true, cancelledAt: true },
+            });
+            if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
+            if (project.status !== 'CANCELLED' && !project.cancelledAt) {
+                return res.status(400).json({ error: 'Dieses Projekt ist nicht storniert.' });
+            }
+
+            const orders = await (prisma as any).salesOrder.count({ where: { projectId, tenantId } });
+            await (prisma as any).$transaction(async (tx: any) => uncancelProjectWithin(tx, {
+                projectId, tenantId, hasOrders: orders > 0,
+            }));
+
+            res.json({ projectId, cancelled: false });
+        } catch (error: any) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * PROJEKT LÖSCHEN. Seit dem 06.09.2026 nur noch, wenn an ihm NICHTS mehr
+     * hängt: kein Auftrag, keine Rechnung, kein Rapport, keine Lagerbewegung.
+     * Der Weg dahin führt über die Aufträge — jeder einzelne geht «zurück in
+     * den Entwurf» —, und was übrigbleibt, ist eine leere Planung.
+     *
+     * Vorher riss das Löschen des Projekts jeden Auftrag samt Rapporten,
+     * Terminen und Spesen mit; das war genau die «offizielle Zeile still
+     * entfernen», die die Vorgabe unterbindet.
+     */
     async deleteProject(req: Request, res: Response) {
         try {
             const projectId = req.params.id as string;
@@ -3162,91 +3214,42 @@ export class ProjectController {
             const project: any = await (prisma as any).project.findFirst({
                 where: { id: projectId, tenantId },
                 // tenderId: die Offerte des Projekts geht mit zurück in den Entwurf.
-                select: { id: true, tenderId: true },
+                select: { id: true, tenantId: true, tenderId: true, status: true, cancelledAt: true },
             });
             if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
 
-            const orders: any[] = await (prisma as any).salesOrder.findMany({
-                where: { projectId, tenantId },
-                select: { id: true, tenderId: true, orderNumber: true },
-            });
-            const orderIds = orders.map((order) => order.id);
-            const invoiceCount = await (prisma as any).invoice.count({
-                where: {
-                    OR: [
-                        { projectId },
-                        ...(orderIds.length ? [{ salesOrderId: { in: orderIds } }] : []),
-                    ],
-                },
-            });
-            if (invoiceCount > 0) {
-                return res.status(400).json({ error: "Faturalandırılmış bir proje silinemez." });
-            }
+            const lifecycle = await readProjectLifecycle(prisma as any, project);
+            assertProjectDeletable(lifecycle);
 
             await (prisma as any).$transaction(async (tx: any) => {
-                // Stok iadesi silmeden ÖNCE — sipariş silmedeki kuralın aynısı.
-                const extraMaterials: any[] = await tx.projectExtraMaterial.findMany({
-                    where: { projectId },
-                    select: { id: true, articleId: true, quantity: true },
-                });
-                for (const row of extraMaterials) {
-                    await adjustArticleStock(tx, {
-                        tenantId: req.user!.tenantId,
-                        articleId: row.articleId,
-                        employeeId: req.user!.id,
-                        quantity: Number(row.quantity || 0),
-                        direction: 'IN',
-                        referenceId: projectId,
-                        description: 'Zusatzmaterial iadesi',
-                    });
-                }
-                if (extraMaterials.length) {
-                    await tx.projectExtraMaterial.deleteMany({ where: { projectId } });
-                }
+                await purgeProjectWithin(tx, { projectId, tenantId, employeeId: req.user!.id });
 
-                // Raporlar randevulardan ÖNCE (rapor→randevu bağı var); rapor
-                // görselleri ve malzemeleri cascade ile düşer.
-                await tx.projectReport.deleteMany({ where: { projectId } });
-                await tx.projectExpense.deleteMany({ where: { projectId } });
-                await tx.appointment.deleteMany({ where: { projectId } });
-                await tx.deliveryReport.deleteMany({ where: { projectId, tenantId } });
-                await tx.signatureRequest.deleteMany({ where: { projectId, tenantId } });
-
-                if (orderIds.length) {
-                    await tx.salesOrder.deleteMany({ where: { id: { in: orderIds } } });
-                }
-
-                await tx.project.delete({ where: { id: projectId } });
-
-                // Mit dem Projekt gehen seine Aufträge — also sind deren Offerten
-                // wieder Entwurf und können erneut zu einem Auftrag werden. Die
-                // Offerte des Projekts selbst ist dabei, auch wenn sie es nie bis
-                // zu einem Auftrag geschafft hat.
-                const orderNumbers = orders.map((order: any) => order.orderNumber).filter(Boolean).join(', ');
+                // Die Offerte des Projekts ist damit projektlos — zurück in den
+                // Entwurf, wie bei jedem anderen Weg zurück.
                 await revertTendersToDraft(
                     tx,
                     tenantId,
                     req.user!.id,
-                    [project.tenderId, ...orders.map((order: any) => order.tenderId)],
-                    orderNumbers
-                        ? `Proje silindi; ${orderNumbers} kaldirildi, teklif taslaga dondu.`
-                        : 'Proje silindi; teklif taslaga dondu.',
+                    [project.tenderId],
+                    'Proje silindi; teklif taslaga dondu.',
                 );
-
-                // Sicherheitsnetz: `Tender.projectId` ist kein Fremdschlüssel, eine
-                // vergessene Verknüpfung zählte sonst weiter als «Auftrag».
-                await tx.tender.updateMany({
-                    where: { projectId, tenantId },
-                    data: { projectId: null },
-                });
             });
 
             res.status(204).send();
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
         }
     }
 
+    /**
+     * Einen Auftrag des Projekts zurücknehmen — von der Projektseite aus.
+     *
+     * Vorgabe Samet (06.09.2026, §5): «Auf dem Projektbildschirm darf ein Knopf
+     * stehen, aber er handelt am jeweiligen AUFTRAG.» Genau das tut diese
+     * Adresse: sie prüft nur noch, dass der Auftrag zu diesem Projekt gehört,
+     * und übergibt an dieselben Regeln, die die Auftragsansicht benutzt —
+     * Hauptauftrag zurück in den Entwurf, Nachtrag ohne Rechnung weg.
+     */
     async deleteSalesOrder(req: Request, res: Response) {
         try {
             const projectId = req.params.id as string;
@@ -3258,137 +3261,40 @@ export class ProjectController {
             });
             if (!order) return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
 
-            const isAddon = Boolean(order.parentSalesOrderId);
-
-            // Deleting a main order removes its addon orders with it, so the whole
-            // family (order + addons) must be un-billed before anything is deleted.
-            const addons: any[] = isAddon
-                ? []
-                : await (prisma as any).salesOrder.findMany({
-                    where: { parentSalesOrderId: order.id, projectId, tenantId },
-                    select: { id: true },
-                });
-            const familyIds = [order.id, ...addons.map((addon) => addon.id)];
-            const invoiceCount = await (prisma as any).invoice.count({ where: { salesOrderId: { in: familyIds } } });
-            if (invoiceCount > 0) {
-                return res.status(400).json({ error: "Faturalandırılmış bir sipariş silinemez." });
+            if (!order.parentSalesOrderId) {
+                const lifecycle = await readSalesOrderLifecycle(prisma as any, order, tenantId);
+                assertSalesOrderRevertible(lifecycle);
+                // Mit dem Auftrag fallen seine Termine — die Absagen VOR dem
+                // Schnitt einsammeln, verschicken erst danach (derselbe Weg wie
+                // in der Auftragsansicht).
+                const cancellations = await collectFamilyAppointmentCancellations(lifecycle.familyIds, tenantId);
+                const result = await (prisma as any).$transaction(async (tx: any) => revertSalesOrderToDraftWithin(tx, {
+                    order, tenantId, employeeId: req.user!.id, lifecycle,
+                }));
+                for (const cancellation of cancellations) {
+                    queueAppointmentCancellation(cancellation, req.user!.id);
+                }
+                return res.json({ ...result, orderNumber: order.orderNumber, isAddon: false });
             }
 
-            await (prisma as any).$transaction(async (tx: any) => {
-                if (isAddon) {
-                    // EK SİPARİŞ İPTALİ (kullanıcı isteği 2026-08-07): kullanılan
-                    // ek malzemeler STOĞA İADE edilir. Yeni model ekleri kayıtlarını
-                    // kendi id'siyle damgalı taşır; ESKİ ekler için aynı iade, üst
-                    // siparişe damgalı kalmış ZAMAN DİLİMİ kayıtlarına uygulanır
-                    // (önceki ek → bu ek; okuma tarafındaki pencereyle birebir).
-                    const siblings: any[] = await tx.salesOrder.findMany({
-                        where: { parentSalesOrderId: order.parentSalesOrderId, projectId, tenantId, NOT: { id: order.id } },
-                        select: { id: true, createdAt: true },
-                    });
-                    const previousAddon = siblings
-                        .filter((sibling) => new Date(sibling.createdAt).getTime() < new Date(order.createdAt).getTime())
-                        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] || null;
-                    const legacyWindow = {
-                        salesOrderId: order.parentSalesOrderId,
-                        addedAt: {
-                            ...(previousAddon ? { gt: previousAddon.createdAt } : {}),
-                            lte: order.createdAt,
-                        },
-                    };
+            if (order.cancelledAt || order.status === 'CANCELLED') {
+                return res.status(400).json({
+                    error: 'Ein stornierter Nachtrag bleibt als Beleg stehen und wird nicht geloescht.',
+                    blockers: ['CANCELLED'],
+                });
+            }
 
-                    const extraMaterials: any[] = await tx.projectExtraMaterial.findMany({
-                        where: { projectId, OR: [{ salesOrderId: order.id }, legacyWindow] },
-                        select: { id: true, articleId: true, quantity: true },
-                    });
-                    for (const row of extraMaterials) {
-                        await adjustArticleStock(tx, {
-                            tenantId: req.user!.tenantId,
-                            articleId: row.articleId,
-                            employeeId: req.user!.id,
-                            quantity: Number(row.quantity || 0),
-                            direction: 'IN',
-                            referenceId: projectId,
-                            description: 'Zusatzmaterial iadesi',
-                        });
-                    }
-                    if (extraMaterials.length) {
-                        await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((row) => row.id) } } });
-                    }
+            const { familyIds } = await assertSalesOrderDeletable(prisma as any, order, tenantId);
+            const result = await (prisma as any).$transaction(async (tx: any) => deleteSalesOrderWithin(tx, {
+                order,
+                tenantId,
+                employeeId: req.user!.id,
+                familyIds,
+            }));
 
-                    // Gider, rapor ve randevular SİLİNMEZ — saha kaydı yok edilmez.
-                    // Üst siparişe geri damgalanır ve bekleyen havuza döner; bir
-                    // sonraki ek sipariş isterse yeniden faturalar.
-                    const returnStamp = { salesOrderId: order.parentSalesOrderId };
-                    await tx.projectExpense.updateMany({ where: { projectId, salesOrderId: order.id }, data: returnStamp });
-                    await tx.projectReport.updateMany({ where: { projectId, salesOrderId: order.id }, data: returnStamp });
-                    await tx.appointment.updateMany({ where: { projectId, salesOrderId: order.id }, data: returnStamp });
-                }
-
-                if (!isAddon) {
-                    // Records normally carry the parent order id, but sweep the whole
-                    // family in case anything was ever stamped with an addon id.
-                    // Reports own their materials/images via onDelete: Cascade.
-                    const reports: any[] = await tx.projectReport.findMany({
-                        where: { projectId, salesOrderId: { in: familyIds } },
-                        select: { id: true },
-                    });
-                    if (reports.length) {
-                        await tx.projectReport.deleteMany({ where: { id: { in: reports.map((r) => r.id) } } });
-                    }
-
-                    // Restock every extra material before removing it.
-                    const extraMaterials: any[] = await tx.projectExtraMaterial.findMany({
-                        where: { projectId, salesOrderId: { in: familyIds } },
-                        select: { id: true, articleId: true, quantity: true },
-                    });
-                    for (const row of extraMaterials) {
-                        await adjustArticleStock(tx, {
-                            tenantId: req.user!.tenantId,
-                            articleId: row.articleId,
-                            employeeId: req.user!.id,
-                            quantity: Number(row.quantity || 0),
-                            direction: 'IN',
-                            referenceId: projectId,
-                            description: 'Zusatzmaterial iadesi',
-                        });
-                    }
-                    if (extraMaterials.length) {
-                        await tx.projectExtraMaterial.deleteMany({ where: { id: { in: extraMaterials.map((r) => r.id) } } });
-                    }
-
-                    await tx.projectExpense.deleteMany({ where: { projectId, salesOrderId: { in: familyIds } } });
-
-                    // Appointment assignments cascade on Appointment delete.
-                    await tx.appointment.deleteMany({ where: { projectId, salesOrderId: { in: familyIds } } });
-
-                    // Addon orders carry no records of their own (they bill the parent's
-                    // time slice, deleted above) — remove them entirely, not just zeroed.
-                    if (addons.length) {
-                        await tx.salesOrder.deleteMany({ where: { id: { in: addons.map((addon) => addon.id) } } });
-                    }
-                }
-
-                await tx.salesOrder.delete({ where: { id: order.id } });
-
-                // Ein gelöschter HAUPTauftrag lässt seine Offerte auftragslos
-                // zurück — dieselbe Regel wie beim Projekt, sonst bliebe sie
-                // gesperrt und stünde in der Liste unter «Auftrag». Nachträge
-                // (`isAddon`) tragen keine Offerte und lassen den Hauptauftrag
-                // stehen, da ändert sich nichts.
-                if (!isAddon) {
-                    await revertTendersToDraft(
-                        tx,
-                        tenantId,
-                        req.user!.id,
-                        [order.tenderId],
-                        `${order.orderNumber} silindi; teklif taslaga dondu.`,
-                    );
-                }
-            });
-
-            res.status(204).send();
+            res.json({ ...result, projectId, orderNumber: order.orderNumber, isAddon: true });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
         }
     }
 
@@ -3415,6 +3321,10 @@ export class ProjectController {
                 ? await (prisma as any).salesOrder.findFirst({ where: { id: parentSalesOrderId, projectId, tenantId } })
                 : selectedOrder;
             if (!parentOrder) return res.status(404).json({ error: "Ana sipariş bulunamadı." });
+            // Zu einem stornierten Auftrag entsteht kein Nachtrag (06.09.2026).
+            if (parentOrder.cancelledAt || parentOrder.status === 'CANCELLED') {
+                return res.status(400).json({ error: 'Zu einem stornierten Auftrag kann kein Nachtrag erstellt werden.' });
+            }
 
             const addons: any[] = await (prisma as any).salesOrder.findMany({
                 where: { parentSalesOrderId, projectId, tenantId },
@@ -3595,24 +3505,33 @@ export class ProjectController {
         return { startTime, endTime, ...this.parseAppointmentMeta(body) };
     }
 
-    // A customer may receive at most one field appointment per calendar day, regardless of project/order.
+    /* A customer may receive at most one PLANNED field appointment per calendar
+       day, regardless of project/order.
+
+       BOOKED only (03.09.2026) — a COMPLETED day is finished work, not a
+       reservation, so a second visit may be planned alongside it. Kept in step
+       with assertDaysAvailable(), which states the reasoning in full. */
     private async findCustomerSameDayAppointment(customerId: string, day: Date, excludeAppointmentId?: string) {
         if (!customerId) return null;
         return await (prisma as any).appointment.findFirst({
             where: {
                 customerId,
                 projectId: { not: null },
-                status: { in: ["BOOKED", "COMPLETED"] },
+                status: "BOOKED",
                 ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
                 startTime: { gte: startOfDay(day), lte: endOfDay(day) },
             },
         });
     }
 
+    /* A COMPLETED day no longer reserves its time window (03.09.2026) — same
+       rule as assertDaysAvailable(), so the single-day edit and the series save
+       accept exactly the same plans. */
     private async findProjectAppointmentConflict(projectId: string, startTime: Date, endTime: Date, appointmentId?: string, salesOrderId?: string | null) {
         return await (prisma as any).appointment.findFirst({
             where: {
                 projectId,
+                status: { not: "COMPLETED" },
                 ...(salesOrderId !== undefined ? { salesOrderId } : {}),
                 ...(appointmentId ? { id: { not: appointmentId } } : {}),
                 startTime: { lt: endTime },
@@ -3675,6 +3594,11 @@ export class ProjectController {
             if (!project || (project as any).tenantId !== req.user!.tenantId) {
                 return res.status(404).json({ error: "Proje bulunamadı." });
             }
+            // In einem stornierten Projekt wird nichts mehr angesetzt: das
+            // Storno hat die künftigen Termine gerade erst abgesagt.
+            if ((project as any).status === 'CANCELLED' || (project as any).cancelledAt) {
+                return res.status(400).json({ error: 'In einem stornierten Projekt koennen keine Termine angesetzt werden.' });
+            }
 
             const meta = this.parseAppointmentMeta(req.body);
             /* Ohne mitgeschicktes Etikett greift der Vorschlag der Rolle
@@ -3682,6 +3606,15 @@ export class ProjectController {
                dieses Etikett ausgeblendet, bleibt der Termin ohne Etikett. */
             const labelId = await resolveNewLabelId((project as any).tenantId, meta.labelId, 'PLANNED');
             const days = parseAppointmentDays(req.body);
+            /* DER TAG ENTSCHEIDET (Vorgabe Samet, 03.09.2026): ein vergangener
+               Tag ist abgeschlossen, ein heutiger laufend, ein künftiger
+               geplant — Status und Etikett. Das gewählte Etikett wird nur
+               ersetzt, wenn es ein Status-Etikett ist (dayLabelPatch); je
+               Rolle einmal nachgeschlagen, nicht je Tag. */
+            const labelForRole = new Map<string, string | null>();
+            for (const role of new Set(days.map((day) => labelRoleForAppointmentDay(day)))) {
+                labelForRole.set(role, (await dayLabelPatch((project as any).tenantId, labelId, role)).labelId ?? labelId);
+            }
             const salesOrderId = await this.resolveProjectSalesOrderId(project.id, req.user!.tenantId, req.body.salesOrderId);
 
             const technicians = await this.validateProjectTechnicians(this.appointmentTechnicianIdsFromBody(req.body), req.user!.tenantId) as any[];
@@ -3764,10 +3697,11 @@ export class ProjectController {
                         endTime: day.endTime,
                         notes: meta.notes ?? null,
                         ccEmails: meta.ccEmails ?? [],
-                        labelId,
+                        labelId: labelForRole.get(labelRoleForAppointmentDay(day)) ?? labelId,
                         // Wer den Termin setzt, bekommt die automatische Teammail mit.
                         createdByEmployeeId: req.user!.id,
-                        status: "BOOKED",
+                        // Vergangener Tag ⇒ abgeschlossen, sonst offen (siehe oben).
+                        status: statusForAppointmentDay(day),
                         isLocked: true,
                         seriesId: id,
                         dayIndex: index,
@@ -3853,6 +3787,17 @@ export class ProjectController {
                 return res.status(404).json({ error: "Randevu bulunamadı." });
             }
             const parsed = this.parseAppointmentBody(req.body);
+            /* EIN ABGESCHLOSSENER TAG WIRD NICHT VERSCHOBEN (Vorgabe Samet,
+               03.09.2026: «ein abgeschlossener Tag darf nicht bewegt werden»).
+               An ihm hängt geleistete Arbeit mit ihrem Datum — Rapport, Spesen,
+               Stunden. Notiz, Monteur, Etikett dürfen weiter geändert werden;
+               Datum und Uhrzeit nicht. Der Kalender bietet dafür keine Griffe
+               mehr an; hier ist der Riegel, falls doch etwas ankommt. */
+            if (appointment.status === "COMPLETED"
+                && (new Date(appointment.startTime).getTime() !== parsed.startTime.getTime()
+                    || new Date(appointment.endTime).getTime() !== parsed.endTime.getTime())) {
+                return res.status(409).json({ error: "Ein abgeschlossener Termin kann nicht verschoben werden." });
+            }
             // Nicht mitgeschickt = unveraendert; ausdruecklich leer = ohne Etikett.
             const labelId = await sanitizeLabelId(req.user!.tenantId, parsed.labelId);
             const salesOrderId = await this.resolveProjectSalesOrderId(appointment.projectId, req.user!.tenantId, req.body.salesOrderId || appointment.salesOrderId);
@@ -3871,6 +3816,20 @@ export class ProjectController {
             const techConflict = await this.findTechnicianScheduleConflict(technicianIds, parsed.startTime, parsed.endTime, req.user!.tenantId, appointment.id);
             if (techConflict) return res.status(409).json({ error: techConflict.message });
 
+            /* DER TAG ENTSCHEIDET (Vorgabe Samet, 03.09.2026): ein offener
+               Termin, der auf einen vergangenen Tag rückt, ist abgeschlossen;
+               auf heute ⇒ laufend; auf später ⇒ geplant (das hebt auch eine
+               Absage wieder auf, wie bisher). Ein ABGESCHLOSSENER bleibt es —
+               er kann ohnehin nicht verschoben werden (Riegel oben); Notiz,
+               Monteur und Etikett dürfen sich ändern, und ein Status-Etikett
+               bleibt dabei «abgeschlossen». */
+            const nextStatus = appointment.status === "COMPLETED" ? "COMPLETED" : statusForAppointmentDay(parsed);
+            const labelPatch = await dayLabelPatch(
+                req.user!.tenantId,
+                labelId !== undefined ? labelId : appointment.labelId,
+                nextStatus === "COMPLETED" ? 'DONE' : labelRoleForAppointmentDay(parsed),
+            );
+
             const updated = await (prisma as any).appointment.update({
                 where: { id: appointment.id },
                 data: {
@@ -3881,7 +3840,8 @@ export class ProjectController {
                     notes: parsed.notes ?? appointment.notes,
                     ...(parsed.ccEmails !== undefined ? { ccEmails: parsed.ccEmails } : {}),
                     ...(labelId !== undefined ? { labelId } : {}),
-                    status: "BOOKED",
+                    ...labelPatch,
+                    status: nextStatus,
                     isLocked: true
                 },
                 include: {
@@ -4106,7 +4066,13 @@ export class ProjectController {
             const appointment = await this.findScopedAppointment(req, opts);
             if (!appointment) return res.status(404).json({ error: "Termin nicht gefunden." });
 
+            /* `hasReport` (03.09.2026): ob an einem Tag GELEISTETE ARBEIT hängt.
+               Bis heute sagte das der Status — «abgeschlossen» hiess «Rapport
+               geschrieben». Seit ein vergangener Tag von selbst abgeschlossen
+               ist, sagt der Status nur noch «vorbei»; was der Einsatzplan
+               schützen muss (den Papierkorb verbergen), ist der Rapport. */
             if (!appointment.seriesId) {
+                const reports = await (prisma as any).projectReport.count({ where: { appointmentId: appointment.id } });
                 return res.status(200).json({
                     seriesId: null,
                     coverNote: null,
@@ -4116,6 +4082,7 @@ export class ProjectController {
                         startTime: appointment.startTime,
                         endTime: appointment.endTime,
                         status: appointment.status,
+                        hasReport: reports > 0,
                     }],
                     documents: [],
                 });
@@ -4129,7 +4096,10 @@ export class ProjectController {
                 (prisma as any).appointment.findMany({
                     where: { seriesId: appointment.seriesId, tenantId: req.user!.tenantId },
                     orderBy: { startTime: "asc" },
-                    select: { id: true, dayIndex: true, startTime: true, endTime: true, status: true },
+                    select: {
+                        id: true, dayIndex: true, startTime: true, endTime: true, status: true,
+                        _count: { select: { reports: true } },
+                    },
                 }),
                 (prisma as any).appointmentDocument.findMany({
                     where: { seriesId: appointment.seriesId },
@@ -4141,7 +4111,7 @@ export class ProjectController {
             res.status(200).json({
                 seriesId: appointment.seriesId,
                 coverNote: series?.coverNote ?? null,
-                days,
+                days: days.map(({ _count, ...day }: any) => ({ ...day, hasReport: (_count?.reports ?? 0) > 0 })),
                 documents: await Promise.all(documents.map(appointmentDocumentDto)),
             });
         } catch (error: any) {
@@ -4171,7 +4141,10 @@ export class ProjectController {
             const existing: any[] = await (prisma as any).appointment.findMany({
                 where: { seriesId, tenantId: req.user!.tenantId },
                 orderBy: { startTime: "asc" },
-                select: { id: true, projectId: true, salesOrderId: true, startTime: true, endTime: true, status: true },
+                select: {
+                    id: true, projectId: true, salesOrderId: true, startTime: true, endTime: true, status: true, labelId: true,
+                    _count: { select: { reports: true } },
+                },
             });
             const existingById = new Map(existing.map((row) => [row.id, row]));
 
@@ -4187,10 +4160,31 @@ export class ProjectController {
             const removed = existing.filter((row) => !keptIds.has(row.id));
             /* Ein Tag, an dem schon gearbeitet wurde, verschwindet nicht
                nebenbei: an ihm hängen Rapport, Spesen und Material. Wer ihn
-               wirklich streichen will, löscht ihn ausdrücklich. */
-            const finished = removed.find((row) => row.status === "COMPLETED");
+               wirklich streichen will, löscht ihn ausdrücklich.
+
+               Woran man «gearbeitet» erkennt, ist seit dem 03.09.2026 der
+               RAPPORT, nicht der Status: ein vergangener Tag ist von selbst
+               abgeschlossen (Vorgabe Samet: «ein abgeschlossener Termin vom
+               1. September darf wieder geöffnet werden — das Datum ist ja
+               vorbei»), und an einem vergangenen Tag ohne Rapport hängt nichts,
+               was zu schützen wäre. */
+            const finished = removed.find((row) => (row._count?.reports ?? 0) > 0);
             if (finished) {
-                return res.status(409).json({ error: "Ein bereits abgeschlossener Tag kann nicht aus dem Einsatz entfernt werden." });
+                return res.status(409).json({ error: "Ein Tag mit Rapport kann nicht aus dem Einsatz entfernt werden." });
+            }
+            /* EIN ABGESCHLOSSENER TAG WIRD NICHT VERSCHOBEN (Vorgabe Samet,
+               03.09.2026) — dieselbe Regel wie in updateAppointment. Der
+               Einsatzplan sperrt Datum und Zeiten eines solchen Tages; hier
+               der Riegel dahinter. */
+            const movedCompleted = days.find((day) => {
+                if (!day.appointmentId) return false;
+                const current = existingById.get(day.appointmentId)!;
+                return current.status === "COMPLETED"
+                    && (new Date(current.startTime).getTime() !== day.startTime.getTime()
+                        || new Date(current.endTime).getTime() !== day.endTime.getTime());
+            });
+            if (movedCompleted) {
+                return res.status(409).json({ error: "Ein abgeschlossener Tag kann nicht verschoben werden." });
             }
 
             const fallbackTechnicianIds = [
@@ -4216,6 +4210,13 @@ export class ProjectController {
 
             const cancellations = await Promise.all(removed.map((row) => buildAppointmentCancellation(row.id)));
             const addedIds: string[] = [];
+            /* Neue Tage erben das Etikett des Einsatzes — ein Status-Etikett
+               aber in der Rolle, die zu IHREM Tag passt (vorbei / heute /
+               später). Je Rolle einmal nachgeschlagen, nicht je Tag. */
+            const labelForRole = new Map<string, string | null>();
+            for (const role of new Set(days.filter((day) => !day.appointmentId).map((day) => labelRoleForAppointmentDay(day)))) {
+                labelForRole.set(role, (await dayLabelPatch(req.user!.tenantId, appointment.labelId, role)).labelId ?? appointment.labelId ?? null);
+            }
 
             await (prisma as any).$transaction(async (tx: any) => {
                 for (const day of days) {
@@ -4223,9 +4224,19 @@ export class ProjectController {
                         const current = existingById.get(day.appointmentId)!;
                         if (new Date(current.startTime).getTime() === day.startTime.getTime()
                             && new Date(current.endTime).getTime() === day.endTime.getTime()) continue;
+                        /* Ein offener Tag, der verschoben wird, folgt seinem neuen
+                           Tag: vorbei ⇒ abgeschlossen, heute ⇒ laufend, später ⇒
+                           geplant (Status und Status-Etikett). Ein abgeschlossener
+                           kommt hier nicht an (Riegel oben). */
+                        const movedRole = labelRoleForAppointmentDay(day);
                         await tx.appointment.update({
                             where: { id: day.appointmentId },
-                            data: { startTime: day.startTime, endTime: day.endTime },
+                            data: {
+                                startTime: day.startTime,
+                                endTime: day.endTime,
+                                status: statusForAppointmentDay(day),
+                                ...(await dayLabelPatch(req.user!.tenantId, current.labelId, movedRole)),
+                            },
                         });
                         continue;
                     }
@@ -4244,7 +4255,9 @@ export class ProjectController {
                             notes: appointment.notes ?? null,
                             ccEmails: appointment.ccEmails ?? [],
                             createdByEmployeeId: appointment.createdByEmployeeId || req.user!.id,
-                            status: "BOOKED",
+                            // Der Tag entscheidet (03.09.2026): vorbei ⇒ abgeschlossen.
+                            status: statusForAppointmentDay(day),
+                            labelId: labelForRole.get(labelRoleForAppointmentDay(day)) ?? appointment.labelId ?? null,
                             isLocked: true,
                             seriesId,
                         },

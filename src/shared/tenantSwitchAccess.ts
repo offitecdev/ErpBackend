@@ -33,11 +33,15 @@
  */
 import { Prisma } from '@prisma/client';
 import prisma from '../infrastructure/database/prisma.client';
+import { TtlCache } from './ttlCache';
 
 const TENANT_SWITCH_CACHE_TTL_MS = 60_000;
 
-const cache = new Map<string, { expiresAt: number; allowed: boolean }>();
+/* Begrenzt und selbstkehrend — siehe ttlCache.ts. */
+const cache = new TtlCache<boolean>({ name: 'tenantSwitchAccess', ttlMs: TENANT_SWITCH_CACHE_TTL_MS });
 const inFlight = new Map<string, Promise<boolean>>();
+
+export const tenantSwitchAccessCacheStats = () => cache.stats();
 
 export const invalidateTenantSwitchAccess = (employeeId: string): void => {
     cache.delete(employeeId);
@@ -55,10 +59,10 @@ export const clearTenantSwitchAccessCache = (): void => {
  */
 export const mayReachWholeCompanyTree = async (employeeId: string): Promise<boolean> => {
     const cached = cache.get(employeeId);
-    if (cached && cached.expiresAt > Date.now()) return cached.allowed;
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
 
     const pending = inFlight.get(employeeId);
-    if (pending) return cached ? cached.allowed : pending;
+    if (pending) return cached ? cached.value : pending;
 
     // Eine Anweisung, ein Join: die verschachtelte include-Kette
     // (EmployeeRole → Role) kostete hier einen zweiten Rundgang zur fernen
@@ -73,7 +77,7 @@ export const mayReachWholeCompanyTree = async (employeeId: string): Promise<bool
             LIMIT 1
         `);
         const allowed = rows.length > 0;
-        cache.set(employeeId, { expiresAt: Date.now() + TENANT_SWITCH_CACHE_TTL_MS, allowed });
+        cache.set(employeeId, allowed);
         return allowed;
     })().finally(() => {
         inFlight.delete(employeeId);
@@ -84,5 +88,5 @@ export const mayReachWholeCompanyTree = async (employeeId: string): Promise<bool
     // sofort zurueck, die Auffrischung laeuft dahinter (stale-while-revalidate).
     // Ein ENTZOGENES Recht wirkt trotzdem sofort, weil jede Rollenaenderung den
     // Eintrag LOESCHT statt ihn auslaufen zu lassen.
-    return cached ? cached.allowed : request;
+    return cached ? cached.value : request;
 };

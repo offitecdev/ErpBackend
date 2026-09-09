@@ -11,19 +11,31 @@
 // `requireDates: false` and stores the dates as null (`stripStageDates`); the
 // order's own endpoint keeps demanding a date per instalment.
 //
+// Each instalment may also carry a free text of its own (`label`), so a plan
+// reads as the sentence the customer expects: «50% vor Montage, 50% nach
+// Fertigstellung». It is printed, never calculated, and never validated.
+//
 // Legacy rows hold a bare percent array (`[30,20,10,40]`) from before dates
-// existed. They still parse — the dates come back null.
+// existed. They still parse — dates and texts come back null.
 //
 // Frontend mirror: offitec-frontend/src/lib/paymentSchedule.ts — keep in sync.
 
 const EPSILON = 0.005;
 export const MAX_PAYMENT_STAGES = 12;
+/** Freitext einer Rate — gekappt, damit die PDF-Spalte nie überläuft. */
+export const MAX_STAGE_LABEL = 120;
 
 export interface PaymentStage {
     /** Share of the gross total billed at this stage, in percent. */
     percent: number;
     /** Due date as an ISO day (`YYYY-MM-DD`); null on legacy percent-only rows. */
     date: string | null;
+    /**
+     * Freitext zur Rate — «vor Montage», «nach Fertigstellung» (Vorgabe
+     * 03.09.2026). Rein beschreibend: ein Plan bleibt ohne Text gültig, und
+     * kein Betrag hängt daran. null = kein Text erfasst.
+     */
+    label: string | null;
 }
 
 const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -34,18 +46,29 @@ const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 export const isValidStageDate = (date: string | null | undefined): date is string =>
     typeof date === 'string' && ISO_DAY.test(date) && !Number.isNaN(new Date(`${date}T00:00:00`).getTime());
 
-/** One stored entry — a bare percent (legacy) or a `{ percent, date }` object. */
+/** Getrimmter, gekappter Freitext — Leerstring zählt als «kein Text». */
+export const normalizeStageLabel = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const text = value.trim().slice(0, MAX_STAGE_LABEL);
+    return text || null;
+};
+
+/** One stored entry — a bare percent (legacy) or a `{ percent, date, label }` object. */
 const toStage = (entry: unknown): PaymentStage | null => {
     if (typeof entry === 'number' || typeof entry === 'string') {
         const percent = Number(entry);
-        return Number.isFinite(percent) ? { percent, date: null } : null;
+        return Number.isFinite(percent) ? { percent, date: null, label: null } : null;
     }
     if (entry && typeof entry === 'object') {
-        const record = entry as { percent?: unknown; date?: unknown };
+        const record = entry as { percent?: unknown; date?: unknown; label?: unknown };
         const percent = Number(record.percent);
         if (!Number.isFinite(percent)) return null;
         const date = typeof record.date === 'string' ? record.date : null;
-        return { percent, date: isValidStageDate(date) ? date : null };
+        return {
+            percent,
+            date: isValidStageDate(date) ? date : null,
+            label: normalizeStageLabel(record.label),
+        };
     }
     return null;
 };
@@ -99,7 +122,11 @@ export const validatePaymentStages = (
 };
 
 export const serializePaymentStages = (stages: PaymentStage[]): string =>
-    JSON.stringify(stages.map((stage) => ({ percent: round2(stage.percent), date: stage.date ?? null })));
+    JSON.stringify(stages.map((stage) => ({
+        percent: round2(stage.percent),
+        date: stage.date ?? null,
+        label: normalizeStageLabel(stage.label),
+    })));
 
 export interface NextStageInfo {
     // Zero-based stage index.

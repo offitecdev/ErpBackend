@@ -4,6 +4,7 @@ import { ITenantRepository } from "../../../domain/repositories/ITenantRepositor
 import { Project } from "../../../domain/entities/Project";
 import prisma from "../../../infrastructure/database/prisma.client";
 import { isModuleEnabledForTenant } from "../../../shared/tenantModules";
+import { statusForAppointmentDay } from "../../../shared/appointmentDay";
 import { nanoid } from "nanoid";
 import crypto from "crypto";
 
@@ -113,7 +114,9 @@ export class CreateProjectFromTenderUseCase {
                     assignedTechId: slot.assignedTechId || null,
                     startTime: slot.startTime,
                     endTime: slot.endTime,
-                    status: "BOOKED",
+                    // Der Tag entscheidet (03.09.2026): ein Slot, dessen Tag
+                    // vorbei ist, wird als abgeschlossener Termin übernommen.
+                    status: statusForAppointmentDay(slot),
                     notes: slot.notes,
                     isLocked: true,
                 })),

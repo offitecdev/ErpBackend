@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ConfirmAccountDeletionUseCase = exports.RequestAccountDeletionUseCase = void 0;
 const JwtTokenService_1 = require("../../../infrastructure/services/JwtTokenService");
+const AuthErrors_1 = require("../../errors/AuthErrors");
 /**
  * Mails a deletion-confirmation link to the logged-in employee's own address.
  * Deletion only happens after the mailed token is confirmed.
@@ -18,7 +19,7 @@ class RequestAccountDeletionUseCase {
     async execute(employeeId) {
         const employee = await this.employeeRepo.findById(employeeId);
         if (!employee || employee.deletedAt)
-            throw new Error("Hesap bulunamadı veya silinmiş.");
+            throw new AuthErrors_1.PublicError("Hesap bulunamadı veya silinmiş.");
         const token = this.tokenService.generateToken('account_deletion', {
             id: employee.id,
             tenantId: employee.tenantId,
@@ -42,11 +43,11 @@ class ConfirmAccountDeletionUseCase {
         const decoded = this.tokenService.verifyToken('account_deletion', token);
         const employee = await this.employeeRepo.findById(decoded.id);
         if (!employee)
-            throw new Error("Hesap bulunamadı.");
+            throw new AuthErrors_1.PublicError("Hesap bulunamadı.");
         if (employee.deletedAt)
             return; // already deleted — idempotent
         if (decoded.pwdAt !== (0, JwtTokenService_1.toPwdAtClaim)(employee.passwordChangedAt)) {
-            throw new Error("Silme bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
+            throw new AuthErrors_1.PublicError("Silme bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
         }
         // Soft delete: blocks login, refresh and every authorized request.
         await this.employeeRepo.update(employee.id, {

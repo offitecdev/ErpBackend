@@ -6,7 +6,7 @@ export class Tender {
         public tenderNumber: string,
         public version: number,
         public format : 'SIA451' | 'CRBX',
-        public status : 'Draft' | 'Approved' | 'Exported',
+        public status : 'Draft' | 'Approved' | 'Exported' | 'Cancelled',
         public createdByEmployeeId: string,
         public createdAt: Date,
         public projectId?: string | null,

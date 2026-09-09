@@ -6,10 +6,16 @@ export interface ICustomerFilter {
     segment?: string;
     status?: string;
     isActive?: boolean;
-    // Kolon bazlı filtreler (liste başlığı altındaki filtre satırı) — sunucuda daraltır.
+    // Kolon bazlı filtreler — artık başlığın İÇİNDEKİ büyütecinden gelirler
+    // (her sütun adının yanında bir büyüteç var; tıklanınca ad yerine arama
+    // kutusu çıkar). Bu yüzden telefon ve yetkili de burada: her büyüteç
+    // gerçekten bir şey yapmalı.
     companyName?: string;
     vatNumber?: string;
     email?: string;
+    phone?: string;
+    /** Yetkili adı — ad VEYA soyadın içinde geçer. */
+    contact?: string;
     // Not: Customer modelinde createdAt yok — sıralama yalnızca bu kolonlara izinli.
     sortBy?: 'companyName' | 'vatNumber' | 'status';
     sortDirection?: 'asc' | 'desc';

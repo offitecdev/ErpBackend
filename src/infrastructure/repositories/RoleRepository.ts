@@ -8,9 +8,13 @@ import {
     type PageLevel,
 } from "../../shared/pageCatalog";
 import { invalidateTenantSwitchAccess } from "../../shared/tenantSwitchAccess";
+import { TtlCache } from "../../shared/ttlCache";
 
 const PERMISSION_CACHE_TTL_MS = 60_000;
-const permissionCache = new Map<string, { expiresAt: number; permissions: string[] }>();
+/* Begrenzt und selbstkehrend (siehe shared/ttlCache.ts): beide Zwischenspeicher
+   waren einfache Maps, deren Lebensdauer nur gelesen und nie durchgesetzt
+   wurde — kein Eintrag verschwand je wieder. */
+const permissionCache = new TtlCache<string[]>({ name: 'permissions', ttlMs: PERMISSION_CACHE_TTL_MS });
 const permissionInFlight = new Map<string, Promise<string[]>>();
 /**
  * Was die Rolle EINER Person über sie sagt: die Seitenstufen und ob sie die
@@ -24,19 +28,21 @@ export interface EmployeeRoleInfo {
     isSystemAdmin: boolean;
 }
 
-const pageAccessCache = new Map<string, { expiresAt: number; info: EmployeeRoleInfo }>();
+const pageAccessCache = new TtlCache<EmployeeRoleInfo>({ name: 'pageAccess', ttlMs: PERMISSION_CACHE_TTL_MS });
 const pageAccessInFlight = new Map<string, Promise<EmployeeRoleInfo>>();
+
+export const roleCacheStats = () => [permissionCache.stats(), pageAccessCache.stats()];
 
 export class RoleRepository implements IRoleRepository {
 
     async getEmployeePermissions(employeeId: string): Promise<string[]> {
         const cached = permissionCache.get(employeeId);
         if (cached && cached.expiresAt > Date.now()) {
-            return cached.permissions;
+            return cached.value;
         }
 
         const pending = permissionInFlight.get(employeeId);
-        if (pending) return cached ? cached.permissions : pending;
+        if (pending) return cached ? cached.value : pending;
 
         // Tek ifadeye indirildi. İç içe `include` zinciri (EmployeeRole → Role →
         // RolePermission → Permission) Prisma'da seviye başına AYRI bir sorgu
@@ -51,10 +57,7 @@ export class RoleRepository implements IRoleRepository {
                 WHERE er.employeeId = ${employeeId}
             `);
             const permissions = rows.map((row) => row.permissionName);
-            permissionCache.set(employeeId, {
-                expiresAt: Date.now() + PERMISSION_CACHE_TTL_MS,
-                permissions,
-            });
+            permissionCache.set(employeeId, permissions);
             return permissions;
         })().finally(() => {
             permissionInFlight.delete(employeeId);
@@ -65,7 +68,7 @@ export class RoleRepository implements IRoleRepository {
         // arkada biter (stale-while-revalidate). Rol atamaları bu süreçte
         // `permissionCache.delete` çağırdığı için anında etki korunur; TTL
         // yalnızca süreç dışı değişikliklerde ~tazeleme süresi kadar esner.
-        return cached ? cached.permissions : request;
+        return cached ? cached.value : request;
     }
 
     async assignRoleToEmployee(employeeId: string, roleId: string): Promise<void> {
@@ -101,10 +104,10 @@ export class RoleRepository implements IRoleRepository {
      */
     async getEmployeeRoleInfo(employeeId: string): Promise<EmployeeRoleInfo> {
         const cached = pageAccessCache.get(employeeId);
-        if (cached && cached.expiresAt > Date.now()) return cached.info;
+        if (cached && cached.expiresAt > Date.now()) return cached.value;
 
         const pending = pageAccessInFlight.get(employeeId);
-        if (pending) return cached ? cached.info : pending;
+        if (pending) return cached ? cached.value : pending;
 
         const request = (async () => {
             // Eine Anweisung: Rolle + ihre Rechtenamen in einem Join — die
@@ -156,14 +159,14 @@ export class RoleRepository implements IRoleRepository {
             }
 
             const info: EmployeeRoleInfo = { pageAccess: merged, isSystemAdmin };
-            pageAccessCache.set(employeeId, { expiresAt: Date.now() + PERMISSION_CACHE_TTL_MS, info });
+            pageAccessCache.set(employeeId, info);
             return info;
         })().finally(() => {
             pageAccessInFlight.delete(employeeId);
         });
 
         pageAccessInFlight.set(employeeId, request);
-        return cached ? cached.info : request;
+        return cached ? cached.value : request;
     }
 }
 

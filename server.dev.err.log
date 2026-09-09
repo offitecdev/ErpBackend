@@ -1,35 +1,35 @@
-(node:20200) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(node:49784) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
 (Use `node --trace-deprecation ...` to show where the warning was created)
-(node:45332) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+[Threadpool] Nur 4 Plaetze. bcrypt, Dateizugriffe und die Bildverkleinerung teilen sie sich. Empfohlen: UV_THREADPOOL_SIZE=16 in der UMGEBUNG des Dienstes setzen (in der .env wirkt es nicht - sie wird erst im Vorgang gelesen).
+(node:4380) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
 (Use `node --trace-deprecation ...` to show where the warning was created)
-(node:12824) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+[Threadpool] Nur 4 Plaetze. bcrypt, Dateizugriffe und die Bildverkleinerung teilen sie sich. Empfohlen: UV_THREADPOOL_SIZE=16 in der UMGEBUNG des Dienstes setzen (in der .env wirkt es nicht - sie wird erst im Vorgang gelesen).
+(node:3880) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
 (Use `node --trace-deprecation ...` to show where the warning was created)
-(node:33096) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+[Threadpool] Nur 4 Plaetze. bcrypt, Dateizugriffe und die Bildverkleinerung teilen sie sich. Empfohlen: UV_THREADPOOL_SIZE=16 in der UMGEBUNG des Dienstes setzen (in der .env wirkt es nicht - sie wird erst im Vorgang gelesen).
+(node:45116) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
 (Use `node --trace-deprecation ...` to show where the warning was created)
-(node:31964) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+[Threadpool] Nur 4 Plaetze. bcrypt, Dateizugriffe und die Bildverkleinerung teilen sie sich. Empfohlen: UV_THREADPOOL_SIZE=16 in der UMGEBUNG des Dienstes setzen (in der .env wirkt es nicht - sie wird erst im Vorgang gelesen).
+[MAIL-IN] pass failed: pool timeout: failed to retrieve a connection from pool after 228851ms
+    (pool connections: active=0 idle=0 limit=10)
+[MAIL-IN] offitec-root fehlgeschlagen: Cannot execute new commands: connection closed
+[reminders] pass failed: 
+Invalid `prisma.$executeRaw()` invocation:
+
+
+Raw query failed. Code: `1213`. Message: `Deadlock found when trying to get lock; try restarting transaction`
+[reminders] pass failed: 
+Invalid `prisma.$executeRaw()` invocation:
+
+
+Raw query failed. Code: `1213`. Message: `Deadlock found when trying to get lock; try restarting transaction`
+[reminders] pass failed: 
+Invalid `prisma.$executeRaw()` invocation:
+
+
+Raw query failed. Code: `1213`. Message: `Deadlock found when trying to get lock; try restarting transaction`
+[MAIL-IN] pass failed: pool timeout: failed to retrieve a connection from pool after 10015ms
+    (pool connections: active=0 idle=0 limit=10)
+Compilation error in C:\ERP\Erp_Backend\src\infrastructure\repositories\TenderRepository.ts
+(node:48468) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
 (Use `node --trace-deprecation ...` to show where the warning was created)
-(node:19568) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\FormController.ts
-(node:53284) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\FormController.ts
-(node:50712) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\FormController.ts
-(node:5716) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts
-(node:15352) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts
-Compilation error in C:\ERP\Erp_Backend\src\presentation\routes\auth.routes.ts
-Compilation error in C:\ERP\Erp_Backend\src\presentation\routes\auth.routes.ts
-(node:15020) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Compilation error in C:\ERP\Erp_Backend\src\main.ts
-Compilation error in C:\ERP\Erp_Backend\src\main.ts
-(node:3348) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts
-Compilation error in C:\ERP\Erp_Backend\src\presentation\controllers\AuthController.ts

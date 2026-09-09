@@ -51,7 +51,7 @@ const card = {
     start: days[0]!.startTime, end: days[0]!.endTime,
     schedule: days.map((d) => ({ start: d.startTime, end: d.endTime })),
     summary: 'Montagetermin – Beispiel', location: 'Musterstrasse 1, 8000 Zürich',
-    details: [{ label: 'Projekt', value: 'PR-2026-00042' }], senderName: 'Offitec Verwaltungspanel',
+    details: [{ label: 'Projekt', value: 'PR-2026-00042' }], senderName: 'Offitec Control Center',
 };
 const text = buildInviteText(card);
 console.log('--- text ---');

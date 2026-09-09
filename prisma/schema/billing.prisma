@@ -1,4 +1,5 @@
 model Invoice {
+  paymentStages String? @db.LongText
   id                 String    @id
   tenantId           String
   customerId         String?
@@ -44,6 +45,35 @@ model Invoice {
   // Angewandter MWST-Satz. Eingefroren, damit ein spaeter geaenderter
   // Firmenwert eine bereits gestellte Rechnung nicht rueckwirkend verschiebt.
   vatRate            Float?
+  // ── DIE DREI ABSCHNITTE DER DIREKTRECHNUNG (05.09.2026) ────────────────
+  // Vorgabe Samet: der Beleg besteht aus DREI Abschnitten — Positionen,
+  // Rabatt und Schlusstext — und jeder einzelne darf entfernt werden. Ein
+  // entfernter Abschnitt verschwindet dann AUCH aus dem PDF.
+  //
+  // Gespeichert wird, welche Abschnitte GEDRUCKT werden, als JSON-Objekt
+  // {"positions":true,"discount":true,"closing":false}. NULL heisst "alle
+  // drei" — so drucken die vor diesem Umbau erstellten Rechnungen
+  // unveraendert weiter ihre Positionen.
+  sections           String?   @db.Text
+  // Rabattstapel des Belegs — dieselbe Form wie `Tender.totalDiscounts`:
+  // [{"name":"Mengenrabatt","kind":"PERCENT","value":5}, …]. Die Rabatte
+  // greifen NACHEINANDER, jeder auf das, was der vorige uebrig laesst; die
+  // MWST rechnet auf dem rabattierten Netto (siehe tenderDiscounts.utils.ts).
+  discounts          String?   @db.Text
+  // Schlusstext — der Absatz UNTER der Summe (Zahlungsbedingung, Dank,
+  // Hinweis). Leer heisst: der Satz aus den Firmeneinstellungen. Gedruckt
+  // wird er nur, solange der Abschnitt "closing" eingeschaltet ist.
+  closingText        String?   @db.Text
+  // Absenderzeile des Belegs. Vorbelegt aus den Mandanteneinstellungen
+  // ("Offitec GmbH, Ceres Tower - Hohenrainstrasse 24, 4133 Pratteln"), je
+  // Rechnung aenderbar und dann EINGEFROREN. Betrifft NUR die gedruckte
+  // Zeile: der Glaeubiger des QR-Zahlteils kommt weiterhin aus den
+  // Einstellungen, weil er mit dem Bankkonto uebereinstimmen MUSS.
+  senderAddress      String?   @db.Text
+  // Zahlungseingang — WANN die Rechnung bezahlt wurde. Gesetzt beim
+  // Umschalten auf PAID (das Markieren traegt ein Datum), geleert beim
+  // Zurueckdrehen auf ISSUED.
+  paidAt             DateTime?
   issuedByEmployeeId String
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -81,6 +111,21 @@ model InvoiceLineItem {
   // Reihenfolge auf dem Beleg. Ohne sie kaeme die Positionsliste in der
   // Reihenfolge zurueck, die der Server gerade liefert.
   sortOrder   Int     @default(0)
+  // ── WIE AUF DER OFFERTE (05.09.2026) ──────────────────────────────────
+  // Vorgabe Samet: „Die Rechnung muss GENAU der Offertentabelle entsprechen —
+  // mit Beschreibung und allem." Die Positionstabelle des Belegs ist dieselbe
+  // wie die des Angebots (Pos · Bezeichnung · Menge · E.-Preis · Rabatt ·
+  // MWST · Betrag), also braucht eine Rechnungszeile dieselben Felder wie
+  // eine Offertposition.
+  //
+  // Beschreibung UNTER der Bezeichnung — im PDF `longDescription`.
+  longDescription String? @db.Text
+  // Zeilenrabatt: der Stapel (Form wie `Position.discounts`) und daneben sein
+  // kombinierter Prozentwert. Genau wie auf der Offerte ist `discount` ein
+  // ABGELEITETER Spiegel des Stapels — wer die Grundlage aendert, muss ihn neu
+  // ableiten (siehe tenderDiscounts.utils.ts).
+  discounts       String? @db.Text
+  discount        Float?
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 

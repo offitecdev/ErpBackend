@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.QrLoginUseCase = void 0;
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 const JwtTokenService_1 = require("../../../infrastructure/services/JwtTokenService");
+const RefreshSessionService_1 = require("../../../infrastructure/services/RefreshSessionService");
+const AuthErrors_1 = require("../../errors/AuthErrors");
 /**
  * ── ANMELDUNG PER PERSONAL-QR ────────────────────────────────────────────────
  *
@@ -24,9 +26,9 @@ class QrLoginUseCase {
     constructor(tokenService) {
         this.tokenService = tokenService;
     }
-    async execute(rawToken) {
+    async execute(rawToken, context = {}) {
         const token = String(rawToken ?? '').trim();
-        const invalid = () => new Error('QR-Code ist ungültig oder abgelaufen.');
+        const invalid = () => new AuthErrors_1.PublicError('QR-Code ist ungültig oder abgelaufen.');
         if (!token)
             throw invalid();
         // Datenbankfehler dürfen NICHT als Meldung nach draussen: der Aufrufer
@@ -49,7 +51,7 @@ class QrLoginUseCase {
         if (!employee || employee.deletedAt || employee.bannedAt)
             throw invalid();
         if (!employee.isActive) {
-            throw new Error('Zugriff verweigert: Das Konto ist deaktiviert. Bitte die Systemverwaltung kontaktieren.');
+            throw new AuthErrors_1.PublicError('Zugriff verweigert: Das Konto ist deaktiviert. Bitte die Systemverwaltung kontaktieren.');
         }
         const payload = {
             id: employee.id,
@@ -57,9 +59,11 @@ class QrLoginUseCase {
             email: employee.email,
             pwdAt: (0, JwtTokenService_1.toPwdAtClaim)(employee.passwordChangedAt),
         };
+        // Wie bei der Kennwortanmeldung: eine Zeile je Anmeldung.
+        const session = await (0, RefreshSessionService_1.startRefreshSession)(employee.id, employee.tenantId, context);
         return {
             accessToken: this.tokenService.generateToken('access', payload),
-            refreshToken: this.tokenService.generateToken('refresh', payload),
+            refreshToken: this.tokenService.generateToken('refresh', { ...payload, ...session }),
             employee: {
                 id: employee.id,
                 firstName: employee.firstName,

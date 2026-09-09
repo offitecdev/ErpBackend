@@ -2,7 +2,13 @@
   // Visit https://aka.ms/tsconfig to read more about this file
   "compilerOptions": {
     // File Layout
-    // "rootDir": "./src",
+    // TypeScript 6 verlangt rootDir ausdruecklich, sobald Dateien AUSSERHALB
+    // des gemeinsamen Wurzelverzeichnisses mitkompiliert werden (TS5011).
+    // Ohne diese Zeile startet `npm run dev` nicht mehr und kein Skript in
+    // scratchpad/ laeuft. Auf die AUSGABE hat sie hier keine Wirkung
+    // (noEmit), und der Produktionsbau setzt in tsconfig.build.json sein
+    // eigenes rootDir "./src".
+    "rootDir": ".",
     // "outDir": "./dist",
 
     // Environment Settings

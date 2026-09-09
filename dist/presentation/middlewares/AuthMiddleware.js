@@ -3,10 +3,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.requireAuth = exports.findTenantRootId = void 0;
 const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService");
 const authCookies_1 = require("../utils/authCookies");
+const CsrfMiddleware_1 = require("./CsrfMiddleware");
 const tenantAccess_1 = require("../utils/tenantAccess");
 const authIdentityCache_1 = require("../../shared/authIdentityCache");
 const tenantSwitchAccess_1 = require("../../shared/tenantSwitchAccess");
 const tenantTree_1 = require("../../shared/tenantTree");
+const AuthErrors_1 = require("../../application/errors/AuthErrors");
 /**
  * Şirket ağacındaki kök tenant. Zincir artık tenant tablosunun paylaşılan
  * önbelleğinden bellekte yürünüyor: eskiden her seviye ayrı bir `findUnique`
@@ -41,7 +43,7 @@ const assertSameCompanyTree = async (homeTenantId, requestedTenantId) => {
         (0, exports.findTenantRootId)(requestedTenantId),
     ]);
     if (!homeRootId || homeRootId !== requestedRootId) {
-        throw new Error('Bu şirket için erişim yetkiniz yok.');
+        throw new AuthErrors_1.PublicError('Bu şirket için erişim yetkiniz yok.');
     }
 };
 const resolveTenantId = async (employeeId, homeTenantId, allowedTenantIds, requestedTenantId) => {
@@ -68,7 +70,7 @@ const resolveTenantId = async (employeeId, homeTenantId, allowedTenantIds, reque
     }
     const homeRootId = await (0, exports.findTenantRootId)(homeTenantId);
     if (!homeRootId) {
-        throw new Error('Bu şirket için erişim yetkiniz yok.');
+        throw new AuthErrors_1.PublicError('Bu şirket için erişim yetkiniz yok.');
     }
     const allowed = await keepUsableAssignments(allowedTenantIds);
     // Every assigned company vanished (deactivated / deleted): fall back to the
@@ -114,13 +116,9 @@ const requireAuth = async (req, res, next) => {
     // cookie but cannot read the csrf cookie to forge the header. Bearer-header
     // auth is inherently CSRF-proof and skips this.
     const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
-    if (cookieToken && isMutation) {
-        const csrfCookie = req.cookies?.[authCookies_1.CSRF_COOKIE];
-        const csrfHeader = req.header('x-csrf-token');
-        if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
-            res.status(403).json({ error: 'CSRF doğrulaması başarısız. Sayfayı yenileyip tekrar deneyin.' });
-            return;
-        }
+    if (cookieToken && isMutation && !(0, CsrfMiddleware_1.csrfDoubleSubmitOk)(req)) {
+        res.status(403).json({ error: CsrfMiddleware_1.CSRF_FAILED_MESSAGE });
+        return;
     }
     try {
         // Purpose-bound verification: only a token signed with the access secret
@@ -169,7 +167,11 @@ const requireAuth = async (req, res, next) => {
         next();
     }
     catch (error) {
-        res.status(401).json({ error: error instanceof Error ? error.message : 'Geçersiz veya süresi dolmuş token.' });
+        // Nicht `error.message`: hier landen auch Prisma-Fehler und ein
+        // fehlendes JWT-Geheimnis, dessen Satz die Umgebungsvariable nennt.
+        res.status(401).json({
+            error: (0, AuthErrors_1.toPublicMessage)(error, 'requireAuth', 'Geçersiz veya süresi dolmuş token.'),
+        });
     }
 };
 exports.requireAuth = requireAuth;

@@ -52,6 +52,11 @@ class CreateInvoiceUseCase {
             });
             if (!order)
                 throw new Error("Sipariş bulunamadı.");
+            // Ein stornierter Auftrag wird nicht mehr fakturiert (Vorgabe Samet
+            // 06.09.2026): er steht als Beleg da, aber er verlangt kein Geld.
+            if (order.cancelledAt || order.status === "CANCELLED") {
+                throw new Error("Ein stornierter Auftrag kann nicht fakturiert werden.");
+            }
             baseAmount = Number(order.totalAmount || 0);
             customerId = order.customerId || null;
             resolvedProjectId = order.projectId || null;
@@ -71,12 +76,16 @@ class CreateInvoiceUseCase {
         else if (projectId) {
             const project = await prisma_client_1.default.project.findFirst({
                 where: { id: projectId, tenantId },
-                include: { salesOrders: { select: { id: true, orderNumber: true, totalAmount: true } } },
+                include: { salesOrders: { select: { id: true, orderNumber: true, totalAmount: true, cancelledAt: true } } },
             });
             if (!project)
                 throw new Error("Proje bulunamadı.");
+            if (project.cancelledAt || project.status === "CANCELLED") {
+                throw new Error("Ein storniertes Projekt kann nicht fakturiert werden.");
+            }
             customerId = project.customerId || null;
-            const orders = project.salesOrders || [];
+            // Stornierte Auftraege zaehlen nicht mehr zur Rechnungsgrundlage.
+            const orders = (project.salesOrders || []).filter((row) => !row.cancelledAt);
             if (orders.length > 0) {
                 for (const order of orders) {
                     const amount = Number(order.totalAmount || 0);

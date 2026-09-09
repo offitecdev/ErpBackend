@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SalesOrderController = void 0;
+exports.SalesOrderController = exports.collectFamilyAppointmentCancellations = exports.listBillingFigures = exports.summariesFromInvoices = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
@@ -14,6 +14,10 @@ const salesOrder_pricing_1 = require("./salesOrder.pricing");
 const paymentSchedule_1 = require("../../application/utils/paymentSchedule");
 const tenantModules_1 = require("../../shared/tenantModules");
 const documentNumber_1 = require("../../shared/documentNumber");
+const appointmentDay_1 = require("../../shared/appointmentDay");
+const salesOrderDeletion_1 = require("../../shared/salesOrderDeletion");
+const documentLifecycle_1 = require("../../shared/documentLifecycle");
+const calendarMailService_1 = require("../../infrastructure/services/calendarMailService");
 const billingSummaryUseCase = new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(new InvoiceRepository_1.InvoiceRepository());
 // Resolve billing summaries for a set of orders with one invoice query (no N+1).
 // `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
@@ -28,6 +32,9 @@ const safeBatchSummaries = async (tenantId, targets) => {
 // Aynı özet hesabı, faturalar zaten yüklendiğinde (liste uç noktaları fatura
 // sorgusunu sipariş sorgusuyla paralel çalıştırır). Hata durumunda liste
 // çökmesin diye özetler boş kalır — `safeBatchSummaries` ile aynı davranış.
+// Exportiert: die Nachtragsliste (AddonOrderController) rechnet ihre Spalten
+// «fakturiert / offen» mit genau denselben Helfern, damit Auftrags- und
+// Nachtragsliste nie andere Zahlen zeigen.
 const summariesFromInvoices = (targets, invoices) => {
     try {
         return billingSummaryUseCase.buildBatchFromInvoices(targets, invoices);
@@ -36,6 +43,7 @@ const summariesFromInvoices = (targets, invoices) => {
         return new Map();
     }
 };
+exports.summariesFromInvoices = summariesFromInvoices;
 // The list only ever shows "total / invoiced / remaining", and remaining is
 // derived client-side from these figures. Sending the whole summary would ship
 // every invoice row of every order, so the list gets just these three.
@@ -45,10 +53,30 @@ const summariesFromInvoices = (targets, invoices) => {
 const listBillingFigures = (summary) => summary
     ? { baseAmount: summary.baseAmount, billedAmount: summary.billedAmount, billedPercent: summary.billedPercent }
     : null;
+exports.listBillingFigures = listBillingFigures;
 // Auftragsbestätigung: der Einleitungstext der Titelseite ist derselbe
 // Rich-Text wie das Anschreiben der Offerte, aus dem er startet — also
 // dieselbe Obergrenze.
 const CONFIRMATION_NOTE_MAX = 40000;
+/**
+ * Die Absagen der TERMINE einer Auftragsfamilie einsammeln, solange die Zeilen
+ * noch existieren. Verschickt werden sie erst nach dem erfolgreichen Eingriff —
+ * ein gescheiterter Schnitt darf keinen Termin aus fremden Kalendern werfen.
+ * Storno und «zurück in den Entwurf» benutzen beide diesen Weg.
+ */
+const collectFamilyAppointmentCancellations = async (familyIds, tenantId) => {
+    const rows = await prisma_client_1.default.appointment.findMany({
+        where: {
+            salesOrderId: { in: familyIds },
+            tenantId,
+            startTime: { gte: new Date() },
+            NOT: { status: 'CANCELLED' },
+        },
+        select: { id: true },
+    });
+    return Promise.all(rows.map((row) => (0, calendarMailService_1.buildAppointmentCancellation)(row.id).catch(() => null)));
+};
+exports.collectFamilyAppointmentCancellations = collectFamilyAppointmentCancellations;
 const allowedOrderModes = new Set(['PROJECT_NEW', 'PROJECT_EXISTING', 'INVOICE']);
 class SalesOrderController {
     /**
@@ -85,6 +113,7 @@ class SalesOrderController {
                     so.parentSalesOrderId, so.revisionNumber, so.orderNumber, so.orderType,
                     so.status, so.totalAmount, so.paymentStages, so.createdByEmployeeId,
                     so.createdAt, so.updatedAt, so.orderDate,
+                    so.cancelledAt, so.cancelReason,
                     c.companyName AS customerCompanyName,
                     c.mainEmail AS customerMainEmail,
                     c.mainPhone AS customerMainPhone,
@@ -115,6 +144,10 @@ class SalesOrderController {
                 orderNumber: row.orderNumber,
                 orderType: row.orderType,
                 status: row.status,
+                // STORNO (06.09.2026): die Liste zeigt einen stornierten Auftrag
+                // weiter an — als storniert, nicht als offen.
+                cancelledAt: row.cancelledAt ?? null,
+                cancelReason: row.cancelReason ?? null,
                 totalAmount: Number(row.totalAmount ?? 0),
                 paymentStages: row.paymentStages ?? null,
                 createdByEmployeeId: row.createdByEmployeeId,
@@ -224,6 +257,9 @@ class SalesOrderController {
                         // Teklif onaylanırken seçilen yol (proje siparişi / teslimat
                         // siparişi) listede rozet olarak gösterilir.
                         orderType: true,
+                        // STORNO (06.09.2026): ein stornierter Auftrag bleibt in
+                        // der Liste — durchgestrichen, mit rotem Zeichen.
+                        cancelledAt: true,
                         // Kept: the project screens filter the same feed by project.
                         projectId: true,
                         // Sipariş listesi bağlı projeyi gösterir; projesi OLMAYAN
@@ -236,7 +272,7 @@ class SalesOrderController {
                             // Liste ek siparişleri kendi satırları olarak da gösterir;
                             // satırdaki tarih ek işin ait olduğu gün (orderDate),
                             // yoksa oluşturulma tarihidir.
-                            select: { id: true, orderNumber: true, totalAmount: true, createdAt: true, orderDate: true },
+                            select: { id: true, orderNumber: true, totalAmount: true, createdAt: true, orderDate: true, cancelledAt: true },
                         },
                     },
                 }),
@@ -269,13 +305,13 @@ class SalesOrderController {
                     baseAmount: Number(addon.totalAmount || 0),
                 })),
             ]);
-            const summaries = summariesFromInvoices(targets, invoiceRows);
+            const summaries = (0, exports.summariesFromInvoices)(targets, invoiceRows);
             const enriched = orders.map((order) => ({
                 ...order,
-                billingSummary: listBillingFigures(summaries.get(order.id)),
+                billingSummary: (0, exports.listBillingFigures)(summaries.get(order.id)),
                 addonSalesOrders: (order.addonSalesOrders || []).map((addon) => ({
                     ...addon,
-                    billingSummary: listBillingFigures(summaries.get(addon.id)),
+                    billingSummary: (0, exports.listBillingFigures)(summaries.get(addon.id)),
                 })),
             }));
             res.status(200).json(enriched);
@@ -315,15 +351,15 @@ class SalesOrderController {
                     },
                     project: {
                         select: {
-                            id: true, projectName: true, status: true, plannedBudget: true, actualCost: true,
+                            id: true, projectName: true, status: true, cancelledAt: true, plannedBudget: true, actualCost: true,
                             startDate: true, endDate: true,
                             phases: { select: { id: true, phaseName: true, progressPercentage: true, isCompleted: true } },
                         },
                     },
-                    parentSalesOrder: { select: { id: true, orderNumber: true } },
+                    parentSalesOrder: { select: { id: true, orderNumber: true, cancelledAt: true } },
                     addonSalesOrders: {
                         orderBy: [{ revisionNumber: 'asc' }, { createdAt: 'asc' }],
-                        select: { id: true, orderNumber: true, orderType: true, status: true, revisionNumber: true, totalAmount: true, paymentStages: true, createdAt: true, orderDate: true },
+                        select: { id: true, orderNumber: true, orderType: true, status: true, cancelledAt: true, cancelReason: true, revisionNumber: true, totalAmount: true, paymentStages: true, createdAt: true, orderDate: true },
                     },
                     reports: {
                         orderBy: { workDate: 'asc' },
@@ -384,6 +420,204 @@ class SalesOrderController {
         }
     }
     // Set or clear the order's payment schedule (dated percent stages summing to 100).
+    /**
+     * EINEN AUFTRAG ZURÜCKNEHMEN — von der Auftragsansicht aus, für JEDE Art:
+     * Projektauftrag, Nachtrag und (neu) den Lieferauftrag, der gar kein
+     * Projekt hat und darum über die Projektadresse nie löschbar war.
+     *
+     * Die Regeln selbst stehen in `shared/salesOrderDeletion`: mitfallende
+     * Nachträge, Lagerrückgabe, Offerte zurück auf «Entwurf», und das Projekt,
+     * das mit seinem letzten Auftrag verschwindet.
+     */
+    /**
+     * ── LÖSCHEN, STORNO, ZURÜCK IN ENTWURF ───────────────────────────────────
+     *
+     * Vorgabe Samet (06.09.2026): ein Auftrag ist ein Beleg. Solange noch nichts
+     * geschehen ist, darf er ZURÜCK IN DEN ENTWURF — er verschwindet, und seine
+     * Offerte ist wieder änderbar. Sobald etwas daran hängt (Rechnung,
+     * Lagerbewegung, Rapport, begonnene Montage, Nachträge), gibt es nur noch
+     * das STORNO: die Zeile bleibt mit allen Sätzen stehen.
+     *
+     * Diese Auskunft holt sich die Auftragsansicht beim Öffnen, damit sie den
+     * richtigen Knopf zeigt statt beim Klick abzublitzen.
+     */
+    async lifecycle(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const id = String(req.params.id);
+            const order = await prisma_client_1.default.salesOrder.findFirst({ where: { id, tenantId } });
+            if (!order)
+                return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            const lifecycle = await (0, documentLifecycle_1.readSalesOrderLifecycle)(prisma_client_1.default, order, tenantId);
+            res.json({
+                ...lifecycle,
+                orderNumber: order.orderNumber,
+                isAddon: Boolean(order.parentSalesOrderId),
+                projectId: order.projectId ?? null,
+                tenderId: order.tenderId ?? null,
+                cancelledAt: order.cancelledAt ?? null,
+                cancelReason: order.cancelReason ?? null,
+            });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /**
+     * ZURÜCK IN ENTWURF. Der Auftrag geht, die Offerte wird wieder ein Entwurf,
+     * und war es der letzte Auftrag des Projekts, fällt das Projekt in die
+     * Planung zurück — es wird NICHT gelöscht (das ist der Unterschied zum
+     * früheren Verhalten). Andere Aufträge des Projekts bleiben unberührt.
+     *
+     * `DELETE /sales-orders/:id` landet für Hauptaufträge in derselben Methode:
+     * es gibt für einen Auftrag nur diesen einen Weg zurück, und alte Aufrufer
+     * sollen ihn nicht umgehen können.
+     */
+    async revertToDraft(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const id = String(req.params.id);
+            const order = await prisma_client_1.default.salesOrder.findFirst({ where: { id, tenantId } });
+            if (!order)
+                return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            const lifecycle = await (0, documentLifecycle_1.readSalesOrderLifecycle)(prisma_client_1.default, order, tenantId);
+            (0, documentLifecycle_1.assertSalesOrderRevertible)(lifecycle);
+            // Mit dem Auftrag fallen seine angesetzten Termine. Die Absagen
+            // werden EINGESAMMELT, solange die Zeilen noch da sind, und erst
+            // nach dem erfolgreichen Zuruecksetzen verschickt — sonst stuende
+            // der Termin weiter in fremden Kalendern (derselbe Weg wie beim
+            // Loeschen eines einzelnen Termins).
+            const cancellations = await (0, exports.collectFamilyAppointmentCancellations)(lifecycle.familyIds, tenantId);
+            const result = await prisma_client_1.default.$transaction(async (tx) => (0, documentLifecycle_1.revertSalesOrderToDraftWithin)(tx, {
+                order,
+                tenantId,
+                employeeId: req.user.id,
+                lifecycle,
+            }));
+            for (const cancellation of cancellations) {
+                (0, calendarMailService_1.queueAppointmentCancellation)(cancellation, req.user.id);
+            }
+            // `tenderId` ist der Weg zurück: dort steht der Entwurf, den jemand
+            // gerade wieder bearbeiten will. `projectReverted` sagt, dass das
+            // Projekt noch da, aber leer ist.
+            res.json({ ...result, orderNumber: order.orderNumber, isAddon: Boolean(order.parentSalesOrderId) });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
+        }
+    }
+    /**
+     * STORNO. Der Auftrag und seine Nachträge werden zurückgenommen, ohne dass
+     * eine Zeile verschwindet; künftige Termine werden abgesagt (und die schon
+     * verschickten Einladungen zurückgezogen). Das Projekt geht NUR mit, wenn
+     * dies sein letzter aktiver Auftrag war — stehen weitere darin, läuft es
+     * weiter.
+     */
+    async cancel(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const id = String(req.params.id);
+            const order = await prisma_client_1.default.salesOrder.findFirst({ where: { id, tenantId } });
+            if (!order)
+                return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            const lifecycle = await (0, documentLifecycle_1.readSalesOrderLifecycle)(prisma_client_1.default, order, tenantId);
+            (0, documentLifecycle_1.assertSalesOrderCancellable)(lifecycle);
+            const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
+            // Die Absagen EINSAMMELN, solange die Termine noch stehen — genau
+            // wie beim Löschen eines Termins. Verschickt wird erst, wenn das
+            // Storno durchgelaufen ist.
+            const cancellations = await (0, exports.collectFamilyAppointmentCancellations)(lifecycle.familyIds, tenantId);
+            const result = await prisma_client_1.default.$transaction(async (tx) => (0, documentLifecycle_1.cancelSalesOrderWithin)(tx, {
+                order,
+                tenantId,
+                employeeId: req.user.id,
+                reason,
+                lifecycle,
+            }));
+            for (const cancellation of cancellations) {
+                (0, calendarMailService_1.queueAppointmentCancellation)(cancellation, req.user.id);
+            }
+            res.json({ ...result, orderNumber: order.orderNumber, isAddon: Boolean(order.parentSalesOrderId) });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
+        }
+    }
+    /** Storno aufheben — Auftrag, Nachträge, Offerte und Projekt leben wieder. */
+    async uncancel(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const id = String(req.params.id);
+            const order = await prisma_client_1.default.salesOrder.findFirst({ where: { id, tenantId } });
+            if (!order)
+                return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (!order.cancelledAt && order.status !== 'CANCELLED') {
+                return res.status(400).json({ error: 'Dieser Auftrag ist nicht storniert.' });
+            }
+            // Ein Nachtrag lebt nur mit seinem Hauptauftrag: der darf nicht
+            // storniert bleiben, während der Nachtrag wieder aktiv wird.
+            if (order.parentSalesOrderId) {
+                const parent = await prisma_client_1.default.salesOrder.findFirst({
+                    where: { id: order.parentSalesOrderId, tenantId },
+                    select: { orderNumber: true, cancelledAt: true },
+                });
+                if (parent?.cancelledAt) {
+                    return res.status(400).json({
+                        error: `Der Hauptauftrag ${parent.orderNumber || ''} ist storniert. Heben Sie dessen Storno auf — der Nachtrag folgt.`,
+                    });
+                }
+            }
+            const familyIds = await (0, salesOrderDeletion_1.salesOrderFamilyIds)(prisma_client_1.default, order, tenantId);
+            const result = await prisma_client_1.default.$transaction(async (tx) => (0, documentLifecycle_1.uncancelSalesOrderWithin)(tx, {
+                order,
+                tenantId,
+                employeeId: req.user.id,
+                familyIds,
+            }));
+            res.json({ ...result, orderNumber: order.orderNumber });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message });
+        }
+    }
+    /**
+     * `DELETE /sales-orders/:id` — der alte Weg, mit den neuen Regeln.
+     *
+     * Ein HAUPTAUFTRAG wird nicht mehr «gelöscht»: er geht zurück in den
+     * Entwurf, mit denselben Bedingungen (nichts darf geschehen sein). Ein
+     * NACHTRAG dagegen ist kein eigener Vertrag, sondern der Rechnungsschnitt
+     * über eine Zeitscheibe des Hauptauftrags — solange keine Rechnung an ihm
+     * hängt, verschwindet er ganz und seine Sätze kehren zum Hauptauftrag
+     * zurück.
+     */
+    async remove(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const id = String(req.params.id);
+            const order = await prisma_client_1.default.salesOrder.findFirst({ where: { id, tenantId } });
+            if (!order)
+                return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (!order.parentSalesOrderId)
+                return this.revertToDraft(req, res);
+            if (order.cancelledAt || order.status === 'CANCELLED') {
+                return res.status(400).json({
+                    error: 'Ein stornierter Nachtrag bleibt als Beleg stehen und wird nicht geloescht.',
+                    blockers: ['CANCELLED'],
+                });
+            }
+            const { familyIds } = await (0, salesOrderDeletion_1.assertSalesOrderDeletable)(prisma_client_1.default, order, tenantId);
+            const result = await prisma_client_1.default.$transaction(async (tx) => (0, salesOrderDeletion_1.deleteSalesOrderWithin)(tx, {
+                order,
+                tenantId,
+                employeeId: req.user.id,
+                familyIds,
+            }));
+            res.json({ ...result, projectId: order.projectId ?? null, orderNumber: order.orderNumber, isAddon: true });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
+        }
+    }
     async updatePaymentStages(req, res) {
         try {
             const tenantId = req.user.tenantId;
@@ -397,12 +631,18 @@ class SalesOrderController {
                     return res.status(400).json({ error: stageError });
                 serialized = (0, paymentSchedule_1.serializePaymentStages)(stages);
             }
+            // Ein STORNIERTER Auftrag wird nicht mehr bearbeitet — er steht als
+            // Beleg da (Vorgabe Samet 06.09.2026).
             const result = await prisma_client_1.default.salesOrder.updateMany({
-                where: { id, tenantId },
+                where: { id, tenantId, cancelledAt: null },
                 data: { paymentStages: serialized },
             });
-            if (result.count === 0)
-                return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (result.count === 0) {
+                const exists = await prisma_client_1.default.salesOrder.count({ where: { id, tenantId } });
+                return exists
+                    ? res.status(400).json({ error: 'Ein stornierter Auftrag kann nicht geaendert werden.' })
+                    : res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            }
             res.status(200).json({ message: 'Ödeme planı güncellendi.', paymentStages: serialized });
         }
         catch (error) {
@@ -452,9 +692,14 @@ class SalesOrderController {
             if (Object.keys(data).length === 0) {
                 return res.status(400).json({ error: 'Keine Änderung übermittelt.' });
             }
-            const result = await prisma_client_1.default.salesOrder.updateMany({ where: { id, tenantId }, data });
-            if (result.count === 0)
-                return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            // Ein stornierter Auftrag wird nicht mehr bearbeitet (06.09.2026).
+            const result = await prisma_client_1.default.salesOrder.updateMany({ where: { id, tenantId, cancelledAt: null }, data });
+            if (result.count === 0) {
+                const exists = await prisma_client_1.default.salesOrder.count({ where: { id, tenantId } });
+                return exists
+                    ? res.status(400).json({ error: 'Ein stornierter Auftrag kann nicht geaendert werden.' })
+                    : res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            }
             const saved = await prisma_client_1.default.salesOrder.findFirst({
                 where: { id, tenantId },
                 select: { confirmationNote: true, confirmationValidUntil: true },
@@ -506,6 +751,11 @@ class SalesOrderController {
                 });
                 if (!tender || tender.tenantId !== tenantId)
                     throw new Error('Teklif bulunamadi.');
+                // Aus einer STORNIERTEN Offerte entsteht kein Auftrag (Vorgabe
+                // Samet 06.09.2026) — erst das Storno aufheben.
+                if (tender.status === 'Cancelled' || tender.cancelledAt) {
+                    throw new Error('Aus einer stornierten Offerte kann kein Auftrag entstehen.');
+                }
                 if (!tender.customerId)
                     throw new Error('Siparis icin teklifin musterisi olmalidir.');
                 // Sipariş zaten açılmışsa hiçbir şey doğrulanmaz/yazılmaz —
@@ -649,7 +899,9 @@ class SalesOrderController {
                                 assignedTechId: slot.assignedTechId || null,
                                 startTime: slot.startTime,
                                 endTime: slot.endTime,
-                                status: 'BOOKED',
+                                // Der Tag entscheidet (03.09.2026): ein Slot, dessen Tag
+                                // vorbei ist, wird als abgeschlossener Termin übernommen.
+                                status: (0, appointmentDay_1.statusForAppointmentDay)(slot),
                                 notes: slot.notes,
                                 isLocked: true,
                             },

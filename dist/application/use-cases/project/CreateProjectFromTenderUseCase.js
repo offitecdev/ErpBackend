@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.CreateProjectFromTenderUseCase = void 0;
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 const tenantModules_1 = require("../../../shared/tenantModules");
+const appointmentDay_1 = require("../../../shared/appointmentDay");
 const nanoid_1 = require("nanoid");
 const crypto_1 = __importDefault(require("crypto"));
 class CreateProjectFromTenderUseCase {
@@ -105,7 +106,9 @@ class CreateProjectFromTenderUseCase {
                     assignedTechId: slot.assignedTechId || null,
                     startTime: slot.startTime,
                     endTime: slot.endTime,
-                    status: "BOOKED",
+                    // Der Tag entscheidet (03.09.2026): ein Slot, dessen Tag
+                    // vorbei ist, wird als abgeschlossener Termin übernommen.
+                    status: (0, appointmentDay_1.statusForAppointmentDay)(slot),
                     notes: slot.notes,
                     isLocked: true,
                 })),

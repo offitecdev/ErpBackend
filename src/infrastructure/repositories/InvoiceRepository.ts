@@ -124,6 +124,10 @@ export class InvoiceRepository implements IInvoiceRepository {
                     i.salespersonName, i.commissionNumber, i.billedPercent, i.baseAmount,
                     i.amount, i.status, i.notes, i.issuedByEmployeeId,
                     i.recipientName, i.recipientAddress, i.introText, i.vatRate,
+                    -- Die drei Abschnitte, ihr Rabattstapel, der Schlusstext und
+                    -- die eigene Absenderzeile: OHNE sie druckt die Liste eine
+                    -- andere Rechnung als die Erfassungsseite (utils/pdf/invoicePdf.ts).
+                    i.sections, i.discounts, i.closingText, i.senderAddress, i.paymentStages, i.paidAt,
                     i.createdAt, i.updatedAt,
                     c.companyName AS customerCompanyName,
                     pr.projectName AS projectName,
@@ -149,7 +153,10 @@ export class InvoiceRepository implements IInvoiceRepository {
             `),
             prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
                 SELECT li.id, li.invoiceId, li.description, li.sourceType, li.sourceId,
-                       li.quantity, li.unitAmount, li.lineTotal, li.unit, li.sortOrder
+                       li.quantity, li.unitAmount, li.lineTotal, li.unit, li.sortOrder,
+                       -- Beschreibung und Zeilenrabatt: OHNE sie druckt die
+                       -- Liste eine andere Tabelle als die Erfassungsseite.
+                       li.longDescription, li.discounts, li.discount
                 FROM InvoiceLineItem li
                 WHERE li.invoiceId IN (SELECT i.id ${scopeSql})
                 ORDER BY li.sortOrder ASC
@@ -191,6 +198,14 @@ export class InvoiceRepository implements IInvoiceRepository {
             recipientAddress: row.recipientAddress ?? null,
             introText: row.introText ?? null,
             vatRate: row.vatRate == null ? null : Number(row.vatRate),
+            // Der Beleg selbst: welche Abschnitte gedruckt werden, ihr
+            // Rabattstapel, der Schlusstext und die Absenderzeile.
+            sections: row.sections ?? null,
+            discounts: row.discounts ?? null,
+            closingText: row.closingText ?? null,
+            senderAddress: row.senderAddress ?? null,
+            paymentStages: row.paymentStages ?? null,
+            paidAt: row.paidAt ?? null,
             issuedByEmployeeId: row.issuedByEmployeeId,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -263,10 +278,21 @@ export class InvoiceRepository implements IInvoiceRepository {
         return this.sumBilled({ projectId });
     }
 
-    async updateStatus(id: string, tenantId: string, status: InvoiceStatus): Promise<Invoice> {
+    /**
+     * Statuswechsel — und mit ihm der ZAHLUNGSEINGANG: "bezahlt" ist ein
+     * Ereignis mit einem Datum, kein blosses Etikett. Beim Umschalten auf PAID
+     * wird `paidAt` gesetzt (der Aufrufer darf ein anderes Datum als heute
+     * nennen), beim Zurueckdrehen wieder geleert — sonst behielte eine wieder
+     * geoeffnete Rechnung ein Zahlungsdatum, das es nicht mehr gibt.
+     */
+    async updateStatus(id: string, tenantId: string, status: InvoiceStatus, paidAt?: Date | null): Promise<Invoice> {
         const existing = await (prisma as any).invoice.findFirst({ where: { id, tenantId } });
         if (!existing) throw new Error("Fatura bulunamadı.");
-        await (prisma as any).invoice.update({ where: { id }, data: { status } });
+        const paid = status === "PAID";
+        await (prisma as any).invoice.update({
+            where: { id },
+            data: { status, paidAt: paid ? (paidAt ?? existing.paidAt ?? new Date()) : null },
+        });
         return (await (prisma as any).invoice.findUnique({ where: { id }, include: invoiceInclude })) as unknown as Invoice;
     }
 

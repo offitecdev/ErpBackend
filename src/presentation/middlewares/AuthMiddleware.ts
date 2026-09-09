@@ -1,10 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { jwtTokenService, toPwdAtClaim } from '../../infrastructure/services/JwtTokenService';
-import { ACCESS_COOKIE, CSRF_COOKIE, clearAuthCookies } from '../utils/authCookies';
+import { ACCESS_COOKIE, clearAuthCookies } from '../utils/authCookies';
+import { csrfDoubleSubmitOk, CSRF_FAILED_MESSAGE } from './CsrfMiddleware';
 import { parseAllowedTenantIds } from '../utils/tenantAccess';
 import { getAuthIdentity } from '../../shared/authIdentityCache';
 import { mayReachWholeCompanyTree } from '../../shared/tenantSwitchAccess';
 import { findTenantRootIdCached, getAllTenants } from '../../shared/tenantTree';
+import { PublicError, toPublicMessage } from '../../application/errors/AuthErrors';
 
 declare module 'express-serve-static-core' {
     interface Request {
@@ -55,7 +57,7 @@ const assertSameCompanyTree = async (homeTenantId: string, requestedTenantId: st
         findTenantRootId(requestedTenantId),
     ]);
     if (!homeRootId || homeRootId !== requestedRootId) {
-        throw new Error('Bu şirket için erişim yetkiniz yok.');
+        throw new PublicError('Bu şirket için erişim yetkiniz yok.');
     }
 };
 
@@ -88,7 +90,7 @@ const resolveTenantId = async (
 
     const homeRootId = await findTenantRootId(homeTenantId);
     if (!homeRootId) {
-        throw new Error('Bu şirket için erişim yetkiniz yok.');
+        throw new PublicError('Bu şirket için erişim yetkiniz yok.');
     }
 
     const allowed = await keepUsableAssignments(allowedTenantIds);
@@ -135,13 +137,9 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
     // cookie but cannot read the csrf cookie to forge the header. Bearer-header
     // auth is inherently CSRF-proof and skips this.
     const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
-    if (cookieToken && isMutation) {
-        const csrfCookie = req.cookies?.[CSRF_COOKIE];
-        const csrfHeader = req.header('x-csrf-token');
-        if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
-            res.status(403).json({ error: 'CSRF doğrulaması başarısız. Sayfayı yenileyip tekrar deneyin.' });
-            return;
-        }
+    if (cookieToken && isMutation && !csrfDoubleSubmitOk(req)) {
+        res.status(403).json({ error: CSRF_FAILED_MESSAGE });
+        return;
     }
 
     try {
@@ -200,6 +198,10 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
         (req as any).authDurMs = Date.now() - authStartedAt;
         next();
     } catch (error) {
-        res.status(401).json({ error: error instanceof Error ? error.message : 'Geçersiz veya süresi dolmuş token.' });
+        // Nicht `error.message`: hier landen auch Prisma-Fehler und ein
+        // fehlendes JWT-Geheimnis, dessen Satz die Umgebungsvariable nennt.
+        res.status(401).json({
+            error: toPublicMessage(error, 'requireAuth', 'Geçersiz veya süresi dolmuş token.'),
+        });
     }
 };

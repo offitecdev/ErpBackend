@@ -13,6 +13,7 @@
  * 60 sn ile aynı ödünleşimi yapıyor; burada daha kısa bir pencere seçildi.
  */
 import prisma from '../infrastructure/database/prisma.client';
+import { TtlCache } from './ttlCache';
 
 export type AuthIdentity = {
     firstName: string;
@@ -26,8 +27,12 @@ export type AuthIdentity = {
 
 const AUTH_IDENTITY_TTL_MS = 30_000;
 
-const cache = new Map<string, { expiresAt: number; identity: AuthIdentity }>();
+/* Begrenzt und selbstkehrend (siehe ttlCache.ts): vorher wuchs diese Map bis
+   zum Neustart, weil die Lebensdauer nur gelesen und nie durchgesetzt wurde. */
+const cache = new TtlCache<AuthIdentity>({ name: 'authIdentity', ttlMs: AUTH_IDENTITY_TTL_MS });
 const inFlight = new Map<string, Promise<AuthIdentity | null>>();
+
+export const authIdentityCacheStats = () => cache.stats();
 
 export const invalidateAuthIdentity = (employeeId: string): void => {
     cache.delete(employeeId);
@@ -41,10 +46,10 @@ export const clearAuthIdentityCache = (): void => {
 
 export const getAuthIdentity = async (employeeId: string): Promise<AuthIdentity | null> => {
     const cached = cache.get(employeeId);
-    if (cached && cached.expiresAt > Date.now()) return cached.identity;
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
 
     const pending = inFlight.get(employeeId);
-    if (pending) return cached ? cached.identity : pending;
+    if (pending) return cached ? cached.value : pending;
 
     const request = prisma.employee
         .findUnique({
@@ -65,10 +70,7 @@ export const getAuthIdentity = async (employeeId: string): Promise<AuthIdentity 
             // negatif bir kayda takılmamalı. Eski kaydı da düşür ki bayat
             // kimlik süresiz servis edilmesin.
             if (employee) {
-                cache.set(employeeId, {
-                    expiresAt: Date.now() + AUTH_IDENTITY_TTL_MS,
-                    identity: employee as AuthIdentity,
-                });
+                cache.set(employeeId, employee as AuthIdentity);
             } else {
                 cache.delete(employeeId);
             }
@@ -84,5 +86,5 @@ export const getAuthIdentity = async (employeeId: string): Promise<AuthIdentity 
     // `invalidateAuthIdentity` ile kaydı SİLDİĞİ için bir sonraki istek bloklu
     // taze okumaya düşer — anında etki bozulmaz; TTL yalnızca süreç dışı
     // değişikliklerde ~tazeleme süresi kadar esner.
-    return cached ? cached.identity : request;
+    return cached ? cached.value : request;
 };

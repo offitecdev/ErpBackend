@@ -12,6 +12,8 @@ import { employeeCreateSchema, employeeUpdateSchema } from '../validation/employ
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
 import { getPersonnelTenantScope, isEmployeeInScope } from '../controllers/serviceTenantScope';
+import prisma from '../../infrastructure/database/prisma.client';
+import { revokeAllRefreshSessions } from '../../infrastructure/services/RefreshSessionService';
 
 const router = Router();
 
@@ -333,6 +335,71 @@ router.patch(
             res.status(200).json({ message: 'Hesap engellendi.' });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /employees/{id}/mfa-reset:
+ *   patch:
+ *     tags: [Employees]
+ *     summary: "Zweiten Faktor zurücksetzen (verlorenes oder gewechseltes Telefon)"
+ *     description: >
+ *       Löscht die Verbindung zur Authenticator-App. Die Person wird bei ihrer
+ *       nächsten Anmeldung erneut durch die Einrichtung geführt — der zweite
+ *       Faktor entfällt dadurch NICHT, er wird nur neu vergeben.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+    '/:id/mfa-reset',
+    requireAuth,
+    /* Dasselbe Recht wie Sperren und Löschen: wer den zweiten Faktor einer
+       anderen Person zurücksetzen kann, kann ihr Konto übernehmen, sobald er
+       auch das Kennwort neu setzt. Das ist Verwaltungsarbeit, keine
+       Bearbeitung von Stammdaten. */
+    requirePermission('employees.delete'),
+    async (req, res) => {
+        try {
+            const id = req.params.id as string;
+            const existing = await employeeRepo.findById(id);
+            const scopeTenantIds = await getPersonnelTenantScope(req.user!.tenantId);
+            if (!existing || !isEmployeeInScope(existing, scopeTenantIds)) {
+                return res.status(404).json({ error: 'Personel bulunamadı.' });
+            }
+            if (!existing.totpEnabledAt && !existing.totpSecret) {
+                return res.status(200).json({ message: 'Bu hesapta kurulu bir doğrulama uygulaması yok.', reset: false });
+            }
+            /* Direkt über Prisma und nicht über `employeeRepo.update`: die drei
+               Spalten stehen bewusst nicht in der Schreibliste des
+               Personalwegs (WRITABLE_EMPLOYEE_FIELDS) — der zweite Faktor ist
+               eine Zugangsangabe wie der QR-Schlüssel, kein Stammdatenfeld. */
+            await prisma.employee.update({
+                where: { id },
+                data: { totpSecret: null, totpEnabledAt: null, totpLastStep: null },
+            });
+            /* Die offenen Anmeldungen fallen mit. Wer das Telefon verloren hat,
+               will nicht, dass eine Sitzung von dort weiterläuft — und wenn die
+               Verwaltung zurücksetzt, weil etwas passiert ist, erst recht
+               nicht. */
+            await revokeAllRefreshSessions(id, 'account').catch((error) =>
+                console.error('[employees/mfa-reset] Sitzungen konnten nicht beendet werden:', error?.message || error));
+            auditLog.log({
+                action: 'employee.mfa_reset',
+                tenantId: req.user!.tenantId,
+                employeeId: req.user!.id,
+                entityType: 'Employee',
+                entityId: id,
+                ...auditLog.context(req),
+            });
+            res.status(200).json({
+                message: 'Doğrulama uygulaması sıfırlandı. Kullanıcı bir sonraki girişinde yeniden kuracak.',
+                reset: true,
+            });
+        } catch (error: any) {
+            console.error('[employees/mfa-reset]', error);
+            res.status(400).json({ error: 'İşlem şu anda gerçekleştirilemiyor.' });
         }
     }
 );

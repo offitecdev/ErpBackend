@@ -228,6 +228,21 @@ export class CustomerRepository implements ICustomerRepository {
         if (filter.companyName) whereClause.companyName = { contains: filter.companyName };
         if (filter.vatNumber) whereClause.vatNumber = { contains: filter.vatNumber };
         if (filter.email) whereClause.mainEmail = { contains: filter.email };
+        if (filter.phone) whereClause.mainPhone = { contains: filter.phone };
+        // Yetkili: ad ve soyad AYRI kolonlarda durur, kullanıcı ise tek parça
+        // yazar. İki kolonu OR'lamak "Anna" ve "Bühler" aramalarının ikisini de
+        // yakalar. Bu OR `AND` listesine girer, `whereClause.OR`a DEĞİL: oradaki
+        // yer genel aramanın, ikisi aynı anda kullanılırsa biri diğerini ezerdi.
+        if (filter.contact) {
+            const contact = filter.contact;
+            whereClause.AND = [
+                ...(Array.isArray(whereClause.AND) ? whereClause.AND : []),
+                { OR: [
+                    { responsibleFirstName: { contains: contact } },
+                    { responsibleLastName: { contains: contact } },
+                ] },
+            ];
+        }
 
         // Sıralama — yalnızca izin verilen DB kolonları; sortBy yoksa alfabetik varsayılan.
         const sortDir: 'asc' | 'desc' = filter.sortDirection === 'asc' ? 'asc' : 'desc';

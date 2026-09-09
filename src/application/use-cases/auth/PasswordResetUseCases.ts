@@ -4,6 +4,7 @@ import { ITokenService } from "../../interfaces/ITokenService";
 import { AuthMailService } from "../../../infrastructure/services/AuthMailService";
 import { toPwdAtClaim } from "../../../infrastructure/services/JwtTokenService";
 import { assertPasswordPolicy } from "../../validation/password";
+import { PublicError } from "../../errors/AuthErrors";
 
 /**
  * Sends a password-reset link. Always resolves silently so the endpoint can't
@@ -46,13 +47,13 @@ export class ResetPasswordUseCase {
         const decoded = this.tokenService.verifyToken('password_reset', token);
 
         const employee = await this.employeeRepo.findById(decoded.id);
-        if (!employee || employee.deletedAt) throw new Error("Hesap bulunamadı veya silinmiş.");
-        if (!employee.isActive) throw new Error("Hesabınız pasif durumdadır.");
+        if (!employee || employee.deletedAt) throw new PublicError("Hesap bulunamadı veya silinmiş.");
+        if (!employee.isActive) throw new PublicError("Hesabınız pasif durumdadır.");
 
         // pwdAt binding makes a reset link effectively single-use: as soon as the
         // password changes, every link issued before it stops validating.
         if (decoded.pwdAt !== toPwdAtClaim(employee.passwordChangedAt)) {
-            throw new Error("Parola sıfırlama bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
+            throw new PublicError("Parola sıfırlama bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
         }
 
         const passwordHash = await this.cryptoService.hashPassword(newPassword);

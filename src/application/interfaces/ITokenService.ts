@@ -8,7 +8,14 @@ export type TokenPurpose =
     | 'refresh'
     | 'activation'
     | 'password_reset'
-    | 'account_deletion';
+    | 'account_deletion'
+    /**
+     * Die halbe Anmeldung: Kennwort stimmt, der zweite Faktor fehlt noch.
+     * Es ist AUSDRÜCKLICH kein Zugangstoken — mit eigenem Geheimnis, eigenem
+     * `typ` und wenigen Minuten Laufzeit. Wer es hat, kann genau eines: einen
+     * Einmalcode einreichen (siehe MfaUseCases).
+     */
+    | 'mfa';
 
 export interface AuthTokenPayload {
     /** Employee id */
@@ -22,12 +29,39 @@ export interface AuthTokenPayload {
      * issued before it.
      */
     pwdAt: number;
+    /**
+     * NUR im Erneuerungstoken (`refresh`): die Zeile der offenen Anmeldung und
+     * die Anmeldung selbst — siehe RefreshSessionService. Zugangstoken tragen
+     * beides nicht; sie leben 15 Minuten und werden nicht einzeln entwertet.
+     */
+    jti?: string;
+    sid?: string;
+    /**
+     * NUR im Zwischentoken (`mfa`): welche Hälfte des zweiten Faktors noch
+     * aussteht.
+     *   verify — es gibt ein eingerichtetes Geheimnis, es fehlt der Code.
+     *   enroll — es gibt noch keines; `sec` trägt das VORGESCHLAGENE, und es
+     *            wird erst geschrieben, wenn der erste Code stimmt.
+     *
+     * `sec` steht bewusst im (signierten) Token und nicht in der Datenbank:
+     * ein abgebrochener Einrichtungsversuch hinterlässt damit keine halb
+     * eingerichtete Zeile, und der Vorschlag ist ohnehin kein Geheimnis vor
+     * dem Aufrufer — er bekommt ihn als QR-Bild zu sehen.
+     */
+    mfaStage?: 'verify' | 'enroll';
+    sec?: string;
 }
 
 export interface VerifiedToken extends AuthTokenPayload {
     typ: TokenPurpose;
     iat: number;
     exp: number;
+}
+
+/** Ein geprüftes Erneuerungstoken trägt die Sitzungskennungen immer. */
+export interface VerifiedRefreshToken extends VerifiedToken {
+    jti: string;
+    sid: string;
 }
 
 export interface ITokenService {

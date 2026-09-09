@@ -147,14 +147,35 @@ const assertDaysAvailable = async (input) => {
        geplanten Tagen stehen sonst vier Absagen hintereinander an. */
     const blockerSelect = { id: true, startTime: true, endTime: true, status: true };
     const [customerHits, projectHits, technicianHits] = await Promise.all([
-        // Ein Kunde bekommt je Kalendertag EINEN Einsatztermin — dieselbe Regel
-        // wie beim einzelnen Termin, nur für alle gewählten Tage zugleich.
+        /* Ein Kunde bekommt je Kalendertag EINEN GEPLANTEN Einsatztermin —
+           dieselbe Regel wie beim einzelnen Termin, nur für alle gewählten Tage
+           zugleich.
+
+           NUR NOCH `BOOKED` (03.09.2026, Vorgabe Samet: «neben einem
+           abgeschlossenen Termin soll man einen weiteren anlegen können»).
+           Vorher zählte ein ABGESCHLOSSENER Tag mit — und das war eine Sackgasse:
+           die Regel wehrte ab, der Knopf «löschen und speichern» durfte einen
+           abgeschlossenen Tag aber nicht wegräumen (`replaceableRows`), also
+           blieb dem Benutzer gar nichts. Sachlich war die Sperre auch falsch:
+           die Regel soll die PLANUNG ordnen, nicht geleistete Arbeit. Ist der
+           Vormittag abgearbeitet und muss am Nachmittag nachgebessert werden,
+           ist das ein zweiter Einsatz und kein Doppeleintrag. Dieselbe
+           Unterscheidung trifft die Technikerplanung längst
+           (findTechnicianScheduleConflict: nur `BOOKED` bindet den Monteur).
+
+           Und ein VERGANGENER Tag ist ein abgeschlossener — der Tag
+           entscheidet (shared/appointmentDay.ts): beim Anlegen sofort, für
+           den Bestand um Mitternacht (MaintenanceReminderService,
+           runAutoFinishInstallationPass). Diese Regel muss also nicht selbst
+           auf die Uhr schauen — der Status ist die einzige Quelle, hier wie
+           in ProjectController. Ein für gestern NACHGETRAGENER Termin kommt
+           deshalb schon als abgeschlossener an und sperrt nichts. */
         input.customerId
             ? prisma_client_1.default.appointment.findMany({
                 where: {
                     customerId: input.customerId,
                     projectId: { not: null },
-                    status: { in: ["BOOKED", "COMPLETED"] },
+                    status: "BOOKED",
                     ...notSelf,
                     OR: dayWindows.map((window) => ({ startTime: window })),
                 },
@@ -162,10 +183,15 @@ const assertDaysAvailable = async (input) => {
                 select: blockerSelect,
             })
             : Promise.resolve([]),
-        // Derselbe Auftrag darf sich nicht selbst überlappen.
+        /* Derselbe Auftrag darf sich nicht selbst überlappen — ausser mit einem
+           bereits ABGESCHLOSSENEN Tag (03.09.2026). Sonst wäre die Lockerung
+           oben wirkungslos: der abgeschlossene Vormittag hätte den neuen Termin
+           gleich in der nächsten Frage wieder abgewiesen, und wieder ohne
+           Ausweg. Was vergangen ist, belegt keine Zeit mehr. */
         prisma_client_1.default.appointment.findMany({
             where: {
                 projectId: input.projectId,
+                status: { not: "COMPLETED" },
                 ...(input.salesOrderId !== undefined ? { salesOrderId: input.salesOrderId } : {}),
                 ...notSelf,
                 OR: input.days.map((day) => ({

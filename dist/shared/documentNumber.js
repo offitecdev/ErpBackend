@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.raiseDocumentCounter = exports.nextDocumentNumber = exports.parseDocumentNumber = exports.formatDocumentNumber = exports.DOCUMENT_BLOCK_SIZE = exports.DOCUMENT_SEQ_PAD = exports.DOCUMENT_PREFIX = void 0;
+exports.raiseDocumentCounter = exports.peekDocumentNumber = exports.nextDocumentNumber = exports.parseDocumentNumber = exports.formatDocumentNumber = exports.DOCUMENT_BLOCK_SIZE = exports.DOCUMENT_SEQ_PAD = exports.DOCUMENT_PREFIX = void 0;
 /**
  * BELGE KODU ÜRETİCİSİ — ÖNEK-YIL-NNNNN (örn. AN-2026-10001).
  *
@@ -201,6 +201,43 @@ const nextDocumentNumber = async (tenantId, type, tx) => {
     return prisma_client_1.default.$transaction(async (client) => (0, exports.formatDocumentNumber)(type, year, await bumpCounter(client, tenantId, type)));
 };
 exports.nextDocumentNumber = nextDocumentNumber;
+/**
+ * Die Nummer, die das NÄCHSTE Dokument dieser Art bekäme — OHNE den Zähler zu
+ * bewegen. Für Vorschauen: die Erfassungsmaske soll die Rechnungsnummer zeigen
+ * dürfen, bevor die Rechnung existiert, statt «Entwurf» zu schreiben.
+ *
+ * ⚠ Es ist eine VORSCHAU, keine Reservierung: wer im selben Augenblick eine
+ * Rechnung erstellt, bekommt diese Nummer, und die Vorschau zeigt dann eine,
+ * die schon vergeben ist. Vergeben wird ausschliesslich in `nextDocumentNumber`
+ * innerhalb der Transaktion des Dokuments.
+ */
+const peekDocumentNumber = async (tenantId, type) => {
+    if (!tenantId)
+        throw new Error('Belge numarası için tenant zorunludur.');
+    const year = new Date().getFullYear();
+    const seq = await prisma_client_1.default.$transaction(async (tx) => {
+        const client = tx;
+        const block = await blockStartFor(client, tenantId);
+        const floor = block + 1;
+        const blockEnd = block + exports.DOCUMENT_BLOCK_SIZE - 1;
+        const rows = await client.$queryRaw `
+            SELECT \`lastValue\` FROM \`DocumentCounter\`
+            WHERE \`tenantId\` = ${tenantId} AND \`docType\` = ${type}`;
+        const current = rows.length ? Number(rows[0]?.lastValue ?? 0) : null;
+        // Dieselbe Entscheidung wie `bumpCounter`, nur ohne zu schreiben.
+        if (current === null)
+            return floor;
+        if (current < floor || current > blockEnd) {
+            const maxIssued = await maxIssuedSeqInBlock(client, tenantId, type, floor, blockEnd);
+            const next = Math.max(block, maxIssued) + 1;
+            if (next <= blockEnd)
+                return next;
+        }
+        return Math.max(current + 1, floor);
+    });
+    return (0, exports.formatDocumentNumber)(type, year, seq);
+};
+exports.peekDocumentNumber = peekDocumentNumber;
 const raiseFloor = async (client, tenantId, docType, minValue) => {
     await client.$executeRaw `
         INSERT INTO \`DocumentCounter\` (\`tenantId\`, \`docType\`, \`lastValue\`, \`updatedAt\`)

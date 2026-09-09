@@ -224,6 +224,13 @@ model PurchaseOrder {
   // Kalem değildir: miktarı/indirimi/KDV'si yoktur, genel toplama net olarak
   // eklenir (`totalFees`).
   additionalFees  String?   @db.Text
+  // JSON ["priceGross", "discount", "x2"] — die Spalten, die die Vorlage beim
+  // Erfassen AUSGEBLENDET hatte (Auge in «Meine Vorlagen»). Das PDF wird auf dem
+  // Client aus dieser Zeile gebaut und spaeter erneut geoeffnet und gemailt —
+  // ohne den Schnappschuss hier wuesste es nicht mehr, was der Beleg zeigen
+  // soll (Vorgabe Samet, 09.09.2026: «goeze bastiysak PDF'te de goeruenmesin»).
+  // NULL = nichts ausgeblendet. Die Werte selbst bleiben in `items` stehen.
+  hiddenColumnKeys String?  @db.Text
   currency        String    @default("CHF")
   // KDV kipi: LINE = satır başına oran (eski davranış), TOTAL = tek oran genel
   // toplam üzerinden (totalNet + totalFees) — detay popup'ındaki KDV ayarları
@@ -266,6 +273,45 @@ model PurchaseOrderTextTemplate {
   updatedAt DateTime @updatedAt
 
   @@index([tenantId])
+}
+
+/// LIEFERANTEN-RECHENVORLAGE (07.09.2026, Vorgabe Samet).
+///
+/// Beim Beleg-Import einer Bestellung wird nach dem Erkennen NICHT mehr von
+/// Hand zugeordnet, sondern GERECHNET: welche Spalten das Modell holen soll,
+/// welche Rabatte gestaffelt darauf fallen, welcher Steuersatz gilt — und ab
+/// welcher Menge welcher Rabatt greift ("die Werte ändern sich je nach Menge,
+/// das System muss den passenden nehmen"). Genau diese Einstellung wird hier
+/// je Lieferant abgelegt und beim nächsten Beleg desselben Lieferanten von
+/// selbst wieder vorgeschlagen.
+///
+/// `supplierId` darf NULL sein: dann ist es eine allgemeine Vorlage, die für
+/// jeden Lieferanten in der Liste steht. `supplierName` ist eine Momentaufnahme
+/// — die Vorlage überlebt damit das Löschen eines Lieferanten lesbar.
+model SupplierOrderTemplate {
+  id           String  @id
+  tenantId     String
+  supplierId   String?
+  supplierName String  @default("")
+  title        String  @default("")
+  /// ORDER, PRICE_REQUEST und GOODS_RECEIPT sind getrennte Vorlagenlisten.
+  documentType String  @default("ORDER") @db.VarChar(32)
+  /// JSON: { fields[], withTiers, discounts[], vatRate, vatCountry, calcMode,
+  ///         priceBasis, currency, qtyTiers[{minQuantity, discount, unitPrice}] }
+  /// Als Text, nicht als Spalten: die Einstellung wächst mit jedem Lieferanten,
+  /// und eine Wanderung je Feld wäre die falsche Rechnung.
+  config       String  @db.Text
+  /// Genau eine Vorlage je Lieferant darf sich von selbst anlegen.
+  isDefault    Boolean @default(false)
+  usageCount   Int     @default(0)
+
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, supplierId])
+  @@index([tenantId, documentType])
 }
 
 model ArticleSupplier {

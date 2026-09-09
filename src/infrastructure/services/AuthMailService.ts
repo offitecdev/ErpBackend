@@ -22,7 +22,7 @@ export class AuthMailService {
 
         const result = await smtp.send(settings || {}, {
             fromEmail,
-            fromName: settings?.fromName || 'OFFITEC ERP',
+            fromName: settings?.fromName || 'OFFITEC CONTROL CENTER',
             to,
             subject,
             text,
@@ -35,7 +35,7 @@ export class AuthMailService {
     }
 
     async sendActivationMail(tenantId: string, to: string, token: string) {
-        await this.send(tenantId, to, 'OFFITEC ERP - Hesap Aktivasyonu', [
+        await this.send(tenantId, to, 'OFFITEC CONTROL CENTER - Hesap Aktivasyonu', [
             'Hesabınızı etkinleştirmek için aşağıdaki bağlantıyı kullanın (24 saat geçerlidir):',
             `${APP_URL()}/activate-account?token=${encodeURIComponent(token)}`,
             'Bu isteği siz yapmadıysanız bu e-postayı yok sayabilirsiniz.',
@@ -43,7 +43,7 @@ export class AuthMailService {
     }
 
     async sendPasswordResetMail(tenantId: string, to: string, token: string) {
-        await this.send(tenantId, to, 'OFFITEC ERP - Parola Sıfırlama', [
+        await this.send(tenantId, to, 'OFFITEC CONTROL CENTER - Parola Sıfırlama', [
             'Parolanızı sıfırlamak için aşağıdaki bağlantıyı kullanın (1 saat geçerlidir):',
             `${APP_URL()}/reset-password?token=${encodeURIComponent(token)}`,
             'Bu isteği siz yapmadıysanız parolanız değişmemiştir; bu e-postayı yok sayabilirsiniz.',
@@ -51,7 +51,7 @@ export class AuthMailService {
     }
 
     async sendAccountDeletionMail(tenantId: string, to: string, token: string) {
-        await this.send(tenantId, to, 'OFFITEC ERP - Hesap Silme Onayı', [
+        await this.send(tenantId, to, 'OFFITEC CONTROL CENTER - Hesap Silme Onayı', [
             'Hesabınızı silmek için aşağıdaki bağlantıyı kullanın (15 dakika geçerlidir):',
             `${APP_URL()}/confirm-account-deletion?token=${encodeURIComponent(token)}`,
             'Bu isteği siz yapmadıysanız lütfen sistem yöneticinize bildirin.',

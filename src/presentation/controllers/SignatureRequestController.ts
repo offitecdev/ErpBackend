@@ -4,6 +4,8 @@ import { SmtpMailService } from "../../infrastructure/services/SmtpMailService";
 import { nanoid } from "nanoid";
 import { notifyProjectEvent } from "../../infrastructure/services/projectEventNotifications";
 import { getMailTenantId } from "./serviceTenantScope";
+import { readPublicToken, isSignatureLinkExpired } from "../utils/publicToken";
+import { toPublicMessage } from "../../application/errors/AuthErrors";
 
 const smtp = new SmtpMailService();
 
@@ -140,7 +142,7 @@ export class SignatureRequestController {
                 try {
                     const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
                     const fromEmail = String(body.fromEmail || settings?.fromEmail || req.user!.email || "").trim();
-                    const fromName = body.fromName || settings?.fromName || "Offitec ERP";
+                    const fromName = body.fromName || settings?.fromName || "Offitec Control Center";
                     const subject = String(body.subject || `${request.title || "Rapor"} - imza talebi`).trim();
                     const message = String(body.message || "Raporunuz imza için hazır. Aşağıdaki bağlantıdan görüntüleyip imzalayabilirsiniz.").trim();
                     if (fromEmail) {
@@ -226,9 +228,14 @@ export class SignatureRequestController {
     /** Public: render-ready snapshot for the tokenized sign page. */
     async getByToken(req: Request, res: Response) {
         try {
-            const token = String(req.params.token);
-            const request = await prisma.signatureRequest.findUnique({ where: { token } });
-            if (!request) return res.status(404).json({ error: "Bağlantı geçersiz veya süresi dolmuş." });
+            // Schlüssel aus dem Kopf `X-Public-Token` (Pfad nur als Rückfallweg).
+            const token = readPublicToken(req);
+            const request = token ? await prisma.signatureRequest.findUnique({ where: { token } }) : null;
+            // Abgelaufen verhält sich wie unbekannt: derselbe Satz, dieselbe
+            // Antwortzeit — der Verweis soll nicht verraten, dass es ihn gab.
+            if (!request || isSignatureLinkExpired(request.createdAt)) {
+                return res.status(404).json({ error: "Bağlantı geçersiz veya süresi dolmuş." });
+            }
             res.status(200).json({
                 reportType: request.reportType,
                 title: request.title,
@@ -237,7 +244,9 @@ export class SignatureRequestController {
                 signedAt: request.signedAt,
             });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            // Nicht `error.message`: dieser Weg ist unangemeldet erreichbar,
+            // hier landen auch Prisma-Texte.
+            res.status(400).json({ error: toPublicMessage(error, "signatureRequest.getByToken") });
         }
     }
 
@@ -247,11 +256,13 @@ export class SignatureRequestController {
      */
     async signByToken(req: Request, res: Response) {
         try {
-            const token = String(req.params.token);
+            const token = readPublicToken(req);
             const body = req.body || {};
             const signature = body.signatureBase64 ? String(body.signatureBase64) : null;
-            const request = await prisma.signatureRequest.findUnique({ where: { token } });
-            if (!request) return res.status(404).json({ error: "Bağlantı geçersiz veya süresi dolmuş." });
+            const request = token ? await prisma.signatureRequest.findUnique({ where: { token } }) : null;
+            if (!request || isSignatureLinkExpired(request.createdAt)) {
+                return res.status(404).json({ error: "Bağlantı geçersiz veya süresi dolmuş." });
+            }
             if (request.status === "SIGNED") {
                 return res.status(409).json({ error: "Bu rapor zaten imzalanmış." });
             }
@@ -297,7 +308,7 @@ export class SignatureRequestController {
 
             res.status(200).json({ message: signature ? "İmza kaydedildi." : "Rapor imzasız olarak kaydedildi.", signed: Boolean(signature) });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: toPublicMessage(error, "signatureRequest.signByToken") });
         }
     }
 }

@@ -39,15 +39,45 @@
  * Erkennung nicht eingerichtet ist, statt still nichts zu tun.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.extractWithGpt = exports.SOURCE_LINE_FIELD = exports.TIER_FIELD = exports.normalizeColumns = exports.TEMPLATE_MAX_COLUMNS = exports.TEMPLATE_MIN_COLUMNS = exports.GptError = exports.gptModelName = exports.gptConfigured = void 0;
+exports.extractWithGpt = exports.transcribeImage = exports.SOURCE_LINE_FIELD = exports.TIER_FIELD = exports.normalizeColumns = exports.TEMPLATE_MAX_COLUMNS = exports.TEMPLATE_MIN_COLUMNS = exports.GptError = exports.gptModelName = exports.gptConfigured = void 0;
 const API_KEY = () => String(
 // Der Name, den Samet vorgegeben hat, steht zuerst; die beiden anderen sind
 // nur Ausweichnamen für Umgebungen, die kleingeschriebene Variablen
 // unschön finden.
 process.env.gptApi ?? process.env.GPT_API ?? process.env.OFFITEC_GPT_API_KEY ?? '').trim();
-const MODEL = () => String(process.env.gptModel ?? process.env.GPT_MODEL ?? 'gpt-4o-mini').trim();
+/**
+ * ── WELCHES MODELL LIEST ────────────────────────────────────────────────
+ * Vorgabe Samet (08.09.2026): «Nimm eine etwas bessere Fassung — eine, die
+ * tüchtig ist und nicht übermässig Token frisst.»
+ *
+ * `gpt-4.1-mini` statt `gpt-4o-mini`: dieselbe Bauart, aber deutlich sicherer
+ * darin, eine Tabelle spaltentreu zu lesen — und genau daran hing das
+ * Fehlerbild. Es kostet 0.40 $ / 1.60 $ je Million (gegen 0.15 $ / 0.60 $),
+ * also rund das Zweieinhalbfache: bei einem Beleg mit 35 Positionen sind das
+ * etwa 0.008 $ statt 0.003 $. Eine einzige Position, die in der falschen
+ * Spalte landet, kostet mehr Zeit, als dieser Unterschied je Geld kostet.
+ *
+ * `gptModel` in der Umgebung schlägt diese Vorgabe weiterhin.
+ */
+const MODEL = () => String(process.env.gptModel ?? process.env.GPT_MODEL ?? 'gpt-4.1-mini').trim();
 const ENDPOINT = () => String(process.env.gptEndpoint ?? process.env.GPT_ENDPOINT ?? 'https://api.openai.com/v1/chat/completions').trim();
-const TIMEOUT_MS = Number(process.env.gptTimeoutMs || 90_000);
+/**
+ * ── WIE LANGE EIN BELEG BRAUCHEN DARF ───────────────────────────────────
+ * 90 s waren zu knapp, und zwar messbar: ein Beleg mit 35 Positionen ergibt
+ * rund 2'900 Ausgabe-Token — bei den ueblichen 50-110 Token je Sekunde sind
+ * das 26-58 s allein fuer das Schreiben, dazu kommt das Bild. Ein dichter
+ * Beleg lag damit auf der Grenze, und was darueber ging, brach ab.
+ *
+ * Diese Frist ist die INNERSTE der drei (Nginx 300 s, Browser 290 s) und
+ * muss die kleinste bleiben: nur dann meldet sich der Server selbst mit
+ * einem verstaendlichen Satz, statt dass die Verbindung wortlos reisst.
+ */
+const TIMEOUT_MS = Number(process.env.gptTimeoutMs || 240_000);
+/**
+ * Die Ausgabegrenze eines Durchgangs. 16'384 ist, was die 4o-Reihe hergibt,
+ * und reicht fuer weit ueber hundert Positionen samt Zeilenanker.
+ */
+const MAX_OUTPUT_TOKENS = Number(process.env.gptMaxOutputTokens || 16_384);
 /** Steht der Schlüssel? Ohne ihn hat die Route nichts zu tun. */
 const gptConfigured = () => API_KEY().length > 0;
 exports.gptConfigured = gptConfigured;
@@ -66,7 +96,7 @@ class GptError extends Error {
     }
 }
 exports.GptError = GptError;
-exports.TEMPLATE_MIN_COLUMNS = 4;
+exports.TEMPLATE_MIN_COLUMNS = 1;
 /**
  * Die feste Ausstattung sind sechs Spalten (Code, Bezeichnung, Menge, Preis,
  * Rabatt 1, Rabatt 2), dazu bis zu drei eigene — zwoelf laesst Luft nach oben,
@@ -139,7 +169,7 @@ exports.SOURCE_LINE_FIELD = 'sourceLine';
    `additionalProperties: false` gesetzt ist. «Nicht gefunden» wird deshalb
    nicht durch Weglassen ausgedrueckt, sondern durch `null` — darum traegt jedes
    Feld seinen Typ UND `null`. */
-const buildSchema = (columns, withTiers) => {
+const buildSchema = (columns, withTiers, includeDocumentHeader = true) => {
     const properties = {};
     /* ZUERST der Anker, dann die Spalten — die Reihenfolge IST die Wirkung
        (siehe `SOURCE_LINE_FIELD`): erst abschreiben, dann zerlegen. */
@@ -178,19 +208,22 @@ const buildSchema = (columns, withTiers) => {
         };
     }
     const rowKeys = Object.keys(properties);
+    const documentProperties = includeDocumentHeader ? {
+        /* Kopfdaten des Belegs. Sie kosten zusammen ein paar Dutzend Token
+           und ersparen der Anwendung das Raten, welcher Lieferant, welche
+           Waehrung und welcher Steuersatz gemeint sind. */
+        supplierName: { type: ['string', 'null'], description: 'Company that issued the document' },
+        documentNumber: { type: ['string', 'null'], description: 'Offer / order number on the document' },
+        documentDate: { type: ['string', 'null'], description: 'Date on the document, ISO yyyy-mm-dd' },
+        currency: { type: ['string', 'null'], description: 'ISO currency code, e.g. CHF, EUR' },
+        vatRate: { type: ['number', 'null'], description: 'VAT percentage of the whole document' },
+        totalNet: { type: ['number', 'null'], description: 'Net total of the document' },
+    } : {};
     return {
         type: 'object',
         additionalProperties: false,
         properties: {
-            /* Kopfdaten des Belegs. Sie kosten zusammen ein paar Dutzend Token
-               und ersparen der Anwendung das Raten, welcher Lieferant, welche
-               Waehrung und welcher Steuersatz gemeint sind. */
-            supplierName: { type: ['string', 'null'], description: 'Company that issued the document' },
-            documentNumber: { type: ['string', 'null'], description: 'Offer / order number on the document' },
-            documentDate: { type: ['string', 'null'], description: 'Date on the document, ISO yyyy-mm-dd' },
-            currency: { type: ['string', 'null'], description: 'ISO currency code, e.g. CHF, EUR' },
-            vatRate: { type: ['number', 'null'], description: 'VAT percentage of the whole document' },
-            totalNet: { type: ['number', 'null'], description: 'Net total of the document' },
+            ...documentProperties,
             rows: {
                 type: 'array',
                 description: 'One entry per order position',
@@ -202,15 +235,17 @@ const buildSchema = (columns, withTiers) => {
                 },
             },
         },
-        required: ['supplierName', 'documentNumber', 'documentDate', 'currency', 'vatRate', 'totalNet', 'rows'],
+        required: includeDocumentHeader
+            ? ['supplierName', 'documentNumber', 'documentDate', 'currency', 'vatRate', 'totalNet', 'rows']
+            : ['rows'],
     };
 };
 /* ── WAS DIE FESTEN FELDER BEDEUTEN ───────────────────────────────────────
    Die Anwendung schickt nur Spaltennamen; die Bedeutung steht hier. Ohne sie
    raet das Modell — und riet bei zwei Preisspalten zweimal dieselbe Zahl. */
 const ROLE_HINTS = {
-    code: 'Article or catalogue number of the item, exactly as printed',
-    name: 'Description of the item',
+    code: 'The item identifier of this row - the article number, product code, type number, type reference or catalogue number are ALL this one field; whichever of them the document prints, it goes here. Copied EXACTLY as printed and in full. It is not necessarily a number: it may be a catalogue number, a type reference containing letters, dots, slashes or dashes, or even a complete URL. Copy the whole string - never shorten it, never drop a prefix or a suffix, never tidy it',
+    name: 'The item description of this row, copied EXACTLY as printed, in full and character for character. Never translate it, never abbreviate a word, never shorten or summarise it: "TeSys Deca contactor - 3P(3 NO)" stays "TeSys Deca contactor - 3P(3 NO)" and never becomes "TeSys D contactor"',
     quantity: 'Ordered quantity as a plain number, without the unit',
     priceGross: 'The MATERIAL price of one unit as printed in the price column - the list price BEFORE any discount. In the worked example below this is 78.10. Never put a discounted price, a line amount or a total here',
     priceNet: 'The price of one unit AFTER the discount. It is always LOWER than the gross price whenever a discount exists, and equal to it only when there is none. In the worked example this is 42.67',
@@ -234,7 +269,13 @@ const LANGUAGE_NAMES = {
  * ist und nicht ein Textauszug.
  */
 const IMAGE_TASK = 'Read the supplier document in this image and return its order positions, following the rules above. '
-    + 'Work down the position table one printed row at a time and stay inside the row you are on.';
+    + 'Work down the position table one printed row at a time and stay inside the row you are on. '
+    /* Eine Aufnahme wird von oben nach unten abgearbeitet, und die letzte
+       Zeile ist die, die am ehesten fehlt: das Modell hoert auf, wenn die
+       Liste "vollstaendig genug" aussieht. Darum steht die Zaehlung VOR
+       der Ausgabe und der Schlusssatz noch einmal daneben. */
+    + 'First count the position rows printed in the table, then transcribe every single one of them - '
+    + 'including the very last row and any row whose cells are partly empty. Do not stop early.';
 const systemPrompt = (language) => {
     const target = LANGUAGE_NAMES[language] ?? LANGUAGE_NAMES.de;
     return [
@@ -259,13 +300,55 @@ const systemPrompt = (language) => {
         `For each position, first copy its whole printed line verbatim into "${exports.SOURCE_LINE_FIELD}" (including any continuation line that belongs to it), and only then split THAT line into the fields.`,
         'Every value of a row must come from that row\'s own line. Never take a value from the line above or below, never carry a value over from the previous position, and never collect a column top-down across the document.',
         'If a line does not show a value, that field is null for this position - do not fill the gap from a neighbouring line.',
+        /* ── DIE SPALTENGRENZE ─────────────────────────────────────────
+           `compactText` liefert die Zeile jetzt mit Tabulatoren als
+           Spaltengrenzen (Excel bringt sie schon so mit). Ohne diesen Satz
+           weiss das Modell nicht, dass zwei Tabulatoren hintereinander eine
+           LEERE Zelle sind — und schiebt den nächsten Wert nach links, um
+           die Lücke zu füllen. Das ist die gemeldete Verschiebung. */
+        'In the text form of the document a TAB separates two columns.',
+        'Two tabs in a row mean the cell between them is EMPTY: that field is null, and the value after the gap keeps'
+            + ' its own column. Never slide a value left into an empty cell, and never let an empty cell shift the rest of the row.',
+        'Count the columns of every line from the left, gap by gap, and match them against the header line of the table.',
         'Return the positions in the order they are printed, one entry per printed position, and never reorder them.',
+        /* ── EINE ZEILE DES BLATTES IST EINE ZEILE DER ANTWORT ─────────
+           Die Zahl wird NICHT mehr gezaehlt und NICHT mehr angesagt
+           (Vorgabe Samet, 08.09.2026: «so etwas wie 35 gibt es nicht, nimm
+           das weg»). Sie ergibt sich: die Abschrift hat so viele Zeilen,
+           wie sie hat, und die Zuordnung muss genau so viele liefern. Wer
+           zaehlen will, zaehlt beide und vergleicht — dafuer braucht es
+           keine Angabe von aussen. */
+        'Return one entry per line of the table - no more, no fewer.',
+        'A row belongs in the answer even when most of its cells are empty: an empty cell is null, an empty row is still a row.',
+        'Never merge two printed rows into one entry, never split one printed row into two, and never leave out a row because it looks unimportant, repeats the row above, or continues it.',
+        'The last printed row of the table matters as much as the first - do not stop before you reach it.',
         /* Die Übersetzung darf den Anker NICHT anfassen: er ist der Beleg
            selbst und die einzige Stelle, an der sich nachsehen lässt, woher
            ein Wert stammt. Übersetzt reicht er dafür nicht mehr. */
-        `Write every text value in ${target}; translate names that are in another language. The one exception is "${exports.SOURCE_LINE_FIELD}": it is never translated, shortened or tidied - it is the document's own wording.`,
-        'Keep article numbers, codes and units exactly as printed.',
+        /* ── ABSCHREIBEN, NICHT UEBERSETZEN ────────────────────────────
+           Fehlerbild Samet (08.09.2026): «Wenn dort "TeSys Deca contactor
+           - 3P(3 NO) - AC-3 - <= 440 V 9 A - 24 V DC coil" steht, dann
+           muss genau das dastehen; es darf nicht "D" statt "Deca"
+           schreiben und nichts abkuerzen.»
+
+           Hier stand bis dahin das Gegenteil: «Write every text value in
+           German; translate names that are in another language.» Damit war
+           das Umschreiben der Artikelbezeichnung ausdruecklich VERLANGT —
+           und ein Modell, das uebersetzen soll, kuerzt beim Uebersetzen.
+           Eine Belegzeile ist kein Text, den man uebertraegt, sondern eine
+           Angabe, die der Lieferant genau so bestellt haben will. Sie wird
+           abgeschrieben. */
+        'Every text value is a TRANSCRIPTION of what is printed, not a translation: copy it character for character,'
+            + ' with its own wording, spelling, punctuation, spacing, capitalisation and units.',
+        'Never translate, abbreviate, expand, shorten, summarise, correct or tidy any value you take from the document -'
+            + ' not the identifier, not the description, not the unit. "TeSys Deca contactor - 3P(3 NO) - AC-3 - <= 440 V 9 A'
+            + ' - 24 V DC coil" must come back exactly like that, never as "TeSys D contactor" or any other shortened form.',
+        `This holds for "${exports.SOURCE_LINE_FIELD}" as well: it is never translated, shortened or tidied - it is the document's own wording.`,
+        `You may use ${target} only for a word you have to invent yourself, and there is none in this task.`,
+        'Item identifiers are not always numbers: a code may contain letters, dots, slashes or dashes, or be a complete URL.'
+            + ' Copy the whole string, however long it is, and never cut a URL short.',
         'Numbers: plain decimals with a dot, no thousand separators, no currency symbol, no percent sign.',
+        'Keep every decimal place that is printed - 9.50 stays 9.50 and 0.125 stays 0.125 - and never round a value.',
         'Percentages are numbers: 7.5 means 7.5%.',
         /* ── DIE PREISREGEL, MIT EINEM DURCHGERECHNETEN BEISPIEL ───────────
            Fehlerbild Samet (08.09.2026): «Das Modell bestimmt den Bruttopreis
@@ -291,7 +374,16 @@ const systemPrompt = (language) => {
         '(5) VAT is not part of any of these - it is applied at the very end, on the sum of the line totals, so never add it to a price or to a line total.',
         'Worked example: gross 78.10 with a printed discount of -45.36 gives discount 45.36, net 42.67 and, for quantity 1, a line total of 42.67.',
         'Gross and net are equal only when the line truly has no discount. Otherwise derive the missing one from the other - never copy the same number into both.',
-        'Skip totals, subtotals, delivery terms, headers and footers - only real positions.',
+        /* Der Satz stand frueher ohne Grenze da («skip totals, subtotals,
+           delivery terms, headers and footers») und war damit ein
+           Freibrief: was das Modell fuer unwichtig hielt, fiel weg. Er
+           gilt jetzt nur noch fuer das, was AUSSERHALB der Positions-
+           tabelle steht. Innerhalb der Tabelle wird nicht ausgewaehlt. */
+        'Leave out only what is printed OUTSIDE the position table: page headers and footers, the address block,'
+            + ' delivery and payment terms, and the closing total block of the document.',
+        'Inside the position table nothing is left out. Do not judge whether a row is important - transcribe it.',
+        'The same holds column by column: an empty cell stays empty. Read each value from the column it is printed under,'
+            + ' never from the nearest column that happens to have a number in it.',
         'A value that is not on the document is null. Never guess or invent.',
     ].join(' ');
 };
@@ -318,6 +410,103 @@ const usageOf = (raw, model) => {
             : null,
     };
 };
+const TRANSCRIBE_PROMPT = [
+    'You are transcribing a table from an image. You do NOT interpret it, you do not summarise it, you do not translate it.',
+    'Return the table exactly as it is printed, line by line, from top to bottom.',
+    'Put the column header row into "header" and every other printed row into "lines", one entry per printed row.',
+    'Inside a line, separate the cells with a TAB character. Keep the columns in their printed left-to-right order.',
+    'Every line must contain the SAME number of tabs as the header, so that column 3 of one line is column 3 of every line.',
+    'A cell that is empty on the page stays empty: write nothing between the two tabs. Never leave a tab out to close a gap,'
+        + ' and never move a value into a neighbouring column.',
+    'Copy every value character for character - identifiers, descriptions, units, URLs and numbers alike.'
+        + ' Do not shorten, abbreviate, translate, round or tidy anything, and keep the decimal separator that is printed.',
+    'A cell whose text wraps onto several printed lines is still ONE cell: join it with a single space, do not start a new line.',
+    'Transcribe every row of the table including the last one, and nothing that stands outside the table.',
+].join(' ');
+const TRANSCRIBE_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+        header: { type: ['string', 'null'], description: 'The column header row, cells separated by TAB' },
+        lines: {
+            type: 'array',
+            description: 'One entry per printed table row, cells separated by TAB',
+            items: { type: 'string' },
+        },
+    },
+    required: ['header', 'lines'],
+};
+/**
+ * Eine Aufnahme in eine Tabelle verwandeln — und sonst nichts. Das Ergebnis
+ * geht danach als TEXT durch `extractWithGpt`, genau wie eine Excel-Datei.
+ */
+const transcribeImage = async (image) => {
+    const key = API_KEY();
+    if (!key)
+        throw new GptError('Die KI-Erkennung ist nicht eingerichtet.', 'GPT_NOT_CONFIGURED', 503);
+    const model = MODEL();
+    const body = {
+        model,
+        temperature: 0,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        response_format: {
+            type: 'json_schema',
+            json_schema: { name: 'document_table', strict: true, schema: TRANSCRIBE_SCHEMA },
+        },
+        messages: [
+            { role: 'system', content: TRANSCRIBE_PROMPT },
+            {
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'Transcribe the table in this image.' },
+                    {
+                        type: 'image_url',
+                        image_url: { url: `data:${image.mimeType};base64,${image.data}`, detail: 'high' },
+                    },
+                ],
+            },
+        ],
+    };
+    let response;
+    try {
+        response = await fetch(ENDPOINT(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+    }
+    catch (error) {
+        const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+        throw new GptError(timedOut ? 'Die KI-Erkennung hat zu lange gebraucht.' : 'Die KI-Erkennung ist nicht erreichbar.', timedOut ? 'GPT_TIMEOUT' : 'GPT_UNREACHABLE', 504);
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+        const message = String(payload?.error?.message || '').slice(0, 400);
+        console.error('[gptExtract/transcribe] OpenAI antwortete', response.status, message || '(ohne Grund)');
+        throw new GptError('Die KI-Erkennung hat den Beleg abgelehnt.', 'GPT_REJECTED', 502, message);
+    }
+    const choice = payload?.choices?.[0];
+    if (choice?.finish_reason === 'length') {
+        throw new GptError('Der Beleg ist für einen Durchgang zu lang. Bitte weniger Seiten aufs Mal hochladen.', 'GPT_TRUNCATED', 422, `Die Abschrift riss nach ${MAX_OUTPUT_TOKENS} Token ab.`);
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(String(choice?.message?.content ?? ''));
+    }
+    catch {
+        throw new GptError('Die Antwort der KI war nicht lesbar.', 'GPT_BAD_JSON', 502);
+    }
+    const lines = Array.isArray(parsed?.lines)
+        ? parsed.lines.map((line) => String(line ?? '')).filter((line) => line.trim())
+        : [];
+    return {
+        header: parsed?.header ? String(parsed.header) : null,
+        lines,
+        usage: usageOf(payload?.usage, model),
+    };
+};
+exports.transcribeImage = transcribeImage;
 /**
  * EINEN Textblock lesen lassen. Für lange Belege ruft die Route diese Funktion
  * mehrfach auf (ein Stück je Aufruf) und führt die Positionen zusammen.
@@ -339,12 +528,21 @@ const extractWithGpt = async (input) => {
         // Ein Beleg ist kein Ort für Einfälle: dieselbe Seite muss zweimal
         // dasselbe ergeben.
         temperature: 0,
+        /* ── PLATZ FUER ALLE ZEILEN ──────────────────────────────────────
+           Eine Position mit ihrem Zeilenanker kostet grob 80 Ausgabe-Token;
+           35 davon sind rund 3'000. Ohne ausdrueckliche Grenze setzt die
+           Gegenseite ihre eigene, und wo sie greift, bricht die Antwort
+           mitten im JSON ab — die Bestellung ist dann nicht kuerzer,
+           sondern gar nicht da (`finish_reason: 'length'`). Lieber die
+           Obergrenze des Modells ausschoepfen: ungenutzte Token kosten
+           nichts, nur ausgegebene. */
+        max_tokens: MAX_OUTPUT_TOKENS,
         response_format: {
             type: 'json_schema',
             json_schema: {
                 name: 'supplier_document',
                 strict: true,
-                schema: buildSchema(columns, Boolean(input.withTiers)),
+                schema: buildSchema(columns, Boolean(input.withTiers), input.includeDocumentHeader !== false),
             },
         },
         messages: [
@@ -409,7 +607,7 @@ const extractWithGpt = async (input) => {
        wegzuwerfen ist richtig — halb geparste Positionen wären schlimmer als
        keine, weil sie glaubwürdig aussehen. */
     if (choice?.finish_reason === 'length') {
-        throw new GptError('Der Beleg ist für einen Durchgang zu lang. Bitte weniger Seiten aufs Mal hochladen.', 'GPT_TRUNCATED', 422);
+        throw new GptError('Der Beleg ist für einen Durchgang zu lang. Bitte weniger Seiten aufs Mal hochladen.', 'GPT_TRUNCATED', 422, `Die Antwort riss nach ${MAX_OUTPUT_TOKENS} Token ab.`);
     }
     if (choice?.message?.refusal) {
         throw new GptError('Die KI-Erkennung hat den Beleg abgelehnt.', 'GPT_REFUSED', 422, String(choice.message.refusal).slice(0, 300));

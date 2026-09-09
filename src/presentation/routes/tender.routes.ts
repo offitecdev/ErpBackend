@@ -110,6 +110,35 @@ router.delete(
 );
 
 /**
+ * ── LÖSCHEN / STORNO (Vorgabe Samet 06.09.2026) ──────────────────────────────
+ * `GET  /:id/lifecycle` sagt, was erlaubt ist (und warum nicht).
+ * `POST /:id/cancel`    storniert die Offerte — sie bleibt als Beleg stehen.
+ * `POST /:id/uncancel`  nimmt das Storno zurück.
+ * Beides ist ein Eingriff in den Belegbestand: dieselbe Berechtigung wie das
+ * Löschen.
+ */
+router.get(
+    '/:id/lifecycle',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.lifecycle(req, res)
+);
+
+router.post(
+    '/:id/cancel',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.cancel(req, res)
+);
+
+router.post(
+    '/:id/uncancel',
+    requireAuth,
+    requirePermission('tenders.manage'),
+    (req, res) => tenderController.uncancel(req, res)
+);
+
+/**
  * @swagger
  * /tenders/{id}/positions:
  *   post:

@@ -1,6 +1,25 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { assertRuntimeConfig, threadpoolAdvice, runtimeEnv, RuntimeConfigError } from './infrastructure/config/runtime';
+import { apiDocsAccess } from './infrastructure/config/apiDocs';
+
+// Eine Fehlkonfiguration ist ein Startfehler, kein stiller Sicherheitsverlust:
+// `OFFITEC_ENV` entschied bisher ungeprüft darüber, ob die Sitzungskekse das
+// Secure-Merkmal tragen. Ein Tippfehler schaltete es ab, ohne dass irgendwo
+// eine Zeile erschien. Jetzt startet der Dienst in dem Fall gar nicht.
+try {
+    assertRuntimeConfig();
+} catch (error) {
+    if (error instanceof RuntimeConfigError) {
+        console.error(`
+[Konfiguration] ${error.message}
+`);
+        process.exit(1);
+    }
+    throw error;
+}
+
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -34,6 +53,7 @@ import logisticsRoutes from './presentation/routes/logistics.routes';
 import regieRoutes from './presentation/routes/regie.routes';
 import maintenanceRoutes from './presentation/routes/maintenance.routes';
 import salesOrderRoutes from './presentation/routes/sales-order.routes';
+import addonOrderRoutes from './presentation/routes/addon-order.routes';
 import billingRoutes from './presentation/routes/billing.routes';
 import notificationRoutes from './presentation/routes/notification.routes';
 import meetingRoutes from './presentation/routes/meeting.routes';
@@ -62,8 +82,13 @@ import dashboardRoutes from './presentation/routes/dashboard.routes';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { startReminderEngine } from './infrastructure/services/ReminderEngine';
 import { startImapCaptureService } from './infrastructure/services/ImapCaptureService';
+import { startRefreshSessionCleanup } from './infrastructure/services/RefreshSessionService';
 import { startCaldavCaptureService } from './infrastructure/services/caldavCalendarService';
 import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
+import { redactPublicTokens } from './presentation/utils/logRedaction';
+import { bcryptGateStats } from './application/services/bcryptGate';
+// Nur für die API-Dokumentation: im Produktivbetrieb ist sie anmeldepflichtig.
+import { requireAuth } from './presentation/middlewares/AuthMiddleware';
 import prisma from './infrastructure/database/prisma.client';
 
 
@@ -71,16 +96,69 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 const apiPrefixes = ['/api/v1', '/backend/api/v1'];
 const swaggerUiOptions = {
-    customSiteTitle: 'OFFITEC ERP API Docs',
+    customSiteTitle: 'OFFITEC CONTROL CENTER API Docs',
     swaggerOptions: {
         persistAuthorization: true,
         docExpansion: 'list',
     },
 };
-const allowSwaggerUi = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
-    res.removeHeader('Content-Security-Policy');
+/**
+ * ── DIE API-DOKUMENTATION IST KEINE ÖFFENTLICHE SEITE ───────────────────────
+ *
+ * Hier stand:
+ *
+ *     res.removeHeader('Content-Security-Policy');
+ *
+ * und die beiden Wege `/api-docs` und `/swagger.json` hingen ohne jede
+ * Anmeldung am Produktivrechner. Damit lag das vollständige Verzeichnis aller
+ * Endpunkte samt Feldern offen — für einen Angreifer die Landkarte, die er
+ * sich sonst mühsam zusammensuchen müsste —, und auf genau diesen Wegen war
+ * zusätzlich die Inhaltsrichtlinie abgeschaltet.
+ *
+ * Zwei getrennte Entscheidungen, beide umgedreht:
+ *
+ *  • WER: im Produktivbetrieb ist die Dokumentation AUS, es sei denn
+ *    `OFFITEC_API_DOCS=on` — und dann nur für Angemeldete. Ausserhalb des
+ *    Produktivbetriebs bleibt sie offen (`OFFITEC_API_DOCS=off` schaltet sie
+ *    auch dort ab). Fehlt die Variable auf dem Server, ist der Weg zu.
+ *
+ *  • WAS: die Richtlinie wird nicht mehr entfernt, sondern für diese Wege
+ *    passend gesetzt. Swagger-UI 5 liefert seinen Startcode als eigene Datei
+ *    (`swagger-ui-init.js`) statt eingebettet — `script-src 'self'` genügt
+ *    also. Eingebettet ist nur noch ein `<style>`-Block.
+ */
+const SWAGGER_CSP = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+].join('; ');
+
+const apiDocs = apiDocsAccess(runtimeEnv(), process.env.OFFITEC_API_DOCS);
+
+const swaggerCsp = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    res.setHeader('Content-Security-Policy', SWAGGER_CSP);
     next();
 };
+
+/** Abgeschaltet heisst: es gibt den Weg nicht. Kein Hinweis, dass es ihn gäbe. */
+const apiDocsGate = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!apiDocs.enabled) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+    }
+    next();
+};
+
+/** Im Produktivbetrieb zusätzlich: nur mit gültiger Sitzung. */
+const apiDocsGuards: express.RequestHandler[] = apiDocs.requireLogin
+    ? [apiDocsGate, requireAuth, swaggerCsp]
+    : [apiDocsGate, swaggerCsp];
 
 app.set('etag', false);
 // One reverse-proxy hop (nginx) in production: makes req.ip the real client
@@ -117,7 +195,13 @@ app.use(cookieParser());
 // 'combined' plus the response time: the API has a 100-200 ms budget per
 // endpoint against the remote database, so the one number that matters when
 // reading the log must be in the log.
-app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] :response-time ms'));
+// Öffentliche Schlüssel, die noch im Pfad stehen (alte Verweise), werden vor
+// dem Schreiben geschwärzt — siehe utils/logRedaction.ts.
+morgan.token('safe-url', (req) => redactPublicTokens(
+    (req as express.Request).originalUrl || (req as { url?: string }).url || '',
+));
+
+app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :safe-url HTTP/:http-version" :status :res[content-length] :response-time ms'));
 // 15 MB is the global upload/body ceiling (mirrors MAX_UPLOAD_BYTES).
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ limit: '15mb', extended: true }));
@@ -130,10 +214,10 @@ app.use(apiPrefixes, (_req, res, next) => {
 });
 
 
-app.use('/api-docs', allowSwaggerUi, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
-app.use('/backend/api-docs', allowSwaggerUi, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+app.use('/api-docs', ...apiDocsGuards, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+app.use('/backend/api-docs', ...apiDocsGuards, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
 
-app.get(['/swagger.json', '/backend/swagger.json'], (_req, res) => {
+app.get(['/swagger.json', '/backend/swagger.json'], ...apiDocsGuards, (_req, res) => {
     res.header('Content-Type', 'application/json');
     res.send(swaggerSpec);
 });
@@ -159,6 +243,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/tenants`, tenantRoutes);
     app.use(`${prefix}/customers`, customerRoutes);
     app.use(`${prefix}/sales-orders`, salesOrderRoutes);
+    // Nachträge (NT-…): Liste, Beleg, freier Nachtrag mit eigenen Positionen.
+    app.use(`${prefix}/addon-orders`, addonOrderRoutes);
     app.use(`${prefix}/billing`, billingRoutes);
     app.use(`${prefix}/roles`, roleRoutes);
     // Eigener Pfad statt eines Unterwegs von /roles: dort steht bereits ein
@@ -207,11 +293,25 @@ app.use(globalErrorHandler);
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    const pool = threadpoolAdvice();
+    console.log(`Threadpool  -> ${pool.effective} Plaetze, hoechstens ${bcryptGateStats().globalLimit} gleichzeitige bcrypt-Aufgaben`);
+    if (pool.shouldRaise) {
+        // Aus dem Code heraus nicht zu aendern (Node liest die Variable beim
+        // Hochfahren) — deshalb hier der genaue Handgriff fuer den Betrieb.
+        console.warn(
+            `[Threadpool] Nur ${pool.effective} Plaetze. bcrypt, Dateizugriffe und die Bildverkleinerung ` +
+            `teilen sie sich. Empfohlen: UV_THREADPOOL_SIZE=${pool.recommended} in der UMGEBUNG des Dienstes ` +
+            `setzen (in der .env wirkt es nicht - sie wird erst im Vorgang gelesen).`,
+        );
+    }
     console.log(`API Docs  -> http://localhost:${PORT}/api-docs`);
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     startMaintenanceReminderService();
     startReminderEngine();
     startImapCaptureService();
+    // Abgelaufene Anmeldezeilen abräumen (entwertete bleiben bis zum Ablauf
+    // stehen — nur so ist ein wiedereingespieltes Token erkennbar).
+    startRefreshSessionCleanup();
     // Der Kalender des Kontos (CalDAV) hat seinen eigenen Zeitplan: er
     // liest keine Lesestände fort, sondern jedes Mal den ganzen Zeitraum,
     // und darf deshalb seltener und unabhängig laufen.

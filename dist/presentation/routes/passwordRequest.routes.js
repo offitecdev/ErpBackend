@@ -14,6 +14,9 @@ const BcryptCryptoService_1 = require("../../infrastructure/services/BcryptCrypt
 const password_1 = require("../../application/validation/password");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
+const AuthErrors_1 = require("../../application/errors/AuthErrors");
+const RateLimitMiddleware_1 = require("../middlewares/RateLimitMiddleware");
+const bcryptGate_1 = require("../../application/services/bcryptGate");
 /* ── KENNWORTWUNSCH (17.08.2026) ─────────────────────────────────────────────
  *
  * Vorgabe: „Das Kennwort kann geändert werden, aber es braucht die Freigabe
@@ -29,6 +32,28 @@ const AuditLogService_1 = require("../../infrastructure/services/AuditLogService
  * gelassener Bildschirm zum Kontowechsel benutzt werden.
  */
 const router = (0, express_1.Router)();
+/* ── WARUM HIER EINE BREMSE STEHT ────────────────────────────────────────────
+ *
+ * Dieser Weg prüft das BISHERIGE Kennwort — und tat das ohne jede Begrenzung.
+ * Wer eine Sitzung übernommen hat (offener Bildschirm, gestohlener Keks),
+ * konnte hier beliebig oft raten, um das Kennwort der Person zu erfahren; das
+ * ist etwas anderes als Zugriff zu haben, weil dasselbe Kennwort meist auch
+ * anderswo gilt.
+ *
+ * Gezählt wird je PERSON, nicht je Anschluss: das Schutzgut ist das Konto, und
+ * ein ganzes Büro sitzt hinter einer Adresse (dieselbe Überlegung wie bei den
+ * Postwegen in auth.routes.ts).
+ *
+ * Ein GELUNGENER Wechsel kostet nichts (`skipSuccessfulRequests`) — sonst
+ * sperrt sich aus, wer sein Kennwort mehrmals berechtigt ändert.
+ */
+const passwordAttemptLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: 'Zu viele Versuche. Bitte versuchen Sie es später erneut.',
+    skipSuccessfulRequests: true,
+    keyBy: (req) => (req.user?.id ? `pwreq:${req.user.id}` : null),
+});
 const employeeRepo = new EmployeeRepository_1.EmployeeRepository();
 const roleRepo = new RoleRepository_1.RoleRepository();
 const cryptoService = new BcryptCryptoService_1.BcryptCryptoService();
@@ -70,7 +95,7 @@ const callerManages = async (employeeId) => (await roleRepo.getEmployeePermissio
  * POST /password-requests — { currentPassword, newPassword, note? }
  * Antwort: { applied: true } (sofort gesetzt) oder { applied: false, request }.
  */
-router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.post('/', AuthMiddleware_1.requireAuth, passwordAttemptLimiter, async (req, res) => {
     try {
         const user = req.user;
         const currentPassword = String(req.body?.currentPassword || '');
@@ -85,13 +110,20 @@ router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
         });
         if (!employee)
             return res.status(404).json({ error: 'Person nicht gefunden.' });
-        const ok = await cryptoService.comparePassword(currentPassword, employee.passwordHash);
+        /* Alle drei bcrypt-Arbeiten laufen unter der Schranke: ein Vergleich
+           und ein Hash kosten je ~250-400 ms Threadpool, und dieser Weg konnte
+           sie unbegrenzt oft anfordern (bcryptGate.ts).
+
+           Der ZWEITE Vergleich steht bewusst hinter dem `return` des ersten:
+           wer das bisherige Kennwort nicht kennt, zahlt einen Vergleich, nicht
+           zwei. */
+        const ok = await (0, bcryptGate_1.runBcryptGuarded)(user.id, () => cryptoService.comparePassword(currentPassword, employee.passwordHash));
         if (!ok)
             return res.status(400).json({ error: 'Das bisherige Kennwort stimmt nicht.' });
-        if (await cryptoService.comparePassword(newPassword, employee.passwordHash)) {
+        if (await (0, bcryptGate_1.runBcryptGuarded)(user.id, () => cryptoService.comparePassword(newPassword, employee.passwordHash))) {
             return res.status(400).json({ error: 'Das neue Kennwort ist mit dem bisherigen identisch.' });
         }
-        const newPasswordHash = await cryptoService.hashPassword(newPassword);
+        const newPasswordHash = await (0, bcryptGate_1.runBcryptGuarded)(user.id, () => cryptoService.hashPassword(newPassword));
         if (await callerManages(user.id)) {
             await employeeRepo.update(user.id, { passwordHash: newPasswordHash, passwordChangedAt: new Date() });
             AuditLogService_1.auditLog.log({
@@ -129,7 +161,13 @@ router.post('/', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(201).json({ applied: false, request: mapRequest(created) });
     }
     catch (error) {
-        res.status(400).json({ error: error.message });
+        // Eine überlastete Schranke ist kein Eingabefehler, sondern ein
+        // "zu viel" — eigener Statuscode mit Wartezeit (wie bei der Anmeldung).
+        if (error instanceof AuthErrors_1.TooManyAttemptsError) {
+            res.setHeader('Retry-After', String(error.retryAfterSeconds));
+            return res.status(429).json({ error: error.message });
+        }
+        res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'password-requests') });
     }
 });
 /** GET /password-requests/mine — der eigene Stand (offen oder zuletzt entschieden). */
@@ -144,7 +182,7 @@ router.get('/mine', AuthMiddleware_1.requireAuth, async (req, res) => {
         res.status(200).json({ data: rows.map(mapRequest) });
     }
     catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'password-requests') });
     }
 });
 /** GET /password-requests?status=PENDING — die Freigabeliste.
@@ -169,7 +207,7 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPer
         res.status(200).json({ data: rows.map(mapRequest) });
     }
     catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'password-requests') });
     }
 });
 /** POST /password-requests/:id/decide — { approve, note? }. Entscheiden darf,
@@ -221,7 +259,7 @@ router.post('/:id/decide', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
         res.status(200).json({ request: mapRequest(updated) });
     }
     catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'password-requests') });
     }
 });
 exports.default = router;

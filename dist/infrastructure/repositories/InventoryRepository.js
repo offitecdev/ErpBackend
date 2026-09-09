@@ -116,6 +116,50 @@ const computeArticleCostSummary = (article) => {
         manualCostValue,
     };
 };
+/**
+ * ── PRODUKTLISTE: ERST ALPHABETISCH, DANN NUMERISCH ──────────────────────────
+ *
+ * Die Ordnung, in der Offerte, Rechnung und Nachtrag ihre Produkte erwarten
+ * (Vorgabe Samet). Zwei Schlüssel:
+ *
+ *   1. Namen, die mit einer ZIFFER beginnen, kommen NACH den Buchstaben. Der
+ *      Katalog ist voll reiner Zahlencodes ("032F0197", "0585805100"); rein
+ *      lexikografisch sortiert stünden sie zu Tausenden vor dem ersten Wort und
+ *      begrüben alles Benannte unter sich.
+ *   2. Innerhalb davon vergleicht MariaDBs `NATURAL_SORT_KEY` eingebettete
+ *      Zahlen ALS Zahlen: DN15 · DN50 · DN100 statt DN100 · DN15 · DN50.
+ *      Klein nach gross, wie verlangt.
+ *
+ * Der Schlüssel wird gerechnet, nicht gelesen — Prisma kann ihn nicht
+ * ausdrücken, also läuft diese Sortierung über den Rohweg. Sie MUSS in der
+ * Datenbank stehen: die Liste kommt seitenweise, und eine fertige Seite
+ * nachträglich zu ordnen sortiert bloss die zehn Zeilen, die der Server nach
+ * einer anderen Regel schon ausgewählt hatte.
+ */
+const NATURAL_NAME_SORT = 'nameNatural';
+/* `NATURAL_SORT_KEY` gibt es erst ab MariaDB 10.7. Fehlt es, bleibt Regel 1
+   bestehen und der Name wird wieder zeichenweise verglichen — die Liste ist
+   dann gröber sortiert, aber der Produktwähler fällt nicht aus. Ein positives
+   Ergebnis wird für die Laufzeit gemerkt; ein Fehlschlag NICHT, denn ein
+   Verbindungsfehler ist keine Auskunft über die Datenbank. */
+let naturalSortKeySupported = null;
+const supportsNaturalSortKey = async () => {
+    if (naturalSortKeySupported !== null)
+        return naturalSortKeySupported;
+    try {
+        await prisma_client_1.default.$queryRawUnsafe("SELECT NATURAL_SORT_KEY('a') AS k");
+        naturalSortKeySupported = true;
+        return true;
+    }
+    catch {
+        return false;
+    }
+};
+/** Das ORDER BY der beiden Schlüssel, für den Tabellen-Alias einer Rohabfrage. */
+const naturalNameOrderSql = (alias, direction, natural) => {
+    const nameKey = natural ? `NATURAL_SORT_KEY(${alias}.\`name\`)` : `${alias}.\`name\``;
+    return `(${alias}.\`name\` REGEXP '^[0-9]') ${direction}, ${nameKey} ${direction}`;
+};
 class InventoryRepository {
     async createLocation(locationData) {
         const data = await prisma_client_1.default.location.create({
@@ -278,12 +322,12 @@ class InventoryRepository {
         }
         if (columnFilters.length)
             where.AND = columnFilters;
-        if (!options.lean) {
-            // Ürün/malzeme listesi yalnızca bu yedi alanı gösterir. Article'ın
-            // kategori, barkod, maliyet, durum ve tarih kolonlarını yanıta
-            // taşımadan; stok toplamını da ayrı relation sorgusu yerine aynı SQL'de
-            // topluyoruz. Böylece 15 satır için Article + StockBalance ardışık DB
-            // turları oluşmaz.
+        /* Dieselben Bedingungen noch einmal für den Rohweg. Sie standen früher
+           nur im Listenzweig; seit der Produktwähler nach der gerechneten
+           Namensordnung fragt, braucht auch der schlanke Zweig sie — und beide
+           müssen dieselbe Menge treffen, sonst zählt die eine Seite anders als
+           die andere filtert. */
+        const buildRawFilter = () => {
             const clauses = ['a.`tenantId` = ?', 'a.`deletedAt` IS NULL'];
             const values = [tenantId];
             if (options.itemType) {
@@ -312,6 +356,21 @@ class InventoryRepository {
                 clauses.push('(a.`systemBarcode` LIKE ? OR a.`supplierBarcode` LIKE ?)');
                 values.push(term, term);
             }
+            return { clauses, values };
+        };
+        if (!options.lean) {
+            // Ürün/malzeme listesi yalnızca bu yedi alanı gösterir. Article'ın
+            // kategori, barkod, maliyet, durum ve tarih kolonlarını yanıta
+            // taşımadan; stok toplamını da ayrı relation sorgusu yerine aynı SQL'de
+            // topluyoruz. Böylece 15 satır için Article + StockBalance ardışık DB
+            // turları oluşmaz.
+            //
+            // AÇIKLAMA İSTENİRSE (`includeDescription`) SORGUYA KATILIR. Bu hızlı
+            // yol eklendiğinde bayrak yalnızca aşağıdaki Prisma yolunda kalmıştı;
+            // liste ucu bayrağı sessizce yutuyor, alan yanıta hiç düşmüyordu.
+            // `description` @db.Text'tir — 15 satırın ötesinde bir maliyeti yok,
+            // ama istenmedikçe de taşınmaz.
+            const { clauses, values } = buildRawFilter();
             const sortableSql = {
                 createdAt: 'a.`createdAt`',
                 articleCode: 'a.`articleCode`',
@@ -323,14 +382,30 @@ class InventoryRepository {
                 status: 'a.`status`',
                 totalQuantity: 'totalQuantity',
             };
-            const orderColumn = sortableSql[options.sortBy || 'createdAt'] || sortableSql.createdAt;
             const orderDirection = options.sortDirection === 'asc' ? 'ASC' : 'DESC';
+            /* Die Namensordnung braucht ZWEI Schlüssel (Buchstaben vor Ziffern,
+               dann die Zahlen als Zahlen) und passt darum nicht in die
+               Spaltentabelle darüber. */
+            const orderBySql = options.sortBy === NATURAL_NAME_SORT
+                ? naturalNameOrderSql('a', orderDirection, await supportsNaturalSortKey())
+                : `${sortableSql[options.sortBy || 'createdAt'] || sortableSql.createdAt} ${orderDirection}`;
             const whereSql = clauses.join(' AND ');
             const offset = (page - 1) * pageSize;
+            /* Neden `MAX(a.description)` ve düz bir kolon değil:
+             *
+             * Sorgu GROUP BY ile toplanıyor. Düz kolon `ONLY_FULL_GROUP_BY`
+             * altında GROUP BY listesine de girmek zorunda kalırdı; TEXT bir
+             * kolonu gruplamak ise geçici tabloyu diske itebilir — 15 satırlık
+             * bir liste için ağır bir bedel. Toplama işlevi bu şartın dışında
+             * kalır ve her grup TEK ürün (a.`id` birincil anahtar, GROUP BY'ın
+             * içinde) olduğundan MAX o satırın kendi değeridir. */
+            const descriptionSelect = options.includeDescription
+                ? 'MAX(a.`description`) AS description,'
+                : '';
             const [countRows, articleRows] = await Promise.all([
                 prisma_client_1.default.$queryRawUnsafe(`SELECT COUNT(*) AS total FROM \`Article\` a WHERE ${whereSql}`, ...values),
                 prisma_client_1.default.$queryRawUnsafe(`SELECT a.\`id\`, a.\`articleCode\`, a.\`name\`, a.\`unit\`,
-                            a.\`salePrice\`, a.\`criticalStockLevel\`,
+                            a.\`salePrice\`, a.\`criticalStockLevel\`, ${descriptionSelect}
                             COALESCE(SUM(sb.\`currentQuantity\`), 0) AS totalQuantity
                      FROM \`Article\` a
                      LEFT JOIN \`StockBalance\` sb ON sb.\`articleId\` = a.\`id\`
@@ -338,7 +413,7 @@ class InventoryRepository {
                      GROUP BY a.\`id\`, a.\`articleCode\`, a.\`name\`, a.\`unit\`,
                               a.\`salePrice\`, a.\`criticalStockLevel\`, a.\`createdAt\`,
                               a.\`systemBarcode\`, a.\`minStockLevel\`, a.\`status\`
-                     ORDER BY ${orderColumn} ${orderDirection}, a.\`id\` ASC
+                     ORDER BY ${orderBySql}, a.\`id\` ASC
                      LIMIT ? OFFSET ?`, ...values, pageSize, offset),
             ]);
             return {
@@ -350,6 +425,9 @@ class InventoryRepository {
                     salePrice: Number(article.salePrice) || 0,
                     criticalStockLevel: Number(article.criticalStockLevel) || 0,
                     totalQuantity: Number(article.totalQuantity) || 0,
+                    // İstenmediyse alan yanıtta hiç yer almaz — Prisma yolundaki
+                    // davranışın aynısı.
+                    ...(options.includeDescription ? { description: article.description ?? null } : {}),
                 })),
                 total: Math.max(0, Number(countRows?.[0]?.total) || 0),
                 page,
@@ -427,6 +505,31 @@ class InventoryRepository {
             status: 'status',
         };
         const requestedSort = options.sortBy || 'createdAt';
+        /* Der Produktwähler der Offerte — und damit auch der von Rechnung und
+           Nachtrag, die dieselbe Zelle benutzen — fragt nach der gerechneten
+           Namensordnung. Prisma kann sie nicht formulieren, also läuft sie über
+           denselben Rohweg wie die Liste, nur mit den schlanken Feldern und
+           ohne den Bestands-JOIN. */
+        if (requestedSort === NATURAL_NAME_SORT) {
+            const { clauses, values } = buildRawFilter();
+            const whereSql = clauses.join(' AND ');
+            const orderBySql = naturalNameOrderSql('a', sortDirection === 'asc' ? 'ASC' : 'DESC', await supportsNaturalSortKey());
+            const [countRows, articleRows] = await Promise.all([
+                prisma_client_1.default.$queryRawUnsafe(`SELECT COUNT(*) AS total FROM \`Article\` a WHERE ${whereSql}`, ...values),
+                prisma_client_1.default.$queryRawUnsafe(`SELECT a.\`id\`, a.\`articleCode\`, a.\`name\`, a.\`description\`,
+                            a.\`unit\`, a.\`salePrice\`, a.\`baseCost\`
+                     FROM \`Article\` a
+                     WHERE ${whereSql}
+                     ORDER BY ${orderBySql}, a.\`id\` ASC
+                     LIMIT ? OFFSET ?`, ...values, pageSize, (page - 1) * pageSize),
+            ]);
+            return {
+                items: articleRows.map(mapLeanRow),
+                total: Math.max(0, Number(countRows?.[0]?.total) || 0),
+                page,
+                pageSize,
+            };
+        }
         const sortBy = requestedSort === 'totalQuantity' || sortableFields[requestedSort]
             ? requestedSort
             : 'createdAt';

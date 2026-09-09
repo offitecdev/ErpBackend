@@ -68,7 +68,7 @@ const buildInvite = (invite) => {
     const lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//Offitec//ERP Kalender//DE",
+        "PRODID:-//Offitec//Control Center Kalender//DE",
         "CALSCALE:GREGORIAN",
         `METHOD:${invite.method}`,
     ];

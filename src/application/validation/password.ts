@@ -1,3 +1,5 @@
+import { PublicError } from '../errors/AuthErrors';
+
 /**
  * Central password policy — the single source of truth for every place a NEW
  * password is accepted (employee create/update, password reset). Login is
@@ -18,6 +20,6 @@ export const isPasswordCompliant = (password: string): boolean =>
 /** Throws with the user-facing policy message when the password is too weak. */
 export const assertPasswordPolicy = (password: string): void => {
     if (!isPasswordCompliant(password)) {
-        throw new Error(PASSWORD_POLICY_MESSAGE);
+        throw new PublicError(PASSWORD_POLICY_MESSAGE);
     }
 };

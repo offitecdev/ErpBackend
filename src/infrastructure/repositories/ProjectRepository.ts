@@ -406,6 +406,8 @@ export class ProjectRepository {
                 projectNumber: true,
                 projectName: true,
                 status: true,
+                cancelledAt: true,
+                cancelReason: true,
                 plannedBudget: true,
                 actualCost: true,
                 overtimeHourlyRate: true,
@@ -440,6 +442,10 @@ export class ProjectRepository {
                         orderNumber: true,
                         orderType: true,
                         status: true,
+                        // STORNO (06.09.2026): jede Auftragszeile der
+                        // Projektseite sagt selbst, ob sie zurueckgenommen ist.
+                        cancelledAt: true,
+                        cancelReason: true,
                         totalAmount: true,
                         createdByEmployeeId: true,
                         createdAt: true,

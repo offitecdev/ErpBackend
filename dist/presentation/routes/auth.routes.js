@@ -10,6 +10,8 @@ const RoleRepository_1 = require("../../infrastructure/repositories/RoleReposito
 const BcryptCryptoService_1 = require("../../infrastructure/services/BcryptCryptoService");
 const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
+const CsrfMiddleware_1 = require("../middlewares/CsrfMiddleware");
+const authCookies_1 = require("../utils/authCookies");
 const RateLimitMiddleware_1 = require("../middlewares/RateLimitMiddleware");
 const GetMeUseCase_1 = require("../../application/use-cases/auth/GetMeUseCase");
 const RefreshTokenUseCase_1 = require("../../application/use-cases/auth/RefreshTokenUseCase");
@@ -17,6 +19,7 @@ const AccountActivationUseCases_1 = require("../../application/use-cases/auth/Ac
 const PasswordResetUseCases_1 = require("../../application/use-cases/auth/PasswordResetUseCases");
 const AccountDeletionUseCases_1 = require("../../application/use-cases/auth/AccountDeletionUseCases");
 const AuthMailService_1 = require("../../infrastructure/services/AuthMailService");
+const MfaUseCases_1 = require("../../application/use-cases/auth/MfaUseCases");
 const ValidationMiddleware_1 = require("../middlewares/ValidationMiddleware");
 const authSchemas_1 = require("../validation/authSchemas");
 // Throttle credential attempts per IP to blunt brute-force / enumeration.
@@ -27,6 +30,20 @@ const loginRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
     message: 'Çok fazla giriş denemesi. Lütfen bir süre sonra tekrar deneyin.',
     skipSuccessfulRequests: true,
 });
+/* ── DER ZWEITE FAKTOR ───────────────────────────────────────────────────────
+ * Eigener Zähler, aus zwei Gründen. Erstens gehört ein Vertipper im Codefeld
+ * nicht in das Kennwort-Budget — sonst sperrt sich aus, wer sein Kennwort
+ * kennt und den Sechser zweimal daneben tippt. Zweitens ist der eigentliche
+ * Schutz ohnehin der Zähler JE KONTO in `MfaUseCases` (fünf Fehlversuche, dann
+ * wachsende Wartezeit); dieser hier bremst nur das Skript auf EINEM Anschluss,
+ * und darf deshalb grosszügiger sein. Gelungene Eingaben zählen nicht mit —
+ * ein Grossraumbüro hinter einer Adresse meldet sich morgens gemeinsam an. */
+const mfaRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    message: 'Çok fazla deneme. Lütfen bir süre sonra tekrar deneyin.',
+    skipSuccessfulRequests: true,
+});
 // Separate limiter (own counter) for silent token refresh: the frontend calls
 // this on every 401, so it must not share the login brute-force budget.
 const refreshRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
@@ -35,12 +52,54 @@ const refreshRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
     message: 'Çok fazla istek gönderildi. Lütfen bir süre sonra tekrar deneyin.',
     skipSuccessfulRequests: true,
 });
-// Tighter limit for the mail-sending flows (activation / reset / deletion
-// requests) so they can't be abused to spam mailboxes.
-const mailFlowRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+/* ── DIE POSTWEGE (Aktivierung / Kennwort / Löschung) ────────────────────────
+ *
+ * Hier stand EIN Zähler für alle sechs Wege: 5 Anfragen je Anschluss und
+ * Viertelstunde, ohne `skipSuccessfulRequests`. Das war an drei Stellen falsch:
+ *
+ *  • Ein ganzes Büro sitzt hinter EINER Adresse. Fünf Kennwortanfragen je
+ *    Viertelstunde galten damit für die Firma, nicht für die Person.
+ *  • Die BESTÄTIGUNGEN teilten sich denselben Zähler. Wer seinen Link ein paar
+ *    Mal falsch anklickte, konnte den richtigen nicht mehr bestätigen.
+ *  • Das eigentliche Schutzgut — ein einzelnes Postfach — war gar nicht
+ *    geschützt: über wechselnde Adressen liess sich dieselbe Person weiter
+ *    zuschütten.
+ *
+ * Jetzt sind es drei Zähler mit je eigener Aufgabe.
+ */
+/** Grobe Bremse gegen Massenversand von EINEM Anschluss. Grosszügig — sie soll
+    das Büro nicht treffen, sondern das Skript. */
+const mailFlowIpRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
     windowMs: 15 * 60 * 1000,
-    max: 5,
+    max: 30,
     message: 'Çok fazla istek gönderildi. Lütfen bir süre sonra tekrar deneyin.',
+});
+/** Der eigentliche Schutz: je EMPFÄNGERPOSTFACH, quer über alle Anschlüsse.
+    Steht hinter `validate`, damit die Adresse geprüft und getrimmt ist. */
+const mailRecipientRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 3,
+    message: 'Bu adres için çok fazla istek gönderildi. Lütfen bir süre sonra tekrar deneyin.',
+    keyBy: (req) => {
+        const email = String(req.body?.email || '').trim().toLowerCase();
+        return email ? `mail:${email}` : null;
+    },
+});
+/** Kontolöschung: kein Feld im Körper, die Person steht im Zugangstoken. */
+const mailSelfRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 3,
+    message: 'Çok fazla istek gönderildi. Lütfen bir süre sonra tekrar deneyin.',
+    keyBy: (req) => (req.user?.id ? `self:${req.user.id}` : null),
+});
+/** BESTÄTIGUNGEN haben ihren eigenen Zähler, und ein GELUNGENER Klick kostet
+    nichts: sonst sperrt sich aus, wer einen alten Link erwischt hat und dann
+    den richtigen öffnet. */
+const tokenConfirmRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    message: 'Çok fazla deneme. Lütfen bir süre sonra tekrar deneyin.',
+    skipSuccessfulRequests: true,
 });
 const router = (0, express_1.Router)();
 const employeeRepo = new EmployeeRepository_1.EmployeeRepository();
@@ -59,7 +118,35 @@ const resetPasswordUseCase = new PasswordResetUseCases_1.ResetPasswordUseCase(em
 const requestAccountDeletionUseCase = new AccountDeletionUseCases_1.RequestAccountDeletionUseCase(employeeRepo, tokenService, authMailService);
 const confirmAccountDeletionUseCase = new AccountDeletionUseCases_1.ConfirmAccountDeletionUseCase(employeeRepo, tokenService);
 const qrLoginUseCase = new QrLoginUseCase_1.QrLoginUseCase(tokenService);
-const authController = new AuthController_1.AuthController(loginUseCase, getUserPermissionsUseCase, getMeUseCase, refreshTokenUseCase, requestActivationUseCase, activateAccountUseCase, requestPasswordResetUseCase, resetPasswordUseCase, requestAccountDeletionUseCase, confirmAccountDeletionUseCase, qrLoginUseCase);
+const verifyMfaCodeUseCase = new MfaUseCases_1.VerifyMfaCodeUseCase(tokenService);
+const authController = new AuthController_1.AuthController(loginUseCase, getUserPermissionsUseCase, getMeUseCase, refreshTokenUseCase, requestActivationUseCase, activateAccountUseCase, requestPasswordResetUseCase, resetPasswordUseCase, requestAccountDeletionUseCase, confirmAccountDeletionUseCase, qrLoginUseCase, verifyMfaCodeUseCase);
+/** Der Keks vor der Sitzung: reine Zufallsbytes, kein Datenbankzugriff. Die
+    Grenze ist entsprechend grosszügig und soll nur ein Skript bremsen. */
+const csrfIssueRateLimiter = (0, RateLimitMiddleware_1.rateLimit)({
+    windowMs: 15 * 60 * 1000,
+    max: 240,
+    message: 'Çok fazla istek gönderildi. Lütfen bir süre sonra tekrar deneyin.',
+});
+/**
+ * @swagger
+ * /auth/csrf:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Setzt den CSRF-Keks für die Wege VOR der Anmeldung
+ *     description: >
+ *       Anmeldung, QR-Anmeldung, Erneuerung und Abmeldung liegen ausserhalb von
+ *       requireAuth. Unter OFFITEC_COOKIE_SAMESITE=none werden sie trotzdem auf
+ *       die Doppelvorlage geprüft — dafür braucht die Anmeldeseite einen Keks,
+ *       bevor es eine Sitzung gibt. Unter SameSite=Lax ist der Aufruf harmlos
+ *       und schadet nicht.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Keks gesetzt; derselbe Wert steht im Rumpf
+ */
+router.get('/csrf', csrfIssueRateLimiter, (_req, res) => {
+    res.status(200).json({ csrfToken: (0, authCookies_1.issueCsrfCookie)(res) });
+});
 /**
  * @swagger
  * /auth/login:
@@ -87,7 +174,43 @@ const authController = new AuthController_1.AuthController(loginUseCase, getUser
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.post('/login', loginRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.loginSchema }), (req, res) => authController.login(req, res));
+router.post('/login', loginRateLimiter, CsrfMiddleware_1.requireCsrfOnPublicAuth, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.loginSchema }), (req, res) => authController.login(req, res));
+/**
+ * @swagger
+ * /auth/mfa/verify:
+ *   post:
+ *     tags: [Auth]
+ *     summary: "Zweiter Faktor: den Einmalcode der Authenticator-App einlösen"
+ *     description: >
+ *       Zweite Hälfte der Anmeldung. `POST /auth/login` beantwortet die
+ *       richtige Kennworteingabe mit `mfaRequired` und setzt den HttpOnly-Keks
+ *       `ofi_mfa`; hier wird der sechsstellige Code dazu eingereicht. Stimmt er,
+ *       entstehen die Sitzungskeks — vorher gibt es keine Sitzung.
+ *       Bei der ersten Anmeldung einer Person (`stage=enroll`) bestätigt
+ *       derselbe Aufruf zugleich die Einrichtung.
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [code]
+ *             properties:
+ *               code:
+ *                 type: string
+ *                 example: "482193"
+ *     responses:
+ *       200:
+ *         description: Angemeldet (Keks gesetzt)
+ *       400:
+ *         description: Code falsch oder bereits verbraucht — dieselbe Eingabe darf wiederholt werden
+ *       401:
+ *         description: Zwischentoken abgelaufen oder Konto nicht mehr anmeldbar — von vorne beginnen
+ *       429:
+ *         description: Zu viele Fehlversuche
+ */
+router.post('/mfa/verify', mfaRateLimiter, CsrfMiddleware_1.requireCsrfOnPublicAuth, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.mfaVerifySchema }), (req, res) => authController.verifyMfa(req, res));
 /**
  * @swagger
  * /auth/qr-login:
@@ -116,7 +239,7 @@ router.post('/login', loginRateLimiter, (0, ValidationMiddleware_1.validate)({ b
  */
 // Teilt den Brute-Force-Zähler der Kennwortanmeldung: ein QR-Schlüssel ist eine
 // Zugangsangabe wie ein Kennwort und darf nicht schneller geraten werden dürfen.
-router.post('/qr-login', loginRateLimiter, (req, res) => authController.qrLogin(req, res));
+router.post('/qr-login', loginRateLimiter, CsrfMiddleware_1.requireCsrfOnPublicAuth, (req, res) => authController.qrLogin(req, res));
 /**
  * @swagger
  * /auth/refresh:
@@ -131,7 +254,7 @@ router.post('/qr-login', loginRateLimiter, (req, res) => authController.qrLogin(
  *       401:
  *         description: Geçersiz veya süresi dolmuş refresh token (cookie'ler temizlenir)
  */
-router.post('/refresh', refreshRateLimiter, (req, res) => authController.refresh(req, res));
+router.post('/refresh', refreshRateLimiter, CsrfMiddleware_1.requireCsrfOnPublicAuth, (req, res) => authController.refresh(req, res));
 /**
  * @swagger
  * /auth/logout:
@@ -143,7 +266,7 @@ router.post('/refresh', refreshRateLimiter, (req, res) => authController.refresh
  *       200:
  *         description: Çıkış yapıldı
  */
-router.post('/logout', (req, res) => authController.logout(req, res));
+router.post('/logout', CsrfMiddleware_1.requireCsrfOnPublicAuth, (req, res) => authController.logout(req, res));
 /**
  * @swagger
  * /auth/activation/request:
@@ -165,7 +288,7 @@ router.post('/logout', (req, res) => authController.logout(req, res));
  *       200:
  *         description: İstek alındı
  */
-router.post('/activation/request', mailFlowRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.emailRequestSchema }), (req, res) => authController.requestActivation(req, res));
+router.post('/activation/request', mailFlowIpRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.emailRequestSchema }), mailRecipientRateLimiter, (req, res) => authController.requestActivation(req, res));
 /**
  * @swagger
  * /auth/activation/confirm:
@@ -189,7 +312,7 @@ router.post('/activation/request', mailFlowRateLimiter, (0, ValidationMiddleware
  *       400:
  *         description: Geçersiz veya süresi dolmuş token
  */
-router.post('/activation/confirm', mailFlowRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.tokenConfirmSchema }), (req, res) => authController.activate(req, res));
+router.post('/activation/confirm', tokenConfirmRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.tokenConfirmSchema }), (req, res) => authController.activate(req, res));
 /**
  * @swagger
  * /auth/password-reset/request:
@@ -211,7 +334,7 @@ router.post('/activation/confirm', mailFlowRateLimiter, (0, ValidationMiddleware
  *       200:
  *         description: İstek alındı
  */
-router.post('/password-reset/request', mailFlowRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.emailRequestSchema }), (req, res) => authController.requestPasswordReset(req, res));
+router.post('/password-reset/request', mailFlowIpRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.emailRequestSchema }), mailRecipientRateLimiter, (req, res) => authController.requestPasswordReset(req, res));
 /**
  * @swagger
  * /auth/password-reset/confirm:
@@ -237,7 +360,7 @@ router.post('/password-reset/request', mailFlowRateLimiter, (0, ValidationMiddle
  *       400:
  *         description: Geçersiz veya süresi dolmuş token
  */
-router.post('/password-reset/confirm', mailFlowRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.passwordResetConfirmSchema }), (req, res) => authController.resetPassword(req, res));
+router.post('/password-reset/confirm', tokenConfirmRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.passwordResetConfirmSchema }), (req, res) => authController.resetPassword(req, res));
 /**
  * @swagger
  * /auth/account-deletion/request:
@@ -252,7 +375,7 @@ router.post('/password-reset/confirm', mailFlowRateLimiter, (0, ValidationMiddle
  *       401:
  *         description: Yetkisiz
  */
-router.post('/account-deletion/request', AuthMiddleware_1.requireAuth, mailFlowRateLimiter, (req, res) => authController.requestAccountDeletion(req, res));
+router.post('/account-deletion/request', AuthMiddleware_1.requireAuth, mailFlowIpRateLimiter, mailSelfRateLimiter, (req, res) => authController.requestAccountDeletion(req, res));
 /**
  * @swagger
  * /auth/account-deletion/confirm:
@@ -276,7 +399,7 @@ router.post('/account-deletion/request', AuthMiddleware_1.requireAuth, mailFlowR
  *       400:
  *         description: Geçersiz veya süresi dolmuş token
  */
-router.post('/account-deletion/confirm', mailFlowRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.tokenConfirmSchema }), (req, res) => authController.confirmAccountDeletion(req, res));
+router.post('/account-deletion/confirm', tokenConfirmRateLimiter, (0, ValidationMiddleware_1.validate)({ body: authSchemas_1.tokenConfirmSchema }), (req, res) => authController.confirmAccountDeletion(req, res));
 /**
  * @swagger
  * /auth/me/permissions:

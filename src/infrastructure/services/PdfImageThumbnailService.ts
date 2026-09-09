@@ -14,23 +14,40 @@ import {
  * Product images for the offer PDF, reduced to the size the PDF actually draws.
  *
  * The stored images are full-resolution uploads (1600–2000 px PNGs, 1–2 MB each)
- * while `tenderPdfModern` draws them into a 24 mm square — ~320 px even at print
- * resolution. Shipping the originals meant reading megabytes of base64 LongText
- * out of the database and pushing them through JSON on every single export; the
- * downscaled JPEG is roughly 150x smaller and visually identical at that size.
+ * while `tenderPdfModern` fits them into a 36 × 20 mm frame. Shipping the
+ * originals meant reading megabytes of base64 LongText out of the database and
+ * pushing them through JSON on every single export; the downscaled JPEG is
+ * roughly 30x smaller.
  *
  * Because the conversion is pure (same source bytes -> same thumbnail), the
  * result is cached in-process, on disk, and in a dedicated database table
  * shared by every server instance. The cache key carries the article's
- * `updatedAt`; repository writes also refresh the durable derivative.
+ * `updatedAt` AND the thumbnail spec below; repository writes also refresh the
+ * durable derivative.
  */
 
-/** 24 mm at ~340 DPI. Above this the PDF gains nothing but bytes. */
-const MAX_PX = 320;
-const JPEG_QUALITY = 78;
+/**
+ * 800 px on the longer edge ≈ 560 DPI across the frame's full 36 mm width and
+ * ~750 DPI for a 4:3 photo that prints 27 mm wide — a 1024 px upload keeps
+ * nearly all of its pixels. The earlier 320 px / quality 78 was sized for a
+ * 24 mm square at 340 DPI and smeared fine detail (a fan grille, engraved
+ * text) into grey; Samet, 04.09.2026: "the clarity is really poor".
+ */
+const MAX_PX = 800;
+const JPEG_QUALITY = 86;
+/**
+ * Stamped into every cache key and into the persisted `sourceVersion`. Bump it
+ * whenever MAX_PX / JPEG_QUALITY change: thumbnails made under an older spec
+ * then miss in memory, on disk and in the table, and are regenerated from the
+ * original on the next export instead of being served small forever.
+ */
+const THUMB_SPEC = 'v2-800q86';
+const withSpec = (sourceVersion?: string | null) => `${sourceVersion ?? ''}#${THUMB_SPEC}`;
+const hasCurrentSpec = (sourceVersion?: string | null) =>
+    typeof sourceVersion === 'string' && sourceVersion.endsWith(`#${THUMB_SPEC}`);
 
-/** In-process budget. Thumbnails are ~10 KB, so this holds thousands of them. */
-const MEMORY_BUDGET_BYTES = 32 * 1024 * 1024;
+/** In-process budget. Thumbnails are ~50–80 KB, so this holds several hundred. */
+const MEMORY_BUDGET_BYTES = 64 * 1024 * 1024;
 
 const CACHE_DIR = process.env.OFFITEC_PDF_THUMB_CACHE_DIR
     || path.join(os.tmpdir(), 'offitec-pdf-thumbs');
@@ -167,9 +184,13 @@ const loadPersistedThumbnails = async (
     try {
         const rows = await prisma.pdfImageThumbnail.findMany({
             where: { tenantId, sourceType, sourceId: { in: sourceIds } },
-            select: { sourceId: true, imageUrl: true },
+            select: { sourceId: true, imageUrl: true, sourceVersion: true },
         });
-        return new Map(rows.map((row) => [row.sourceId, row.imageUrl]));
+        // A row made under an older spec is treated as missing: the caller then
+        // regenerates from the original and the upsert replaces it.
+        return new Map(rows
+            .filter((row) => hasCurrentSpec(row.sourceVersion))
+            .map((row) => [row.sourceId, row.imageUrl]));
     } catch {
         // Keep rolling deployments compatible while the migration is being
         // applied. The endpoint can still generate the image lazily.
@@ -200,12 +221,12 @@ const persistThumbnailValue = async (
                 tenantId,
                 sourceType,
                 sourceId,
-                sourceVersion: sourceVersion ?? null,
+                sourceVersion: withSpec(sourceVersion),
                 imageUrl,
             },
             update: {
                 tenantId,
-                sourceVersion: sourceVersion ?? null,
+                sourceVersion: withSpec(sourceVersion),
                 imageUrl,
             },
         });
@@ -260,7 +281,7 @@ export const getArticleThumbnails = async (
     if (articles.length === 0) return [];
 
     const keyOf = (article: ArticleVersion) =>
-        `${tenantId}:${article.id}:${article.updatedAt.getTime()}`;
+        `${tenantId}:${article.id}:${article.updatedAt.getTime()}:${THUMB_SPEC}`;
     const resolved = new Map<string, string>();
     const missing: ArticleVersion[] = [];
     const persisted = await loadPersistedThumbnails(

@@ -16,6 +16,7 @@ const tenantTree_1 = require("../../shared/tenantTree");
 const tenantAccess_1 = require("../utils/tenantAccess");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const roleTemplate_routes_1 = require("./roleTemplate.routes");
+const AuthErrors_1 = require("../../application/errors/AuthErrors");
 /* ── ZUGANG EINER PERSON (Personal → Person → Zugang, 17.08.2026) ────────────
  *
  * Umgebaut: früher stellte diese Seite je Modul eine Stufe ein und LEITETE
@@ -94,7 +95,7 @@ router.get('/:id/authorization', AuthMiddleware_1.requireAuth, (0, RbacMiddlewar
            31.08.2026 JEDE aktive Firma, Untergesellschaft oder nicht. Die
            Vorgabe lautet, dass die Verwaltung hier sieht, was ueberhaupt in der
            Liste steht, und die Auswahl ausdruecklich trifft. */
-        const assignableTenantIds = await (0, serviceTenantScope_1.getAssignableTenantIds)(user.tenantId, user.homeTenantId);
+        const assignableTenantIds = await (0, serviceTenantScope_1.getAssignableTenantIds)(user.tenantId, user.homeTenantId, user.id);
         const companies = (await prisma_client_1.default.tenant.findMany({
             where: { id: { in: assignableTenantIds } },
             select: { id: true, tenantName: true, parentTenantId: true },
@@ -123,7 +124,7 @@ router.get('/:id/authorization', AuthMiddleware_1.requireAuth, (0, RbacMiddlewar
         });
     }
     catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'employees.authorization') });
     }
 });
 /**
@@ -193,7 +194,7 @@ router.put('/:id/authorization', AuthMiddleware_1.requireAuth, (0, RbacMiddlewar
                 // anbietet. Eine Untergesellschaft kann so keinen Zugang zu
                 // einer Schwesterfirma verteilen, auch nicht mit einer von
                 // Hand gesetzten Id.
-                const assignable = await (0, serviceTenantScope_1.getAssignableTenantIds)(user.tenantId, user.homeTenantId);
+                const assignable = await (0, serviceTenantScope_1.getAssignableTenantIds)(user.tenantId, user.homeTenantId, user.id);
                 const outside = wanted.filter((tenantId) => !assignable.includes(tenantId));
                 if (outside.length)
                     return res.status(400).json({ error: 'Eine der gewählten Firmen steht Ihnen nicht zur Verfügung.' });
@@ -217,7 +218,7 @@ router.put('/:id/authorization', AuthMiddleware_1.requireAuth, (0, RbacMiddlewar
         });
     }
     catch (error) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: (0, AuthErrors_1.toPublicMessage)(error, 'employees.authorization') });
     }
 });
 exports.default = router;

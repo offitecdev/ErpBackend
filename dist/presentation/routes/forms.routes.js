@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const TechnicianGuard_1 = require("../middlewares/TechnicianGuard");
 const FormController_1 = require("../controllers/FormController");
 /* Checklisten / Formulare / Vorlagen (Modul im CRM).
    Rechte: BEWUSST keine neuen Berechtigungsschlüssel — ein neuer Schlüssel
@@ -10,7 +11,13 @@ const FormController_1 = require("../controllers/FormController");
    crm.routes.ts / dashboard.routes.ts). Lesen ist für jede angemeldete Person
    des Mandanten offen (Techniker brauchen die Formulare am Termin), Schreiben
    verlangt eine der Rollen, die im CRM, im Verkauf, im Projekt oder im Feld
-   arbeiten. Vorlagen pflegt das Büro (CRM/Projekt/Admin-Rechte). */
+   arbeiten. Vorlagen pflegt das Büro (CRM/Projekt/Admin-Rechte).
+
+   ANLEGEN und LÖSCHEN einer Checkliste ist seit dem 02.09.2026 Sache des
+   Büros (Vorgabe Samet: «Techniker sollen keine Checklisten anlegen, nur
+   ausfüllen oder ansehen»): eine Technikerrolle — «Montage» als einzige
+   Arbeitsfläche, siehe TechnicianGuard — wird an diesen beiden Wegen
+   abgewiesen, das AUSFÜLLEN (PUT) und die Einsatz-Hinweise bleiben ihr offen. */
 const router = (0, express_1.Router)();
 const controller = new FormController_1.FormController();
 const canWriteSubmissions = (0, RbacMiddleware_1.requireAnyPermission)([
@@ -39,9 +46,9 @@ router.get('/context/:kind/:id', AuthMiddleware_1.requireAuth, (req, res) => con
 router.get('/submissions', AuthMiddleware_1.requireAuth, (req, res) => controller.listSubmissions(req, res));
 router.get('/submissions/:id', AuthMiddleware_1.requireAuth, (req, res) => controller.getSubmission(req, res));
 router.get('/submissions/:id/visibility', AuthMiddleware_1.requireAuth, (req, res) => controller.getSubmissionVisibility(req, res));
-router.post('/submissions', AuthMiddleware_1.requireAuth, canWriteSubmissions, (req, res) => controller.createSubmission(req, res));
+router.post('/submissions', AuthMiddleware_1.requireAuth, canWriteSubmissions, TechnicianGuard_1.denyTechnicianOnly, (req, res) => controller.createSubmission(req, res));
 router.put('/submissions/:id', AuthMiddleware_1.requireAuth, canWriteSubmissions, (req, res) => controller.updateSubmission(req, res));
-router.delete('/submissions/:id', AuthMiddleware_1.requireAuth, canWriteSubmissions, (req, res) => controller.deleteSubmission(req, res));
+router.delete('/submissions/:id', AuthMiddleware_1.requireAuth, canWriteSubmissions, TechnicianGuard_1.denyTechnicianOnly, (req, res) => controller.deleteSubmission(req, res));
 // Einsatz-Hinweise
 router.get('/notes', AuthMiddleware_1.requireAuth, (req, res) => controller.listNotes(req, res));
 router.post('/notes', AuthMiddleware_1.requireAuth, canWriteSubmissions, (req, res) => controller.createNote(req, res));

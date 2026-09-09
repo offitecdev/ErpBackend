@@ -4,9 +4,9 @@ const options: swaggerJsdoc.Options = {
     definition: {
         openapi: '3.0.0',
         info: {
-            title: 'OFFITEC ERP API',
+            title: 'OFFITEC CONTROL CENTER API',
             version: '1.0.0',
-            description: 'OFFITEC Kurumsal ERP Sistemi API Dokümantasyonu',
+            description: 'OFFITEC Control Center (OCC) API Dokümantasyonu',
         },
         servers: [
             {

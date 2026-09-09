@@ -7,6 +7,12 @@ enum TenderStatus {
   Draft
   Approved
   Exported
+  // STORNIERT (06.09.2026). Eine offizielle Offerte wird nicht geloescht,
+  // sondern zurueckgenommen: die Zeile bleibt als Beleg stehen und ist gegen
+  // jede Bearbeitung gesperrt (jeder Schreibpfad im TenderController laesst
+  // nur `Draft` durch). Wer, wann und warum steht in den drei
+  // `cancel*`-Spalten.
+  Cancelled
 }
 
 model Tender {
@@ -92,6 +98,14 @@ model Tender {
   sourceRecurringTotal  Float?
   sourceMargin          Float?
   status                TenderStatus          @default(Draft)
+  // ── STORNO (06.09.2026) ───────────────────────────────────────────────────
+  // Vorgabe Samet: geloescht wird nur, was Entwurf und mit nichts verknuepft
+  // ist; alles Offizielle wird STORNIERT und bleibt stehen. `cancelledAt` ist
+  // die Wahrheit ueber "ist storniert" (der Status traegt es zusaetzlich,
+  // damit die Bearbeitungssperren greifen), `cancelReason` der Grund.
+  cancelledAt           DateTime?
+  cancelledById         String?
+  cancelReason          String?               @db.Text
   // Kopya (CC) alıcıları — takvimdeki Appointment/MeetingActivity ile AYNI
   // biçim: JSON dizi (["planer@firma.ch"]). Teklifin bütün müşteri mailleri
   // (teklif maili ve otomatik sipariş bildirimi) bu listeyi CC'ler; alıcı (To)

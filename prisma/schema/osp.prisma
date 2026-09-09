@@ -233,8 +233,22 @@ model OspUnit {
   datasheetFetchedAt DateTime?
   datasheetError     String?     @db.Text
   /// Die berechneten Angaben (Leistung, COP/EER, Technologie, Schalldruck,
-  /// Abmessungen, Gewicht) — Grundlage der Positionsbeschreibung.
+  /// Abmessungen, Gewicht, Modell, Kategorie, Listenpreis) — Grundlage der
+  /// Positionsbeschreibung. Gelesen werden sie aus den ZEILEN des Blattes
+  /// (ospDatasheetDocument.ts), nie aus seinem Fliesstext.
   datasheetSpecs     Json?
+  /// ── DAS BLATT ALS MARKDOWN (20.09.2026) ───────────────────────────────
+  /// Dieselbe Momentaufnahme, nur lesbar: oben die erkannten Produktangaben
+  /// als Tabelle, darunter das ganze Blatt Abschnitt für Abschnitt. Es ist
+  /// die Fassung, AUS DER die Angaben stammen — wer eine Zahl auf der Offerte
+  /// nachprüfen will, liest hier nach, statt ein PDF zu öffnen. Und es lebt
+  /// in der Datenbank, nicht auf einer Platte: es ist Text, den man sucht und
+  /// anzeigt, keine Datei.
+  datasheetMarkdown  String?     @db.MediumText
+  /// Woher die Markdown-Fassung stammt, falls die OSP eine liefert. Heute
+  /// nennt der Vertrag keine; dann wird sie aus dem PDF erzeugt.
+  markdownUrl        String?     @db.Text
+  markdownFetchedAt  DateTime?
   /// Was die letzte Überarbeitung an DIESER Einheit bewegt hat (§1a):
   /// ["recalculated"], ["unit options"] … Eine LEERE Liste ist eine Aussage:
   /// das Datenblatt wurde durch eine Änderung am PROJEKT neu gerendert, an

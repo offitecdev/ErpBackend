@@ -2,6 +2,7 @@ import { IEmployeeRepository } from "../../../domain/repositories/IEmployeeRepos
 import { ITokenService } from "../../interfaces/ITokenService";
 import { AuthMailService } from "../../../infrastructure/services/AuthMailService";
 import { toPwdAtClaim } from "../../../infrastructure/services/JwtTokenService";
+import { PublicError } from "../../errors/AuthErrors";
 
 /**
  * Mails a deletion-confirmation link to the logged-in employee's own address.
@@ -16,7 +17,7 @@ export class RequestAccountDeletionUseCase {
 
     async execute(employeeId: string): Promise<void> {
         const employee = await this.employeeRepo.findById(employeeId);
-        if (!employee || employee.deletedAt) throw new Error("Hesap bulunamadı veya silinmiş.");
+        if (!employee || employee.deletedAt) throw new PublicError("Hesap bulunamadı veya silinmiş.");
 
         const token = this.tokenService.generateToken('account_deletion', {
             id: employee.id,
@@ -41,11 +42,11 @@ export class ConfirmAccountDeletionUseCase {
         const decoded = this.tokenService.verifyToken('account_deletion', token);
 
         const employee = await this.employeeRepo.findById(decoded.id);
-        if (!employee) throw new Error("Hesap bulunamadı.");
+        if (!employee) throw new PublicError("Hesap bulunamadı.");
         if (employee.deletedAt) return; // already deleted — idempotent
 
         if (decoded.pwdAt !== toPwdAtClaim(employee.passwordChangedAt)) {
-            throw new Error("Silme bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
+            throw new PublicError("Silme bağlantısı geçersiz. Lütfen yeni bir bağlantı isteyin.");
         }
 
         // Soft delete: blocks login, refresh and every authorized request.

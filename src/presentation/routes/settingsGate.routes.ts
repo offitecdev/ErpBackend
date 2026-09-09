@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../middlewares/AuthMiddleware';
-import { IT_GATE_PASSWORD, issueItGateTicket } from '../middlewares/ItGateMiddleware';
+import { isItGateConfigured, issueItGateTicket, verifyItGatePassword } from '../middlewares/ItGateMiddleware';
 
 /* IT-Schleuse für heikle Einstellungsseiten (E-Mail-Einstellungen,
    Firmen-/Mandantenverwaltung): die Seite öffnet erst nach Eingabe des
@@ -8,9 +8,12 @@ import { IT_GATE_PASSWORD, issueItGateTicket } from '../middlewares/ItGateMiddle
    Berechtigung — gedacht als "nur die IT-Administration kennt es", nicht als
    kryptografische Sicherung.
 
-   Das Kennwort steht in OFFITEC_IT_GATE_PASSWORD (Voreinstellung wie vom
-   Auftraggeber genannt) und wird NUR hier auf dem Server geprüft — es steht
-   nirgends im ausgelieferten Frontend-Code.
+   Das Kennwort steht in OFFITEC_IT_GATE_PASSWORD und wird NUR hier auf dem
+   Server geprüft — es steht nirgends im ausgelieferten Frontend-Code. Es gibt
+   seit dem 22.09.2026 KEINEN Rückfallwert mehr: ist die Umgebungsvariable
+   leer, ist die Schleuse zu (503) statt mit einem im Quelltext lesbaren
+   Kennwort offen. Verglichen wird in konstanter Zeit, siehe
+   `verifyItGatePassword`.
 
    Seit dem Produkt-Upload (17.08.2026) gibt die Prüfung zusätzlich einen
    kurzlebigen Ausweis zurück (ItGateMiddleware): Seiten OHNE zweite
@@ -18,8 +21,6 @@ import { IT_GATE_PASSWORD, issueItGateTicket } from '../middlewares/ItGateMiddle
    jedem Aufruf vor, damit die Schleuse nicht bloss Anzeige bleibt. */
 
 const router = Router();
-
-const GATE_PASSWORD = IT_GATE_PASSWORD;
 
 /* Grober Schutz gegen Durchprobieren: je Person höchstens 5 Fehlversuche pro
    5 Minuten. Bewusst im Speicher — ein Neustart setzt die Zähler zurück, das
@@ -45,11 +46,15 @@ const tooManyAttempts = (employeeId: string): boolean => {
    Upload-Aufrufe beiseite. */
 router.post('/it-gate/verify', requireAuth, (req, res) => {
     const user = req.user!;
+    if (!isItGateConfigured()) {
+        return res.status(503).json({
+            error: 'IT-Schleuse ist nicht eingerichtet. Bitte OFFITEC_IT_GATE_PASSWORD setzen.',
+        });
+    }
     if (tooManyAttempts(user.id)) {
         return res.status(429).json({ error: 'Zu viele Versuche — bitte einige Minuten warten.' });
     }
-    const password = String(req.body?.password || '');
-    if (password !== GATE_PASSWORD) {
+    if (!verifyItGatePassword(req.body?.password)) {
         return res.status(403).json({ error: 'Falsches Kennwort.' });
     }
     attempts.delete(user.id);

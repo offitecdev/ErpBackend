@@ -129,8 +129,17 @@ router.delete('/:id/sales-orders/:salesOrderId', (0, RbacMiddleware_1.requirePer
 // Technicians raise an addon-order request (they cannot create the order); managers resolve/dismiss it.
 router.post('/:id/addon-order-requests', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.requestAddonOrder(req, res));
 router.patch('/addon-order-requests/:requestId', (0, RbacMiddleware_1.requirePermission)('projects.createAddonOrder'), (req, res) => controller.resolveAddonRequest(req, res));
-// Projeyi tüm operasyonel kayıtlarıyla siler (faturalanmış proje silinemez).
-// Daha özgül DELETE yolları üstte kayıtlı olduğundan '/:id' onları GÖLGELEMEZ.
+/* ── LÖSCHEN / STORNO (Vorgabe Samet 06.09.2026) ──────────────────────────────
+   `GET  /:id/lifecycle` — was an diesem Projekt erlaubt ist, und warum nicht.
+   `POST /:id/cancel`    — stornieren (nur ohne aktiven Auftrag; sonst fällt das
+                           Projekt von selbst mit seinem letzten Auftrag).
+   `POST /:id/uncancel`  — Storno aufheben. */
+router.get('/:id/lifecycle', (0, RbacMiddleware_1.requirePermission)('projects.view'), (req, res) => controller.projectLifecycle(req, res));
+router.post('/:id/cancel', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.cancelProject(req, res));
+router.post('/:id/uncancel', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.uncancelProject(req, res));
+// Projeyi siler — YALNIZCA hiçbir bağlı kayıt kalmadıysa (sipariş, fatura,
+// rapor, stok hareketi). Daha özgül DELETE yolları üstte kayıtlı olduğundan
+// '/:id' onları GÖLGELEMEZ.
 router.delete('/:id', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.deleteProject(req, res));
 exports.default = router;
 //# sourceMappingURL=project.routes.js.map

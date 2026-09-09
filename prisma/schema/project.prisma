@@ -27,6 +27,13 @@ model Project {
   projectNumber            String
   projectName              String
   status                   ProjectStatus @default(AWAITING_APPROVAL)
+  // ── STORNO (06.09.2026) ────────────────────────────────────────────────
+  // Ein Projekt faellt nicht mit einem einzelnen Auftrag: erst wenn sein
+  // LETZTER aktiver Auftrag storniert wird, geht es selbst auf CANCELLED.
+  // Wer, wann und warum steht hier.
+  cancelledAt              DateTime?
+  cancelledById            String?
+  cancelReason             String?       @db.Text
   plannedBudget            Float         @default(0)
   actualCost               Float         @default(0)
   overtimeHourlyRate       Float         @default(0)
@@ -170,6 +177,7 @@ model ReportMaterial {
 }
 
 model ProjectExpense {
+  documentLine String? @db.LongText
   id            String   @id
   projectId     String
   salesOrderId  String?
@@ -373,6 +381,7 @@ model OfferScheduleSlotAssignment {
 /// Zusatzmaterial rows. Since the material/product merge (2026-08-14) they
 /// reference Article; the API keeps accepting `materialId` on the wire.
 model ProjectExtraMaterial {
+  documentLine String? @db.LongText
   id            String   @id
   projectId     String
   salesOrderId  String?

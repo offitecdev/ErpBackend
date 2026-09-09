@@ -9,6 +9,9 @@ import { BcryptCryptoService } from '../../infrastructure/services/BcryptCryptoS
 import { assertPasswordPolicy } from '../../application/validation/password';
 import { getPersonnelTenantScope } from '../controllers/serviceTenantScope';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
+import { toPublicMessage, TooManyAttemptsError } from '../../application/errors/AuthErrors';
+import { rateLimit } from '../middlewares/RateLimitMiddleware';
+import { runBcryptGuarded } from '../../application/services/bcryptGate';
 
 /* ── KENNWORTWUNSCH (17.08.2026) ─────────────────────────────────────────────
  *
@@ -26,6 +29,29 @@ import { auditLog } from '../../infrastructure/services/AuditLogService';
  */
 
 const router = Router();
+
+/* ── WARUM HIER EINE BREMSE STEHT ────────────────────────────────────────────
+ *
+ * Dieser Weg prüft das BISHERIGE Kennwort — und tat das ohne jede Begrenzung.
+ * Wer eine Sitzung übernommen hat (offener Bildschirm, gestohlener Keks),
+ * konnte hier beliebig oft raten, um das Kennwort der Person zu erfahren; das
+ * ist etwas anderes als Zugriff zu haben, weil dasselbe Kennwort meist auch
+ * anderswo gilt.
+ *
+ * Gezählt wird je PERSON, nicht je Anschluss: das Schutzgut ist das Konto, und
+ * ein ganzes Büro sitzt hinter einer Adresse (dieselbe Überlegung wie bei den
+ * Postwegen in auth.routes.ts).
+ *
+ * Ein GELUNGENER Wechsel kostet nichts (`skipSuccessfulRequests`) — sonst
+ * sperrt sich aus, wer sein Kennwort mehrmals berechtigt ändert.
+ */
+const passwordAttemptLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: 'Zu viele Versuche. Bitte versuchen Sie es später erneut.',
+    skipSuccessfulRequests: true,
+    keyBy: (req) => (req.user?.id ? `pwreq:${req.user.id}` : null),
+});
 
 const employeeRepo = new EmployeeRepository();
 const roleRepo = new RoleRepository();
@@ -73,7 +99,7 @@ const callerManages = async (employeeId: string): Promise<boolean> =>
  * POST /password-requests — { currentPassword, newPassword, note? }
  * Antwort: { applied: true } (sofort gesetzt) oder { applied: false, request }.
  */
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, passwordAttemptLimiter, async (req, res) => {
     try {
         const user = req.user!;
         const currentPassword = String(req.body?.currentPassword || '');
@@ -89,13 +115,23 @@ router.post('/', requireAuth, async (req, res) => {
         });
         if (!employee) return res.status(404).json({ error: 'Person nicht gefunden.' });
 
-        const ok = await cryptoService.comparePassword(currentPassword, employee.passwordHash);
+        /* Alle drei bcrypt-Arbeiten laufen unter der Schranke: ein Vergleich
+           und ein Hash kosten je ~250-400 ms Threadpool, und dieser Weg konnte
+           sie unbegrenzt oft anfordern (bcryptGate.ts).
+
+           Der ZWEITE Vergleich steht bewusst hinter dem `return` des ersten:
+           wer das bisherige Kennwort nicht kennt, zahlt einen Vergleich, nicht
+           zwei. */
+        const ok = await runBcryptGuarded(user.id, () =>
+            cryptoService.comparePassword(currentPassword, employee.passwordHash));
         if (!ok) return res.status(400).json({ error: 'Das bisherige Kennwort stimmt nicht.' });
-        if (await cryptoService.comparePassword(newPassword, employee.passwordHash)) {
+        if (await runBcryptGuarded(user.id, () =>
+            cryptoService.comparePassword(newPassword, employee.passwordHash))) {
             return res.status(400).json({ error: 'Das neue Kennwort ist mit dem bisherigen identisch.' });
         }
 
-        const newPasswordHash = await cryptoService.hashPassword(newPassword);
+        const newPasswordHash = await runBcryptGuarded(user.id, () =>
+            cryptoService.hashPassword(newPassword));
 
         if (await callerManages(user.id)) {
             await employeeRepo.update(user.id, { passwordHash: newPasswordHash, passwordChangedAt: new Date() } as any);
@@ -136,7 +172,13 @@ router.post('/', requireAuth, async (req, res) => {
 
         res.status(201).json({ applied: false, request: mapRequest(created) });
     } catch (error: any) {
-        res.status(400).json({ error: error.message });
+        // Eine überlastete Schranke ist kein Eingabefehler, sondern ein
+        // "zu viel" — eigener Statuscode mit Wartezeit (wie bei der Anmeldung).
+        if (error instanceof TooManyAttemptsError) {
+            res.setHeader('Retry-After', String(error.retryAfterSeconds));
+            return res.status(429).json({ error: error.message });
+        }
+        res.status(400).json({ error: toPublicMessage(error, 'password-requests') });
     }
 });
 
@@ -151,7 +193,7 @@ router.get('/mine', requireAuth, async (req, res) => {
         });
         res.status(200).json({ data: rows.map(mapRequest) });
     } catch (error: any) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: toPublicMessage(error, 'password-requests') });
     }
 });
 
@@ -176,7 +218,7 @@ router.get('/', requireAuth, requireAnyPermission(['roles.manage', 'employees.up
         });
         res.status(200).json({ data: rows.map(mapRequest) });
     } catch (error: any) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: toPublicMessage(error, 'password-requests') });
     }
 });
 
@@ -231,7 +273,7 @@ router.post('/:id/decide', requireAuth, requireAnyPermission(['roles.manage', 'e
 
         res.status(200).json({ request: mapRequest(updated) });
     } catch (error: any) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: toPublicMessage(error, 'password-requests') });
     }
 });
 

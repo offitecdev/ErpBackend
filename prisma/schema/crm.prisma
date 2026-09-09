@@ -181,7 +181,16 @@ model SalesOrder {
   // AB- geçişinden önceki AU-2026-10001 kodları).
   legacyNumber           String?
   orderType              String
+  // ORDERED | CANCELLED. Ein Auftrag wird NICHT geloescht, sobald an ihm
+  // etwas haengt (Rechnung, Lagerbewegung, Rapport, begonnene Montage) — er
+  // wird STORNIERT (06.09.2026) und bleibt mit allen Saetzen stehen.
   status                 String    @default("ORDERED")
+  // ── STORNO (06.09.2026) ────────────────────────────────────────────────
+  // Wer, wann und warum. `cancelledAt` ist die Wahrheit ueber "storniert";
+  // `status` traegt es zusaetzlich, damit alte Listenabfragen es sehen.
+  cancelledAt            DateTime?
+  cancelledById          String?
+  cancelReason           String?   @db.Text
   totalAmount            Float     @default(0)
   // Payment schedule copied from the tender at conversion (JSON percent array,
   // e.g. "[30,20,10,40]"); drives "bill next stage" suggestions. Null = free-form.
@@ -201,6 +210,7 @@ model SalesOrder {
   // Dokument druckt dann den Einleitungstext der OFFERTE (Tender.coverLetter),
   // denn genau von dort startet der Text, bevor jemand ihn ändert.
   confirmationNote       String?   @db.LongText
+  addonDiscounts         String?   @db.LongText
   // "Gültig bis" der Bestätigung. NULL = Auftragsdatum + 1 Monat (Standard);
   // ein gesetzter Wert stammt aus dem Bearbeiten-Fenster und schlägt ihn.
   confirmationValidUntil DateTime?

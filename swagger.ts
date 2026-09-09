@@ -2,7 +2,7 @@ import swaggerAutogen from 'swagger-autogen';
 
 const doc = {
   info: {
-    title: 'OFFITEC ERP API',
+    title: 'OFFITEC CONTROL CENTER API',
     description: 'Otomatik Üretilen API Dokümantasyonu',
   },
   host: 'localhost:3000',

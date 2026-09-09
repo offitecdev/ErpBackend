@@ -4,8 +4,11 @@ import { InventoryRepository } from '../../infrastructure/repositories/Inventory
 import { ProcessStockMovementUseCase } from '../../application/use-cases/inventory/ProcessStockMovementUseCase';
 import { ManagePurchaseProposalsUseCase } from '../../application/use-cases/inventory/ManagePurchaseProposalsUseCase';
 import { requireAuth } from '../middlewares/AuthMiddleware';
-import { requirePermission } from '../middlewares/RbacMiddleware';
+import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
 import { requireItGate } from '../middlewares/ItGateMiddleware';
+// Schnellerfassung: der markierte Bildausschnitt geht ueber den Server zu
+// Google Cloud Vision — der Schluessel bleibt hier, nie im Browser.
+import { readTextWithOcr, ocrConfigured, OcrError, OCR_MAX_BYTES } from '../../infrastructure/services/ocrSpaceOcr';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
@@ -30,6 +33,7 @@ import { normalizeRichText } from '../../shared/richText';
 import { listUnits, resolveUnit } from '../../application/services/measurementUnitCatalog';
 import { nanoid } from 'nanoid';
 import { getMailTenantId } from "../controllers/serviceTenantScope";
+import { purchaseOrderImportRouter } from './purchaseOrderImport.routes';
 
 /** Tedarikçi adresinin ayrı bileşenleri (tek serbest metin alanı yoktur). */
 const SUPPLIER_ADDRESS_FIELDS = ['address', 'addressSupplement', 'postalCode', 'city', 'state', 'country'] as const;
@@ -229,6 +233,24 @@ router.get(
  *         name: barcode
  *         schema: { type: string }
  *         description: Sistem/tedarikçi barkodu kolonunda daraltma (contains)
+ *       - in: query
+ *         name: includeDescription
+ *         schema: { type: boolean, default: false }
+ *         description: >
+ *           true ise her satıra ürün kartının açıklaması (`description`)
+ *           eklenir. İstenmedikçe alan yanıtta HİÇ yer almaz — liste ekranı
+ *           göstermediği bir metni taşımasın diye.
+ *       - in: query
+ *         name: sortBy
+ *         schema: { type: string, default: createdAt }
+ *         description: >
+ *           Listenspalte, nach der geordnet wird. `nameNatural` ist die Ordnung
+ *           des Produktwählers von Offerte, Rechnung und Nachtrag: erst
+ *           alphabetisch (Namen mit führender Ziffer stehen dahinter), dann die
+ *           Zahlen im Namen als Zahlen — DN15 vor DN100.
+ *       - in: query
+ *         name: sortDirection
+ *         schema: { type: string, enum: [asc, desc], default: desc }
  */
 router.get(
     '/articles/summary/paged',
@@ -1693,14 +1715,21 @@ const rowWriteFailure = (error: any): { code: string; message: string } => {
  * miktar 0 kabul edilir, böylece içe aktarılan ürün STOKSUZ tanımlanır
  * (bakiye satırı yazılmaz, yalnızca tanım hareketi düşer).
  */
-const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =>
-    async (req: any, res: any) => {
+type BulkArticlesOutcome = { status: number; body: any };
+
+/**
+ * Der eigentliche Rumpf — ohne `res`. Er gibt Status und Antwort ZURÜCK, damit
+ * ein dritter Aufrufer (die Schnellerfassung, `/articles/quick`) das Ergebnis
+ * lesen und bei einer Nummernkollision mit frischen Nummern nachsetzen kann,
+ * statt die Antwort schon auf dem Draht zu haben.
+ */
+const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boolean } = {}): Promise<BulkArticlesOutcome> => {
         try {
             const tenantId = req.user!.tenantId;
             const employeeId = req.user!.id;
             const items: any[] = Array.isArray(req.body.items) ? req.body.items : [];
-            if (!items.length) return res.status(400).json({ error: 'Eklenecek satır yok.' });
-            if (items.length > 500) return res.status(400).json({ error: 'Tek seferde en fazla 500 satır eklenebilir.' });
+            if (!items.length) return { status: 400, body: { error: 'Eklenecek satır yok.' } };
+            if (items.length > 500) return { status: 400, body: { error: 'Tek seferde en fazla 500 satır eklenebilir.' } };
             // itemType = ürün/hizmet sınıflandırması (PRODUCT | SERVICE);
             // varsayılan üründür, detay ekranından hizmete çevrilebilir.
             const defaultItemType = req.body.itemType === 'SERVICE' ? 'SERVICE' : 'PRODUCT';
@@ -2006,22 +2035,284 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
                 : created;
             errors.sort((a, b) => a.index - b.index);
 
-            res.status(errors.length && !writtenRows.length ? 400 : 201).json({
-                createdCount: writtenRows.length,
-                updatedCount: articleUpdates.length - failedUpdateIds.size,
-                created: writtenRows,
+            return {
+                status: errors.length && !writtenRows.length ? 400 : 201,
+                body: {
+                    createdCount: writtenRows.length,
+                    updatedCount: articleUpdates.length - failedUpdateIds.size,
+                    created: writtenRows,
+                    errors,
+                },
+            };
+        } catch (error: any) {
+            return { status: 400, body: { error: error.message } };
+        }
+    };
+
+const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =>
+    async (req: any, res: any) => {
+        const outcome = await runBulkCreateArticles(req, options);
+        res.status(outcome.status).json(outcome.body);
+    };
+
+/* ═══════════════ SCHNELLERFASSUNG (02.09.2026) ═══════════════════════════
+   Vorgabe Samet: «Produktcodes soll das System selbst vergeben, nicht der
+   Anwender.» Die Schnellerfassung (Foto → Texterkennung → Name antippen →
+   Menge) kennt darum KEIN Codefeld: jede Zeile bekommt hier die nächste freie
+   Nummer des Mandanten und läuft dann durch DENSELBEN Rumpf wie die Tabelle
+   und der Excel-Import (Artikel + Bestand + Bewegung + Partie in einem Zug).
+   Der Tabellenweg (`/articles/bulk`) bleibt unverändert: dort ist der Code
+   weiterhin Pflicht — die Nummernvergabe gilt nur hier.
+
+   Die Nummer: `ART-00001`, `ART-00002`, … je Mandant, fünfstellig aufgefüllt
+   (wächst darüber hinaus weiter). Gezählt wird über ALLE Karten des Mandanten,
+   auch die im Papierkorb — der eindeutige Schlüssel (tenantId, articleCode)
+   kennt keinen Papierkorb, und eine wiederverwendete Nummer würde dort
+   anstossen. Gleichzeitige Erfassungen können dieselbe Nummer ziehen; dann
+   meldet der Rumpf `CODE_TAKEN` für die Zeile, und die Route setzt für genau
+   diese Zeilen mit frischen Nummern nach (bis zu drei Versuche), bevor sie
+   den Fehler weiterreicht. */
+const QUICK_CODE_PREFIX = 'ART-';
+const QUICK_CODE_DIGITS = 5;
+const QUICK_MAX_ITEMS = 50;
+
+/** Die höchste vergebene laufende Nummer des Mandanten (0 = noch keine). */
+const highestQuickCodeNumber = async (tenantId: string): Promise<number> => {
+    const pattern = '^' + QUICK_CODE_PREFIX + '[0-9]+$';
+    const rows: Array<{ maxNo: bigint | number | null }> = await (prisma as any).$queryRaw`
+        SELECT MAX(CAST(SUBSTRING(articleCode, ${QUICK_CODE_PREFIX.length + 1}) AS UNSIGNED)) AS maxNo
+        FROM Article
+        WHERE tenantId = ${tenantId}
+          AND articleCode REGEXP ${pattern}
+    `;
+    const value = rows[0]?.maxNo;
+    return value === null || value === undefined ? 0 : Number(value);
+};
+
+const formatQuickCode = (n: number): string => `${QUICK_CODE_PREFIX}${String(n).padStart(QUICK_CODE_DIGITS, '0')}`;
+
+/**
+ * `count` frische Nummern ab der nächsten freien. `skip` sind Nummern, die in
+ * diesem Aufruf schon vergeben wurden (zweiter Versuch nach einer Kollision).
+ */
+const nextQuickCodes = async (tenantId: string, count: number, skip: ReadonlySet<string> = new Set()): Promise<string[]> => {
+    let n = await highestQuickCodeNumber(tenantId);
+    const codes: string[] = [];
+    while (codes.length < count) {
+        n += 1;
+        const code = formatQuickCode(n);
+        if (!skip.has(code)) codes.push(code);
+    }
+    return codes;
+};
+
+/**
+ * @swagger
+ * /inventory/articles/quick:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Schnellerfassung — neue Produkte OHNE Codeeingabe (Nummer vergibt das System)
+ *     description: >
+ *       Für die Foto-/Texterkennungs-Erfassung auf Tablet und Telefon. Jede
+ *       Zeile braucht nur einen Namen und eine Menge; der Produktcode wird
+ *       als `ART-NNNNN` je Mandant fortlaufend vergeben. Danach läuft die Zeile
+ *       durch denselben Rumpf wie `/inventory/articles/bulk` (Artikel, Bestand,
+ *       Eingangsbewegung, Partie). Antwortform wie dort.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               items:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     name: { type: string }
+ *                     quantity: { type: number, description: "Eingangsmenge; 0 = nur Definition" }
+ *                     unit: { type: string, nullable: true }
+ *                     purchasePrice: { type: number, nullable: true }
+ *                     salePrice: { type: number, nullable: true }
+ *                     imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... (max. 2 MB)" }
+ */
+router.post(
+    '/articles/quick',
+    requireAuth,
+    requirePermission('inventory.articles.create'),
+    async (req: any, res: any) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const rawItems: any[] = Array.isArray(req.body.items) ? req.body.items : [];
+            if (!rawItems.length) return res.status(400).json({ error: 'Eklenecek satır yok.' });
+            if (rawItems.length > QUICK_MAX_ITEMS) return res.status(400).json({ error: `Tek seferde en fazla ${QUICK_MAX_ITEMS} satır eklenebilir.` });
+
+            // Nur die erlaubten Felder reisen weiter — die Schnellerfassung darf
+            // weder `overwrite` noch fremde Codes in den Rumpf schmuggeln.
+            const items = rawItems.map((item) => ({
+                name: String(item?.name ?? '').trim(),
+                quantity: Math.max(0, Number(item?.quantity) || 0),
+                unit: item?.unit ? String(item.unit) : null,
+                purchasePrice: Math.max(0, Number(item?.purchasePrice) || 0),
+                salePrice: Math.max(0, Number(item?.salePrice) || 0),
+                supplierId: item?.supplierId ? String(item.supplierId) : null,
+                supplierName: item?.supplierName ? String(item.supplierName) : null,
+                imageUrl: typeof item?.imageUrl === 'string' && item.imageUrl ? item.imageUrl : null,
+                articleCode: '',
+            }));
+
+            const codes = await nextQuickCodes(tenantId, items.length);
+            items.forEach((item, index) => { item.articleCode = codes[index]!; });
+            const issued = new Set<string>(codes);
+
+            // Der Rumpf liest nur `user` und `body` — mehr wird ihm auch nicht
+            // gereicht: so kann keine Angabe aus dem echten Aufruf (etwa
+            // `overwrite`) an der Prüfung oben vorbei in ihn hineinlaufen.
+            const runFor = (subset: typeof items) => runBulkCreateArticles(
+                { user: req.user, body: { items: subset, itemType: 'PRODUCT' } },
+                {},
+            );
+
+            const first = await runFor(items);
+            let created: any[] = Array.isArray(first.body?.created) ? first.body.created : [];
+            let errors: any[] = Array.isArray(first.body?.errors) ? first.body.errors : [];
+            if (first.body?.error && !created.length && !errors.length) {
+                return res.status(first.status).json(first.body);
+            }
+
+            // Kollision (jemand hat zwischenzeitlich dieselbe Nummer gezogen):
+            // nur die betroffenen Zeilen mit neuen Nummern noch einmal.
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                const clashed = errors.filter((e) => e?.code === 'CODE_TAKEN');
+                if (!clashed.length) break;
+                const retryIndexes = clashed
+                    .map((e) => Number(e.index))
+                    .filter((i) => Number.isInteger(i) && i >= 0 && i < items.length);
+                if (!retryIndexes.length) break;
+                const fresh = await nextQuickCodes(tenantId, retryIndexes.length, issued);
+                const subset = retryIndexes.map((originalIndex, k) => {
+                    const code = fresh[k]!;
+                    issued.add(code);
+                    items[originalIndex]!.articleCode = code;
+                    return items[originalIndex]!;
+                });
+                const retry = await runFor(subset);
+                const retryCreated: any[] = Array.isArray(retry.body?.created) ? retry.body.created : [];
+                const retryErrors: any[] = Array.isArray(retry.body?.errors) ? retry.body.errors : [];
+                created = created.concat(retryCreated);
+                // Zeilenfehler tragen den Index des TEILAUFRUFS — zurück auf den
+                // Index der ursprünglichen Liste, sonst zeigt der Client falsch.
+                errors = errors
+                    .filter((e) => e?.code !== 'CODE_TAKEN')
+                    .concat(retryErrors.map((e) => ({ ...e, index: retryIndexes[Number(e.index)] ?? -1 })));
+                if (retry.body?.error && !retryCreated.length && !retryErrors.length) {
+                    errors = errors.concat(retryIndexes.map((index) => ({
+                        index,
+                        articleCode: items[index]!.articleCode,
+                        error: String(retry.body.error),
+                    })));
+                    break;
+                }
+            }
+
+            errors.sort((a, b) => Number(a.index) - Number(b.index));
+            res.status(errors.length && !created.length ? 400 : 201).json({
+                createdCount: created.length,
+                updatedCount: 0,
+                created,
                 errors,
             });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
-    };
+    },
+);
 
 router.post(
     '/articles/bulk',
     requireAuth,
     requirePermission('inventory.articles.create'),
     bulkCreateArticlesHandler(),
+);
+
+/**
+ * @swagger
+ * /inventory/ocr/read:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Schnellerfassung — den markierten Bildausschnitt lesen (OCR.space)
+ *     description: >
+ *       Die Schnellerfassung schickt NUR den Ausschnitt, den der Anwender auf
+ *       dem Foto aufgezogen hat — nie das ganze Bild. Der Server reicht ihn an
+ *       OCR.space weiter; der API-Schlüssel bleibt hier und kommt nie in das
+ *       Browser-Bündel. Zurück kommen der zusammenhängende Text und die
+ *       einzelnen Zeilen mit ihren Rahmen (in Pixeln des Ausschnitts), aus
+ *       denen die Anwendung den Produktnamen ableitet.
+ *       Ohne `OFFITEC_OCR_SPACE_API_KEY` antwortet die Route 503 mit
+ *       `code: OCR_NOT_CONFIGURED`. Der Ausschnitt darf höchstens 1 MB
+ *       gross sein (Grenze des kostenlosen Kontingents).
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 description: "data:image/jpeg;base64,… oder der reine Base64-Inhalt (max. 4 MB)"
+ */
+router.post(
+    '/ocr/read',
+    requireAuth,
+    // Lesen darf, wer damit auch etwas anfangen kann: neue Produkte anlegen
+    // oder einen Eingang buchen. Sonst wäre die Route ein offener Übersetzer
+    // auf unsere Rechnung.
+    requireAnyPermission(['inventory.articles.create', 'inventory.transfer']),
+    async (req: any, res: any) => {
+        try {
+            if (!ocrConfigured()) {
+                return res.status(503).json({
+                    error: 'Die Texterkennung ist nicht eingerichtet.',
+                    code: 'OCR_NOT_CONFIGURED',
+                });
+            }
+            const raw = String(req.body?.image ?? '');
+            // `data:image/jpeg;base64,…` und der nackte Inhalt sind beide erlaubt.
+            const base64 = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw;
+            if (!base64) return res.status(400).json({ error: 'Kein Bildausschnitt erhalten.' });
+            // Base64 trägt 4 Zeichen je 3 Byte — so wird die Bildgrösse geprüft,
+            // ohne den Puffer dafür anzulegen.
+            if ((base64.length * 3) / 4 > OCR_MAX_BYTES) {
+                return res.status(413).json({ error: 'Der Bildausschnitt ist zu gross.' });
+            }
+
+            /* Der Kopf des Daten-URI sagt, was es ist; kam der nackte Inhalt,
+               ist JPEG die verträglichste Annahme. */
+            const mimeType = raw.startsWith('data:') ? raw.slice(5, raw.indexOf(';')) : 'image/jpeg';
+            const result = await readTextWithOcr(base64, mimeType || 'image/jpeg');
+            return res.json({ text: result.text, lines: result.lines, engine: 'ocr-space' });
+        } catch (error: any) {
+            if (error instanceof OcrError) {
+                // `detail` ist der Wortlaut des Dienstes. Er steht NICHT auf dem
+                // Bildschirm (dort steht der Satz oben), aber wer die
+                // Einrichtung macht, findet ihn so in der Antwort statt nur im
+                // Serverprotokoll.
+                return res.status(error.status).json({
+                    error: error.message,
+                    code: error.code,
+                    ...(error.detail ? { detail: error.detail } : {}),
+                });
+            }
+            console.error('[inventory/ocr/read] unerwarteter Fehler:', error);
+            return res.status(500).json({ error: 'Die Texterkennung ist fehlgeschlagen.' });
+        }
+    },
 );
 
 /**
@@ -2056,6 +2347,7 @@ router.post(
  *                     salePrice: { type: number }
  *                     purchasePrice: { type: number, description: "Kosten / durchschnittlicher Stückpreis" }
  *                     unit: { type: string, nullable: true }
+ *                     description: { type: string, nullable: true, description: "Verkaufsbeschreibung der Datei — landet auf der Produktkarte, nicht in der Bestandsbuchung" }
  *                     imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... (max. 2 MB)" }
  *               overwrite:
  *                 type: boolean
@@ -2657,7 +2949,7 @@ router.post(
                 const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
                 const result = await smtp.send(settings || {}, {
                     fromEmail: settings?.fromEmail || req.user!.email,
-                    fromName: settings?.fromName || 'Offitec ERP',
+                    fromName: settings?.fromName || 'Offitec Control Center',
                     to: supplierEmail,
                     subject,
                     text: bodyText,
@@ -2843,16 +3135,76 @@ const poPercent = (value: unknown): number => {
 //
 // ⚠ Frontend eşi: `pages/inventory/utils/orderPricing.ts` → `computeOrderLine`
 // ve `OrderCreatePage.tsx` → `rowFigures` (kip dalları).
+/**
+ * ── EIGENE SPALTEN AN DER POSITION (07.09.2026, Vorgabe Samet) ──────────────
+ *
+ * «Wir nehmen sie als feste Spalten RECHTS NEBEN den Produktnamen — nicht
+ *  darunter —, insgesamt drei. Und ihre Reihenfolge muss sich ändern lassen,
+ *  die Spaltenüberschriften wandern mit.»
+ *
+ * Jede Position trägt ihre eigenen Angaben deshalb ALS LISTE MIT NAMEN — nicht
+ * als Zuordnung Schlüssel→Wert. Das hat zwei Gründe, und beide zeigen sich erst
+ * später:
+ *   · DIE REIHENFOLGE ist die Reihenfolge der Liste. Wer die Spalten umstellt,
+ *     stellt die Liste um; ein Objekt hätte keine verlässliche Ordnung.
+ *   · DIE ÜBERSCHRIFT REIST MIT. Eine Bestellung, die in einem Jahr geöffnet
+ *     wird, weiss dann noch, wie ihre Spalten heissen — auch wenn die Vorlage
+ *     inzwischen umbenannt oder gelöscht wurde.
+ */
+const PO_MAX_EXTRAS = 5;
+
+const normalizePurchaseOrderExtras = (raw: unknown) => {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<string>();
+    const extras: Array<{ key: string; name: string; value: string; width: number }> = [];
+    for (const entry of raw) {
+        const key = String((entry as any)?.key ?? '').trim().slice(0, 16);
+        const name = String((entry as any)?.name ?? '').trim().slice(0, 60);
+        // Ohne Schlüssel und ohne Überschrift ist es keine Spalte, sondern Müll.
+        if (!key || !name || seen.has(key)) continue;
+        seen.add(key);
+        const width = Math.round(Math.min(240, Math.max(80, Number((entry as any)?.width) || 120)));
+        extras.push({ key, name, value: String((entry as any)?.value ?? '').trim().slice(0, 240), width });
+        if (extras.length >= PO_MAX_EXTRAS) break;
+    }
+    return extras;
+};
+
 const normalizePurchaseOrderItems = (raw: unknown) => {
     if (!Array.isArray(raw) || raw.length === 0) throw new Error('Sipariş için en az bir ürün satırı gereklidir.');
     if (raw.length > 500) throw new Error('Bir siparişe en fazla 500 satır eklenebilir.');
     const items = raw.map((r: any, index: number) => {
         const name = String(r?.name || '').trim();
-        if (!name) throw new Error(`Satır ${index + 1}: ürün adı zorunludur.`);
+        /* ── EINE ZEILE OHNE BEZEICHNUNG IST EINE ZEILE ──────────────────
+           Vorgabe Samet (08.09.2026): «Es koennen leere Zellen dabei sein
+           oder Zeilen, die trotzdem mit muessen.» Auf einem Beleg steht
+           nicht in jeder Zeile ein Text — eine Position kann sich allein
+           ueber ihren Bezeichner ausweisen, und eine erfundene Bezeichnung
+           waere schlimmer als eine leere.
+
+           Was BLEIBT, ist die Forderung nach einer Identitaet: ganz ohne
+           Bezeichnung UND ohne Bezeichner ist die Zeile nichts, und dann
+           sagt die Meldung auch, welche es war. */
+        const identifier = String(r?.code || '').trim();
+        if (!name && !identifier) {
+            throw new Error(`Satır ${index + 1}: ürün adı veya ürün kodu zorunludur.`);
+        }
         const rawQty = Number(r?.quantity);
         const quantity = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1;
-        // Brüt fiyat satırın TEK fiyat girişidir; yalnızca boşsa net fiyat taban olur.
-        const grossPrice = Number(r?.grossPrice) || Number(r?.netPrice) || 0;
+        /* Brüt fiyat satırın TEK fiyat girişidir; yalnızca BOŞSA net fiyat
+           taban olur.
+
+           ⚠ «Boş» ile «sıfır» aynı şey değildir (Samet, 08.09.2026: «alan
+           ondalık olduğu için değerleri reddediyor olabilir, 0.00 olsa bile
+           kabul etmeli»). Burada `Number(x) || Number(y)` yazıyordu ve
+           JavaScript'te 0 yanlış sayıldığı için, belgede AÇIKÇA 0.00 yazan
+           bir brüt fiyat sessizce net fiyata düşüyordu. */
+        const decimalOrNull = (value: unknown): number | null => {
+            if (value === null || value === undefined || value === '') return null;
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        };
+        const grossPrice = decimalOrNull(r?.grossPrice) ?? decimalOrNull(r?.netPrice) ?? 0;
         const discount = poPercent(r?.discount);
         const discount2 = poPercent(r?.discount2);
         const discount3 = poPercent(r?.discount3);
@@ -2923,6 +3275,12 @@ const normalizePurchaseOrderItems = (raw: unknown) => {
             lineTotal,
             lineVat: Math.round(lineTotal * (vatRate / 100) * 100) / 100,
             calcMode,
+            // Die eigenen Spalten der Vorlage — leer heisst: gar nicht erst
+            // mitschreiben, damit alte Bestellungen unverändert aussehen.
+            ...(() => {
+                const extras = normalizePurchaseOrderExtras(r?.extras);
+                return extras.length ? { extras } : {};
+            })(),
             ...(displayNetPrice !== null ? { displayNetPrice } : {}),
             ...(receivedQuantity > 0 ? { receivedQuantity, receivedAt } : {}),
             // Eski bayrak geriye uyumluluk için korunur (eski frontend sürümleri
@@ -2951,21 +3309,44 @@ const normalizePurchaseOrderVat = (input: { vatMode?: unknown; orderVatRate?: un
 };
 
 /**
- * TOTAL kipinde sipariş KDV'si — HESAP SIRASI (kullanıcı isteği 2026-08-02):
- *   satır tutarları toplamı + ek ücretler = MATRAH → matrah × oran = KDV.
- * Matrah da sonuç da iki ondalığa yuvarlanır (43'721.34768 → 43'721.35).
+ * DIE STEUER EINER BESTELLUNG IM TOTAL-MODUS (Vorgabe Samet, 07.09.2026):
+ * «Die Mehrwertsteuer muss JE PRODUKT gerechnet und dann zusammengezählt
+ * werden, mit dem Satz der gewählten Vorlage. Der Betrag der Zeile muss im PDF
+ * genau so wiederkommen. Die Versandkosten kommen separat dazu.»
  *
- * ⚠ Frontend eşi: `orderPricing.ts` → `computeOrderTotals` / `orderVatTotal`.
+ *   je Zeile: Betrag × Satz, auf zwei Stellen gerundet → addiert = Steuer.
+ *
+ * ZWEI ÄNDERUNGEN GEGENÜBER DEM STAND VOM 02.08.2026, beide gewollt:
+ *   • Die ZUSATZKOSTEN sind NICHT mehr Teil der Grundlage. Sie sind keine
+ *     Position, tragen darum keine Zeilensteuer und kommen separat zum Total.
+ *   • Gerundet wird JE ZEILE, nicht auf die Summe. Wer das PDF nachrechnet,
+ *     addiert Zeile für Zeile; auf die Gesamtsumme gerechnet kämen ein paar
+ *     Rappen Unterschied heraus — und genau die waren die Klage.
+ *
+ * Fehlen die Zeilenbeträge (ältere Aufrufer), bleibt der Satz auf der
+ * Nettosumme; das Ergebnis unterscheidet sich höchstens um Rappen.
+ *
+ * ⚠ Frontend-Zwilling: `orderPricing.ts` → `computeOrderTotals` / `orderVatTotal`.
+ *   Beide zusammen ändern, sonst zeigt der Bildschirm etwas anderes als das
+ *   gespeicherte Dokument.
  */
 const purchaseOrderTotalVat = (
     vat: { vatMode: string; orderVatRate: number },
     totalNet: number,
-    totalFees: number,
+    _totalFees: number,
     lineVatSum: number,
+    lineTotals?: number[],
 ): number => {
     if (vat.vatMode !== 'TOTAL') return lineVatSum;
-    const base = Math.round((totalNet + totalFees) * 100) / 100;
-    return Math.round(base * (vat.orderVatRate / 100) * 100) / 100;
+    const rate = vat.orderVatRate / 100;
+    if (lineTotals && lineTotals.length) {
+        const sum = lineTotals.reduce(
+            (acc, amount) => acc + Math.round((Number(amount) || 0) * rate * 100) / 100,
+            0,
+        );
+        return Math.round(sum * 100) / 100;
+    }
+    return Math.round(Math.round(totalNet * 100) / 100 * rate * 100) / 100;
 };
 
 /**
@@ -3004,7 +3385,10 @@ const parsePurchaseOrderRow = (row: any) => {
     let additionalFees: any[] = [];
     try { additionalFees = JSON.parse(row.additionalFees || '[]'); } catch { additionalFees = []; }
     if (!Array.isArray(additionalFees)) additionalFees = [];
-    return { ...row, items, additionalFees, itemCount: items.length };
+    let hiddenColumnKeys: string[] = [];
+    try { hiddenColumnKeys = JSON.parse(row.hiddenColumnKeys || '[]'); } catch { hiddenColumnKeys = []; }
+    if (!Array.isArray(hiddenColumnKeys)) hiddenColumnKeys = [];
+    return { ...row, items, additionalFees, hiddenColumnKeys, itemCount: items.length };
 };
 
 /**
@@ -3178,6 +3562,23 @@ const poRecipientName = (value: unknown): string | null => {
     return name ? name.slice(0, 120) : null;
 };
 
+/**
+ * Die AUSGEBLENDETEN SPALTEN der Bestellung — derselbe Schluesselsatz wie in der
+ * Vorlage (`hiddenColumnKeys` in purchaseOrderImport.routes.ts), dieselbe
+ * Reinigung: nur Bezeichner, keine Doppelten, eine harte Obergrenze. Gespeichert
+ * wird ein JSON-Array oder NULL, wenn nichts ausgeblendet ist — eine leere Liste
+ * als Text waere nur Betrieb in der Zeile.
+ */
+const PO_HIDDEN_COLUMNS_MAX = 16;
+const poHiddenColumnKeys = (value: unknown): string | null => {
+    if (!Array.isArray(value)) return null;
+    const keys = value
+        .map((key) => String(key ?? '').trim())
+        .filter((key, index, list) => /^[a-zA-Z][a-zA-Z0-9]{0,15}$/.test(key) && list.indexOf(key) === index)
+        .slice(0, PO_HIDDEN_COLUMNS_MAX);
+    return keys.length ? JSON.stringify(keys) : null;
+};
+
 const PO_COVER_LETTER_MAX = 4000;
 const poCoverLetter = (value: unknown): string | null => {
     if (value === null || value === undefined) return null;
@@ -3332,6 +3733,15 @@ router.delete(
     }
 );
 
+/* BELEG-IMPORT DER BESTELLUNG (07.09.2026) — `ai-extract`, `ai-status` und die
+   Rechenvorlagen je Lieferant liegen in einer eigenen Datei
+   (`purchaseOrderImport.routes.ts`), weil sie ein geschlossenes Stück sind und
+   sonst nichts im Lager anfassen.
+   ⚠ Die Reihenfolge zählt genauso wie bei den Textvorlagen darüber: dieser
+   Block MUSS vor `/purchase-orders/:id` stehen, sonst hält Express
+   «ai-extract» für eine Bestellnummer. */
+router.use('/purchase-orders', purchaseOrderImportRouter);
+
 /**
  * @swagger
  * /inventory/purchase-orders/{id}:
@@ -3385,6 +3795,7 @@ router.post(
                 projectName: string | null;
                 recipientName: string | null;
                 coverLetter: string | null;
+                hiddenColumnKeys: string | null;
                 currency: string;
                 status: string;
                 vatMode: string;
@@ -3422,6 +3833,9 @@ router.post(
                     recipientName: poRecipientName(raw?.recipientName),
                     // Boş ön yazı NULL yazılır: PDF standart metnine döner.
                     coverLetter: poCoverLetter(raw?.coverLetter),
+                    // Was die Vorlage ausgeblendet hatte, faehrt mit — das PDF
+                    // braucht es spaeter ohne die Vorlage.
+                    hiddenColumnKeys: poHiddenColumnKeys(raw?.hiddenColumnKeys),
                     currency: raw?.currency ? String(raw.currency) : 'CHF',
                     status: requestedStatus,
                     ...vat,
@@ -3430,7 +3844,12 @@ router.post(
                     additionalFees: fees,
                     totalNet,
                     totalGross,
-                    totalVat: purchaseOrderTotalVat(vat, totalNet, totalFees, totalVat),
+                    // Die Zeilenbeträge gehen mit: die Steuer wird JE ZEILE
+                    // gerechnet und addiert (Vorgabe Samet, 07.09.2026).
+                    totalVat: purchaseOrderTotalVat(
+                        vat, totalNet, totalFees, totalVat,
+                        items.map((it: any) => it.lineTotal),
+                    ),
                     totalFees,
                 });
             }
@@ -3453,6 +3872,7 @@ router.post(
                                 projectName: order.projectName,
                                 recipientName: order.recipientName,
                                 coverLetter: order.coverLetter,
+                                hiddenColumnKeys: order.hiddenColumnKeys,
                                 status: order.status,
                                 vatMode: order.vatMode,
                                 orderVatRate: order.orderVatRate,
@@ -3535,6 +3955,12 @@ router.patch(
             if (b.coverLetter !== undefined) {
                 data.coverLetter = poCoverLetter(b.coverLetter);
             }
+            // Die ausgeblendeten Spalten sind ebenfalls Kopf, nicht Inhalt: sie
+            // aendern, was das Blatt ZEIGT, nicht, was der Lieferant bekommt —
+            // darum kein «güncellendi», keine neue Revision.
+            if (b.hiddenColumnKeys !== undefined) {
+                data.hiddenColumnKeys = poHiddenColumnKeys(b.hiddenColumnKeys);
+            }
             const vatChanged = b.vatMode !== undefined || b.orderVatRate !== undefined || b.orderVatCountry !== undefined;
             const wantsContentChange = b.items !== undefined || b.currency !== undefined
                 || b.additionalFees !== undefined || vatChanged
@@ -3589,14 +4015,19 @@ router.patch(
             // hangisi değişirse değişsin efektif değerlerle yeniden hesaplanır.
             // TOTAL kipinde satır KDV toplamı yerine (net + ücretler) × oran yazılır.
             if (vatChanged || b.items !== undefined || b.additionalFees !== undefined) {
-                let lineVatSum: number;
+                /* Die Zeilen, auf denen die Steuer sitzt: entweder die eben
+                   geschickten oder die gespeicherten. Ohne sie liesse sich die
+                   Steuer nicht mehr JE ZEILE rechnen, und das gespeicherte
+                   Dokument wiche vom Bildschirm ab. */
+                let effectiveItems: any[] = [];
                 if (b.items !== undefined) {
-                    lineVatSum = data.totalVat;
+                    try { effectiveItems = JSON.parse(data.items || '[]'); } catch { effectiveItems = []; }
                 } else {
-                    let parsedItems: any[] = [];
-                    try { parsedItems = JSON.parse(existing.items || '[]'); } catch { parsedItems = []; }
-                    lineVatSum = Math.round(parsedItems.reduce((sum, it) => sum + (Number(it?.lineVat) || 0), 0) * 100) / 100;
+                    try { effectiveItems = JSON.parse(existing.items || '[]'); } catch { effectiveItems = []; }
                 }
+                const lineVatSum = b.items !== undefined
+                    ? data.totalVat
+                    : Math.round(effectiveItems.reduce((sum, it) => sum + (Number(it?.lineVat) || 0), 0) * 100) / 100;
                 data.totalVat = purchaseOrderTotalVat(
                     {
                         vatMode: data.vatMode ?? existing.vatMode ?? 'LINE',
@@ -3605,6 +4036,7 @@ router.patch(
                     data.totalNet ?? existing.totalNet ?? 0,
                     data.totalFees ?? existing.totalFees ?? 0,
                     lineVatSum,
+                    effectiveItems.map((it) => Number(it?.lineTotal) || 0),
                 );
             }
             if (!Object.keys(data).length) return res.status(400).json({ error: 'Güncellenecek alan yok.' });
@@ -3940,6 +4372,111 @@ router.post(
 
 /**
  * @swagger
+ * /inventory/purchase-orders/{id}/receive/revert:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Wareneingang loeschen: Lagerbuchungen der Bestellung zuruecknehmen und eine Stufe zurueckgehen"
+ *     security:
+ *       - bearerAuth: []
+ */
+// ── WARENEINGANG LÖSCHEN (Vorgabe Samet, 08.09.2026) ────────────────────────
+// «Wird der Wareneingang gelöscht, geht der Vorgang eine Stufe zurück.»
+//
+// Das Löschen ist kein Statuswechsel, sondern die RÜCKNAHME DER BUCHUNGEN: die
+// Eingangsbewegungen dieser Bestellung (StockMovement.referenceId = Bestellung,
+// movementType = IN) werden gelöscht, ihre Menge wieder vom Bestand abgezogen
+// und die aus ihnen entstandenen Lieferantenpartien (ArticleSupplier
+// .stockMovementId) verschwinden mit. Erst danach fallen `receivedQuantity`
+// und `receivedAt` jeder Zeile auf null zurück und die Bestellung steht wieder
+// auf der BESTELLSTUFE — «Bestellung erteilt» (ORDERED), wenn die Mail bereits
+// draussen ist, sonst «Bestellung bestätigt» (PENDING).
+//
+// Ein blosser Statuswechsel wäre hier falsch: er liesse die Ware im Lager
+// stehen und der nächste Wareneingang würde sie ein zweites Mal buchen.
+//
+// ⚠ WAS NICHT ZURÜCKGENOMMEN WIRD: die ABGELEITETEN Angaben am Artikel, die der
+// Wareneingang nebenbei fortschreibt — `baseCost` (gleitender Einstandspreis),
+// `defaultSupplierId`, `lastPurchaseDate` und das `isPreferred`-Kreuz der zuvor
+// bevorzugten Partie. Sie liessen sich nur aus einer Momentaufnahme
+// wiederherstellen, die der Wareneingang heute nicht anlegt. Menge, Bewegung,
+// Partie und Stufe gehen vollständig zurück; die «zuletzt gekauft für …»-Angabe
+// bleibt auf dem Stand des gelöschten Eingangs stehen, bis der nächste echte
+// Wareneingang sie überschreibt.
+router.post(
+    '/purchase-orders/:id/receive/revert',
+    requireAuth,
+    requirePermission('inventory.transfer'),
+    async (req, res) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+            if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (existing.status !== 'TO_BE_STOCKED' && existing.status !== 'COMPLETED') {
+                return res.status(400).json({ error: 'Bu sipariş mal kabul aşamasında değil.' });
+            }
+
+            let items: any[] = [];
+            try { items = JSON.parse(existing.items || '[]'); } catch { items = []; }
+
+            // Bu siparişin yazdığı TÜM giriş hareketleri. Konum başına ayrı
+            // toplanır: bakiye (ürün, konum) çiftinde tutulur.
+            const movements = await (prisma as any).stockMovement.findMany({
+                where: { tenantId, referenceId: existing.id, movementType: 'IN' },
+                select: { id: true, articleId: true, quantity: true, destinationLocationId: true },
+            });
+
+            const deltasByLocation = new Map<string, Map<string, number>>();
+            for (const movement of movements) {
+                const locationId = movement.destinationLocationId ? String(movement.destinationLocationId) : null;
+                if (!locationId) continue; // konumsuz hareket bakiye yazmamıştır
+                const perArticle = deltasByLocation.get(locationId) ?? new Map<string, number>();
+                perArticle.set(
+                    String(movement.articleId),
+                    (perArticle.get(String(movement.articleId)) ?? 0) - (Number(movement.quantity) || 0),
+                );
+                deltasByLocation.set(locationId, perArticle);
+            }
+
+            const movementIds = movements.map((movement: any) => String(movement.id));
+            // Satırların kabul damgası sıfırlanır: mal kabul hiç yapılmamış olur.
+            items.forEach((item) => {
+                item.receivedQuantity = 0;
+                item.receivedAt = null;
+            });
+            // Mail gitmişse sipariş "verilmiş"tir, gitmemişse yalnızca onaylanmış.
+            const targetStatus = existing.emailSentAt ? 'ORDERED' : 'PENDING';
+
+            const updated = await (prisma as any).$transaction(async (tx: any) => {
+                if (movementIds.length) {
+                    // Partiler önce: hareketlere bağlıdırlar.
+                    await tx.articleSupplier.deleteMany({ where: { tenantId, stockMovementId: { in: movementIds } } });
+                    await tx.stockMovement.deleteMany({ where: { tenantId, id: { in: movementIds } } });
+                }
+                for (const [locationId, perArticle] of deltasByLocation) {
+                    await bulkApplyStockBalanceDeltas(tx, tenantId, locationId, perArticle);
+                }
+                return tx.purchaseOrder.update({
+                    where: { id: existing.id },
+                    data: {
+                        items: JSON.stringify(items),
+                        status: targetStatus,
+                        stockedAt: null,
+                    },
+                });
+            });
+
+            res.status(200).json({
+                revertedMovements: movementIds.length,
+                order: parsePurchaseOrderRow(updated),
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+);
+
+/**
+ * @swagger
  * /inventory/purchase-orders/{id}/send-mail:
  *   post:
  *     tags: [Inventory]
@@ -3992,7 +4529,7 @@ router.post(
             if (!fromEmail || !PO_EMAIL_RE.test(fromEmail)) {
                 return res.status(400).json({ error: 'Gönderici e-posta adresi yapılandırılmamış.' });
             }
-            const fromName = poStripHeader(String(settings?.fromName || 'Offitec ERP')).slice(0, 100) || 'Offitec ERP';
+            const fromName = poStripHeader(String(settings?.fromName || 'Offitec Control Center')).slice(0, 100) || 'Offitec Control Center';
 
             // Fiyat talebi aşamasındaki siparişin maili "Preisanfrage" konusuyla
             // çıkar. DRAFT da bu aşamadadır (kaydedilmiş fiyat talebi taslağı);

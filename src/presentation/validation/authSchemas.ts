@@ -37,3 +37,17 @@ export const passwordResetConfirmSchema = z.object({
     token: tokenSchema,
     newPassword: strongPasswordSchema,
 });
+
+/**
+ * Der Einmalcode des zweiten Faktors. Absichtlich grosszügig entgegengenommen:
+ * Menschen tippen "482 193" mit Leerzeichen ab, und Aegis' Zwischenablage gibt
+ * den Code je nach Einstellung mit Trennzeichen heraus. Geprüft wird nach dem
+ * Aufräumen — genau sechs Ziffern (siehe shared/totp.ts).
+ */
+export const mfaVerifySchema = z.object({
+    code: z
+        .string({ error: 'Kod zorunludur.' })
+        .max(32, 'Kod çok uzun.')
+        .transform((value) => value.replace(/\D/g, ''))
+        .refine((value) => value.length === 6, 'Kod 6 haneli olmalıdır.'),
+});

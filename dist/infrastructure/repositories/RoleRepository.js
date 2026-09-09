@@ -3,25 +3,31 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.clearPermissionCacheForRole = exports.clearPermissionCacheForEmployee = exports.RoleRepository = void 0;
+exports.clearPermissionCacheForRole = exports.clearPermissionCacheForEmployee = exports.RoleRepository = exports.roleCacheStats = void 0;
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const pageCatalog_1 = require("../../shared/pageCatalog");
 const tenantSwitchAccess_1 = require("../../shared/tenantSwitchAccess");
+const ttlCache_1 = require("../../shared/ttlCache");
 const PERMISSION_CACHE_TTL_MS = 60_000;
-const permissionCache = new Map();
+/* Begrenzt und selbstkehrend (siehe shared/ttlCache.ts): beide Zwischenspeicher
+   waren einfache Maps, deren Lebensdauer nur gelesen und nie durchgesetzt
+   wurde — kein Eintrag verschwand je wieder. */
+const permissionCache = new ttlCache_1.TtlCache({ name: 'permissions', ttlMs: PERMISSION_CACHE_TTL_MS });
 const permissionInFlight = new Map();
-const pageAccessCache = new Map();
+const pageAccessCache = new ttlCache_1.TtlCache({ name: 'pageAccess', ttlMs: PERMISSION_CACHE_TTL_MS });
 const pageAccessInFlight = new Map();
+const roleCacheStats = () => [permissionCache.stats(), pageAccessCache.stats()];
+exports.roleCacheStats = roleCacheStats;
 class RoleRepository {
     async getEmployeePermissions(employeeId) {
         const cached = permissionCache.get(employeeId);
         if (cached && cached.expiresAt > Date.now()) {
-            return cached.permissions;
+            return cached.value;
         }
         const pending = permissionInFlight.get(employeeId);
         if (pending)
-            return cached ? cached.permissions : pending;
+            return cached ? cached.value : pending;
         // Tek ifadeye indirildi. İç içe `include` zinciri (EmployeeRole → Role →
         // RolePermission → Permission) Prisma'da seviye başına AYRI bir sorgu
         // üretiyordu: 4 ardışık tur, uzak veritabanında ~400 ms. Aynı veri tek
@@ -35,10 +41,7 @@ class RoleRepository {
                 WHERE er.employeeId = ${employeeId}
             `);
             const permissions = rows.map((row) => row.permissionName);
-            permissionCache.set(employeeId, {
-                expiresAt: Date.now() + PERMISSION_CACHE_TTL_MS,
-                permissions,
-            });
+            permissionCache.set(employeeId, permissions);
             return permissions;
         })().finally(() => {
             permissionInFlight.delete(employeeId);
@@ -48,7 +51,7 @@ class RoleRepository {
         // arkada biter (stale-while-revalidate). Rol atamaları bu süreçte
         // `permissionCache.delete` çağırdığı için anında etki korunur; TTL
         // yalnızca süreç dışı değişikliklerde ~tazeleme süresi kadar esner.
-        return cached ? cached.permissions : request;
+        return cached ? cached.value : request;
     }
     async assignRoleToEmployee(employeeId, roleId) {
         await prisma_client_1.default.employeeRole.deleteMany({ where: { employeeId } });
@@ -81,10 +84,10 @@ class RoleRepository {
     async getEmployeeRoleInfo(employeeId) {
         const cached = pageAccessCache.get(employeeId);
         if (cached && cached.expiresAt > Date.now())
-            return cached.info;
+            return cached.value;
         const pending = pageAccessInFlight.get(employeeId);
         if (pending)
-            return cached ? cached.info : pending;
+            return cached ? cached.value : pending;
         const request = (async () => {
             // Eine Anweisung: Rolle + ihre Rechtenamen in einem Join — die
             // verschachtelte include-Kette kostete hier vier Rundgänge.
@@ -135,13 +138,13 @@ class RoleRepository {
                 }
             }
             const info = { pageAccess: merged, isSystemAdmin };
-            pageAccessCache.set(employeeId, { expiresAt: Date.now() + PERMISSION_CACHE_TTL_MS, info });
+            pageAccessCache.set(employeeId, info);
             return info;
         })().finally(() => {
             pageAccessInFlight.delete(employeeId);
         });
         pageAccessInFlight.set(employeeId, request);
-        return cached ? cached.info : request;
+        return cached ? cached.value : request;
     }
 }
 exports.RoleRepository = RoleRepository;

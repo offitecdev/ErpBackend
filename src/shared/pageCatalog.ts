@@ -257,6 +257,20 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 },
             },
             {
+                // Zusatzaufträge / Nachträge (05.09.2026): ALLE NT-Belege des
+                // Mandanten in einer Liste, neben den Aufträgen (AB). Anlegen
+                // (freier Nachtrag mit eigenen Positionen) ist Stufe 2 und
+                // trägt dasselbe Recht wie das Zusammenziehen aus dem Feld.
+                key: 'sales.addonOrders',
+                path: '/sales/addon-orders',
+                labelKey: 'nav.addonOrders',
+                maxLevel: 2,
+                grants: {
+                    read: ['crm.customers.view', 'billing.view'],
+                    write: ['projects.createAddonOrder'],
+                },
+            },
+            {
                 // OSP (04.09.2026): Offertanfragen der Offitec Selection
                 // Platform — Liste, Zuständigkeit, Import in eine Offerte.
                 key: 'sales.osp',
@@ -448,6 +462,8 @@ export const RETIRED_PAGE_KEYS: Readonly<Record<string, string>> = {
 export const PAGE_LEVEL_FALLBACKS: Readonly<Record<string, string>> = {
     'crm.enquiries': 'crm.customers',
     'crm.activities': 'crm.communication',
+    // Nachträge sind Aufträge — wer die Auftragsliste sieht, sieht auch sie.
+    'sales.addonOrders': 'sales.orders',
 };
 
 /**

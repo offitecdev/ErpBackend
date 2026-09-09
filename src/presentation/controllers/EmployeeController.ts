@@ -12,6 +12,62 @@ import { auditLog } from '../../infrastructure/services/AuditLogService';
 import { getPersonnelTenantScope, getAssignableTenantIds, employeeScopeSql, isEmployeeInScope } from './serviceTenantScope';
 import { getCachedStaffDirectory } from '../../shared/staffDirectoryCache';
 import { parseAllowedTenantIds } from '../utils/tenantAccess';
+import { PublicError, toPublicMessage } from '../../application/errors/AuthErrors';
+
+/* ── WAS EINE ANFRAGE AM PERSONALDATENSATZ ÄNDERN DARF ───────────────────────
+ *
+ * `employeeCreateSchema` / `employeeUpdateSchema` sind bewusst OFFEN
+ * (`z.looseObject`): unbekannte Felder reisen durch, damit die Anwendungsfälle
+ * sich nehmen, was sie brauchen. `CreateEmployeeUseCase` tut das auch — der
+ * Änderungsweg tat es NICHT: er reichte `req.body` als Ganzes an
+ * `EmployeeRepository.update` weiter, und das streift nur `id`, `tenantId` und
+ * `roleId` ab. Alles andere ging unbesehen an Prisma.
+ *
+ * Damit konnte, wer `employees.update` trug (Personalwesen, Projektleitung),
+ * an EINEM fremden Konto — auch dem der Administration — Felder setzen, die
+ * kein Formular je anbietet:
+ *
+ *   passwordHash        ein selbst gewählter Hash, an der Kennwortrichtlinie
+ *                       und an `assertPasswordPolicy` vorbei
+ *   qrToken             der eigene QR-Wert auf fremdem Konto → Anmeldung als
+ *                       diese Person (siehe /auth/qr-login)
+ *   bannedAt/deletedAt  ein gesperrtes oder gelöschtes Konto wieder öffnen
+ *   passwordChangedAt   die Uhr, an der alte Sitzungen sterben, verstellen
+ *
+ * Deshalb wird jetzt AUSGEWÄHLT statt ausgeschlossen. Die Liste ist genau der
+ * Vertrag, den die Schnittstellenbeschreibung nennt (UpdateEmployeeRequest);
+ * `password` steht absichtlich NICHT darin — es läuft weiter durch
+ * `assertPasswordPolicy` und wird gehasht, nie roh übernommen.
+ *
+ * Wer ein Feld ergänzt, prüfe zuerst: kann man damit einen ZUGANG verändern?
+ * Dann gehört es nicht hierher, sondern auf einen eigenen, geprüften Weg
+ * (Kennwort → /password-requests, Sperren → /employees/:id/ban, Rolle und
+ * Firmen → /employees/:id/authorization, QR-Ausweis → /personnel/staff/:id/qr).
+ */
+const WRITABLE_EMPLOYEE_FIELDS = [
+    'firstName',
+    'lastName',
+    'email',
+    'title',
+    'departmentId',
+    'roleName',
+    'phone',
+    'address',
+    'isActive',
+    'hireDate',
+    'terminationDate',
+    'annualLeaveEntitlement',
+    'profilePictureUrl',
+    'notes',
+] as const;
+
+const pickWritableEmployeeFields = (body: Record<string, unknown>): Record<string, unknown> => {
+    const picked: Record<string, unknown> = {};
+    for (const field of WRITABLE_EMPLOYEE_FIELDS) {
+        if (body?.[field] !== undefined) picked[field] = body[field];
+    }
+    return picked;
+};
 
 // TS Hatasını çözmek için Request objesini genişletiyoruz
 export interface AuthRequest extends Request {
@@ -60,15 +116,18 @@ export class EmployeeController {
     private async normalizeAllowedTenantIds(
         input: unknown,
         callerTenantId: string,
-        callerHomeTenantId?: string,
+        callerHomeTenantId: string | undefined,
+        callerEmployeeId: string,
     ): Promise<string[] | null | undefined> {
         if (input === undefined) return undefined;
         const tenantIds = parseAllowedTenantIds(input);
         if (!tenantIds) return null;
-        const assignable = await getAssignableTenantIds(callerTenantId, callerHomeTenantId);
+        // Der Zuteilende MUSS genannt werden: nur die feste Administratorrolle
+        // teilt über die Firmengruppe hinaus zu (siehe getAssignableTenantIds).
+        const assignable = await getAssignableTenantIds(callerTenantId, callerHomeTenantId, callerEmployeeId);
         const outside = tenantIds.filter((tenantId) => !assignable.includes(tenantId));
         if (outside.length) {
-            throw new Error('Seçilen şirketlerden biri size açık değil.');
+            throw new PublicError('Seçilen şirketlerden biri size açık değil.');
         }
         return tenantIds;
     }
@@ -78,12 +137,16 @@ export class EmployeeController {
             const roleAssignError = await this.assertCanAssignRole(req);
             if (roleAssignError) return res.status(403).json({ error: roleAssignError });
 
+            // NIEMALS `...req.body`: das Schema ist bewusst offen (looseObject),
+            // also landete früher jedes mitgeschickte Feld hier — siehe die
+            // Begründung an WRITABLE_EMPLOYEE_FIELDS.
             const employeeData = {
-                ...req.body,
+                ...pickWritableEmployeeFields(req.body),
+                password: req.body.password,
                 // Accessible pages are a property of the ROLE (RoleModuleConfig),
                 // never of the individual — a personal package is not accepted.
                 moduleKeys: undefined,
-                allowedTenantIds: await this.normalizeAllowedTenantIds(req.body.allowedTenantIds, req.user!.tenantId, req.user!.homeTenantId) ?? null,
+                allowedTenantIds: await this.normalizeAllowedTenantIds(req.body.allowedTenantIds, req.user!.tenantId, req.user!.homeTenantId, req.user!.id) ?? null,
                 tenantId: req.user?.tenantId
             };
             const result = await this.createEmployeeUseCase.execute(employeeData);
@@ -112,7 +175,7 @@ export class EmployeeController {
 
             res.status(201).json(result);
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: toPublicMessage(error, 'employees') });
         }
     }
 
@@ -187,7 +250,7 @@ export class EmployeeController {
             // records stay out, unlike in the HR listing where admins need them.
             return res.status(200).json(await this.lightStaffRows(scopeTenantIds, isActive, true));
         } catch (error: any) {
-            return res.status(400).json({ error: error.message });
+            return res.status(400).json({ error: toPublicMessage(error, 'employees') });
         }
     }
 
@@ -214,7 +277,7 @@ export class EmployeeController {
             const safeResults = results.map(({ passwordHash, ...rest }) => rest);
             res.status(200).json(safeResults);
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: toPublicMessage(error, 'employees') });
         }
     }
 
@@ -233,7 +296,7 @@ export class EmployeeController {
             const { passwordHash, ...safeResult } = employee;
             res.status(200).json(safeResult);
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: toPublicMessage(error, 'employees') });
         }
     }
 
@@ -243,12 +306,14 @@ export class EmployeeController {
             if (roleAssignError) return res.status(403).json({ error: roleAssignError });
 
             const id = req.params.id as string;
-            // moduleKeys is dropped, not normalized: accessible pages belong to
-            // the ROLE (RoleModuleConfig), so the employee form cannot set them.
-            const { roleId, password, moduleKeys: _ignoredModuleKeys, ...employeeData } = req.body;
-            if ('allowedTenantIds' in employeeData) {
+            const { roleId, password } = req.body;
+            // Nur die Felder des Vertrags. `moduleKeys` bleibt draussen (die
+            // Seiten hängen an der ROLLE), und ebenso alles, was den Zugang
+            // selbst betrifft — siehe WRITABLE_EMPLOYEE_FIELDS.
+            const employeeData: Record<string, unknown> = pickWritableEmployeeFields(req.body);
+            if ('allowedTenantIds' in req.body) {
                 employeeData.allowedTenantIds =
-                    await this.normalizeAllowedTenantIds(employeeData.allowedTenantIds, req.user!.tenantId, req.user!.homeTenantId) ?? null;
+                    await this.normalizeAllowedTenantIds(req.body.allowedTenantIds, req.user!.tenantId, req.user!.homeTenantId, req.user!.id) ?? null;
             }
 
             // Ownership check before any write — the row must belong to the
@@ -290,7 +355,7 @@ export class EmployeeController {
             const { passwordHash, ...safeResult } = result;
             res.status(200).json(safeResult);
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(400).json({ error: toPublicMessage(error, 'employees') });
         }
     }
 }

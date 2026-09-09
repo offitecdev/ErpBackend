@@ -375,7 +375,7 @@ class MailController {
             const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tenantId) } });
             const body = req.body || {};
             const fromEmail = body.fromEmail || settings?.fromEmail || req.user.email;
-            const fromName = body.fromName || settings?.fromName || "Offitec ERP";
+            const fromName = body.fromName || settings?.fromName || "Offitec Control Center";
             const to = String(body.to || "").trim();
             // CC dizi ya da virgüllü tek satır olabilir; boşlar ayıklanır.
             const cc = (Array.isArray(body.cc) ? body.cc : String(body.cc || "").split(","))

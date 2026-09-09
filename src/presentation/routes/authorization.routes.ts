@@ -11,6 +11,7 @@ import { findTenantRootIdCached } from '../../shared/tenantTree';
 import { parseAllowedTenantIds } from '../utils/tenantAccess';
 import { auditLog } from '../../infrastructure/services/AuditLogService';
 import { ensureSystemAdminRole, resolvePageLevels } from './roleTemplate.routes';
+import { toPublicMessage } from '../../application/errors/AuthErrors';
 
 /* ── ZUGANG EINER PERSON (Personal → Person → Zugang, 17.08.2026) ────────────
  *
@@ -95,7 +96,7 @@ router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'),
            31.08.2026 JEDE aktive Firma, Untergesellschaft oder nicht. Die
            Vorgabe lautet, dass die Verwaltung hier sieht, was ueberhaupt in der
            Liste steht, und die Auswahl ausdruecklich trifft. */
-        const assignableTenantIds = await getAssignableTenantIds(user.tenantId, user.homeTenantId);
+        const assignableTenantIds = await getAssignableTenantIds(user.tenantId, user.homeTenantId, user.id);
         const companies = (await prisma.tenant.findMany({
             where: { id: { in: assignableTenantIds } },
             select: { id: true, tenantName: true, parentTenantId: true },
@@ -122,7 +123,7 @@ router.get('/:id/authorization', requireAuth, requirePermission('roles.manage'),
             roles: options,
         });
     } catch (error: any) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: toPublicMessage(error, 'employees.authorization') });
     }
 });
 
@@ -192,7 +193,7 @@ router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'),
                 // anbietet. Eine Untergesellschaft kann so keinen Zugang zu
                 // einer Schwesterfirma verteilen, auch nicht mit einer von
                 // Hand gesetzten Id.
-                const assignable = await getAssignableTenantIds(user.tenantId, user.homeTenantId);
+                const assignable = await getAssignableTenantIds(user.tenantId, user.homeTenantId, user.id);
                 const outside = wanted.filter((tenantId) => !assignable.includes(tenantId));
                 if (outside.length) return res.status(400).json({ error: 'Eine der gewählten Firmen steht Ihnen nicht zur Verfügung.' });
             }
@@ -215,7 +216,7 @@ router.put('/:id/authorization', requireAuth, requirePermission('roles.manage'),
             roleName: targetRole?.roleName ?? null,
         });
     } catch (error: any) {
-        res.status(400).json({ error: error.message });
+        res.status(400).json({ error: toPublicMessage(error, 'employees.authorization') });
     }
 });
 

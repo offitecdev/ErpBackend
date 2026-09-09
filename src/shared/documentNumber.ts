@@ -232,6 +232,43 @@ export const nextDocumentNumber = async (
     );
 };
 
+/**
+ * Die Nummer, die das NÄCHSTE Dokument dieser Art bekäme — OHNE den Zähler zu
+ * bewegen. Für Vorschauen: die Erfassungsmaske soll die Rechnungsnummer zeigen
+ * dürfen, bevor die Rechnung existiert, statt «Entwurf» zu schreiben.
+ *
+ * ⚠ Es ist eine VORSCHAU, keine Reservierung: wer im selben Augenblick eine
+ * Rechnung erstellt, bekommt diese Nummer, und die Vorschau zeigt dann eine,
+ * die schon vergeben ist. Vergeben wird ausschliesslich in `nextDocumentNumber`
+ * innerhalb der Transaktion des Dokuments.
+ */
+export const peekDocumentNumber = async (
+    tenantId: string,
+    type: DocumentType,
+): Promise<string> => {
+    if (!tenantId) throw new Error('Belge numarası için tenant zorunludur.');
+    const year = new Date().getFullYear();
+    const seq = await prisma.$transaction(async (tx) => {
+        const client = tx as unknown as RawClient;
+        const block = await blockStartFor(client, tenantId);
+        const floor = block + 1;
+        const blockEnd = block + DOCUMENT_BLOCK_SIZE - 1;
+        const rows: any[] = await client.$queryRaw`
+            SELECT \`lastValue\` FROM \`DocumentCounter\`
+            WHERE \`tenantId\` = ${tenantId} AND \`docType\` = ${type}`;
+        const current = rows.length ? Number(rows[0]?.lastValue ?? 0) : null;
+        // Dieselbe Entscheidung wie `bumpCounter`, nur ohne zu schreiben.
+        if (current === null) return floor;
+        if (current < floor || current > blockEnd) {
+            const maxIssued = await maxIssuedSeqInBlock(client, tenantId, type, floor, blockEnd);
+            const next = Math.max(block, maxIssued) + 1;
+            if (next <= blockEnd) return next;
+        }
+        return Math.max(current + 1, floor);
+    });
+    return formatDocumentNumber(type, year, seq);
+};
+
 const raiseFloor = async (client: RawClient, tenantId: string, docType: DocumentType, minValue: number): Promise<void> => {
     await client.$executeRaw`
         INSERT INTO \`DocumentCounter\` (\`tenantId\`, \`docType\`, \`lastValue\`, \`updatedAt\`)

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.resolveNewLabelId = exports.roleLabelId = exports.sanitizeLabelId = exports.listLabels = exports.LABEL_ORDER_BY = void 0;
+exports.completedLabelPatch = exports.dayLabelPatch = exports.STATUS_LABEL_ROLES = exports.resolveNewLabelId = exports.roleLabelId = exports.sanitizeLabelId = exports.listLabels = exports.LABEL_ORDER_BY = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const calendarLabels_1 = require("../../shared/calendarLabels");
@@ -87,4 +87,41 @@ const resolveNewLabelId = async (tenantId, raw, role) => {
     return (0, exports.roleLabelId)(tenantId, role);
 };
 exports.resolveNewLabelId = resolveNewLabelId;
+/**
+ * DAS STATUS-ETIKETT FOLGT DEM TAG (03.09.2026).
+ *
+ * Vorgabe Samet: «Auf dem Kalender muss man SEHEN, was ein Termin ist — ein
+ * vergangener ist abgeschlossen, einer von heute laufend, einer von morgen
+ * geplant.» Die Farbe einer Karte ist ihr Etikett (CalendarPage, 25.08.2026);
+ * also trägt ein Termin das Etikett der Rolle, die zu seinem Tag passt
+ * (shared/appointmentDay.ts, labelRoleForAppointmentDay), und wechselt es,
+ * wenn der Tag weitergeht.
+ *
+ * Aber nur, wenn er bis dahin ein STATUS-Etikett trug — «geplant», «laufend»
+ * oder «abgeschlossen» — oder gar keines. Ein von Hand gewähltes Farbetikett
+ * und die Besprechung bleiben, was sie sind: die Rolle sperrt nichts, und
+ * eine bewusste Wahl wird nicht überschrieben. Ist das Etikett der Zielrolle
+ * ausgeblendet, bleibt ebenfalls alles.
+ *
+ * Rückgabe: ein Teil von `data` für `appointment.update` — leer, wenn nichts
+ * zu ändern ist. Der Tagesabschluss (MaintenanceReminderService) wendet
+ * dieselbe Regel gebündelt auf den Bestand an.
+ */
+exports.STATUS_LABEL_ROLES = ['PLANNED', 'ONGOING', 'DONE'];
+const dayLabelPatch = async (tenantId, currentLabelId, role) => {
+    const target = await (0, exports.roleLabelId)(tenantId, role);
+    if (!target || target === currentLabelId)
+        return {};
+    if (currentLabelId) {
+        const current = await prisma_client_1.default.calendarLabel.findFirst({ where: { id: currentLabelId, tenantId }, select: { role: true } });
+        // Ein fremdes oder gelöschtes Etikett zählt wie keines.
+        if (current && !exports.STATUS_LABEL_ROLES.includes(current.role || ''))
+            return {};
+    }
+    return { labelId: target };
+};
+exports.dayLabelPatch = dayLabelPatch;
+/** Der Abschluss durch Monteur oder Verantwortlichen: Etikett «abgeschlossen». */
+const completedLabelPatch = (tenantId, currentLabelId) => (0, exports.dayLabelPatch)(tenantId, currentLabelId, 'DONE');
+exports.completedLabelPatch = completedLabelPatch;
 //# sourceMappingURL=calendarLabelCatalog.js.map

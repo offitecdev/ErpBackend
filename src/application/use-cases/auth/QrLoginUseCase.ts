@@ -1,6 +1,8 @@
 import prisma from '../../../infrastructure/database/prisma.client';
 import { ITokenService } from '../../interfaces/ITokenService';
 import { toPwdAtClaim } from '../../../infrastructure/services/JwtTokenService';
+import { startRefreshSession, RefreshSessionContext } from '../../../infrastructure/services/RefreshSessionService';
+import { PublicError } from "../../errors/AuthErrors";
 
 /**
  * ── ANMELDUNG PER PERSONAL-QR ────────────────────────────────────────────────
@@ -18,9 +20,9 @@ import { toPwdAtClaim } from '../../../infrastructure/services/JwtTokenService';
 export class QrLoginUseCase {
     constructor(private tokenService: ITokenService) {}
 
-    async execute(rawToken: string) {
+    async execute(rawToken: string, context: RefreshSessionContext = {}) {
         const token = String(rawToken ?? '').trim();
-        const invalid = () => new Error('QR-Code ist ungültig oder abgelaufen.');
+        const invalid = () => new PublicError('QR-Code ist ungültig oder abgelaufen.');
         if (!token) throw invalid();
 
         // Datenbankfehler dürfen NICHT als Meldung nach draussen: der Aufrufer
@@ -42,7 +44,7 @@ export class QrLoginUseCase {
 
         if (!employee || employee.deletedAt || employee.bannedAt) throw invalid();
         if (!employee.isActive) {
-            throw new Error('Zugriff verweigert: Das Konto ist deaktiviert. Bitte die Systemverwaltung kontaktieren.');
+            throw new PublicError('Zugriff verweigert: Das Konto ist deaktiviert. Bitte die Systemverwaltung kontaktieren.');
         }
 
         const payload = {
@@ -52,9 +54,12 @@ export class QrLoginUseCase {
             pwdAt: toPwdAtClaim(employee.passwordChangedAt),
         };
 
+        // Wie bei der Kennwortanmeldung: eine Zeile je Anmeldung.
+        const session = await startRefreshSession(employee.id, employee.tenantId, context);
+
         return {
             accessToken: this.tokenService.generateToken('access', payload),
-            refreshToken: this.tokenService.generateToken('refresh', payload),
+            refreshToken: this.tokenService.generateToken('refresh', { ...payload, ...session }),
             employee: {
                 id: employee.id,
                 firstName: employee.firstName,

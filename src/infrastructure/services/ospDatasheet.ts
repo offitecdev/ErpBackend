@@ -1,5 +1,11 @@
 import { ospDatasheetStorage } from './LocalFileStorage';
 import type { OspEndpoint } from './OspClient';
+import {
+    buildDatasheetMarkdown,
+    parseDatasheetDocument,
+    parseMarkdownDocument,
+    specsFromDocument,
+} from './ospDatasheetDocument';
 
 /**
  * ── OSP-DATENBLATT (07.09.2026) ─────────────────────────────────────────────
@@ -46,15 +52,32 @@ export interface OspDatasheetSpecs {
     sound10m?: string;
     dimensions?: string;
     weight?: string;
+    /* ── PRODUKTANGABEN AUS DEM BLATT SELBST (20.09.2026) ─────────────────
+       §1 nennt weder Modell noch Kategorie — das Blatt schon. Sie kommen aus
+       seinen ZEILEN (ospDatasheetDocument.ts) und geben der Offertposition
+       ihren Titel, statt dass dort der Projektname stehen muss. */
+    model?: string;
+    brand?: string;
+    category?: string;
+    /** Der unverbindliche Listenpreis, wie das Blatt ihn druckt. Er wird
+        ANGEZEIGT und NIE in die Offerte übernommen — dort wird gerechnet. */
+    listPrice?: string;
 }
 
 export interface OspDatasheetResult {
     ok: boolean;
-    /** Verweis der Ablage (`local:osp-datasheet/…`). */
+    /** Verweis der Ablage (`r2:osp-datasheet/…` oder `local:…`). */
     file?: string;
     specs?: OspDatasheetSpecs;
     /** Der ausgelesene Text — hilft, wenn eine Angabe NICHT erkannt wurde. */
     text?: string;
+    /**
+     * Das Blatt als MARKDOWN: oben die erkannten Produktangaben, darunter das
+     * ganze Blatt Abschnitt für Abschnitt. Das ist die Fassung, aus der die
+     * Angaben gelesen wurden — sie steht an der Einheit, damit man nachsehen
+     * kann, woher eine Zahl kommt, ohne das PDF zu öffnen.
+     */
+    markdown?: string;
     error?: string;
 }
 
@@ -136,6 +159,27 @@ export const pickDatasheetUrl = (entry: unknown): string | null => {
         }
     }
     return best ? (best as { url: string }).url : null;
+};
+
+/**
+ * Die Adresse einer MARKDOWN-Fassung des Blattes, falls der Eintrag eine
+ * nennt. Der Vertrag kennt sie heute nicht — die OSP schickt `pdfUrl` und
+ * sonst nichts. Sollte sie eine liefern (`markdownUrl`, `mdUrl`, `.md`), ist
+ * sie die BESSERE Quelle für die Angaben: dort steht das Blatt bereits
+ * gegliedert, statt dass es aus dem Textlayer eines PDF gelesen werden muss.
+ */
+export const pickMarkdownUrl = (entry: unknown): string | null => {
+    if (!entry || typeof entry !== 'object') return null;
+    const row = entry as Record<string, unknown>;
+    for (const key of ['markdownUrl', 'mdUrl', 'markdown_url', 'datasheetMarkdownUrl']) {
+        const url = asHttpUrl(row[key]);
+        if (url) return url;
+    }
+    /* GERATEN wird nicht. Die Ablage der OSP hat zu einem `…/x.pdf` KEIN
+       `…/x.md` (nachgesehen am 21.09.2026: 404). Eine geratene Adresse würde
+       bei jedem Holen einen Fehlschlag an die Einheit schreiben, der keiner
+       ist — und die Markdown-Fassung entsteht ohnehin aus dem PDF. */
+    return null;
 };
 
 /* ── 2) Das PDF holen ────────────────────────────────────────────────────── */
@@ -365,6 +409,8 @@ export const fetchOspDatasheet = async (
     endpoint: OspEndpoint,
     tenantId: string,
     url: string,
+    /** Projekt und Beleg — sie stehen als Herkunft über der Markdown-Fassung. */
+    meta: { title?: string | null; projectNumber?: string | null; documentId?: string | null } = {},
 ): Promise<OspDatasheetResult> => {
     const base = (endpoint.ospBaseUrl || '').trim();
     const key = (endpoint.ospApiKey || '').trim();
@@ -409,8 +455,64 @@ export const fetchOspDatasheet = async (
         const pdf = await getDocumentProxy(new Uint8Array(body));
         const extracted = await extractText(pdf, { mergePages: true });
         const text = String(extracted.text || '');
-        return { ok: true, file, text, specs: parseDatasheetSpecs(text) };
+
+        /* Das Blatt wird als DOKUMENT gelesen — Abschnitte und Zeilen —, nicht
+           mehr mit Suchmustern über den ganzen Text. Der Unterschied ist kein
+           Feinschliff: aus dem Hinweissatz «differing medium concentrations …»
+           wurde vorher das Medium „concentrations", weil ein Suchmuster nicht
+           weiss, ob es gerade in einer Angabe oder in einem Satz steht. */
+        const doc = parseDatasheetDocument(text);
+        const specs = specsFromDocument(doc);
+        const markdown = buildDatasheetMarkdown(doc, specs, meta);
+
+        /* Hat das Blatt keinen brauchbaren Aufbau (ein gescanntes PDF, ein
+           fremdes Formular), bleiben die alten Suchmuster als Rückfall — lieber
+           eine unsichere Angabe als gar keine. */
+        const fallback = Object.keys(specs).length ? {} : parseDatasheetSpecs(text);
+
+        return { ok: true, file, text, markdown, specs: { ...fallback, ...specs } };
     } catch (error: any) {
         return { ok: true, file, error: `Datenblatt gespeichert, aber nicht lesbar: ${error?.message || error}` };
+    }
+};
+
+/**
+ * Eine MARKDOWN-Fassung des Blattes holen und auslesen.
+ *
+ * Sie ist die bessere Quelle, wo es sie gibt: dort steht das Blatt bereits
+ * gegliedert, statt dass die Gliederung aus dem Textlayer eines PDF
+ * zurückgewonnen werden müsste. Heute liefert die OSP keine — der Weg steht
+ * trotzdem, weil er sonst am Tag, an dem sie eine liefert, erst gebaut werden
+ * müsste (und weil eine von Hand gepflegte Fassung denselben Weg nimmt).
+ *
+ * Best-Effort wie alles hier: wirft nie.
+ */
+export const fetchOspMarkdown = async (
+    endpoint: OspEndpoint,
+    url: string,
+): Promise<{ ok: boolean; markdown?: string; specs?: OspDatasheetSpecs; error?: string }> => {
+    const base = (endpoint.ospBaseUrl || '').trim();
+    const key = (endpoint.ospApiKey || '').trim();
+    // Der Schlüssel gehört der OSP — er geht an keinen anderen Rechner.
+    const headers: Record<string, string> = (key && base && sameHost(url, base))
+        ? { 'X-OSP-Integration-Key': key }
+        : {};
+
+    try {
+        const response = await fetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        if (!response.ok) return { ok: false, error: `Markdown ${response.status}` };
+        const type = (response.headers.get('content-type') || '').toLowerCase();
+        const markdown = await response.text();
+        // Eine HTML-Fehlerseite kommt mit 200 zurück und sähe sonst wie ein
+        // Treffer aus — dasselbe Missverständnis wie beim PDF.
+        if (type.includes('text/html') || /^\s*<(!doctype|html)/i.test(markdown)) {
+            return { ok: false, error: 'Die Adresse liefert kein Markdown (HTML-Seite).' };
+        }
+        if (!markdown.trim()) return { ok: false, error: 'Markdown ist leer.' };
+        if (markdown.length > MAX_BYTES) return { ok: false, error: 'Markdown ist zu gross.' };
+
+        return { ok: true, markdown, specs: specsFromDocument(parseMarkdownDocument(markdown)) };
+    } catch (error: any) {
+        return { ok: false, error: describeFailure(error, url) };
     }
 };

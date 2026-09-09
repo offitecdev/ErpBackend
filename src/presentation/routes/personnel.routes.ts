@@ -66,6 +66,7 @@ import {
     leaveWorkdays,
     type ReportFilters,
 } from '../../application/services/personnelReports';
+import { toPublicMessage } from '../../application/errors/AuthErrors';
 
 const router = Router();
 const cryptoService = new BcryptCryptoService();
@@ -122,7 +123,7 @@ router.get('/shift-plan', requireAuth, async (req, res) => {
     try {
         res.status(200).json({ plan: await loadShiftPlan(req) });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -158,7 +159,7 @@ router.put('/shift-plan', requireAuth, requirePermission('attendance.update'), a
         });
         res.status(200).json({ plan });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -193,7 +194,7 @@ router.get('/staff', requireAuth, requirePermission('employees.view'), async (re
         const [rows, countRows] = await Promise.all([
             prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
                 SELECT e.id, e.staffNumber, e.firstName, e.lastName, e.email, e.createdAt,
-                       e.isActive, e.qrToken, e.staffRole, e.workLocation,
+                       e.isActive, e.staffRole, e.workLocation,
                        (
                            SELECT r.roleName
                            FROM EmployeeRole er
@@ -220,7 +221,6 @@ router.get('/staff', requireAuth, requirePermission('employees.view'), async (re
                 email: String(row.email ?? ''),
                 createdAt: row.createdAt,
                 isActive: Boolean(row.isActive),
-                qrToken: row.qrToken == null ? null : String(row.qrToken),
                 staffRole: String(row.staffRole ?? 'STAFF'),
                 workLocation: String(row.workLocation ?? 'OFFICE'),
                 /* Die Rolle aus den Einstellungen — sie hat die Personalrolle
@@ -232,7 +232,7 @@ router.get('/staff', requireAuth, requirePermission('employees.view'), async (re
             pageSize,
         });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -335,7 +335,7 @@ router.post('/staff/bulk', requireAuth, requirePermission('employees.create'), a
                 },
                 select: {
                     id: true, staffNumber: true, firstName: true, lastName: true,
-                    email: true, createdAt: true, isActive: true, qrToken: true,
+                    email: true, createdAt: true, isActive: true,
                     staffRole: true, workLocation: true,
                 },
             })),
@@ -353,7 +353,46 @@ router.post('/staff/bulk', requireAuth, requirePermission('employees.create'), a
 
         res.status(201).json({ created });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
+    }
+});
+
+/**
+ * GET /personnel/staff/:id/qr — den Schlüssel EINER Person herausgeben, damit
+ * ihr Ausweis gedruckt werden kann.
+ *
+ * ── WARUM DAS EIN EIGENER WEG IST (Sicherheitskorrektur) ────────────────────
+ * `Employee.qrToken` ist eine ZUGANGSANGABE: `POST /auth/qr-login` tauscht ihn
+ * ohne Kennwort gegen eine Sitzung. Trotzdem trug ihn bis hierher jede Zeile
+ * der Personalliste, die Personenseite und `/personnel/me` mit — wer
+ * `employees.view` hatte (Büro, Personalwesen), las damit den Schlüssel der
+ * Geschäftsleitung vom Bildschirm ab und meldete sich als sie an.
+ *
+ * Jetzt verlässt der Schlüssel den Server nur noch hier und beim Neuausgeben:
+ * einzeln, unter demselben Recht wie das Rotieren (`employees.update` — wer
+ * einen neuen Ausweis ausgeben darf, darf auch den bestehenden drucken), und
+ * jeder Abruf steht im Protokoll.
+ */
+router.get('/staff/:id/qr', requireAuth, requirePermission('employees.update'), async (req, res) => {
+    try {
+        const tenantIds = await treeOf(req);
+        const person = await prisma.employee.findFirst({
+            where: { id: String(req.params.id), ...employeeScopeWhere(tenantIds), deletedAt: null },
+            select: { id: true, qrToken: true },
+        });
+        if (!person) return fail(res, 404, 'Person nicht gefunden.');
+
+        auditLog.log({
+            action: 'personnel.staff.qrRead',
+            tenantId: req.user!.tenantId,
+            employeeId: req.user!.id,
+            entityType: 'Employee',
+            entityId: person.id,
+            ...auditLog.context(req),
+        });
+        res.status(200).json({ qrToken: person.qrToken ?? null });
+    } catch (error: any) {
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -382,7 +421,7 @@ router.post('/staff/:id/qr', requireAuth, requirePermission('employees.update'),
         });
         res.status(200).json({ qrToken });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -465,7 +504,7 @@ router.get('/approvers', requireAuth, async (req, res) => {
             staffNumber: row.staffNumber == null ? null : Number(row.staffNumber),
         })));
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -594,7 +633,7 @@ router.post('/clock/scan', requireAuth, async (req, res) => {
             todaySeconds: closedSeconds + justClosed,
         });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -667,7 +706,7 @@ router.get('/clock/activity', requireAuth, async (req, res) => {
         events.sort((a, b) => new Date(b.at as Date).getTime() - new Date(a.at as Date).getTime());
         res.status(200).json({ date: toDateKey(day), events: events.slice(0, 60) });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -723,7 +762,7 @@ router.get('/clock/week', requireAuth, async (req, res) => {
 
         res.status(200).json({ weekStart: toDateKey(monday), days });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -740,7 +779,7 @@ router.get('/reports/detailed', requireAuth, requirePermission('attendance.read'
         const report = await buildDetailedReport(tenantIds, filters, plan);
         res.status(200).json(report);
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -753,7 +792,7 @@ router.get('/reports/accounting', requireAuth, requirePermission('attendance.rea
         const tenantIds = await treeOf(req);
         res.status(200).json(await buildAccountingReport(tenantIds, filters, plan, holidays));
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -768,7 +807,7 @@ router.get('/reports/accounting/:employeeId', requireAuth, requirePermission('at
         if (!detail.person) return fail(res, 404, 'Person nicht gefunden.');
         res.status(200).json({ ...detail, plan });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -811,7 +850,7 @@ router.patch('/time-entries/:id', requireAuth, requirePermission('attendance.upd
         });
         res.status(200).json(updated);
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -834,7 +873,7 @@ router.delete('/time-entries/:id', requireAuth, requirePermission('attendance.up
         });
         res.status(204).end();
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -977,7 +1016,7 @@ router.get('/leaves', requireAuth, async (req, res) => {
         });
         res.status(200).json(rows);
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1055,7 +1094,7 @@ router.post('/leaves', requireAuth, async (req, res) => {
 
         res.status(201).json(created);
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1148,7 +1187,7 @@ router.patch('/leaves/:id/decision', requireAuth, async (req, res) => {
 
         return fail(res, 400, 'Dieser Antrag ist bereits abgeschlossen.');
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1189,7 +1228,7 @@ router.get('/leaves/counts', requireAuth, async (req, res) => {
         ]);
         res.status(200).json({ approver, accounting, mine, incoming: approver + accounting });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1201,12 +1240,12 @@ router.get('/me', requireAuth, async (req, res) => {
     try {
         const me = await prisma.employee.findUnique({
             where: { id: req.user!.id },
-            select: { id: true, firstName: true, lastName: true, staffRole: true, workLocation: true, staffNumber: true, qrToken: true },
+            select: { id: true, firstName: true, lastName: true, staffRole: true, workLocation: true, staffNumber: true },
         });
         if (!me) return fail(res, 404, 'Person nicht gefunden.');
         res.status(200).json(me);
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1242,7 +1281,7 @@ router.patch('/staff/:id/role', requireAuth, requireAnyPermission(['employees.up
         });
         res.status(200).json(updated);
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1278,7 +1317,7 @@ router.get('/staff/:id/overview', requireAuth, async (req, res) => {
             select: {
                 id: true, tenantId: true, staffNumber: true, firstName: true, lastName: true,
                 email: true, phone: true, title: true, isActive: true, staffRole: true,
-                workLocation: true, hireDate: true, createdAt: true, qrToken: true,
+                workLocation: true, hireDate: true, createdAt: true,
                 profilePictureUrl: true, roleName: true,
                 employeeRoles: { take: 1, select: { role: { select: { id: true, roleName: true, isSystemAdmin: true } as any } } },
             },
@@ -1396,7 +1435,6 @@ router.get('/staff/:id/overview', requireAuth, async (req, res) => {
                 workLocation: person.workLocation,
                 hireDate: person.hireDate ?? null,
                 createdAt: person.createdAt,
-                qrToken: person.qrToken ?? null,
                 profilePictureUrl: person.profilePictureUrl ?? null,
                 roleId: assignedRole?.id ?? null,
                 roleName: assignedRole?.roleName ?? person.roleName ?? null,
@@ -1473,7 +1511,7 @@ router.get('/staff/:id/overview', requireAuth, async (req, res) => {
                 : null,
         });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1552,7 +1590,7 @@ router.put('/staff/:id/photo', requireAuth, async (req, res) => {
         invalidateStaffDirectory();
         res.status(200).json({ profilePictureUrl: photo, profilePictureThumb: thumb });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
@@ -1601,7 +1639,7 @@ router.get('/photos', requireAuth, async (req, res) => {
         }
         res.status(200).json({ photos });
     } catch (error: any) {
-        fail(res, 400, error.message);
+        fail(res, 400, toPublicMessage(error, 'personnel'));
     }
 });
 
