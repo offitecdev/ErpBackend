@@ -1,25 +1,45 @@
 import { createHash } from 'crypto';
 import { nanoid } from 'nanoid';
 
+import { Prisma } from '@prisma/client';
+
 import prisma from '../../../infrastructure/database/prisma.client';
 import type { TasksActor } from './taskActor';
 import { ACTIVITY } from './taskConstants';
-import { runTasksTransaction } from './taskDb';
+import { runTasksTransaction, type TasksDb } from './taskDb';
 import { logTaskActivity } from './taskActivity';
+import { collectAttachmentRefs, removeStoredFiles } from './taskFiles';
+import { taskBadRequest } from './taskErrors';
 
 /**
  * Every person who can open the tasks module receives one real first task.
  * The deterministic id makes creation idempotent across browsers and concurrent
- * bootstrap/list requests without adding a second onboarding-state table.
+ * bootstrap/list requests.
+ *
+ * Rules for this guide task only (Samet, 14.09.2026):
+ * - no chat room can be created for it or linked to it;
+ * - once completed it is DELETED. `TaskUserSetting.onboardingDoneVersion`
+ *   remembers that, otherwise the next bootstrap would create it again.
  */
 export const TASK_ONBOARDING_VERSION = 'tasks-intro-v1';
+
+const ONBOARDING_TASK_PREFIX = 'tasks-welcome-';
+
+export const isOnboardingTaskId = (taskId: string): boolean => taskId.startsWith(ONBOARDING_TASK_PREFIX);
+
+export const assertNotOnboardingTasks = (taskIds: readonly string[]): void => {
+    const blocked = taskIds.filter(isOnboardingTaskId);
+    if (blocked.length) {
+        throw taskBadRequest('ONBOARDING_TASK_NO_CHAT', 'Für die Einführungsaufgabe gibt es keinen Chat-Raum.', { taskIds: blocked });
+    }
+};
 
 const onboardingTaskId = (actor: Pick<TasksActor, 'tenantId' | 'employeeId'>): string => {
     const owner = createHash('sha256')
         .update(`${TASK_ONBOARDING_VERSION}\0${actor.tenantId}\0${actor.employeeId}`)
         .digest('hex')
         .slice(0, 24);
-    return `tasks-welcome-${owner}`;
+    return `${ONBOARDING_TASK_PREFIX}${owner}`;
 };
 
 export interface TaskOnboardingDto {
@@ -36,6 +56,29 @@ const toDto = (actor: TasksActor, taskId: string, status: string): TaskOnboardin
     guide: actor.isSystemAdmin ? 'admin' : 'member',
 });
 
+const readDoneVersion = async (db: TasksDb, employeeId: string): Promise<string | null> => {
+    const rows = await db.$queryRaw<Array<{ v: string | null }>>(Prisma.sql`
+        SELECT onboardingDoneVersion AS v FROM TaskUserSetting WHERE employeeId = ${employeeId} LIMIT 1
+    `);
+    return rows[0]?.v ?? null;
+};
+
+/** Marks the guide as done and deletes its task (files leave the storage afterwards). */
+const finishAndDelete = async (actor: TasksActor, taskId: string): Promise<void> => {
+    const fileRefs = await runTasksTransaction(async (tx) => {
+        const now = new Date();
+        await tx.$executeRaw(Prisma.sql`
+            INSERT INTO TaskUserSetting (id, employeeId, onboardingDoneVersion, createdAt, updatedAt)
+            VALUES (${nanoid(12)}, ${actor.employeeId}, ${TASK_ONBOARDING_VERSION}, ${now}, ${now})
+            ON DUPLICATE KEY UPDATE onboardingDoneVersion = ${TASK_ONBOARDING_VERSION}, updatedAt = ${now}
+        `);
+        const refs = await collectAttachmentRefs(tx, { tenantId: actor.tenantId, taskId });
+        await tx.task.deleteMany({ where: { id: taskId, tenantId: actor.tenantId, createdById: actor.employeeId } });
+        return refs;
+    });
+    await removeStoredFiles(fileRefs);
+};
+
 const createOnboardingTask = async (actor: TasksActor, taskId: string): Promise<void> => {
     const now = new Date();
     const checklistId = `${taskId}-steps`;
@@ -47,6 +90,8 @@ const createOnboardingTask = async (actor: TasksActor, taskId: string): Promise<
     ];
 
     await runTasksTransaction(async (tx) => {
+        // Finished in a parallel request meanwhile: never bring the task back.
+        if (await readDoneVersion(tx, actor.employeeId) === TASK_ONBOARDING_VERSION) return;
         await tx.task.create({
             data: {
                 id: taskId,
@@ -113,13 +158,22 @@ const createOnboardingTask = async (actor: TasksActor, taskId: string): Promise<
     });
 };
 
-/** Creates the first task lazily for every module user, exactly once per tenant. */
+/** Creates the first task lazily for every module user, until the guide is done. */
 export const ensureTaskOnboarding = async (actor: TasksActor): Promise<TaskOnboardingDto> => {
     const taskId = onboardingTaskId(actor);
-    const existing = await prisma.task.findFirst({
-        where: { id: taskId, tenantId: actor.tenantId, createdById: actor.employeeId },
-        select: { status: true },
-    });
+    const [doneVersion, existing] = await Promise.all([
+        readDoneVersion(prisma, actor.employeeId),
+        prisma.task.findFirst({
+            where: { id: taskId, tenantId: actor.tenantId, createdById: actor.employeeId },
+            select: { status: true },
+        }),
+    ]);
+    if (doneVersion === TASK_ONBOARDING_VERSION && !existing) return toDto(actor, taskId, 'COMPLETED');
+    // Completed by any other path (or before this rule existed): delete it now.
+    if (existing?.status === 'COMPLETED' || (existing && doneVersion === TASK_ONBOARDING_VERSION)) {
+        await finishAndDelete(actor, taskId);
+        return toDto(actor, taskId, 'COMPLETED');
+    }
     if (existing) return toDto(actor, taskId, existing.status);
 
     try {
@@ -137,39 +191,9 @@ export const ensureTaskOnboarding = async (actor: TasksActor): Promise<TaskOnboa
     return toDto(actor, taskId, 'NOT_STARTED');
 };
 
-/** Finishing the walkthrough completes its real task and all tutorial steps. */
+/** Finishing the walkthrough ends the guide: its task is deleted, not kept as completed. */
 export const completeTaskOnboarding = async (actor: TasksActor): Promise<TaskOnboardingDto> => {
     const taskId = onboardingTaskId(actor);
-    await ensureTaskOnboarding(actor);
-    const now = new Date();
-
-    await runTasksTransaction(async (tx) => {
-        const task = await tx.task.findFirst({
-            where: { id: taskId, tenantId: actor.tenantId, createdById: actor.employeeId },
-            select: { status: true },
-        });
-        if (!task || task.status === 'COMPLETED') return;
-        await tx.taskChecklistItem.updateMany({
-            where: { tenantId: actor.tenantId, taskId, done: false },
-            data: { done: true, doneAt: now, doneById: actor.employeeId },
-        });
-        await tx.task.update({
-            where: { id: taskId },
-            data: {
-                status: 'COMPLETED',
-                completedAt: now,
-                approvalState: 'APPROVED',
-                approvalDecidedById: actor.employeeId,
-                approvalDecidedAt: now,
-            },
-            select: { id: true },
-        });
-        await logTaskActivity(tx, actor.tenantId, null, {
-            taskId,
-            type: ACTIVITY.STATUS,
-            meta: { from: task.status, to: 'COMPLETED', system: true, version: TASK_ONBOARDING_VERSION },
-        });
-    });
-
+    await finishAndDelete(actor, taskId);
     return toDto(actor, taskId, 'COMPLETED');
 };

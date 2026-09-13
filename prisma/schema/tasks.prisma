@@ -373,10 +373,12 @@ model TaskNotifyDispatch {
 /// Persönliche Einstellungen im Modul (je Person, firmenübergreifend).
 /// `reminderLeadMinutes`: wie lange vor dem Ende «Teslim yaklaşıyor» kommt
 /// (10 | 30 | 60 | 120).
+/// `onboardingDoneVersion`: guide finished — its task is deleted and must not come back.
 model TaskUserSetting {
-  id                  String   @id
-  employeeId          String   @unique
-  reminderLeadMinutes Int      @default(30)
+  id                    String   @id
+  employeeId            String   @unique
+  reminderLeadMinutes   Int      @default(30)
+  onboardingDoneVersion String?  @db.VarChar(40)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

@@ -17,6 +17,7 @@ import {
     type IncomingTaskFile,
 } from './taskFiles';
 import { notifyTaskPeople, queueTaskNotification } from './taskNotify';
+import { assertNotOnboardingTasks } from './taskOnboarding';
 import {
     assertAssignablePeople,
     getTasksPeople,
@@ -583,6 +584,7 @@ export const createChatRoom = async (actor: TasksActor, input: CreateChatRoomInp
     assertManager(actor);
     const me = actor.employeeId;
     const taskIds = [...new Set(input.taskIds)];
+    assertNotOnboardingTasks(taskIds);
     const [memberIds, taskRows] = await Promise.all([
         assertAssignablePeople(actor.tenantId, input.memberIds.filter((id) => id !== me)),
         loadTenantTasks(actor, taskIds),
@@ -709,6 +711,7 @@ export const removeChatMember = async (actor: TasksActor, roomId: string, employ
 /** Aufgabe verknüpfen (Görevly `Ch.linkTask`); schon verknüpft ⇒ unverändert, ohne Nachricht. */
 export const linkChatTask = async (actor: TasksActor, roomId: string, taskId: string): Promise<RoomDetailDto> => {
     assertManager(actor);
+    assertNotOnboardingTasks([taskId]);
     const [task] = taskId ? await loadTenantTasks(actor, [taskId]) : [];
     if (!task) throw taskBadRequest('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { taskIds: [taskId] });
 
