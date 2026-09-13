@@ -195,7 +195,10 @@ async function main() {
       'maintenance.reports.manage',
       'regie.calls.manage',
       'regie.reports.manage',
-      'workorders.manage'
+      'workorders.manage',
+      'tasks.view',
+      'tasks.manage',
+      'tasks.delete'
 
     ];
 

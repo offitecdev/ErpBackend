@@ -190,9 +190,16 @@ model CalculationItem {
 model Article {
   id                 String    @id
   tenantId           String
+  /// ERP-Code KAT-UNTER-NNNNN (seit 10.09.2026 aus einem Nummernkreis,
+  /// siehe ArticleCodeScheme). Altbestand traegt noch freie Codes.
   articleCode        String
   systemBarcode      String?   @unique
   supplierBarcode    String?
+  /// Modellnummer (freiwillig) — die Rolle des alten Produktcodes: zehn
+  /// Geraete desselben Modells tragen dieselbe Modellnummer.
+  modelNumber        String?   @db.VarChar(120)
+  /// Seriennummer (freiwillig, aber je Mandant eindeutig) — EIN Geraet.
+  serialNumber       String?   @db.VarChar(120)
   name               String
   description        String?   @db.Text
   baseCost           Float     @default(0)
@@ -228,10 +235,17 @@ model Article {
   tenderUsages         TenderMaterialUsage[]
   extraMaterialUsages  ProjectExtraMaterial[]
   variations           ProjectVariation[]
+  /// Weitere Barcodes desselben Artikels (10.09.2026): dasselbe Modell kann
+  /// je Lieferant/Charge ein anderes Etikett tragen — jeder Scan findet ihn.
+  barcodes             ArticleBarcode[]
 
   @@unique([tenantId, articleCode])
+  @@unique([tenantId, serialNumber])
   @@index([tenantId])
   @@index([tenantId, deletedAt, createdAt])
+  // Schnellerfassung: Scan eines Lieferantenbarcodes / Suche nach Modell.
+  @@index([tenantId, supplierBarcode])
+  @@index([tenantId, modelNumber])
   // Ürün/malzeme listesi varsayılan olarak tenant + tip içinde en yeni kaydı açar.
   @@index([tenantId, itemType, deletedAt, createdAt, id])
 }

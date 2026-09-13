@@ -393,6 +393,30 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
             },
         ],
     },
+    {
+        // GÖREVLER (13.09.2026, Vorgabe Samet): ein EIGENES Aufgabenmodul nach
+        // dem Vorbild Görevly — nicht die CRM-Aufgaben unter /crm/tasks. Eine
+        // Zeile, drei Stufen, genau die zwei Sichten des Moduls:
+        //   1 = Teammitglied (nur eigene Aufgaben, eigener Bericht)
+        //   2 = Leitung (alle Aufgaben, Zuweisung, Freigaben, Kişiler, Berichte)
+        //   3 = Leitung mit Löschen
+        key: 'tasks',
+        labelKey: 'nav.tasksModule',
+        catalogKeys: ['tasks'],
+        pages: [
+            {
+                key: 'tasks.workspace',
+                path: '/tasks',
+                labelKey: 'nav.tasksWorkspace',
+                maxLevel: 3,
+                grants: {
+                    read: ['tasks.view'],
+                    write: ['tasks.manage'],
+                    delete: ['tasks.delete'],
+                },
+            },
+        ],
+    },
 ];
 
 export const ALL_PAGES: ReadonlyArray<PageDefinition> = PAGE_MODULES.flatMap((moduleDef) => moduleDef.pages);

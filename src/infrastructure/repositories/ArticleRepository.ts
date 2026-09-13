@@ -266,6 +266,8 @@ export class ArticleRepository implements IArticleRepository {
                     { articleCode: codeOrBarcode },
                     { systemBarcode: codeOrBarcode },
                     { supplierBarcode: codeOrBarcode },
+                    // Seriennummer (10.09.2026): ein Scan der Serie findet das Geraet.
+                    { serialNumber: codeOrBarcode },
                 ]
             }
         });

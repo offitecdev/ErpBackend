@@ -71,6 +71,13 @@ model StockMovement {
   supplierId            String? // Hareketin tedarikçisi (giriş/alış hareketlerinde)
   referenceId           String? // Proje ID, İhale ID veya Üretim Emri ID
   description           String?      @db.Text
+  /// Herkunft der Bewegung (10.09.2026): QUICK_ADD | QUICK_DELETE |
+  /// ORDER_RECEIPT | REPORT | MANUAL. NULL = Altbestand, gilt als MANUAL.
+  origin                String?      @db.VarChar(24)
+  /// Beim Scan-Zugang/-Abgang gelesener Barcode — damit spaeter nachvollziehbar
+  /// ist, welches Geraet kam oder ging.
+  scannedBarcode        String?      @db.VarChar(120)
+  serialNumber          String?      @db.VarChar(120)
 
   article             Article   @relation(fields: [articleId], references: [id])
   sourceLocation      Location? @relation("SourceLocation", fields: [sourceLocationId], references: [id])
@@ -86,6 +93,8 @@ model StockMovement {
   @@index([tenantId, articleId, transactionDate, id])
   // Ürün tedarikçi maliyeti: yalnızca tedarikçili IN hareketlerini tarar.
   @@index([tenantId, articleId, movementType, supplierId])
+  // Lagerbewegungen: Filter nach Herkunft, neueste zuerst.
+  @@index([tenantId, origin, transactionDate])
 }
 
 model PurchaseProposal {
@@ -231,6 +240,13 @@ model PurchaseOrder {
   // soll (Vorgabe Samet, 09.09.2026: «goeze bastiysak PDF'te de goeruenmesin»).
   // NULL = nichts ausgeblendet. Die Werte selbst bleiben in `items` stehen.
   hiddenColumnKeys String?  @db.Text
+  // JSON [{key, name, label, type}] — die SPALTEN DER VORLAGE, mit der die
+  // Bestellung erfasst wurde, in ihrer Reihenfolge (Vorgabe Samet, 11.09.2026:
+  // «tabloda böyleyse PDF'e de böyle aktarılmalı»). Das PDF schreibt die
+  // NAMEN der Vorlage als Spaltentitel («GESAMTMENGE», nicht «Menge») und
+  // stellt die Spalten so auf, wie die Vorlage sie hatte. NULL = alte
+  // Bestellung ohne Schnappschuss: das PDF nimmt seine eigenen Titel.
+  tableColumns    String?   @db.Text
   currency        String    @default("CHF")
   // KDV kipi: LINE = satır başına oran (eski davranış), TOTAL = tek oran genel
   // toplam üzerinden (totalNet + totalFees) — detay popup'ındaki KDV ayarları
@@ -372,4 +388,67 @@ model MeasurementUnit {
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive, sortOrder])
+}
+
+/// CODE-EINSTELLUNGEN (Einstellungen → Module → Lager → Code-Einstellungen,
+/// 10.09.2026). Eine Kategorie ist die erste Stelle des ERP-Codes: «Elektro» =
+/// ELK, «Klima» = KLI. Kein Tenant-Rueckbezug (wie MeasurementUnit).
+model ArticleCodeCategory {
+  id        String   @id
+  tenantId  String
+  /// Kuerzel, 2–4 Grossbuchstaben ohne Umlaute — die erste Stelle des Codes.
+  code      String   @db.VarChar(8)
+  name      String   @db.VarChar(80)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  schemes ArticleCodeScheme[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, sortOrder])
+}
+
+/// Ein NUMMERNKREIS = Unterkategorie innerhalb einer Kategorie: «PLC» in
+/// «Elektro» vergibt ELK-PLC-00001, ELK-PLC-00002 … Die IT bereitet ihn vor
+/// (startNumber); erst nach FREIGABE ueber die IT-Schleuse (isActive) taucht er
+/// in der Schnellerfassung auf. lastNumber = zuletzt vergebene Laufnummer,
+/// wird atomar hochgezaehlt.
+model ArticleCodeScheme {
+  id            String    @id
+  tenantId      String
+  categoryId    String
+  code          String    @db.VarChar(8)
+  name          String    @db.VarChar(80)
+  startNumber   Int       @default(1)
+  lastNumber    Int       @default(0)
+  isActive      Boolean   @default(false)
+  activatedById String?
+  activatedAt   DateTime?
+  sortOrder     Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  category ArticleCodeCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, categoryId, code])
+  @@index([tenantId, isActive])
+  @@index([categoryId])
+}
+
+/// WEITERE BARCODES EINES ARTIKELS (10.09.2026, Nachtrag Samet: «dasselbe
+/// Modell kann verschiedene Barcodes haben»). Article.supplierBarcode bleibt
+/// der erste/haupt Barcode; alles, was die Schnellerfassung danach auf denselben
+/// Artikel bucht, landet hier — ein Barcode gehört im Mandanten genau EINEM Artikel.
+model ArticleBarcode {
+  id        String   @id
+  tenantId  String
+  articleId String
+  barcode   String   @db.VarChar(120)
+  createdAt DateTime @default(now())
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, barcode])
+  @@index([articleId])
 }

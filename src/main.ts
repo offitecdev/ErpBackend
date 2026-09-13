@@ -66,6 +66,8 @@ import settingsGateRoutes from './presentation/routes/settingsGate.routes';
 import reminderSettingsRoutes from './presentation/routes/reminderSettings.routes';
 // Mengeneinheiten des Lagers (Einstellungen -> Module -> Lager -> Einheiten).
 import measurementUnitRoutes from './presentation/routes/measurementUnit.routes';
+// Code-Einstellungen (10.09.2026): Kategorien + Nummernkreise des ERP-Codes.
+import articleCodesRoutes from './presentation/routes/articleCodes.routes';
 // Kalender-Etiketten (Kalender -> Leiste "Etiketten").
 import calendarLabelRoutes from './presentation/routes/calendarLabel.routes';
 import authorizationRoutes from './presentation/routes/authorization.routes';
@@ -79,6 +81,10 @@ import fxRoutes from './presentation/routes/fx.routes';
 import ospRoutes from './presentation/routes/osp.routes';
 import filesRoutes from './presentation/routes/files.routes';
 import dashboardRoutes from './presentation/routes/dashboard.routes';
+// Görevler (13.09.2026): eigenständiges Aufgabenmodul nach dem Vorbild Görevly —
+// Aufgaben, Checklisten, Zeitmessung, Chat, Berichte (routes/tasks/index.ts).
+import tasksModuleRoutes from './presentation/routes/tasks';
+import { startTasksReminderEngine } from './infrastructure/services/tasks/tasksReminderEngine';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { startReminderEngine } from './infrastructure/services/ReminderEngine';
 import { startImapCaptureService } from './infrastructure/services/ImapCaptureService';
@@ -282,11 +288,14 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/settings`, settingsGateRoutes);
     app.use(`${prefix}/settings/reminder-settings`, reminderSettingsRoutes);
     app.use(`${prefix}/settings/units`, measurementUnitRoutes);
+    app.use(`${prefix}/settings/article-codes`, articleCodesRoutes);
     app.use(`${prefix}/calendar/labels`, calendarLabelRoutes);
     app.use(`${prefix}/fx`, fxRoutes);
     app.use(`${prefix}/osp`, ospRoutes);
     app.use(`${prefix}/files`, filesRoutes);
     app.use(`${prefix}/dashboard`, dashboardRoutes);
+    // Görevler-Modul — nicht zu verwechseln mit /crm/tasks (CRM-Aufgaben).
+    app.use(`${prefix}/tasks`, tasksModuleRoutes);
 }
 
 app.use(globalErrorHandler);
@@ -308,6 +317,9 @@ app.listen(PORT, () => {
     console.log(`API Docs  -> http://localhost:${PORT}/backend/api-docs`);
     startMaintenanceReminderService();
     startReminderEngine();
+    // Görevler: Erinnerung, «Termin naht», «überfällig», Checklisten-Erinnerung —
+    // je Person und Termin genau einmal (TaskNotifyDispatch).
+    startTasksReminderEngine();
     startImapCaptureService();
     // Abgelaufene Anmeldezeilen abräumen (entwertete bleiben bis zum Ablauf
     // stehen — nur so ist ein wiedereingespieltes Token erkennbar).

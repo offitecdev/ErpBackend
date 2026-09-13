@@ -51,6 +51,9 @@ const adjustArticleStock = async (tx, opts) => {
             employeeId: opts.employeeId,
             referenceId: opts.referenceId || null,
             description: opts.description || null,
+            // Diese Buchungen kommen aus Rapporten, Nachtraegen und Projekten —
+            // in den Lagerbewegungen die Herkunft «Rapport/Projekt».
+            origin: 'REPORT',
         },
     });
 };

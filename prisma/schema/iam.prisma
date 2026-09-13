@@ -31,6 +31,17 @@ model Tenant {
   checkInQrSecret        String?               @db.VarChar(512)
   checkOutQrSecret       String?               @db.VarChar(512)
   workScheduleJson       Json?
+  /// ŞİRKET ADRESİ (PDF gönderici satırı + QR fatura alacaklısı). Hepsi NULL
+  /// ise şirket, PDF ayarlarındaki ortak adresi basar; doluysa bu şirketin
+  /// HER belgesinde bu adres basılır. Parçalar frontend'deki
+  /// `PdfCompanySettings` ile birebir aynıdır: `addressLine1` sokak/bina,
+  /// `addressLine2` kapı no, `country` ISO-2. Arayüzü yok — şirket adı gibi
+  /// migration ile yazılır (20261003120000_tenant_company_address).
+  addressLine1           String?               @db.VarChar(255)
+  addressLine2           String?               @db.VarChar(64)
+  postalCode             String?               @db.VarChar(16)
+  city                   String?               @db.VarChar(120)
+  country                String?               @db.VarChar(2)
   customers              Customer[]
   employees              Employee[]
   leaveTypes             LeaveType[]

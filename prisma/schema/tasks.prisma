@@ -1,0 +1,382 @@
+/// ── GÖREVLER / TASKS-MODUL (13.09.2026, Vorgabe Samet) ────────────────────────
+///
+/// Ein EIGENSTÄNDIGES Aufgabenmodul nach dem Vorbild «Görevly»: Aufgaben mit
+/// Verantwortlichen, Etiketten, Anfang/Ende, Erinnerung, Inhaltsblöcken samt
+/// Checklisten, Kommentaren, Dateien, Zeitmessung per Start/Pause (KEINE
+/// Handeingabe), Chat-Räumen und reinen PDF-Berichten.
+///
+/// Bewusst OHNE Verbindung zu Projekten, CrmTask oder MaintenanceTask — und
+/// ohne Fremdschlüssel auf Employee: Personen stehen als blosse Kennung in den
+/// Zeilen. Eine gelöschte Person nimmt so weder ihre Zeiten noch ihre
+/// Kommentare mit, und iam.prisma bleibt unberührt.
+///
+/// Jede Zeile trägt die AUSGEWÄHLTE Firma (`req.user.tenantId`) — nie den
+/// Firmenbaum. Personen = Personal genau dieser Firma (getPersonnelTenantScope).
+///
+/// Alle Tabellen haben eine eigene `id`-Spalte: der $extends-Haken in
+/// prisma.client.ts setzt beim Anlegen eine, und ein Modell ohne `id` liesse
+/// ihn mit «Unknown argument id» scheitern.
+
+/// Die Aufgabe selbst. Zustände (`status`):
+///   NOT_STARTED | IN_PROGRESS | REVIEW (Abschluss beantragt) |
+///   PENDING_APPROVAL (von einem Teammitglied angelegt, Leitung prüft) |
+///   COMPLETED | BLOCKED (nicht machbar, mit Grund) | REJECTED (Vorschlag abgelehnt)
+model Task {
+  id                    String    @id
+  tenantId              String
+  title                 String    @db.VarChar(200)
+  /// Klartext — keine Auszeichnung.
+  description           String?   @db.Text
+  status                String    @default("NOT_STARTED") @db.VarChar(24)
+  /// LOW | MEDIUM | HIGH
+  priority              String    @default("MEDIUM") @db.VarChar(8)
+  /// MANAGER | MEMBER — von wem die Aufgabe angelegt wurde
+  origin                String    @default("MANAGER") @db.VarChar(16)
+  flagged               Boolean   @default(false)
+  startAt               DateTime?
+  dueAt                 DateTime?
+  reminderAt            DateTime?
+  completedAt           DateTime?
+  /// Grund bei BLOCKED («Yapılamadı»), Klartext.
+  blockReason           String?   @db.Text
+  /// Abschlussanfrage: NONE | PENDING | APPROVED | REJECTED
+  approvalState         String    @default("NONE") @db.VarChar(16)
+  approvalRequestedById String?
+  approvalRequestedAt   DateTime?
+  approvalNote          String?   @db.Text
+  approvalDecidedById   String?
+  approvalDecidedAt     DateTime?
+  approvalDecisionNote  String?   @db.Text
+  /// Prüfung einer von einem Teammitglied angelegten Aufgabe:
+  /// APPROVED | PENDING | REJECTED (Leitung legt an ⇒ sofort APPROVED)
+  reviewState           String    @default("APPROVED") @db.VarChar(16)
+  reviewRequestedById   String?
+  reviewRequestedAt     DateTime?
+  reviewDecidedById     String?
+  reviewDecidedAt       DateTime?
+  reviewNote            String?   @db.Text
+  /// Löschanfrage einer Nicht-Admin-Person; ein Admin löscht (= bestätigt) oder lehnt ab.
+  deleteRequestedById   String?
+  deleteRequestedAt     DateTime?
+  deleteRequestNote     String?   @db.Text
+  /// Reihenfolge auf der Pano (Kanban), aufsteigend je Statusspalte.
+  boardPosition         Float     @default(0)
+  createdById           String
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  assignees      TaskAssignee[]
+  labelLinks     TaskLabelLink[]
+  content        TaskContent?
+  checklists     TaskChecklist[]
+  checklistItems TaskChecklistItem[]
+  comments       TaskComment[]
+  attachments    TaskAttachment[]
+  sessions       TaskTimeSession[]
+  activities     TaskActivity[]
+  roomLinks      TaskChatRoomTask[]
+
+  @@index([tenantId, status, dueAt])
+  @@index([tenantId, dueAt])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status, boardPosition])
+  @@index([tenantId, createdById])
+  @@index([tenantId, deleteRequestedAt])
+  @@index([reminderAt])
+}
+
+/// Verantwortliche einer Aufgabe (Personal der Firma, ohne Fremdschlüssel).
+model TaskAssignee {
+  id         String   @id
+  tenantId   String
+  taskId     String
+  employeeId String
+  createdAt  DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, employeeId])
+  @@index([tenantId, employeeId])
+}
+
+/// Eigene Etiketten der Firma. Farbe aus einer festen, ruhigen Palette:
+/// gray | blue | green | orange | red | purple
+model TaskLabel {
+  id          String   @id
+  tenantId    String
+  name        String   @db.VarChar(40)
+  color       String   @default("gray") @db.VarChar(12)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  links TaskLabelLink[]
+
+  @@unique([tenantId, name])
+}
+
+model TaskLabelLink {
+  id        String   @id
+  tenantId  String
+  taskId    String
+  labelId   String
+  createdAt DateTime @default(now())
+
+  task  Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  label TaskLabel @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, labelId])
+  @@index([labelId])
+}
+
+/// Der Inhalt (Blockeditor) — 1:1 zur Aufgabe, getrennt von der Aufgabenzeile,
+/// damit keine Liste ihn je mitlädt. `blocks` = [{ id, type, text, meta }];
+/// `text` ist bereinigtes Inline-HTML (<b>, <i>, <u>, <a>…), nie maskiert.
+/// `version` steigt mit jedem Speichern (optimistische Sperre gegen zwei
+/// gleichzeitig Schreibende).
+model TaskContent {
+  id          String   @id
+  tenantId    String
+  taskId      String   @unique
+  blocks      Json
+  version     Int      @default(1)
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+}
+
+/// Eine Checkliste (Gruppe) einer Aufgabe; ein Block `checklist` verweist mit
+/// `meta.groupId` auf sie.
+model TaskChecklist {
+  id          String   @id
+  tenantId    String
+  taskId      String
+  title       String   @db.VarChar(200)
+  position    Int      @default(0)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  task  Task                @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  items TaskChecklistItem[]
+
+  @@index([taskId, position])
+}
+
+/// Ein Punkt einer Checkliste. Keine Zeitmessung auf Punktebene — die Zeit
+/// gehört der Aufgabe. `taskId` steht doppelt, damit Fortschritt und Berichte
+/// ohne Umweg über die Gruppe zählen.
+model TaskChecklistItem {
+  id          String    @id
+  tenantId    String
+  taskId      String
+  checklistId String
+  text        String    @db.VarChar(500)
+  position    Int       @default(0)
+  done        Boolean   @default(false)
+  doneAt      DateTime?
+  doneById    String?
+  assigneeId  String?
+  dueAt       DateTime?
+  reminderAt  DateTime?
+  flagged     Boolean   @default(false)
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  task      Task          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  checklist TaskChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@index([checklistId, position])
+  @@index([taskId, done])
+  @@index([tenantId, doneById, doneAt])
+  @@index([reminderAt])
+}
+
+/// Kommentar zu einer Aufgabe — Klartext, Dateien als TaskAttachment (kind COMMENT).
+model TaskComment {
+  id        String   @id
+  tenantId  String
+  taskId    String
+  authorId  String
+  text      String   @db.Text
+  createdAt DateTime @default(now())
+
+  task        Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  attachments TaskAttachment[]
+
+  @@index([taskId, createdAt])
+}
+
+/// Datei des Moduls. Die Bytes liegen in der Ablage (`local:`/`r2:`-Verweis),
+/// nie in der Datenbank. `kind`:
+///   TASK    — Dateien-Reiter der Aufgabe (auch Bild-/Dateiblöcke verweisen darauf)
+///   COMMENT — an einem Kommentar (taskId ist mitgesetzt)
+///   CHAT    — an einer Chatnachricht (roomId ist mitgesetzt)
+model TaskAttachment {
+  id           String   @id
+  tenantId     String
+  kind         String   @db.VarChar(12)
+  taskId       String?
+  commentId    String?
+  roomId       String?
+  messageId    String?
+  fileName     String   @db.VarChar(255)
+  contentType  String   @db.VarChar(160)
+  sizeBytes    Int
+  fileRef      String   @db.VarChar(512)
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  task    Task?            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  comment TaskComment?     @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  room    TaskChatRoom?    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  message TaskChatMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, kind, createdAt])
+  @@index([commentId])
+  @@index([roomId])
+  @@index([messageId])
+  @@index([tenantId])
+}
+
+/// Eine Arbeitsmessung (Start → Pause). Entsteht NUR über Start/Pause; eine
+/// Handeingabe gibt es nicht. `endedAt`/`durationMs` sind NULL, solange sie
+/// läuft. `runningKey` = employeeId während der Messung, sonst NULL: der
+/// eindeutige Index lässt je Person nur EINE laufende Messung zu — auch über
+/// Firmen hinweg, denn ein Mensch arbeitet nicht an zwei Stellen zugleich.
+model TaskTimeSession {
+  id         String    @id
+  tenantId   String
+  taskId     String
+  employeeId String
+  startedAt  DateTime
+  endedAt    DateTime?
+  durationMs Int?
+  runningKey String?   @unique
+  note       String?   @db.VarChar(255)
+  createdAt  DateTime  @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, employeeId])
+  @@index([tenantId, employeeId, startedAt])
+  @@index([tenantId, startedAt])
+}
+
+/// Verlauf («Geçmiş») einer Aufgabe — nur für die Leitung sichtbar.
+model TaskActivity {
+  id        String   @id
+  tenantId  String
+  taskId    String
+  actorId   String?
+  type      String   @db.VarChar(32)
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+}
+
+/// Chat-Raum. Anlegen, Mitglieder und Aufgabenverknüpfung: nur die Leitung.
+model TaskChatRoom {
+  id            String    @id
+  tenantId      String
+  name          String    @db.VarChar(80)
+  createdById   String?
+  lastMessageAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  members     TaskChatMember[]
+  taskLinks   TaskChatRoomTask[]
+  messages    TaskChatMessage[]
+  attachments TaskAttachment[]
+
+  @@index([tenantId, lastMessageAt])
+}
+
+/// Mitglied eines Raums; `lastReadAt` ist der Lesestand (ungelesen = neuere
+/// Textnachrichten anderer).
+model TaskChatMember {
+  id         String    @id
+  tenantId   String
+  roomId     String
+  employeeId String
+  lastReadAt DateTime?
+  addedById  String?
+  createdAt  DateTime  @default(now())
+
+  room TaskChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, employeeId])
+  @@index([tenantId, employeeId])
+}
+
+model TaskChatRoomTask {
+  id         String   @id
+  tenantId   String
+  roomId     String
+  taskId     String
+  linkedById String?
+  createdAt  DateTime @default(now())
+
+  room TaskChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, taskId])
+  @@index([taskId])
+}
+
+/// Nachricht: TEXT (Person) | SYSTEM (Raum angelegt, Person hinzugefügt …).
+/// `meta` trägt bei SYSTEM das Ereignis und die Beteiligten, damit die
+/// Oberfläche den Satz in der Sprache der Leserin baut; `text` ist nur das
+/// Rückfallnetz.
+model TaskChatMessage {
+  id        String   @id
+  tenantId  String
+  roomId    String
+  type      String   @default("TEXT") @db.VarChar(12)
+  senderId  String?
+  text      String   @db.Text
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  room        TaskChatRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  attachments TaskAttachment[]
+
+  @@index([roomId, createdAt])
+}
+
+/// «Schon ausgelöst»-Marken der Erinnerungsschleife: je (Art, Ziel, Person,
+/// Termin) genau EINE Meldung. Der Termin steht im Schlüssel — wird er
+/// verschoben, ist die Erinnerung von selbst wieder scharf.
+/// `kind`: REMINDER | DUE_SOON | OVERDUE | CHECK_REMINDER
+model TaskNotifyDispatch {
+  id          String   @id @db.VarChar(64)
+  tenantId    String   @db.VarChar(64)
+  kind        String   @db.VarChar(24)
+  targetId    String   @db.VarChar(64)
+  recipientId String   @db.VarChar(64)
+  dueAt       DateTime
+  batch       String   @db.VarChar(32)
+  firedAt     DateTime @default(now())
+
+  @@unique([kind, targetId, recipientId, dueAt])
+  @@index([batch])
+  @@index([firedAt])
+}
+
+/// Persönliche Einstellungen im Modul (je Person, firmenübergreifend).
+/// `reminderLeadMinutes`: wie lange vor dem Ende «Teslim yaklaşıyor» kommt
+/// (10 | 30 | 60 | 120).
+model TaskUserSetting {
+  id                  String   @id
+  employeeId          String   @unique
+  reminderLeadMinutes Int      @default(30)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}

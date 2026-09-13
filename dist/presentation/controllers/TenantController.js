@@ -39,6 +39,11 @@ class TenantController {
                     tenant.createdAt,
                     tenant.moduleProfileId,
                     tenant.companyNumber,
+                    tenant.addressLine1,
+                    tenant.addressLine2,
+                    tenant.postalCode,
+                    tenant.city,
+                    tenant.country,
                     profile.id AS profileId,
                     profile.profileNumber,
                     profile.name AS profileName,
@@ -72,6 +77,15 @@ class TenantController {
                     createdAt: row.createdAt,
                     moduleProfileId: row.moduleProfileId,
                     companyNumber: row.companyNumber,
+                    // Eigene Absenderadresse für die PDFs; null = die gemeinsame
+                    // aus den PDF-Einstellungen (pdfSettingsStore im Frontend).
+                    companyAddress: row.addressLine1 || row.city ? {
+                        addressLine1: row.addressLine1 || '',
+                        addressLine2: row.addressLine2 || '',
+                        postalCode: row.postalCode || '',
+                        city: row.city || '',
+                        country: row.country || '',
+                    } : null,
                     moduleProfile: row.profileId ? {
                         id: row.profileId,
                         profileNumber: Number(row.profileNumber || 0),

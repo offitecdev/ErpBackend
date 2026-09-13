@@ -31,6 +31,8 @@ import { normalizeRichText } from '../../shared/richText';
 // Mengeneinheiten: der Artikel traegt den kurzen Code als Text, gewaehlt wird
 // aber aus der Liste des Mandanten (Einstellungen -> Module -> Lager).
 import { listUnits, resolveUnit } from '../../application/services/measurementUnitCatalog';
+// ERP-Codes aus den Nummernkreisen der Code-Einstellungen (10.09.2026).
+import { issueCodes } from '../../application/services/articleCodeCatalog';
 import { nanoid } from 'nanoid';
 import { getMailTenantId } from "../controllers/serviceTenantScope";
 import { purchaseOrderImportRouter } from './purchaseOrderImport.routes';
@@ -437,6 +439,10 @@ const buildArticleDetail = async (tenantId: string, id: string) => {
             itemType: true,
             imageUrl: true,
             updatedAt: true,
+            modelNumber: true,
+            serialNumber: true,
+            supplierBarcode: true,
+            systemBarcode: true,
             stockBalances: { select: { currentQuantity: true } },
         },
     });
@@ -447,6 +453,12 @@ const buildArticleDetail = async (tenantId: string, id: string) => {
         articleCode: article.articleCode,
         name: article.name,
         unit: article.unit,
+        // Reihenfolge im Detail (10.09.2026): ERP-Code, Bezeichnung,
+        // Modellnummer, Seriennummer, Barcode.
+        modelNumber: article.modelNumber ?? null,
+        serialNumber: article.serialNumber ?? null,
+        supplierBarcode: article.supplierBarcode ?? null,
+        systemBarcode: article.systemBarcode ?? null,
         description: article.description,
         salePrice: article.salePrice ?? 0,
         itemType: article.itemType ?? 'PRODUCT',
@@ -647,6 +659,24 @@ router.patch(
                 const name = String(body.name).trim();
                 if (!name) return res.status(400).json({ error: 'Ürün adı zorunludur.' });
                 data.name = name;
+            }
+
+            // Modellnummer, Seriennummer, Lieferantenbarcode (10.09.2026) — alle
+            // freiwillig; die Seriennummer ist je Mandant eindeutig.
+            if (body.modelNumber !== undefined) data.modelNumber = readTag(body.modelNumber);
+            if (body.supplierBarcode !== undefined) data.supplierBarcode = readTag(body.supplierBarcode);
+            if (body.serialNumber !== undefined) {
+                const serialNumber = readTag(body.serialNumber);
+                if (serialNumber) {
+                    const owner = await (prisma as any).article.findFirst({
+                        where: { tenantId, serialNumber, NOT: { id } },
+                        select: { articleCode: true },
+                    });
+                    if (owner) {
+                        return res.status(409).json({ error: `Die Seriennummer «${serialNumber}» trägt schon der Artikel ${owner.articleCode}.`, code: 'SERIAL_TAKEN' });
+                    }
+                }
+                data.serialNumber = serialNumber;
             }
 
             if (body.unit !== undefined) {
@@ -1287,6 +1317,9 @@ router.get(
                         { articleCode: { contains: q } },
                         { systemBarcode: { contains: q } },
                         { supplierBarcode: { contains: q } },
+                        // Modell und Serie (10.09.2026): die Schnellerfassung sucht den Zwilling auch darüber.
+                        { modelNumber: { contains: q } },
+                        { serialNumber: { contains: q } },
                     ],
                 },
                 take: 12,
@@ -1299,6 +1332,8 @@ router.get(
                 code: a.articleCode,
                 name: a.name,
                 barcode: a.systemBarcode || a.supplierBarcode || null,
+                modelNumber: a.modelNumber || null,
+                serialNumber: a.serialNumber || null,
                 unit: a.unit,
                 salePrice: a.salePrice ?? 0,
                 baseCost: a.baseCost ?? 0,
@@ -1549,6 +1584,9 @@ router.get(
             const name = toStr(req.query.name);
             const description = toStr(req.query.description);
             const type = toStr(req.query.type).toUpperCase();
+            // Herkunft (10.09.2026): QUICK_ADD | QUICK_DELETE | ORDER_RECEIPT |
+            // REPORT | MANUAL. Altbestand ohne Herkunft zaehlt als MANUAL.
+            const origin = toStr(req.query.origin).toUpperCase();
             // Ürün detayındaki "bu ürünün hareketleri" görünümü — tek ürüne daraltır.
             const articleId = toStr(req.query.articleId);
 
@@ -1566,9 +1604,17 @@ router.get(
             if (articleId) and.push({ articleId });
             if (search) {
                 and.push({
+                    // EIN Suchfeld ueber ERP-Code, Bezeichnung, Modell, Serie und
+                    // Barcode (Artikel wie Bewegung) — Vorgabe 10.09.2026.
                     OR: [
                         { article: { articleCode: { contains: search } } },
                         { article: { name: { contains: search } } },
+                        { article: { modelNumber: { contains: search } } },
+                        { article: { serialNumber: { contains: search } } },
+                        { article: { supplierBarcode: { contains: search } } },
+                        { article: { systemBarcode: { contains: search } } },
+                        { scannedBarcode: { contains: search } },
+                        { serialNumber: { contains: search } },
                         { description: { contains: search } },
                         { supplier: { companyName: { contains: search } } },
                     ],
@@ -1580,6 +1626,8 @@ router.get(
             if (type === 'DEFINITION') and.push({ movementType: 'IN', quantity: 0 });
             else if (type === 'IN') and.push({ movementType: 'IN', quantity: { gt: 0 } });
             else if (type) and.push({ movementType: type });
+            if (origin === 'MANUAL') and.push({ OR: [{ origin: null }, { origin: 'MANUAL' }] });
+            else if (origin) and.push({ origin });
             if (dateFrom) and.push({ transactionDate: { gte: dateFrom } });
             if (dateTo) and.push({ transactionDate: { lte: dateTo } });
 
@@ -1599,10 +1647,16 @@ router.get(
                         quantity: true,
                         unitCost: true,
                         description: true,
+                        origin: true,
+                        scannedBarcode: true,
+                        serialNumber: true,
                         ...(!articleId ? {
-                            article: { select: { articleCode: true, name: true } },
+                            article: { select: { articleCode: true, name: true, modelNumber: true, serialNumber: true, supplierBarcode: true, systemBarcode: true } },
                         } : {}),
                         supplier: { select: { companyName: true } },
+                        employee: { select: { firstName: true, lastName: true } },
+                        sourceLocation: { select: { locationName: true } },
+                        destinationLocation: { select: { locationName: true } },
                     },
                     orderBy: [{ transactionDate: 'desc' }, { id: 'desc' }],
                     skip: (page - 1) * pageSize,
@@ -1621,8 +1675,14 @@ router.get(
                     unitCost: row.unitCost,
                     totalCost: Number(row.quantity || 0) * Number(row.unitCost || 0),
                     description: row.description,
+                    origin: row.origin || 'MANUAL',
+                    scannedBarcode: row.scannedBarcode,
+                    serialNumber: row.serialNumber,
                     ...(!articleId ? { article: row.article } : {}),
                     supplier: row.supplier,
+                    employee: row.employee,
+                    // Das Lager, das die Bewegung betrifft: Ziel beim Zugang, Quelle beim Abgang.
+                    location: row.destinationLocation?.locationName || row.sourceLocation?.locationName || null,
                 })),
                 total,
                 page,
@@ -1703,8 +1763,27 @@ const rowWriteFailure = (error: any): { code: string; message: string } => {
     if (error?.code === 'P2000' || /too long for the column/i.test(raw)) {
         return { code: 'VALUE_TOO_LONG', message: column ? `Alan sütun sınırını aşıyor: ${column}.` : 'Bir alan sütun sınırını aşıyor.' };
     }
-    if (error?.code === 'P2002') return { code: 'CODE_TAKEN', message: 'Bu kod zaten bir üründe kayıtlı.' };
+    if (error?.code === 'P2002') {
+        // Zwei eindeutige Schluessel: der ERP-Code und (seit 10.09.2026) die
+        // Seriennummer. Der Zielname sagt, welcher getroffen wurde.
+        const target = String(error?.meta?.target ?? raw);
+        if (/serialNumber/i.test(target)) return { code: 'SERIAL_TAKEN', message: 'Diese Seriennummer trägt schon ein anderer Artikel.' };
+        return { code: 'CODE_TAKEN', message: 'Bu kod zaten bir üründe kayıtlı.' };
+    }
     return { code: 'WRITE_FAILED', message: 'Satır yazılamadı.' };
+};
+
+/** Herkunft einer Lagerbewegung — nur diese Werte kommen in die Spalte. */
+const MOVEMENT_ORIGINS = ['QUICK_ADD', 'QUICK_DELETE', 'ORDER_RECEIPT', 'REPORT', 'MANUAL'] as const;
+type MovementOrigin = typeof MOVEMENT_ORIGINS[number];
+const readOrigin = (value: unknown, fallback: MovementOrigin = 'MANUAL'): MovementOrigin => {
+    const raw = String(value ?? '').toUpperCase();
+    return (MOVEMENT_ORIGINS as readonly string[]).includes(raw) ? raw as MovementOrigin : fallback;
+};
+/** Freiwillige Kennung (Modell, Serie, Barcode): getrimmt, begrenzt, leer = null. */
+const readTag = (value: unknown, max = 120): string | null => {
+    const text = String(value ?? '').trim().slice(0, max);
+    return text || null;
 };
 
 /**
@@ -1723,7 +1802,7 @@ type BulkArticlesOutcome = { status: number; body: any };
  * lesen und bei einer Nummernkollision mit frischen Nummern nachsetzen kann,
  * statt die Antwort schon auf dem Draht zu haben.
  */
-const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boolean } = {}): Promise<BulkArticlesOutcome> => {
+const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boolean; origin?: MovementOrigin } = {}): Promise<BulkArticlesOutcome> => {
         try {
             const tenantId = req.user!.tenantId;
             const employeeId = req.user!.id;
@@ -1755,12 +1834,24 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                     }
                 }
             });
+            // Seriennummern sind je Mandant eindeutig: doppelte in der Ladung und
+            // schon vergebene fallen als Zeilenfehler, bevor etwas geschrieben wird.
+            const seenSerials = new Map<string, number>();
+            items.forEach((item, index) => {
+                const serial = readTag(item?.serialNumber);
+                if (!serial) return;
+                if (seenSerials.has(serial)) {
+                    errors.push({ index, articleCode: String(item.articleCode || '').trim(), error: 'Dieselbe Seriennummer steht mehrfach in der Liste.', code: 'DUPLICATE_IN_FILE' });
+                } else {
+                    seenSerials.set(serial, index);
+                }
+            });
             const duplicateIndexes = new Set(errors.map((e) => e.index));
 
             // Birbirinden bağımsız hazırlık sorguları aynı anda çalışır. Uzak DB'de
             // bunları art arda beklemek toplu kayda gereksiz üç ağ turu ekliyordu.
             const supplierCache: SupplierCache = new Map();
-            const [existing, defaultLocation, invalidSupplierIds, units] = await Promise.all([
+            const [existing, defaultLocation, invalidSupplierIds, units, serialOwners] = await Promise.all([
                 (prisma as any).article.findMany({
                     where: { tenantId, articleCode: { in: [...seenCodes.keys()] } },
                     select: { id: true, articleCode: true, deletedAt: true, itemType: true },
@@ -1770,7 +1861,17 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                 // Die Einheitenliste des Mandanten: sie gibt die Schreibweise vor
                 // und liefert die Vorgabe fuer Zeilen ohne eigene Einheit.
                 listUnits(tenantId),
+                seenSerials.size
+                    ? (prisma as any).article.findMany({
+                        where: { tenantId, serialNumber: { in: [...seenSerials.keys()] } },
+                        select: { articleCode: true, serialNumber: true },
+                    })
+                    : Promise.resolve([]),
             ]);
+            const serialTakenBy = new Map<string, string>(
+                (serialOwners as any[]).map((row) => [String(row.serialNumber), String(row.articleCode)]),
+            );
+            const movementOrigin: MovementOrigin = options.origin ?? 'MANUAL';
             const existingCodes = new Map<string, { id: string; deleted: boolean; itemType: string }>(
                 existing.map((row: any) => [row.articleCode, { id: row.id, deleted: Boolean(row.deletedAt), itemType: row.itemType || 'PRODUCT' }]),
             );
@@ -1824,6 +1925,14 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                     if (!name) throw new Error('Ürün adı zorunludur.');
                     const clash = existingCodes.get(articleCode);
                     if (clash && !overwrite) throw rowError('CODE_TAKEN', clashMessage(clash));
+                    // Modell, Serie, Lieferantenbarcode (10.09.2026) — alle freiwillig.
+                    const modelNumber = readTag(item.modelNumber);
+                    const serialNumber = readTag(item.serialNumber);
+                    const supplierBarcode = readTag(item.supplierBarcode ?? item.barcode);
+                    const serialOwner = serialNumber ? serialTakenBy.get(serialNumber) : undefined;
+                    if (serialOwner && serialOwner !== articleCode) {
+                        throw rowError('SERIAL_TAKEN', `Die Seriennummer «${serialNumber}» trägt schon der Artikel ${serialOwner}.`);
+                    }
                     // IT içe aktarımında miktar tartışmaya kapalıdır: 0.
                     const quantity = options.forceZeroStock ? 0 : Math.max(0, Number(item.quantity) || 0);
                     const purchasePrice = Math.max(0, Number(item.purchasePrice) || 0);
@@ -1857,6 +1966,9 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                                 ...(supplier ? { defaultSupplierId: supplier.id } : {}),
                                 ...(description ? { description } : {}),
                                 ...(imageUrl ? { imageUrl } : {}),
+                                ...(modelNumber ? { modelNumber } : {}),
+                                ...(serialNumber ? { serialNumber } : {}),
+                                ...(supplierBarcode ? { supplierBarcode } : {}),
                                 deletedAt: null,
                                 isActive: true,
                                 status: 'ACTIVE',
@@ -1884,6 +1996,9 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                         defaultSupplierId: supplier?.id || null,
                         ...(description ? { description } : {}),
                         ...(imageUrl ? { imageUrl } : {}),
+                        modelNumber,
+                        serialNumber,
+                        supplierBarcode,
                         itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType,
                         status: 'ACTIVE',
                         isActive: true,
@@ -1915,6 +2030,11 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                         // `item.description` artık ürün KARTININ açıklamasıdır (biçimli
                         // metin) — hareket notuna sızdırılmaz.
                         description: quantity > 0 ? 'Toplu ürün girişi' : 'Ürün tanımı',
+                        // Herkunft + gescannte Kennungen (10.09.2026): die
+                        // Lagerbewegungen filtern danach.
+                        origin: movementOrigin,
+                        scannedBarcode: supplierBarcode,
+                        serialNumber,
                     });
 
                     if (supplier) {
@@ -2055,69 +2175,37 @@ const bulkCreateArticlesHandler = (options: { forceZeroStock?: boolean } = {}) =
         res.status(outcome.status).json(outcome.body);
     };
 
-/* ═══════════════ SCHNELLERFASSUNG (02.09.2026) ═══════════════════════════
-   Vorgabe Samet: «Produktcodes soll das System selbst vergeben, nicht der
-   Anwender.» Die Schnellerfassung (Foto → Texterkennung → Name antippen →
-   Menge) kennt darum KEIN Codefeld: jede Zeile bekommt hier die nächste freie
-   Nummer des Mandanten und läuft dann durch DENSELBEN Rumpf wie die Tabelle
-   und der Excel-Import (Artikel + Bestand + Bewegung + Partie in einem Zug).
-   Der Tabellenweg (`/articles/bulk`) bleibt unverändert: dort ist der Code
-   weiterhin Pflicht — die Nummernvergabe gilt nur hier.
+/* ═══════════════ SCHNELLERFASSUNG (10.09.2026) ═══════════════════════════
+   Vorgabe Samet: Der Wareneingang läuft im Normalfall über die
+   Schnellerfassung. Kategorie → Unterkategorie → Modus, dann je Gerät:
+   Barcode (Kamera oder Handscanner), Modellnummer, Seriennummer, Bezeichnung.
+   Jeder Speichervorgang ist EIN Stück; Codes vergibt das System aus dem
+   gewählten, von der IT FREIGEGEBENEN Nummernkreis (ELK-PLC-00001, …).
 
-   Die Nummer: `ART-00001`, `ART-00002`, … je Mandant, fünfstellig aufgefüllt
-   (wächst darüber hinaus weiter). Gezählt wird über ALLE Karten des Mandanten,
-   auch die im Papierkorb — der eindeutige Schlüssel (tenantId, articleCode)
-   kennt keinen Papierkorb, und eine wiederverwendete Nummer würde dort
-   anstossen. Gleichzeitige Erfassungen können dieselbe Nummer ziehen; dann
-   meldet der Rumpf `CODE_TAKEN` für die Zeile, und die Route setzt für genau
-   diese Zeilen mit frischen Nummern nach (bis zu drei Versuche), bevor sie
-   den Fehler weiterreicht. */
-const QUICK_CODE_PREFIX = 'ART-';
-const QUICK_CODE_DIGITS = 5;
+   Die Foto-/Texterkennungs-Fassung vom 02.09.2026 (Nummern `ART-NNNNN` je
+   Mandant) ist damit abgelöst: es gibt kein Foto und kein OCR-Viereck mehr.
+   Die Zeile läuft weiterhin durch DENSELBEN Rumpf wie Tabelle und Import
+   (Artikel + Bestand + Bewegung + Partie in einem Zug); der Tabellenweg
+   (`/articles/bulk`) bleibt unverändert — dort ist der Code Pflicht.
+
+   Gleichzeitige Erfassungen können nicht dieselbe Nummer ziehen (die
+   Reservierung im Kreis ist atomar); trifft eine gezogene Nummer dennoch auf
+   einen importierten Altcode, meldet der Rumpf `CODE_TAKEN`, und die Route
+   setzt für genau diese Zeilen mit frischen Nummern nach (bis dreimal). */
 const QUICK_MAX_ITEMS = 50;
-
-/** Die höchste vergebene laufende Nummer des Mandanten (0 = noch keine). */
-const highestQuickCodeNumber = async (tenantId: string): Promise<number> => {
-    const pattern = '^' + QUICK_CODE_PREFIX + '[0-9]+$';
-    const rows: Array<{ maxNo: bigint | number | null }> = await (prisma as any).$queryRaw`
-        SELECT MAX(CAST(SUBSTRING(articleCode, ${QUICK_CODE_PREFIX.length + 1}) AS UNSIGNED)) AS maxNo
-        FROM Article
-        WHERE tenantId = ${tenantId}
-          AND articleCode REGEXP ${pattern}
-    `;
-    const value = rows[0]?.maxNo;
-    return value === null || value === undefined ? 0 : Number(value);
-};
-
-const formatQuickCode = (n: number): string => `${QUICK_CODE_PREFIX}${String(n).padStart(QUICK_CODE_DIGITS, '0')}`;
-
-/**
- * `count` frische Nummern ab der nächsten freien. `skip` sind Nummern, die in
- * diesem Aufruf schon vergeben wurden (zweiter Versuch nach einer Kollision).
- */
-const nextQuickCodes = async (tenantId: string, count: number, skip: ReadonlySet<string> = new Set()): Promise<string[]> => {
-    let n = await highestQuickCodeNumber(tenantId);
-    const codes: string[] = [];
-    while (codes.length < count) {
-        n += 1;
-        const code = formatQuickCode(n);
-        if (!skip.has(code)) codes.push(code);
-    }
-    return codes;
-};
 
 /**
  * @swagger
  * /inventory/articles/quick:
  *   post:
  *     tags: [Inventory]
- *     summary: Schnellerfassung — neue Produkte OHNE Codeeingabe (Nummer vergibt das System)
+ *     summary: Schnellerfassung — neue Artikel mit ERP-Code aus einem freigegebenen Nummernkreis
  *     description: >
- *       Für die Foto-/Texterkennungs-Erfassung auf Tablet und Telefon. Jede
- *       Zeile braucht nur einen Namen und eine Menge; der Produktcode wird
- *       als `ART-NNNNN` je Mandant fortlaufend vergeben. Danach läuft die Zeile
- *       durch denselben Rumpf wie `/inventory/articles/bulk` (Artikel, Bestand,
- *       Eingangsbewegung, Partie). Antwortform wie dort.
+ *       Jede Zeile braucht den Nummernkreis (`schemeId`) und eine Bezeichnung;
+ *       Modellnummer, Seriennummer und Barcode sind freiwillig. Die Menge ist
+ *       1, wenn nichts anderes angegeben ist (ein Scan = ein Stück). Der
+ *       ERP-Code `KAT-UNTER-NNNNN` wird aus dem Kreis gezogen und in
+ *       `created[].articleCode` zurückgemeldet. Antwortform wie `/articles/bulk`.
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -2127,17 +2215,24 @@ const nextQuickCodes = async (tenantId: string, count: number, skip: ReadonlySet
  *           schema:
  *             type: object
  *             properties:
+ *               schemeId: { type: string, description: "Freigegebener Nummernkreis (ArticleCodeScheme)" }
  *               items:
  *                 type: array
  *                 items:
  *                   type: object
  *                   properties:
  *                     name: { type: string }
- *                     quantity: { type: number, description: "Eingangsmenge; 0 = nur Definition" }
+ *                     modelNumber: { type: string, nullable: true }
+ *                     serialNumber: { type: string, nullable: true, description: "je Mandant eindeutig" }
+ *                     barcode: { type: string, nullable: true, description: "gescannter Lieferantenbarcode" }
+ *                     quantity: { type: number, description: "Standard 1; 0 = nur Definition" }
  *                     unit: { type: string, nullable: true }
  *                     purchasePrice: { type: number, nullable: true }
  *                     salePrice: { type: number, nullable: true }
- *                     imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... (max. 2 MB)" }
+ *                     supplierId: { type: string, nullable: true }
+ *                     supplierName: { type: string, nullable: true }
+ *                     description: { type: string, nullable: true }
+ *                     imageUrl: { type: string, nullable: true }
  */
 router.post(
     '/articles/quick',
@@ -2146,6 +2241,8 @@ router.post(
     async (req: any, res: any) => {
         try {
             const tenantId = req.user!.tenantId;
+            const schemeId = String(req.body?.schemeId ?? '').trim();
+            if (!schemeId) return res.status(400).json({ error: 'Bitte zuerst Kategorie und Unterkategorie wählen.', code: 'SCHEME_REQUIRED' });
             const rawItems: any[] = Array.isArray(req.body.items) ? req.body.items : [];
             if (!rawItems.length) return res.status(400).json({ error: 'Eklenecek satır yok.' });
             if (rawItems.length > QUICK_MAX_ITEMS) return res.status(400).json({ error: `Tek seferde en fazla ${QUICK_MAX_ITEMS} satır eklenebilir.` });
@@ -2154,26 +2251,36 @@ router.post(
             // weder `overwrite` noch fremde Codes in den Rumpf schmuggeln.
             const items = rawItems.map((item) => ({
                 name: String(item?.name ?? '').trim(),
-                quantity: Math.max(0, Number(item?.quantity) || 0),
+                quantity: item?.quantity === undefined || item?.quantity === null || item?.quantity === ''
+                    ? 1
+                    : Math.max(0, Number(item.quantity) || 0),
                 unit: item?.unit ? String(item.unit) : null,
                 purchasePrice: Math.max(0, Number(item?.purchasePrice) || 0),
                 salePrice: Math.max(0, Number(item?.salePrice) || 0),
                 supplierId: item?.supplierId ? String(item.supplierId) : null,
                 supplierName: item?.supplierName ? String(item.supplierName) : null,
+                description: typeof item?.description === 'string' && item.description ? item.description : null,
                 imageUrl: typeof item?.imageUrl === 'string' && item.imageUrl ? item.imageUrl : null,
+                modelNumber: readTag(item?.modelNumber),
+                serialNumber: readTag(item?.serialNumber),
+                supplierBarcode: readTag(item?.barcode ?? item?.supplierBarcode),
                 articleCode: '',
             }));
 
-            const codes = await nextQuickCodes(tenantId, items.length);
-            items.forEach((item, index) => { item.articleCode = codes[index]!; });
-            const issued = new Set<string>(codes);
+            let issue;
+            try {
+                issue = await issueCodes(tenantId, schemeId, items.length);
+            } catch (error: any) {
+                return res.status(error?.status || 400).json({ error: error.message, ...(error?.code ? { code: error.code } : {}) });
+            }
+            items.forEach((item, index) => { item.articleCode = issue.codes[index]!; });
 
             // Der Rumpf liest nur `user` und `body` — mehr wird ihm auch nicht
             // gereicht: so kann keine Angabe aus dem echten Aufruf (etwa
             // `overwrite`) an der Prüfung oben vorbei in ihn hineinlaufen.
             const runFor = (subset: typeof items) => runBulkCreateArticles(
                 { user: req.user, body: { items: subset, itemType: 'PRODUCT' } },
-                {},
+                { origin: 'QUICK_ADD' },
             );
 
             const first = await runFor(items);
@@ -2183,8 +2290,8 @@ router.post(
                 return res.status(first.status).json(first.body);
             }
 
-            // Kollision (jemand hat zwischenzeitlich dieselbe Nummer gezogen):
-            // nur die betroffenen Zeilen mit neuen Nummern noch einmal.
+            // Kollision mit einem importierten Altcode: nur die betroffenen
+            // Zeilen mit frischen Nummern noch einmal.
             for (let attempt = 0; attempt < 3; attempt += 1) {
                 const clashed = errors.filter((e) => e?.code === 'CODE_TAKEN');
                 if (!clashed.length) break;
@@ -2192,11 +2299,9 @@ router.post(
                     .map((e) => Number(e.index))
                     .filter((i) => Number.isInteger(i) && i >= 0 && i < items.length);
                 if (!retryIndexes.length) break;
-                const fresh = await nextQuickCodes(tenantId, retryIndexes.length, issued);
+                const fresh = await issueCodes(tenantId, schemeId, retryIndexes.length);
                 const subset = retryIndexes.map((originalIndex, k) => {
-                    const code = fresh[k]!;
-                    issued.add(code);
-                    items[originalIndex]!.articleCode = code;
+                    items[originalIndex]!.articleCode = fresh.codes[k]!;
                     return items[originalIndex]!;
                 });
                 const retry = await runFor(subset);
@@ -2225,6 +2330,199 @@ router.post(
                 created,
                 errors,
             });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    },
+);
+
+/**
+ * @swagger
+ * /inventory/articles/scan-lookup:
+ *   get:
+ *     tags: [Inventory]
+ *     summary: Schnellerfassung — den gescannten Code einem Artikel zuordnen
+ *     description: >
+ *       Genauer Treffer auf Lieferantenbarcode, Systembarcode, Seriennummer oder
+ *       ERP-Code (in dieser Reihenfolge). Antwortet `{found:false}` statt 404,
+ *       damit die Schnellerfassung ohne Fehlerpfad zur Neuanlage weitergeht.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: code
+ *         required: true
+ *         schema: { type: string }
+ */
+router.get(
+    '/articles/scan-lookup',
+    requireAuth,
+    requirePermission('inventory.view'),
+    async (req: any, res: any) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const code = String(req.query.code ?? '').trim();
+            if (!code) return res.status(400).json({ error: 'Kein Code erhalten.' });
+
+            const rows: any[] = await (prisma as any).article.findMany({
+                where: {
+                    tenantId,
+                    deletedAt: null,
+                    OR: [
+                        { supplierBarcode: code },
+                        { systemBarcode: code },
+                        { serialNumber: code },
+                        { articleCode: code },
+                        // Mancher Lieferant druckt die Modellnummer als Barcode.
+                        { modelNumber: code },
+                        // Weitere Etiketten desselben Artikels (ArticleBarcode).
+                        { barcodes: { some: { barcode: code } } },
+                    ],
+                },
+                select: {
+                    id: true, articleCode: true, name: true, unit: true,
+                    modelNumber: true, serialNumber: true, supplierBarcode: true, systemBarcode: true,
+                    stockBalances: { select: { currentQuantity: true } },
+                },
+                take: 4,
+            });
+            if (!rows.length) return res.status(200).json({ found: false });
+
+            // Bei mehreren Treffern gewinnt die genaueste Kennung: Serie vor
+            // Barcode vor ERP-Code.
+            const rank = (row: any) => (row.serialNumber === code ? 0 : row.supplierBarcode === code || row.systemBarcode === code ? 1 : 2);
+            rows.sort((a, b) => rank(a) - rank(b));
+            const hit = rows[0];
+            const matchedBy = hit.serialNumber === code ? 'serial' : hit.supplierBarcode === code || hit.systemBarcode === code ? 'barcode' : 'code';
+            return res.status(200).json({
+                found: true,
+                matchedBy,
+                article: {
+                    id: hit.id,
+                    articleCode: hit.articleCode,
+                    name: hit.name,
+                    unit: hit.unit,
+                    modelNumber: hit.modelNumber,
+                    serialNumber: hit.serialNumber,
+                    supplierBarcode: hit.supplierBarcode,
+                    systemBarcode: hit.systemBarcode,
+                    totalQuantity: hit.stockBalances.reduce((sum: number, b: any) => sum + (Number(b.currentQuantity) || 0), 0),
+                },
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    },
+);
+
+/**
+ * @swagger
+ * /inventory/articles/{id}/barcodes:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Schnellerfassung — einen weiteren Barcode an einen vorhandenen Artikel heften
+ *     description: >
+ *       Dasselbe Modell kann je Lieferant oder Charge ein anderes Etikett
+ *       tragen. Hat der Artikel noch keinen Lieferantenbarcode, wird dieser
+ *       sein Hauptbarcode; sonst kommt er als weiterer Barcode dazu. Ein
+ *       Barcode gehört im Mandanten genau einem Artikel (409, wenn vergeben).
+ *       Wer Bestand buchen darf, darf das — es ist Teil des Scan-Zugangs.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/articles/:id/barcodes',
+    requireAuth,
+    requireAnyPermission(['inventory.transfer', 'inventory.articles.update']),
+    async (req: any, res: any) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const id = String(req.params.id);
+            const barcode = readTag(req.body?.barcode);
+            if (!barcode) return res.status(400).json({ error: 'Kein Barcode erhalten.' });
+            const article = await (prisma as any).article.findFirst({
+                where: { id, tenantId, deletedAt: null },
+                select: { id: true, supplierBarcode: true, systemBarcode: true },
+            });
+            if (!article) return res.status(404).json({ error: 'Ürün bulunamadı.' });
+            if (article.supplierBarcode === barcode || article.systemBarcode === barcode) {
+                return res.status(200).json({ ok: true, primary: true });
+            }
+            // Gehört das Etikett schon einem anderen Artikel?
+            const owner = await (prisma as any).article.findFirst({
+                where: { tenantId, deletedAt: null, NOT: { id }, OR: [{ supplierBarcode: barcode }, { systemBarcode: barcode }, { barcodes: { some: { barcode } } }] },
+                select: { articleCode: true },
+            });
+            if (owner) return res.status(409).json({ error: `Dieser Barcode gehört schon zu ${owner.articleCode}.`, code: 'BARCODE_TAKEN' });
+
+            if (!article.supplierBarcode) {
+                await (prisma as any).article.update({ where: { id }, data: { supplierBarcode: barcode } });
+                return res.status(200).json({ ok: true, primary: true });
+            }
+            await (prisma as any).articleBarcode.upsert({
+                where: { tenantId_barcode: { tenantId, barcode } },
+                update: {},
+                create: { id: nanoid(12), tenantId, articleId: id, barcode },
+            });
+            return res.status(200).json({ ok: true, primary: false });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    },
+);
+
+/**
+ * Ein SYSTEMBARCODE für einen Artikel ohne Barcode — nur auf Knopfdruck aus
+ * den Artikeldetails, nie automatisch (Vorgabe 10.09.2026). Form: EAN-13 mit
+ * Präfix 20 (Bereich für den internen Gebrauch), zehn Ziffern aus der Zeit
+ * und dem Zufall, Prüfziffer. Der Schlüssel ist global eindeutig; ein
+ * Zusammenstoss ist praktisch ausgeschlossen, wird aber trotzdem noch einmal
+ * gezogen.
+ */
+const ean13CheckDigit = (twelve: string): string => {
+    let sum = 0;
+    for (let i = 0; i < 12; i += 1) sum += Number(twelve[i]) * (i % 2 === 0 ? 1 : 3);
+    return String((10 - (sum % 10)) % 10);
+};
+const newSystemBarcode = (): string => {
+    const stamp = String(Date.now()).slice(-7);
+    const random = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+    const twelve = `20${stamp}${random}`;
+    return twelve + ean13CheckDigit(twelve);
+};
+
+/**
+ * @swagger
+ * /inventory/articles/{id}/barcode:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Systembarcode erzeugen (nur für Artikel ohne Systembarcode, nur auf Knopfdruck)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+    '/articles/:id/barcode',
+    requireAuth,
+    requirePermission('inventory.articles.update'),
+    async (req: any, res: any) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const id = String(req.params.id);
+            const article = await (prisma as any).article.findFirst({ where: { id, tenantId, deletedAt: null }, select: { systemBarcode: true } });
+            if (!article) return res.status(404).json({ error: 'Ürün bulunamadı.' });
+            if (article.systemBarcode) return res.status(409).json({ error: 'Dieser Artikel hat schon einen Systembarcode.', code: 'BARCODE_EXISTS' });
+
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+                const candidate = newSystemBarcode();
+                try {
+                    await (prisma as any).article.update({ where: { id }, data: { systemBarcode: candidate } });
+                    const detail = await buildArticleDetail(tenantId, id);
+                    return res.status(200).json(detail);
+                } catch (error: any) {
+                    if (error?.code !== 'P2002') throw error;
+                }
+            }
+            return res.status(500).json({ error: 'Es konnte kein freier Barcode gefunden werden.' });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -2493,7 +2791,7 @@ router.post(
                                 ...(requestedCodes.length ? [{ articleCode: { in: requestedCodes } }] : []),
                             ],
                         },
-                        select: { id: true, articleCode: true, criticalStockLevel: true },
+                        select: { id: true, articleCode: true, criticalStockLevel: true, serialNumber: true },
                     })
                     : Promise.resolve([]),
             ]) as [any, Set<string>, any[]];
@@ -2562,6 +2860,11 @@ router.post(
                         supplierId: supplier?.id || null,
                         referenceId: item.referenceId ? String(item.referenceId) : null,
                         description: item.description ? String(item.description).trim() : null,
+                        // Herkunft und gescannte Kennungen (Schnellerfassung 10.09.2026);
+                        // von Hand gebuchte Zeilen bleiben MANUAL.
+                        origin: readOrigin(item.origin),
+                        scannedBarcode: readTag(item.scannedBarcode),
+                        serialNumber: readTag(item.serialNumber) ?? article.serialNumber ?? null,
                     });
 
                     deltaByArticle.set(article.id, pending + (movementType === 'OUT' ? -quantity : quantity));
@@ -3151,7 +3454,8 @@ const poPercent = (value: unknown): number => {
  *     wird, weiss dann noch, wie ihre Spalten heissen — auch wenn die Vorlage
  *     inzwischen umbenannt oder gelöscht wurde.
  */
-const PO_MAX_EXTRAS = 5;
+// Zwoelf freie Spalten je Vorlage (11.09.2026) — so viele darf eine Position tragen.
+const PO_MAX_EXTRAS = 12;
 
 const normalizePurchaseOrderExtras = (raw: unknown) => {
     if (!Array.isArray(raw)) return [];
@@ -3388,7 +3692,12 @@ const parsePurchaseOrderRow = (row: any) => {
     let hiddenColumnKeys: string[] = [];
     try { hiddenColumnKeys = JSON.parse(row.hiddenColumnKeys || '[]'); } catch { hiddenColumnKeys = []; }
     if (!Array.isArray(hiddenColumnKeys)) hiddenColumnKeys = [];
-    return { ...row, items, additionalFees, hiddenColumnKeys, itemCount: items.length };
+    // Der Schnappschuss der Vorlagenspalten: NULL (alte Bestellung) bleibt null,
+    // damit das PDF weiss, dass es keine Vorlage gab.
+    let tableColumns: any[] | null = null;
+    try { tableColumns = row.tableColumns ? JSON.parse(row.tableColumns) : null; } catch { tableColumns = null; }
+    if (!Array.isArray(tableColumns) || !tableColumns.length) tableColumns = null;
+    return { ...row, items, additionalFees, hiddenColumnKeys, tableColumns, itemCount: items.length };
 };
 
 /**
@@ -3577,6 +3886,33 @@ const poHiddenColumnKeys = (value: unknown): string | null => {
         .filter((key, index, list) => /^[a-zA-Z][a-zA-Z0-9]{0,15}$/.test(key) && list.indexOf(key) === index)
         .slice(0, PO_HIDDEN_COLUMNS_MAX);
     return keys.length ? JSON.stringify(keys) : null;
+};
+
+/**
+ * Die SPALTEN DER VORLAGE, mit der die Bestellung erfasst wurde — Schluessel,
+ * Name, Zuordnung und Typ, in der Reihenfolge der Vorlage (Vorgabe Samet,
+ * 11.09.2026: «tabloda böyleyse PDF'e de böyle aktarılmalı»). Das PDF wird
+ * spaeter ohne die Vorlage gebaut und schreibt diese Namen als Spaltentitel.
+ * Dieselbe Reinigung wie bei den eigenen Angaben; ungueltige Eintraege fallen
+ * weg, gespeichert wird ein JSON-Array oder NULL.
+ */
+const PO_TABLE_COLUMNS_MAX = 13;
+const PO_TABLE_LABELS = new Set(['productName', 'quantity', 'grossPrice', 'netPrice', 'discount', 'discount2', 'total']);
+const poTableColumns = (value: unknown): string | null => {
+    if (!Array.isArray(value)) return null;
+    const seen = new Set<string>();
+    const columns: Array<{ key: string; name: string; label: string | null; type: 'text' | 'number' }> = [];
+    for (const entry of value) {
+        const key = String((entry as any)?.key ?? '').trim();
+        const name = String((entry as any)?.name ?? '').trim().replace(/\s+/g, ' ').slice(0, 60);
+        if (!/^[a-zA-Z][a-zA-Z0-9]{0,15}$/.test(key) || !name || seen.has(key)) continue;
+        const rawLabel = (entry as any)?.label;
+        const label = typeof rawLabel === 'string' && PO_TABLE_LABELS.has(rawLabel) ? rawLabel : null;
+        seen.add(key);
+        columns.push({ key, name, label, type: (entry as any)?.type === 'number' ? 'number' : 'text' });
+        if (columns.length >= PO_TABLE_COLUMNS_MAX) break;
+    }
+    return columns.length ? JSON.stringify(columns) : null;
 };
 
 const PO_COVER_LETTER_MAX = 4000;
@@ -3796,6 +4132,7 @@ router.post(
                 recipientName: string | null;
                 coverLetter: string | null;
                 hiddenColumnKeys: string | null;
+                tableColumns: string | null;
                 currency: string;
                 status: string;
                 vatMode: string;
@@ -3836,6 +4173,9 @@ router.post(
                     // Was die Vorlage ausgeblendet hatte, faehrt mit — das PDF
                     // braucht es spaeter ohne die Vorlage.
                     hiddenColumnKeys: poHiddenColumnKeys(raw?.hiddenColumnKeys),
+                    // Die Spalten der Vorlage (Name + Reihenfolge) fahren mit —
+                    // das PDF traegt spaeter genau diese Titel.
+                    tableColumns: poTableColumns(raw?.tableColumns),
                     currency: raw?.currency ? String(raw.currency) : 'CHF',
                     status: requestedStatus,
                     ...vat,
@@ -3873,6 +4213,7 @@ router.post(
                                 recipientName: order.recipientName,
                                 coverLetter: order.coverLetter,
                                 hiddenColumnKeys: order.hiddenColumnKeys,
+                                tableColumns: order.tableColumns,
                                 status: order.status,
                                 vatMode: order.vatMode,
                                 orderVatRate: order.orderVatRate,
@@ -3960,6 +4301,11 @@ router.patch(
             // darum kein «güncellendi», keine neue Revision.
             if (b.hiddenColumnKeys !== undefined) {
                 data.hiddenColumnKeys = poHiddenColumnKeys(b.hiddenColumnKeys);
+            }
+            // Ebenso der Schnappschuss der Vorlagenspalten (Titel + Reihenfolge
+            // im PDF): Kopf, nicht Inhalt.
+            if (b.tableColumns !== undefined) {
+                data.tableColumns = poTableColumns(b.tableColumns);
             }
             const vatChanged = b.vatMode !== undefined || b.orderVatRate !== undefined || b.orderVatCountry !== undefined;
             const wantsContentChange = b.items !== undefined || b.currency !== undefined
@@ -4295,6 +4641,8 @@ router.post(
                     destinationLocationId: defaultLocation.id,
                     employeeId,
                     supplierId,
+                    // Herkunft: Wareneingang aus einer Lieferantenbestellung.
+                    origin: 'ORDER_RECEIPT',
                     // Hareket dökümünde siparişin parçası olarak görünür.
                     referenceId: existing.id,
                     // AÇIKLAMA = YALNIZCA TEDARİKÇİ ADI (kullanıcı isteği

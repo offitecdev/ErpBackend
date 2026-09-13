@@ -1,0 +1,525 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.deleteChecklistItem = exports.moveChecklistItem = exports.toggleChecklistItem = exports.updateChecklistItem = exports.addChecklistItem = exports.clearDoneItems = exports.checkAllItems = exports.deleteChecklist = exports.renameChecklist = exports.addChecklist = void 0;
+const client_1 = require("@prisma/client");
+const nanoid_1 = require("nanoid");
+const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const contentService_1 = require("./contentService");
+const taskAccess_1 = require("./taskAccess");
+const taskActivity_1 = require("./taskActivity");
+const taskConstants_1 = require("./taskConstants");
+const taskDb_1 = require("./taskDb");
+const taskErrors_1 = require("./taskErrors");
+const taskNotify_1 = require("./taskNotify");
+const taskParts_1 = require("./taskParts");
+const taskPeople_1 = require("./taskPeople");
+const taskRows_1 = require("./taskRows");
+/**
+ * ── CHECKLISTEN (Görevly services/checklist.js, ui/components/checklist.js) ─
+ *
+ * Eine Aufgabe hat beliebig viele Checklisten mit Punkten. Punkte haben KEINE
+ * Zeitmessung — die Zeit gehört der Aufgabe; sie zählen für den Fortschritt
+ * («5/8 madde») und die Bitiş-Prognose. Jede Handlung verlangt, dass die Person
+ * den Inhalt der Aufgabe bearbeiten darf (canEditContent).
+ *
+ * Reihenfolge: `position` aufsteigend, bei Gleichstand `createdAt`. Einfügen
+ * und Verschieben sperren die Aufgabenzeile, zwei gleichzeitige Griffe in
+ * dieselbe Liste laufen also nacheinander. Teilen sich Punkte trotzdem eine
+ * Position, nummeriert das nächste Verschieben die Liste 0…n−1 durch.
+ *
+ * Person eines Punkts: Personal der Firma mit Modulzugang. Steht sie nicht auf
+ * der Aufgabe, nimmt die Leitung sie dazu (Verlauf ASSIGNED + Meldung); ein
+ * Teammitglied darf nur Verantwortliche der Aufgabe wählen.
+ */
+/** Titel einer neuen Checkliste — wortgleich zu Görevly. */
+const CHECKLIST_SELECT = {
+    id: true,
+    taskId: true,
+    title: true,
+    position: true,
+    createdById: true,
+    createdAt: true,
+};
+/** Ein Punkt samt der Aufgabe, zu der er gehört. */
+const OWNED_ITEM_SELECT = { ...taskParts_1.CHECKLIST_ITEM_SELECT, taskId: true };
+/** Anzeigereihenfolge wie loadTaskChecklists; die Kennung entscheidet den letzten Gleichstand. */
+const ITEM_ORDER = [
+    { position: 'asc' },
+    { createdAt: 'asc' },
+    { id: 'asc' },
+];
+const checklistNotFound = () => (0, taskErrors_1.taskNotFound)('CHECKLIST_NOT_FOUND', 'Checkliste nicht gefunden.');
+const itemNotFound = () => (0, taskErrors_1.taskNotFound)('CHECKLIST_ITEM_NOT_FOUND', 'Checklistenpunkt nicht gefunden.');
+/* ── Laden und Ausgeben ─────────────────────────────────────────────────── */
+const toChecklistDto = (list, items) => {
+    const dtos = items.map(taskParts_1.toChecklistItemDto);
+    return {
+        id: list.id,
+        title: list.title,
+        position: list.position,
+        createdById: list.createdById,
+        createdAt: list.createdAt,
+        progress: { done: dtos.filter((item) => item.done).length, total: dtos.length },
+        items: dtos,
+    };
+};
+const loadChecklistItems = (db, tenantId, checklistId) => db.taskChecklistItem.findMany({ where: { tenantId, checklistId }, select: taskParts_1.CHECKLIST_ITEM_SELECT, orderBy: ITEM_ORDER });
+const loadChecklistWithProgress = async (tenantId, list) => {
+    const [items, progress] = await Promise.all([
+        loadChecklistItems(prisma_client_1.default, tenantId, list.id),
+        (0, taskParts_1.loadTaskProgress)(prisma_client_1.default, tenantId, list.taskId),
+    ]);
+    return { checklist: toChecklistDto(list, items), progress };
+};
+/** Checkliste der Firma, deren Aufgabe die Person inhaltlich bearbeiten darf. */
+const requireEditableChecklist = async (actor, checklistId) => {
+    const list = await prisma_client_1.default.taskChecklist.findFirst({
+        where: { id: checklistId, tenantId: actor.tenantId },
+        select: CHECKLIST_SELECT,
+    });
+    if (!list)
+        throw checklistNotFound();
+    const { core } = await (0, contentService_1.requireContentEditableTask)(actor, list.taskId);
+    return { list, core };
+};
+/** Checklistenpunkt der Firma, dessen Aufgabe die Person inhaltlich bearbeiten darf. */
+const requireEditableItem = async (actor, itemId) => {
+    const item = await prisma_client_1.default.taskChecklistItem.findFirst({
+        where: { id: itemId, tenantId: actor.tenantId },
+        select: OWNED_ITEM_SELECT,
+    });
+    if (!item)
+        throw itemNotFound();
+    const { core } = await (0, contentService_1.requireContentEditableTask)(actor, item.taskId);
+    return { item, core };
+};
+/* ── Person eines Punkts ────────────────────────────────────────────────── */
+/**
+ * Prüft die Person eines Punkts (Firma + Modulzugang). Zurück kommt sie nur,
+ * wenn sie erst auf die Aufgabe genommen werden muss — das darf die Leitung.
+ */
+const assigneeJoiningTask = async (actor, core, assigneeId) => {
+    if (!assigneeId)
+        return null;
+    await (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, [assigneeId]);
+    if (core.assigneeIds.includes(assigneeId))
+        return null;
+    if (!actor.isManager) {
+        throw (0, taskErrors_1.taskBadRequest)('ITEM_ASSIGNEE_NOT_ON_TASK', 'Einen Punkt können Sie nur Verantwortlichen dieser Aufgabe zuteilen.', { employeeId: assigneeId });
+    }
+    return assigneeId;
+};
+/**
+ * Nimmt eine Person als Verantwortliche auf; der Aufrufer hält die Sperre der
+ * Aufgabenzeile. Zurück kommt die neue Liste — null, wenn die Person
+ * inzwischen schon darauf stand (dann weder Verlauf noch Meldung).
+ */
+const joinTaskAssignees = async (tx, actor, taskId, employeeId) => {
+    const { count } = await tx.taskAssignee.createMany({
+        data: [{ id: (0, nanoid_1.nanoid)(12), tenantId: actor.tenantId, taskId, employeeId }],
+        skipDuplicates: true,
+    });
+    if (!count)
+        return null;
+    await (0, taskActivity_1.logTaskActivity)(tx, actor.tenantId, actor.employeeId, { taskId, type: taskConstants_1.ACTIVITY.ASSIGNED, meta: { employeeId } });
+    const rows = await tx.taskAssignee.findMany({
+        where: { tenantId: actor.tenantId, taskId },
+        select: { employeeId: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return rows.map((row) => row.employeeId);
+};
+/** TASKS_ASSIGNED an die Person, die über einen Punkt auf die Aufgabe kam — die Antwort wartet nicht darauf. */
+const queueAssignedNotification = (actor, core, employeeId, itemId) => {
+    void (0, taskPeople_1.loadPersonName)(actor.employeeId)
+        .catch((error) => {
+        console.warn('[tasks.checklist] Name für die Zuweisungsmeldung nicht lesbar', error);
+        return '';
+    })
+        .then((actorName) => (0, taskNotify_1.queueTaskNotification)({
+        tenantId: actor.tenantId,
+        type: taskConstants_1.NOTIFY.ASSIGNED,
+        recipientIds: [employeeId],
+        actorId: actor.employeeId,
+        title: 'Neue Aufgabe',
+        message: `${actorName} hat Ihnen «${core.title}» zugewiesen.`,
+        linkUrl: (0, taskConstants_1.taskLinkUrl)(core.id),
+        params: { actor: actorName, title: core.title },
+        meta: { taskId: core.id, itemId },
+    }));
+};
+const rawPosition = (value) => value === null || value === undefined ? null : (0, taskRows_1.rawNumber)(value);
+/**
+ * Wohin ein neuer Punkt kommt — unter der Sperre in EINER Anweisung: die
+ * höchste Position der Liste und die des Vorgängers. Steht der Vorgänger nicht
+ * in dieser Liste, hängt der Punkt wie in Görevly hinten an.
+ * null = die Checkliste ist inzwischen gelöscht.
+ */
+const readItemSlot = async (tx, tenantId, checklistId, afterItemId) => {
+    const afterPosition = afterItemId
+        ? client_1.Prisma.sql `(SELECT i.position FROM TaskChecklistItem i WHERE i.checklistId = c.id AND i.id = ${afterItemId})`
+        : client_1.Prisma.sql `NULL`;
+    const rows = await tx.$queryRaw(client_1.Prisma.sql `
+        SELECT (SELECT MAX(i.position) FROM TaskChecklistItem i WHERE i.checklistId = c.id) AS maxPosition,
+               ${afterPosition} AS afterPosition
+        FROM TaskChecklist c
+        WHERE c.id = ${checklistId} AND c.tenantId = ${tenantId}
+    `);
+    const row = rows[0];
+    return row ? { maxPosition: rawPosition(row.maxPosition), afterPosition: rawPosition(row.afterPosition) } : null;
+};
+/**
+ * Reihenfolge nach einem Schritt nach oben oder unten (Görevly moveItem). Ohne
+ * Gleichstand tauschen genau zwei Punkte ihre Positionen; teilen sich Punkte
+ * eine Position, wird die Liste 0…n−1 durchnummeriert. Am Rand bleibt alles.
+ */
+const reorderItems = (rows, itemId, direction) => {
+    const from = rows.findIndex((row) => row.id === itemId);
+    const to = direction === 'up' ? from - 1 : from + 1;
+    const moving = rows[from];
+    const neighbour = rows[to];
+    if (!moving || !neighbour)
+        return [...rows];
+    const ordered = [...rows];
+    ordered[from] = neighbour;
+    ordered[to] = moving;
+    const collided = rows.some((row, index) => index > 0 && row.position === rows[index - 1]?.position);
+    if (collided)
+        return ordered.map((row, index) => ({ ...row, position: index }));
+    return ordered.map((row) => {
+        if (row.id === moving.id)
+            return { ...row, position: neighbour.position };
+        if (row.id === neighbour.id)
+            return { ...row, position: moving.position };
+        return row;
+    });
+};
+/** Neue Positionen mehrerer Punkte in EINER Anweisung. */
+const writeItemPositions = async (tx, tenantId, rows) => {
+    if (!rows.length)
+        return;
+    const cases = client_1.Prisma.join(rows.map((row) => client_1.Prisma.sql `WHEN ${row.id} THEN ${row.position}`), ' ');
+    await tx.$executeRaw(client_1.Prisma.sql `
+        UPDATE TaskChecklistItem
+        SET position = CASE id ${cases} END, updatedAt = NOW(3)
+        WHERE tenantId = ${tenantId} AND id IN (${client_1.Prisma.join(rows.map((row) => row.id))})
+    `);
+};
+/* ── Checklisten ────────────────────────────────────────────────────────── */
+/** POST /:taskId/checklists — neue Checkliste, auf Wunsch gleich mit ihrem Block im Inhalt. */
+const addChecklist = async (actor, taskId, input) => {
+    await (0, contentService_1.requireContentEditableTask)(actor, taskId);
+    // Kein Vorgabetitel: leer bleibt leer, die Oberfläche zeigt einen Platzhalter.
+    const title = input.title ?? '';
+    return (0, taskDb_1.runTasksTransaction)(async (tx) => {
+        if (!(await (0, taskRows_1.lockTaskRow)(tx, actor.tenantId, taskId)))
+            throw (0, taskErrors_1.taskNotFound)();
+        const { _max: highest } = await tx.taskChecklist.aggregate({
+            where: { tenantId: actor.tenantId, taskId },
+            _max: { position: true },
+        });
+        const list = {
+            id: (0, nanoid_1.nanoid)(12),
+            taskId,
+            title,
+            position: (highest.position ?? -1) + 1,
+            createdById: actor.employeeId,
+            createdAt: new Date(),
+        };
+        // createMany: MySQL kennt kein RETURNING — create läse die bekannte Zeile ein zweites Mal.
+        await tx.taskChecklist.createMany({ data: [{ ...list, tenantId: actor.tenantId }] });
+        await (0, taskActivity_1.logTaskActivity)(tx, actor.tenantId, actor.employeeId, { taskId, type: taskConstants_1.ACTIVITY.CHECKLIST_ADD, meta: { title } });
+        const checklist = toChecklistDto(list, []);
+        if (!input.appendBlock)
+            return { checklist };
+        const base = await (0, contentService_1.lockTaskContent)(tx, actor.tenantId, taskId);
+        const blocks = (0, contentService_1.insertChecklistBlock)(base.blocks, list.id, input.afterBlockId);
+        (0, contentService_1.assertContentSize)(blocks);
+        return { checklist, content: await (0, contentService_1.writeTaskContent)(tx, actor, taskId, base, blocks) };
+    });
+};
+exports.addChecklist = addChecklist;
+/** PATCH /checklists/:checklistId — Titel ändern (ohne Verlauf, wie Görevly). */
+const renameChecklist = async (actor, checklistId, title) => {
+    const { list } = await requireEditableChecklist(actor, checklistId);
+    const [{ count }, items] = await Promise.all([
+        prisma_client_1.default.taskChecklist.updateMany({ where: { id: list.id, tenantId: actor.tenantId }, data: { title } }),
+        loadChecklistItems(prisma_client_1.default, actor.tenantId, list.id),
+    ]);
+    if (!count)
+        throw checklistNotFound();
+    return { checklist: toChecklistDto({ ...list, title }, items) };
+};
+exports.renameChecklist = renameChecklist;
+/**
+ * DELETE /checklists/:checklistId — die Liste (ihre Punkte per Kaskade) und
+ * ihre Blöcke im Inhalt verschwinden in EINER Transaktion.
+ */
+const deleteChecklist = async (actor, checklistId) => {
+    const { list } = await requireEditableChecklist(actor, checklistId);
+    const content = await (0, taskDb_1.runTasksTransaction)(async (tx) => {
+        if (!(await (0, taskRows_1.lockTaskRow)(tx, actor.tenantId, list.taskId)))
+            throw (0, taskErrors_1.taskNotFound)();
+        await tx.taskChecklist.deleteMany({ where: { id: list.id, tenantId: actor.tenantId } });
+        const base = await (0, contentService_1.lockTaskContent)(tx, actor.tenantId, list.taskId);
+        const blocks = (0, contentService_1.removeChecklistBlocks)(base.blocks, list.id);
+        // Die Version steigt nur, wenn wirklich ein Block wegfiel — sonst müsste jede offene Bearbeitung neu laden.
+        return blocks.length === base.blocks.length ? base : (0, contentService_1.writeTaskContent)(tx, actor, list.taskId, base, blocks);
+    });
+    return { content, progress: await (0, taskParts_1.loadTaskProgress)(prisma_client_1.default, actor.tenantId, list.taskId) };
+};
+exports.deleteChecklist = deleteChecklist;
+/** POST /checklists/:checklistId/check-all — alle offenen Punkte abhaken, je Punkt ein Verlaufseintrag. */
+const checkAllItems = async (actor, checklistId) => {
+    const { list } = await requireEditableChecklist(actor, checklistId);
+    await (0, taskDb_1.runTasksTransaction)(async (tx) => {
+        // Gesperrt gelesen: ein gleichzeitiges Abhaken wartet, und der Verlauf nennt nur, was HIER wechselte.
+        const open = await tx.$queryRaw(client_1.Prisma.sql `
+            SELECT id, text
+            FROM TaskChecklistItem
+            WHERE checklistId = ${list.id} AND tenantId = ${actor.tenantId} AND done = 0
+            ORDER BY position, createdAt, id
+            FOR UPDATE
+        `);
+        if (!open.length)
+            return;
+        await tx.taskChecklistItem.updateMany({
+            where: { tenantId: actor.tenantId, id: { in: open.map((row) => row.id) } },
+            data: { done: true, doneAt: new Date(), doneById: actor.employeeId },
+        });
+        await (0, taskActivity_1.logTaskActivities)(tx, actor.tenantId, actor.employeeId, open.map((row) => ({
+            taskId: list.taskId,
+            type: taskConstants_1.ACTIVITY.CHECK_DONE,
+            meta: { text: row.text },
+        })));
+    });
+    return loadChecklistWithProgress(actor.tenantId, list);
+};
+exports.checkAllItems = checkAllItems;
+/** POST /checklists/:checklistId/clear-done — erledigte Punkte entfernen (ohne Verlauf, wie Görevly). */
+const clearDoneItems = async (actor, checklistId) => {
+    const { list } = await requireEditableChecklist(actor, checklistId);
+    await prisma_client_1.default.taskChecklistItem.deleteMany({ where: { tenantId: actor.tenantId, checklistId: list.id, done: true } });
+    return loadChecklistWithProgress(actor.tenantId, list);
+};
+exports.clearDoneItems = clearDoneItems;
+/* ── Punkte ─────────────────────────────────────────────────────────────── */
+/** POST /checklists/:checklistId/items — neuer Punkt hinter `afterItemId` oder am Ende. */
+/**
+ * SCHNELLWEG «Madde ekle» am Listenende (13.09.2026, Samet: «maddeler çok yavaş
+ * ekleniyor»). Vorher 8 Rundreisen zur entfernten DB (Liste, Aufgabe, BEGIN,
+ * Sperre, Platz, INSERT, COMMIT, Fortschritt) ≈ 250–380 ms. Jetzt zwei:
+ *   1. parallel: Liste · Aufgabe (über die Liste) · Fortschritt vorher
+ *   2. EIN INSERT … SELECT, das die nächste Position selbst berechnet
+ * Ohne Transaktion: die Anweisung ist atomar; eine seltene doppelte Position
+ * bei gleichzeitigem Anfügen heilt reorderItems (nummeriert bei Gleichstand neu).
+ * Einfügen MITTEN in der Liste oder mit Person geht weiter den gesperrten Weg.
+ */
+const appendChecklistItemFast = async (actor, checklistId, input) => {
+    const [list, core, before] = await Promise.all([
+        prisma_client_1.default.taskChecklist.findFirst({ where: { id: checklistId, tenantId: actor.tenantId }, select: CHECKLIST_SELECT }),
+        (0, taskRows_1.fetchTaskCores)(prisma_client_1.default, {
+            where: client_1.Prisma.sql `t.tenantId = ${actor.tenantId} AND t.id = (SELECT c.taskId FROM TaskChecklist c WHERE c.id = ${checklistId} AND c.tenantId = ${actor.tenantId})`,
+            limit: 1,
+        }).then((rows) => rows[0] ?? null),
+        prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+            SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN i.done = 1 THEN 1 ELSE 0 END), 0) AS doneCount,
+                   (SELECT MAX(m.position) FROM TaskChecklistItem m WHERE m.checklistId = ${checklistId}) AS maxPosition
+            FROM TaskChecklistItem i
+            WHERE i.tenantId = ${actor.tenantId}
+              AND i.taskId = (SELECT c.taskId FROM TaskChecklist c WHERE c.id = ${checklistId} AND c.tenantId = ${actor.tenantId})
+        `),
+    ]);
+    if (!list || !core)
+        throw checklistNotFound();
+    const permissions = (0, taskAccess_1.taskPermissions)(actor, core);
+    if (!permissions.canSee)
+        throw (0, taskErrors_1.taskForbidden)('TASK_FORBIDDEN', 'Diese Aufgabe ist für Sie nicht sichtbar.');
+    if (!permissions.canEditContent) {
+        throw (0, taskErrors_1.taskForbidden)('CONTENT_EDIT_FORBIDDEN', 'Den Inhalt dieser Aufgabe dürfen Sie nicht bearbeiten.');
+    }
+    const id = input.id ?? (0, nanoid_1.nanoid)(12);
+    const now = new Date();
+    const dueAt = input.dueAt ?? null;
+    const reminderAt = input.reminderAt ?? null;
+    const flagged = input.flagged ?? false;
+    const inserted = await prisma_client_1.default.$executeRaw(client_1.Prisma.sql `
+        INSERT INTO TaskChecklistItem
+            (id, tenantId, taskId, checklistId, text, position, done, assigneeId, dueAt, reminderAt, flagged, createdById, createdAt, updatedAt)
+        SELECT ${id}, c.tenantId, c.taskId, c.id, ${input.text},
+               COALESCE((SELECT MAX(i.position) FROM TaskChecklistItem i WHERE i.checklistId = c.id), -1) + 1,
+               0, NULL, ${dueAt}, ${reminderAt}, ${flagged}, ${actor.employeeId}, ${now}, ${now}
+        FROM TaskChecklist c
+        WHERE c.id = ${list.id} AND c.tenantId = ${actor.tenantId}
+    `);
+    if (!inserted)
+        throw checklistNotFound();
+    const row = {
+        id,
+        checklistId: list.id,
+        text: input.text,
+        // Stand vor dem INSERT + 1 — die DB rechnet dieselbe Zahl im INSERT selbst.
+        position: before[0]?.maxPosition == null ? 0 : (0, taskRows_1.rawNumber)(before[0].maxPosition) + 1,
+        done: false,
+        doneAt: null,
+        doneById: null,
+        assigneeId: null,
+        dueAt,
+        reminderAt,
+        flagged,
+        createdById: actor.employeeId,
+        createdAt: now,
+    };
+    const progressRow = before[0];
+    return {
+        item: (0, taskParts_1.toChecklistItemDto)(row),
+        progress: { done: Number(progressRow?.doneCount ?? 0), total: Number(progressRow?.total ?? 0) + 1 },
+    };
+};
+const addChecklistItem = async (actor, checklistId, input) => {
+    const assigneeId = input.assigneeId ?? null;
+    if (!assigneeId && !input.afterItemId)
+        return appendChecklistItemFast(actor, checklistId, input);
+    const { list, core } = await requireEditableChecklist(actor, checklistId);
+    const joiningId = await assigneeJoiningTask(actor, core, assigneeId);
+    const { row, assigneeIds } = await (0, taskDb_1.runTasksTransaction)(async (tx) => {
+        if (!(await (0, taskRows_1.lockTaskRow)(tx, actor.tenantId, core.id)))
+            throw (0, taskErrors_1.taskNotFound)();
+        const slot = await readItemSlot(tx, actor.tenantId, list.id, input.afterItemId ?? null);
+        if (!slot)
+            throw checklistNotFound();
+        if (slot.afterPosition !== null) {
+            await tx.taskChecklistItem.updateMany({
+                where: { tenantId: actor.tenantId, checklistId: list.id, position: { gt: slot.afterPosition } },
+                data: { position: { increment: 1 } },
+            });
+        }
+        const created = {
+            id: input.id ?? (0, nanoid_1.nanoid)(12),
+            checklistId: list.id,
+            text: input.text,
+            position: slot.afterPosition !== null ? slot.afterPosition + 1 : (slot.maxPosition ?? -1) + 1,
+            done: false,
+            doneAt: null,
+            doneById: null,
+            assigneeId,
+            dueAt: input.dueAt ?? null,
+            reminderAt: input.reminderAt ?? null,
+            flagged: input.flagged ?? false,
+            createdById: actor.employeeId,
+            createdAt: new Date(),
+        };
+        await tx.taskChecklistItem.createMany({ data: [{ ...created, tenantId: actor.tenantId, taskId: core.id }] });
+        return { row: created, assigneeIds: joiningId ? await joinTaskAssignees(tx, actor, core.id, joiningId) : null };
+    });
+    if (assigneeIds && joiningId)
+        queueAssignedNotification(actor, core, joiningId, row.id);
+    return {
+        item: (0, taskParts_1.toChecklistItemDto)(row),
+        progress: await (0, taskParts_1.loadTaskProgress)(prisma_client_1.default, actor.tenantId, core.id),
+        ...(assigneeIds ? { task: { assigneeIds } } : {}),
+    };
+};
+exports.addChecklistItem = addChecklistItem;
+/** PATCH /checklist-items/:itemId — Text, Person, Termine, Fähnchen (ohne Verlauf, wie Görevly). */
+const updateChecklistItem = async (actor, itemId, patch) => {
+    const { item, core } = await requireEditableItem(actor, itemId);
+    // Geprüft wird nur eine GEÄNDERTE Person; wer schon auf dem Punkt steht, bleibt es.
+    const assigneeChanged = patch.assigneeId !== undefined && patch.assigneeId !== item.assigneeId;
+    const joiningId = assigneeChanged ? await assigneeJoiningTask(actor, core, patch.assigneeId ?? null) : null;
+    const changes = {
+        ...(patch.text !== undefined ? { text: patch.text } : {}),
+        ...(assigneeChanged ? { assigneeId: patch.assigneeId ?? null } : {}),
+        ...(patch.dueAt !== undefined ? { dueAt: patch.dueAt } : {}),
+        ...(patch.reminderAt !== undefined ? { reminderAt: patch.reminderAt } : {}),
+        ...(patch.flagged !== undefined ? { flagged: patch.flagged } : {}),
+    };
+    const where = { id: item.id, tenantId: actor.tenantId };
+    let assigneeIds = null;
+    if (joiningId) {
+        assigneeIds = await (0, taskDb_1.runTasksTransaction)(async (tx) => {
+            if (!(await (0, taskRows_1.lockTaskRow)(tx, actor.tenantId, core.id)))
+                throw (0, taskErrors_1.taskNotFound)();
+            const { count } = await tx.taskChecklistItem.updateMany({ where, data: changes });
+            if (!count)
+                throw itemNotFound();
+            return joinTaskAssignees(tx, actor, core.id, joiningId);
+        });
+        if (assigneeIds)
+            queueAssignedNotification(actor, core, joiningId, item.id);
+    }
+    else if (Object.keys(changes).length) {
+        const { count } = await prisma_client_1.default.taskChecklistItem.updateMany({ where, data: changes });
+        if (!count)
+            throw itemNotFound();
+    }
+    return {
+        item: (0, taskParts_1.toChecklistItemDto)({ ...item, ...changes }),
+        // Text, Person und Termine ändern den Fortschritt nicht: die Zählung von eben gilt.
+        progress: { done: core.checkDone, total: core.checkTotal },
+        ...(assigneeIds ? { task: { assigneeIds } } : {}),
+    };
+};
+exports.updateChecklistItem = updateChecklistItem;
+/** POST /checklist-items/:itemId/toggle — abhaken oder zurücknehmen; ohne `done` umschalten. */
+const toggleChecklistItem = async (actor, itemId, done) => {
+    const { item, core } = await requireEditableItem(actor, itemId);
+    const target = done ?? !item.done;
+    await (0, taskDb_1.runTasksTransaction)(async (tx) => {
+        // Nur ein echter Wechsel schreibt — und nur er kommt in den Verlauf.
+        const { count } = await tx.taskChecklistItem.updateMany({
+            where: { id: item.id, tenantId: actor.tenantId, done: !target },
+            data: target
+                ? { done: true, doneAt: new Date(), doneById: actor.employeeId }
+                : { done: false, doneAt: null, doneById: null },
+        });
+        if (!count)
+            return;
+        await (0, taskActivity_1.logTaskActivity)(tx, actor.tenantId, actor.employeeId, {
+            taskId: core.id,
+            type: target ? taskConstants_1.ACTIVITY.CHECK_DONE : taskConstants_1.ACTIVITY.CHECK_UNDONE,
+            meta: { text: item.text },
+        });
+    });
+    const [fresh, progress] = await Promise.all([
+        prisma_client_1.default.taskChecklistItem.findFirst({ where: { id: item.id, tenantId: actor.tenantId }, select: taskParts_1.CHECKLIST_ITEM_SELECT }),
+        (0, taskParts_1.loadTaskProgress)(prisma_client_1.default, actor.tenantId, core.id),
+    ]);
+    if (!fresh)
+        throw itemNotFound();
+    return { item: (0, taskParts_1.toChecklistItemDto)(fresh), progress };
+};
+exports.toggleChecklistItem = toggleChecklistItem;
+/** POST /checklist-items/:itemId/move — einen Platz nach oben oder unten. */
+const moveChecklistItem = async (actor, itemId, direction) => {
+    const { item, core } = await requireEditableItem(actor, itemId);
+    const [items, list] = await Promise.all([
+        (0, taskDb_1.runTasksTransaction)(async (tx) => {
+            if (!(await (0, taskRows_1.lockTaskRow)(tx, actor.tenantId, core.id)))
+                throw (0, taskErrors_1.taskNotFound)();
+            const rows = await loadChecklistItems(tx, actor.tenantId, item.checklistId);
+            if (!rows.some((row) => row.id === item.id))
+                throw itemNotFound();
+            const next = reorderItems(rows, item.id, direction);
+            const before = new Map(rows.map((row) => [row.id, row.position]));
+            await writeItemPositions(tx, actor.tenantId, next.filter((row) => before.get(row.id) !== row.position));
+            return next;
+        }),
+        prisma_client_1.default.taskChecklist.findFirst({ where: { id: item.checklistId, tenantId: actor.tenantId }, select: CHECKLIST_SELECT }),
+    ]);
+    if (!list)
+        throw checklistNotFound();
+    return { checklist: toChecklistDto(list, items) };
+};
+exports.moveChecklistItem = moveChecklistItem;
+/** DELETE /checklist-items/:itemId */
+const deleteChecklistItem = async (actor, itemId) => {
+    const { item } = await requireEditableItem(actor, itemId);
+    await prisma_client_1.default.taskChecklistItem.deleteMany({ where: { id: item.id, tenantId: actor.tenantId } });
+    return { progress: await (0, taskParts_1.loadTaskProgress)(prisma_client_1.default, actor.tenantId, item.taskId) };
+};
+exports.deleteChecklistItem = deleteChecklistItem;
+//# sourceMappingURL=checklistService.js.map

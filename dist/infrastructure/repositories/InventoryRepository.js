@@ -300,6 +300,8 @@ class InventoryRepository {
                 { name: { contains: search } },
                 { systemBarcode: { contains: search } },
                 { supplierBarcode: { contains: search } },
+                { modelNumber: { contains: search } },
+                { serialNumber: { contains: search } },
                 { category: { contains: search } },
             ];
         }
@@ -340,8 +342,8 @@ class InventoryRepository {
             }
             if (search) {
                 const term = `%${search}%`;
-                clauses.push('(a.`articleCode` LIKE ? OR a.`name` LIKE ? OR a.`systemBarcode` LIKE ? OR a.`supplierBarcode` LIKE ? OR a.`category` LIKE ?)');
-                values.push(term, term, term, term, term);
+                clauses.push('(a.`articleCode` LIKE ? OR a.`name` LIKE ? OR a.`systemBarcode` LIKE ? OR a.`supplierBarcode` LIKE ? OR a.`modelNumber` LIKE ? OR a.`serialNumber` LIKE ? OR a.`category` LIKE ?)');
+                values.push(term, term, term, term, term, term, term);
             }
             if (code) {
                 clauses.push('a.`articleCode` LIKE ?');
@@ -376,6 +378,8 @@ class InventoryRepository {
                 articleCode: 'a.`articleCode`',
                 name: 'a.`name`',
                 barcode: 'a.`systemBarcode`',
+                modelNumber: 'a.`modelNumber`',
+                serialNumber: 'a.`serialNumber`',
                 salePrice: 'a.`salePrice`',
                 minStockLevel: 'a.`minStockLevel`',
                 criticalStockLevel: 'a.`criticalStockLevel`',
@@ -405,13 +409,15 @@ class InventoryRepository {
             const [countRows, articleRows] = await Promise.all([
                 prisma_client_1.default.$queryRawUnsafe(`SELECT COUNT(*) AS total FROM \`Article\` a WHERE ${whereSql}`, ...values),
                 prisma_client_1.default.$queryRawUnsafe(`SELECT a.\`id\`, a.\`articleCode\`, a.\`name\`, a.\`unit\`,
-                            a.\`salePrice\`, a.\`criticalStockLevel\`, ${descriptionSelect}
+                            a.\`salePrice\`, a.\`criticalStockLevel\`, a.\`itemType\`, ${descriptionSelect}
+                            a.\`modelNumber\`, a.\`serialNumber\`, a.\`systemBarcode\`, a.\`supplierBarcode\`,
                             COALESCE(SUM(sb.\`currentQuantity\`), 0) AS totalQuantity
                      FROM \`Article\` a
                      LEFT JOIN \`StockBalance\` sb ON sb.\`articleId\` = a.\`id\`
                      WHERE ${whereSql}
                      GROUP BY a.\`id\`, a.\`articleCode\`, a.\`name\`, a.\`unit\`,
-                              a.\`salePrice\`, a.\`criticalStockLevel\`, a.\`createdAt\`,
+                              a.\`salePrice\`, a.\`criticalStockLevel\`, a.\`createdAt\`, a.\`itemType\`,
+                              a.\`modelNumber\`, a.\`serialNumber\`, a.\`supplierBarcode\`,
                               a.\`systemBarcode\`, a.\`minStockLevel\`, a.\`status\`
                      ORDER BY ${orderBySql}, a.\`id\` ASC
                      LIMIT ? OFFSET ?`, ...values, pageSize, offset),
@@ -425,6 +431,12 @@ class InventoryRepository {
                     salePrice: Number(article.salePrice) || 0,
                     criticalStockLevel: Number(article.criticalStockLevel) || 0,
                     totalQuantity: Number(article.totalQuantity) || 0,
+                    itemType: article.itemType || 'PRODUCT',
+                    // Liste (10.09.2026): ERP-Code, Bezeichnung, Modell, Serie, Barcode.
+                    modelNumber: article.modelNumber ?? null,
+                    serialNumber: article.serialNumber ?? null,
+                    systemBarcode: article.systemBarcode ?? null,
+                    supplierBarcode: article.supplierBarcode ?? null,
                     // İstenmediyse alan yanıtta hiç yer almaz — Prisma yolundaki
                     // davranışın aynısı.
                     ...(options.includeDescription ? { description: article.description ?? null } : {}),
@@ -641,6 +653,9 @@ class InventoryRepository {
                     supplierId: movementData.supplierId || null,
                     referenceId: movementData.referenceId || null,
                     description: movementData.description || null,
+                    // Herkunft (10.09.2026): der Einzelweg ist die Handbuchung,
+                    // sofern der Aufrufer nichts anderes sagt.
+                    origin: movementData.origin || 'MANUAL',
                 }
             });
             return movement;

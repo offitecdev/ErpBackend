@@ -38,16 +38,19 @@ import {
 } from '../../infrastructure/services/documentText';
 import {
     extractWithGpt,
-    transcribeImage,
+    readImagePages,
     GptError,
     gptConfigured,
     gptModelName,
+    missingTemplateLabels,
     normalizeColumns,
     SOURCE_LINE_FIELD,
+    TEMPLATE_LABELS,
     TEMPLATE_MAX_COLUMNS,
     TEMPLATE_MIN_COLUMNS,
     type GptUsage,
     type TemplateColumn,
+    type TemplateLabel,
 } from '../../infrastructure/services/gptExtract';
 
 export const purchaseOrderImportRouter = Router();
@@ -73,13 +76,25 @@ const extractRateLimiter = rateLimit({
     keyBy: (req: any) => (req.user?.id ? `gpt:${req.user.id}` : null),
 });
 
-/* ── Rechenvorlage: Gestalt und Prüfung ───────────────────────────────────
+/* ── Die Vorlage: Gestalt und Prüfung ─────────────────────────────────────
    Die Vorlage kommt aus dem Browser und wird hier vollständig neu aufgebaut —
    nie durchgereicht. Was nicht in dieser Funktion steht, steht auch nicht in
-   der Datenbank. */
+   der Datenbank.
 
-/** Die drei Berechnungsarten des Hauses — mehr gibt es nicht. */
-const CALC_MODES = new Set(['AUTO', 'DIRECT', 'SUPPLIER']);
+   ── STAND 11.09.2026 (Vorgabe Samet) ────────────────────────────────────
+   «Es gibt einen Vorlagennamen, aber keinen Lieferanten und keine Rechenart
+    mehr; auch keine Mehrwertsteuer, die steht schon in den Bestelldetails.
+    Bis zu dreizehn Spalten (12+1): eine davon ist der ERP-Code — fest, in
+    den Tabellen, aber nicht im PDF und nicht in der KI-Anfrage. Jede Spalte
+    bekommt Name, Art und eine Zuordnung; Produktname und Menge sind
+    Pflicht, die uebrigen Zuordnungen gibt es je einmal.»
+
+   Die Vorlage ist damit NUR NOCH ihre Spaltenliste. Alles, was frueher
+   daneben stand (Rechenart, Rabattstapel, Mengenstaffel, Steuersatz,
+   Auge-Symbol), ist weg — eine alte Vorlage wird beim Lesen in die neue
+   Gestalt uebersetzt (`legacyColumns`), damit nichts Gespeichertes
+   verloren geht. */
+
 const TEMPLATE_DOCUMENT_TYPES = new Set(['ORDER', 'PRICE_REQUEST', 'GOODS_RECEIPT']);
 type TemplateDocumentType = 'ORDER' | 'PRICE_REQUEST' | 'GOODS_RECEIPT';
 
@@ -88,111 +103,106 @@ const templateDocumentType = (value: unknown): TemplateDocumentType =>
         ? String(value).toUpperCase() as TemplateDocumentType
         : 'ORDER';
 
-const clampPercent = (value: unknown): number => {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return 0;
-    return Math.round(Math.min(100, Math.max(0, parsed)) * 100) / 100;
-};
+/** Eine Spalte der gespeicherten Vorlage — wie `TemplateColumn`, plus Bildschirmbreite. */
+export interface StoredTemplateColumn extends TemplateColumn {
+    width: number;
+}
 
-const positiveNumber = (value: unknown): number => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 1e6) / 1e6 : 0;
+export interface SupplierCalcConfig {
+    columns: StoredTemplateColumn[];
+}
+
+const columnWidth = (value: unknown): number => Math.round(Math.min(240, Math.max(80, Number(value) || 120)));
+
+/**
+ * Eine Vorlage der alten Gestalt (feste Felder + eigene Angaben + Auge) in
+ * die Spaltenliste uebersetzen. Die festen Felder bekommen deutsche Namen —
+ * die Sprache des Hauses — und ihre Zuordnung; ausgeblendete fallen weg;
+ * die eigenen Angaben werden freie Spalten und behalten ihren Schluessel,
+ * damit die Werte gespeicherter Bestellungen ihre Spalte wiederfinden.
+ */
+const legacyColumns = (raw: any, documentType: TemplateDocumentType): StoredTemplateColumn[] => {
+    const hidden = new Set<string>(Array.isArray(raw?.hiddenColumnKeys) ? raw.hiddenColumnKeys.map(String) : []);
+    const fixed: Array<{ key: string; name: string; type: 'text' | 'number'; label: TemplateLabel }> = [
+        { key: 'name', name: 'Produktname', type: 'text', label: 'productName' },
+        { key: 'quantity', name: 'Menge', type: 'number', label: 'quantity' },
+        { key: 'priceGross', name: 'Einzelpreis', type: 'number', label: 'grossPrice' },
+        { key: 'priceNet', name: 'Nettopreis', type: 'number', label: 'netPrice' },
+        { key: 'discount', name: 'Rabatt', type: 'number', label: 'discount' },
+        ...(raw?.discount2Enabled === false ? [] : [{ key: 'discount2', name: 'Rabatt 2', type: 'number' as const, label: 'discount2' as TemplateLabel }]),
+        { key: 'lineTotal', name: 'Zeilensumme', type: 'number', label: 'total' },
+    ];
+    const columns: StoredTemplateColumn[] = fixed
+        // Die Pflichtzuordnungen bleiben auch dann, wenn das Auge sie ausblendete.
+        .filter((column) => !hidden.has(column.key) || column.label === 'productName' || column.label === 'quantity')
+        // Eine Preisanfrage kannte nie Preise — sie bekommt auch jetzt keine.
+        .filter((column) => documentType !== 'PRICE_REQUEST' || column.label === 'productName' || column.label === 'quantity')
+        .map((column) => ({ ...column, width: 120 }));
+    for (const extra of normalizeColumns(raw?.extraColumns)) {
+        if (hidden.has(extra.key)) continue;
+        const source = (Array.isArray(raw?.extraColumns) ? raw.extraColumns : []).find((entry: any) => String(entry?.key ?? '') === extra.key);
+        columns.push({ ...extra, label: null, width: columnWidth(source?.width) });
+    }
+    return columns.slice(0, TEMPLATE_MAX_COLUMNS);
 };
 
 /**
- * DIE SCHLÜSSELZUORDNUNG: welche SPALTE welche Rolle in der Bestellzeile
- * spielt. Die Werte sind Spaltenschlüssel der Vorlage; ein Wert, den es dort
- * nicht gibt, wird zu «nicht besetzt» — sonst zeigte eine Zuordnung ins Leere,
- * nachdem jemand die Spalte gelöscht hat.
+ * Eine alte Vorlage erkennt man an ihren alten Feldern — NICHT am Fehlen von
+ * `columns`: der alte Server schrieb immer ein leeres `columns: []` mit, und
+ * daran allein saehe die neue Gestalt wie «gespeichert, aber ohne Spalten»
+ * aus (Fehlerbild Samet, 11.09.2026: «siparişte şablonlar görünmüyor»).
  */
-const ROLE_KEYS = ['code', 'name', 'quantity', 'unit', 'price', 'discount', 'discount2', 'total', 'totalGross'] as const;
+const LEGACY_CONFIG_KEYS = ['calcMode', 'extraColumns', 'discount2Enabled', 'hiddenColumnKeys', 'qtyTiers', 'roles'];
+const isLegacyConfig = (raw: any): boolean =>
+    Boolean(raw) && typeof raw === 'object'
+    && !(Array.isArray(raw.columns) && raw.columns.length > 0)
+    && LEGACY_CONFIG_KEYS.some((key) => key in raw);
 
-export type SupplierColumnRoles = Record<(typeof ROLE_KEYS)[number], string>;
+export const normalizeTemplateConfig = (raw: any, documentType: TemplateDocumentType = 'ORDER'): SupplierCalcConfig => {
+    const source = Array.isArray(raw?.columns) && !isLegacyConfig(raw) ? raw.columns : null;
+    if (!source) return { columns: legacyColumns(raw, documentType) };
+    const columns = normalizeColumns(source).map((column) => ({
+        ...column,
+        width: columnWidth(source.find((entry: any) => String(entry?.key ?? '') === column.key)?.width),
+    }));
+    return { columns };
+};
 
-export interface SupplierCalcConfig {
-    calcMode: 'AUTO' | 'DIRECT' | 'SUPPLIER';
-    columns: TemplateColumn[];
-    /** Rabatt 2 ist freiwillig — aus heisst: er geht gar nicht an das Modell. */
-    discount2Enabled: boolean;
-    /** Bis zu drei eigene Angaben; sie stehen im PDF unter dem Produktnamen. */
-    extraColumns: TemplateColumn[];
-    /** Hidden columns never enter the AI schema or the downstream calculation. */
-    hiddenColumnKeys: string[];
-    withTiers: boolean;
-    roles: SupplierColumnRoles;
-    /** Gestaffelte Rabatte in Prozent — nacheinander, nicht addiert. */
-    discounts: number[];
-    vatRate: number;
-    vatCountry: string;
-    currency: string;
-    /**
-     * MENGENSTAFFEL des Lieferanten: ab `minQuantity` gilt `discount` (Prozent)
-     * bzw. `unitPrice` (fester Stückpreis). Die Rechenstufe nimmt die höchste
-     * Stufe, deren Menge erreicht ist.
-     */
-    qtyTiers: Array<{ minQuantity: number; discount: number; unitPrice: number }>;
-}
+/**
+ * Was eine Vorlage erfuellen muss, bevor sie gespeichert wird (Vorgabe
+ * Samet: «wird eine Zuordnung nicht gewaehlt, zeigt das System einen
+ * Fehler»). Eine Preisanfrage kennt keine Preise — dort werden die
+ * Preiszuordnungen still abgelegt statt abgewiesen.
+ */
+const PRICE_REQUEST_LABELS = new Set<TemplateLabel>(['productName', 'quantity']);
 
-const normalizeConfig = (raw: any): SupplierCalcConfig => {
-    const columns = normalizeColumns(raw?.columns);
-    const known = new Set(columns.map((column) => column.key));
-
-    const discounts = (Array.isArray(raw?.discounts) ? raw.discounts : [])
-        .map(clampPercent)
-        .filter((value: number) => value > 0)
-        // Die Bestelltabelle trägt Rabatt + EINEN Zusatzrabatt. Mehr anzunehmen
-        // hiesse, den dritten still fallen zu lassen.
-        .slice(0, 2);
-
-    const qtyTiers = (Array.isArray(raw?.qtyTiers) ? raw.qtyTiers : [])
-        .map((tier: any) => ({
-            minQuantity: positiveNumber(tier?.minQuantity),
-            discount: clampPercent(tier?.discount),
-            unitPrice: positiveNumber(tier?.unitPrice),
-        }))
-        .filter((tier: any) => tier.minQuantity > 0 && (tier.discount > 0 || tier.unitPrice > 0))
-        .sort((a: any, b: any) => a.minQuantity - b.minQuantity)
-        .slice(0, 12);
-
-    const roles = {} as SupplierColumnRoles;
-    for (const role of ROLE_KEYS) {
-        const value = String(raw?.roles?.[role] ?? '').trim();
-        roles[role] = known.has(value) ? value : '';
+const validateTemplateConfig = (config: SupplierCalcConfig, documentType: TemplateDocumentType): string | null => {
+    if (documentType === 'PRICE_REQUEST') {
+        config.columns.forEach((column) => {
+            if (column.label && !PRICE_REQUEST_LABELS.has(column.label)) column.label = null;
+        });
     }
-
-    return {
-        // Vorgabe ist die manuelle Eingabe: sie rechnet nichts und ist damit
-        // die einzige Art, die ohne weitere Angaben richtig liegt.
-        calcMode: CALC_MODES.has(String(raw?.calcMode)) ? String(raw.calcMode) as SupplierCalcConfig['calcMode'] : 'DIRECT',
-        columns,
-        discount2Enabled: raw?.discount2Enabled !== false,
-        extraColumns: normalizeColumns(raw?.extraColumns).map((column, index) => ({
-            ...column,
-            width: Math.round(Math.min(240, Math.max(80, Number(raw?.extraColumns?.[index]?.width) || 120))),
-        })),
-        hiddenColumnKeys: (Array.isArray(raw?.hiddenColumnKeys) ? raw.hiddenColumnKeys : [])
-            .map((key: unknown) => String(key).trim())
-            .filter((key: string, index: number, list: string[]) => /^[a-zA-Z][a-zA-Z0-9]{0,15}$/.test(key) && list.indexOf(key) === index)
-            .slice(0, TEMPLATE_MAX_COLUMNS),
-        withTiers: Boolean(raw?.withTiers),
-        roles,
-        discounts,
-        vatRate: clampPercent(raw?.vatRate),
-        vatCountry: String(raw?.vatCountry ?? '').trim().slice(0, 80),
-        currency: String(raw?.currency ?? 'CHF').trim().slice(0, 8).toUpperCase() || 'CHF',
-        qtyTiers,
-    };
+    if (!config.columns.length) return 'Die Vorlage braucht mindestens eine Spalte.';
+    const missing = missingTemplateLabels(config.columns);
+    if (missing.length) {
+        const names: Record<TemplateLabel, string> = {
+            productName: 'Produktname', quantity: 'Menge', grossPrice: 'Einzelpreis', netPrice: 'Nettopreis',
+            discount: 'Rabatt', discount2: 'Rabatt 2', total: 'Zeilensumme',
+        };
+        return `Die Zuordnung «${missing.map((label) => names[label]).join('» und «')}» fehlt.`;
+    }
+    return null;
 };
 
 /** Zeile der Datenbank → Antwort (die Einstellung reist als Objekt, nicht als Text). */
 const parseTemplateRow = (row: any) => {
     let config: SupplierCalcConfig;
     try {
-        config = normalizeConfig(JSON.parse(String(row?.config ?? '{}')));
+        config = normalizeTemplateConfig(JSON.parse(String(row?.config ?? '{}')), templateDocumentType(row?.documentType));
     } catch {
         // Eine unlesbare Einstellung darf die Liste nicht sprengen — sie kommt
-        // als Vorgabe zurück und lässt sich überschreiben.
-        config = normalizeConfig({});
+        // leer zurück und lässt sich überschreiben.
+        config = { columns: [] };
     }
     return {
         id: row.id,
@@ -240,6 +250,7 @@ purchaseOrderImportRouter.get(
             maxChunks: MAX_CHUNKS,
             minColumns: TEMPLATE_MIN_COLUMNS,
             maxColumns: TEMPLATE_MAX_COLUMNS,
+            labels: TEMPLATE_LABELS,
         });
     },
 );
@@ -366,11 +377,10 @@ const pickImageInputs = (body: any): Array<{ data: string; mimeType: string }> =
  *                 type: string
  *                 enum: [ORDER, PRICE_REQUEST, GOODS_RECEIPT]
  *               language: { type: string, description: "de | en | tr — die Sprache, in der die Textwerte zurückkommen" }
- *               fields:
+ *               columns:
  *                 type: array
- *                 items: { type: string }
- *                 description: "Die Vorlage: Spaltenschlüssel aus /ai-status"
- *               withTiers: { type: boolean, description: "Mengenstaffel des Belegs mitlesen" }
+ *                 description: "Die Spalten der Vorlage: {key, name, type, label}"
+ *                 items: { type: object }
  */
 purchaseOrderImportRouter.post(
     '/ai-extract',
@@ -398,7 +408,14 @@ purchaseOrderImportRouter.post(
                     code: 'GPT_TOO_FEW_COLUMNS',
                 });
             }
-            const withTiers = Boolean(req.body?.withTiers);
+            /* Ohne Produktname und Menge laesst sich aus dem Gelesenen keine
+               Bestellzeile machen — dann lieber gar nicht erst bezahlen. */
+            if (missingTemplateLabels(columns).length) {
+                return res.status(400).json({
+                    error: 'Der Vorlage fehlen die Zuordnungen «Produktname» und «Menge».',
+                    code: 'GPT_TEMPLATE_LABELS',
+                });
+            }
             const documentType = templateDocumentType(req.body?.documentType);
             const includeDocumentHeader = documentType !== 'GOODS_RECEIPT';
 
@@ -431,91 +448,18 @@ purchaseOrderImportRouter.post(
                     code: 'DOCUMENT_TOO_LARGE',
                 });
             }
-            /* ── ZUERST ABSCHREIBEN, DANN ZUORDNEN ──────────────────────────
-               Vorgabe Samet (08.09.2026): «Es muss zuerst eine ORDENTLICHE
-               Umwandlung geben, und danach geht es an das Modell — nicht
-               direkt an das Modell.»
-
-               Eine Aufnahme wird darum in zwei Schritten gelesen:
-                 1. `transcribeImage` — dasselbe sehende Modell schreibt die
-                    Tabelle ab, Zeile fuer Zeile, Zellen mit Tabulator,
-                    leere Zelle bleibt leer. Mehr tut es nicht.
-                 2. Diese Abschrift geht als TEXT durch denselben Weg wie
-                    eine Excel-Datei — mit der Kopfzeile davor, an der sich
-                    die Zuordnung ausrichtet.
-
-               Der Gewinn ist nicht nur die Genauigkeit: die Zwischenstufe
-               ist LESBAR. Was das Modell gesehen hat, steht als Tabelle in
-               der Antwort (`transcript`) und laesst sich mit dem Blatt
-               vergleichen. Vorher war zwischen Aufnahme und fertiger
-               Bestellung nichts zu sehen. */
-            /* Each photo is transcribed independently, preserving page boundaries.
-               Only after that are the page texts assembled into ONE structured
-               extraction prompt, in capture order. */
-            const transcripts = images.length
-                ? await Promise.all(images.map((image) => transcribeImage(image)))
-                : [];
-            const transcriptText = transcripts.length
-                ? [
-                    'The following sections are consecutive images of ONE document.',
-                    'Each image was transcribed independently. Process every section in image order; do not merge neighbouring rows.',
-                    ...transcripts.map((transcript, index) => [
-                        `=== IMAGE ${index + 1} OF ${transcripts.length} ===`,
-                        transcript.header ? `HEADER\t${transcript.header}` : 'HEADER\t',
-                        ...transcript.lines,
-                        `=== END IMAGE ${index + 1} ===`,
-                    ].join('\n')),
-                ].join('\n')
-                : '';
-            if (transcripts.length && transcripts.every((transcript) => transcript.lines.length === 0)) {
-                return res.status(422).json({
-                    error: 'Auf dem Beleg wurde keine Tabelle gefunden.',
-                    code: 'GPT_NO_TABLE',
-                });
-            }
-
-            const read = images.length
-                ? {
-                    source: 'image' as const,
-                    engine: 'gpt-vision' as const,
-                    text: transcriptText,
-                    rawChars: transcriptText.length,
-                    chars: transcriptText.length,
-                    truncated: false,
-                }
-                : await readDocumentText({
-                    data: req.body?.data,
-                    text: req.body?.text,
-                    fileName: req.body?.fileName,
-                    mimeType: req.body?.mimeType,
-                });
-
-            /* ── Schritt 2: Tabelle → Positionen ────────────────────────────
-               Ab hier gibt es nur noch EINEN Weg: Text. Die Abschrift einer
-               Aufnahme wird genauso behandelt wie eine Excel-Tabelle, nur
-               dass sie in einem Stueck bleibt — eine halbe Tabelle ans
-               Modell zu schicken hiesse, sie mitten in der Zeile zu
-               zerteilen. */
-            const chunks = images.length ? [] : chunkText(read.text, CHUNK_CHARS);
-            const used = chunks.slice(0, MAX_CHUNKS);
-            const passes: Array<{ text: string }> = images.length
-                ? [{ text: transcriptText }]
-                : used.map((chunk) => ({ text: chunk }));
             const usage = emptyUsage();
-            /* Die erste Stufe kostet auch — sie gehoert in die Rechnung. */
-            if (transcripts.length) {
-                for (const transcript of transcripts) {
-                    usage.promptTokens += transcript.usage.promptTokens;
-                    usage.completionTokens += transcript.usage.completionTokens;
-                    usage.totalTokens += transcript.usage.totalTokens;
-                    if (usage.estimatedUsd !== null && transcript.usage.estimatedUsd !== null) {
-                        usage.estimatedUsd = Math.round((usage.estimatedUsd + transcript.usage.estimatedUsd) * 1e6) / 1e6;
-                    } else {
-                        usage.estimatedUsd = null;
-                    }
-                    usage.chunks += 1;
+            const addUsage = (part: GptUsage) => {
+                usage.promptTokens += part.promptTokens;
+                usage.completionTokens += part.completionTokens;
+                usage.totalTokens += part.totalTokens;
+                if (usage.estimatedUsd !== null && part.estimatedUsd !== null) {
+                    usage.estimatedUsd = Math.round((usage.estimatedUsd + part.estimatedUsd) * 1e6) / 1e6;
+                } else {
+                    usage.estimatedUsd = null;
                 }
-            }
+                usage.chunks += 1;
+            };
             const merged: Array<Record<string, unknown>> = [];
             const seen = new Set<string>();
             let document: {
@@ -534,24 +478,91 @@ purchaseOrderImportRouter.post(
                sagen kann, dass die Liste kuerzer ist als der Beleg. */
             let dropped = 0;
 
+            /* ── DER BILDWEG: ERST DIE TABELLE (Samet, 11.09.2026, 2. Runde) ─
+               «Sie muss erkennen, welche Werte unter welcher Spalte stehen
+               und welche leer sind — eine Tabelle daraus machen.»
+
+               Je Aufnahme zwei Blicke (`readImagePages`): die Spalten der
+               Tabelle, dann das Raster Zeile fuer Zeile, jede Zelle unter
+               ihrer Ueberschrift. Die Zuordnung zur Vorlage macht der
+               Server. Die Aufnahmen bleiben in ihrer Reihenfolge. */
+            if (images.length) {
+                const pages = await readImagePages(images, columns);
+                pages.forEach((page) => addUsage(page.usage));
+                /* Gezaehlt wird das RASTER, nicht eine Ansage des Modells
+                   (am 11.09. zaehlte es 44 Zeilen auf einem Blatt mit 38). */
+                const tableRows = pages.reduce((sum, page) => sum + page.grid.rows.length, 0);
+                for (const page of pages) {
+                    for (const row of page.rows) merged.push(row);
+                }
+                if (!merged.length) {
+                    return res.status(422).json({
+                        error: 'Auf dem Beleg wurde keine Tabelle gefunden.',
+                        code: 'GPT_NO_TABLE',
+                    });
+                }
+                const header = columns.map((column) => column.name).join('\t');
+                const lineOf = (row: Record<string, unknown>) => columns
+                    .map((column) => (row[column.key] === null || row[column.key] === undefined ? '-' : String(row[column.key])))
+                    .join('\t');
+                return res.status(200).json({
+                    source: 'image',
+                    engine: 'gpt-vision',
+                    model: gptModelName(),
+                    language,
+                    columns: columns.map((column) => column.key),
+                    document,
+                    rows: merged,
+                    /* Die Abrechnung der Zeilen: was das Modell gezaehlt hat,
+                       gegen das, was als Zeile ankam. */
+                    rowCount: { returned: merged.length, table: tableRows, dropped: Math.max(0, tableRows - merged.length) },
+                    /* Die Abschrift zum Nachsehen: `lines` in den Spalten
+                       der Vorlage, `pages` das Raster je Aufnahme — ALLE
+                       gedruckten Spalten, null = leere Zelle, und welche
+                       davon welcher Vorlagenspalte zugeordnet wurde (Index
+                       in `headers`, null = auf dem Blatt nicht gefunden). */
+                    transcript: {
+                        header,
+                        lines: merged.map(lineOf),
+                        pages: pages.map((page, index) => ({
+                            index: index + 1,
+                            headers: page.grid.headers,
+                            rows: page.grid.rows,
+                            mapping: page.mapping,
+                        })),
+                    },
+                    /* Vorlagenspalten, die auf KEINER Aufnahme gefunden
+                       wurden: die Oberflaeche sagt es, statt still eine
+                       leere Spalte zu zeigen. */
+                    missingColumns: columns
+                        .filter((column) => pages.every((page) => page.mapping[column.key] === null || page.mapping[column.key] === undefined))
+                        .map((column) => column.key),
+                    usage,
+                    text: { rawChars: 0, chars: 0, approxTokens: 0, truncated: false, chunks: pages.length, chunksRead: pages.length },
+                });
+            }
+
+            /* ── DER TEXTWEG: PDF-Textlage und Excel ────────────────────────
+               Zeile fuer Zeile, mit dem Zeilenanker; lange Belege in
+               Stuecken. */
+            const read = await readDocumentText({
+                data: req.body?.data,
+                text: req.body?.text,
+                fileName: req.body?.fileName,
+                mimeType: req.body?.mimeType,
+            });
+            const chunks = chunkText(read.text, CHUNK_CHARS);
+            const used = chunks.slice(0, MAX_CHUNKS);
+            const passes: Array<{ text: string }> = used.map((chunk) => ({ text: chunk }));
+
             for (const pass of passes) {
                 const result = await extractWithGpt({
                     ...pass,
                     columns,
                     language,
-                    withTiers,
                     includeDocumentHeader,
                 });
-                usage.promptTokens += result.usage.promptTokens;
-                usage.completionTokens += result.usage.completionTokens;
-                usage.totalTokens += result.usage.totalTokens;
-                if (usage.estimatedUsd !== null && result.usage.estimatedUsd !== null) {
-                    usage.estimatedUsd = Math.round((usage.estimatedUsd + result.usage.estimatedUsd) * 1e6) / 1e6;
-                } else {
-                    usage.estimatedUsd = null;
-                }
-                usage.chunks += 1;
-
+                addUsage(result.usage);
                 /* Kopfdaten stehen auf der ERSTEN Seite. Ein späteres Stück
                    darf sie ergänzen, aber nicht überschreiben — sonst gewinnt
                    die Fusszeile der letzten Seite über den Briefkopf. */
@@ -629,23 +640,14 @@ purchaseOrderImportRouter.post(
                    Zahl, die nichts bedeutet). */
                 rowCount: {
                     returned: merged.length,
-                    table: transcripts.length
-                        ? transcripts.reduce((sum, transcript) => sum + transcript.lines.length, 0)
-                        : null,
+                    /* `table` bleibt null: Excel und PDF kommen schon als
+                       Text und tragen Kopfzeilen, Summen und Anschriften
+                       mit — deren Zeilen zu zaehlen ergaebe eine Zahl, die
+                       nichts bedeutet. */
+                    table: null,
                     dropped,
                 },
-                /* DIE ORDENTLICHE UMWANDLUNG, zum Nachsehen. */
-                transcript: transcripts.length
-                    ? {
-                        header: transcripts[0]?.header ?? null,
-                        lines: transcripts.flatMap((transcript) => transcript.lines),
-                        pages: transcripts.map((transcript, index) => ({
-                            index: index + 1,
-                            header: transcript.header,
-                            lines: transcript.lines,
-                        })),
-                    }
-                    : null,
+                transcript: null,
                 usage,
                 text: {
                     rawChars: read.rawChars,
@@ -733,17 +735,19 @@ purchaseOrderImportRouter.post(
             const tenantId = req.user!.tenantId;
             const title = String(req.body?.title ?? '').trim().slice(0, 191);
             if (!title) return res.status(400).json({ error: 'Der Vorlagenname fehlt.' });
-            const supplierId = String(req.body?.supplierId ?? '').trim() || null;
-            const supplierName = String(req.body?.supplierName ?? '').trim().slice(0, 191);
             const documentType = templateDocumentType(req.body?.documentType);
-            const config = normalizeConfig(req.body?.config);
+            const config = normalizeTemplateConfig(req.body?.config, documentType);
+            const problem = validateTemplateConfig(config, documentType);
+            if (problem) return res.status(400).json({ error: problem, code: 'TEMPLATE_INVALID' });
             const isDefault = Boolean(req.body?.isDefault);
 
-            /* Genau EINE Standardvorlage je Lieferant: die alte verliert das
-               Häkchen, bevor die neue es bekommt. */
+            /* Eine Vorlage gehoert keinem Lieferanten mehr (11.09.2026) —
+               `supplierId` bleibt leer, und es gibt genau EINE Vorgabe je
+               Dokumentart: die alte verliert das Häkchen, bevor die neue es
+               bekommt. */
             if (isDefault) {
                 await (prisma as any).supplierOrderTemplate.updateMany({
-                    where: { tenantId, supplierId, documentType, isDefault: true },
+                    where: { tenantId, documentType, isDefault: true },
                     data: { isDefault: false },
                 });
             }
@@ -752,8 +756,8 @@ purchaseOrderImportRouter.post(
                 data: {
                     id: nanoid(12),
                     tenantId,
-                    supplierId,
-                    supplierName,
+                    supplierId: null,
+                    supplierName: '',
                     title,
                     documentType,
                     isDefault,
@@ -797,9 +801,12 @@ purchaseOrderImportRouter.patch(
                 if (!title) return res.status(400).json({ error: 'Der Vorlagenname fehlt.' });
                 data.title = title;
             }
-            if (req.body?.supplierId !== undefined) data.supplierId = String(req.body.supplierId ?? '').trim() || null;
-            if (req.body?.supplierName !== undefined) data.supplierName = String(req.body.supplierName ?? '').trim().slice(0, 191);
-            if (req.body?.config !== undefined) data.config = JSON.stringify(normalizeConfig(req.body.config));
+            if (req.body?.config !== undefined) {
+                const config = normalizeTemplateConfig(req.body.config, templateDocumentType(existing.documentType));
+                const problem = validateTemplateConfig(config, templateDocumentType(existing.documentType));
+                if (problem) return res.status(400).json({ error: problem, code: 'TEMPLATE_INVALID' });
+                data.config = JSON.stringify(config);
+            }
             if (req.body?.isDefault !== undefined) {
                 data.isDefault = Boolean(req.body.isDefault);
                 if (data.isDefault) {
@@ -807,7 +814,6 @@ purchaseOrderImportRouter.patch(
                         where: {
                             tenantId,
                             documentType: existing.documentType,
-                            supplierId: data.supplierId !== undefined ? data.supplierId : existing.supplierId,
                             isDefault: true,
                             NOT: { id: templateId },
                         },

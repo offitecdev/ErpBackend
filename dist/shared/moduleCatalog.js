@@ -73,6 +73,17 @@ exports.MODULE_CATALOG = [
             write: ['billing.create', 'billing.manage'],
         },
     },
+    // Görevler (13.09.2026): eigenständiges Aufgabenmodul (Görevly), ohne
+    // Verbindung zu Projekten oder CRM-Aufgaben. view = Teammitglied,
+    // manage = Leitung, delete = Aufgaben löschen.
+    {
+        key: 'tasks',
+        actions: {
+            read: ['tasks.view'],
+            write: ['tasks.manage'],
+            delete: ['tasks.delete'],
+        },
+    },
     {
         key: 'settings',
         actions: {},
