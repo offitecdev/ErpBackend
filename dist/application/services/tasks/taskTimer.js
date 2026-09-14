@@ -14,6 +14,20 @@ const taskDb_1 = require("./taskDb");
 const taskErrors_1 = require("./taskErrors");
 const taskRows_1 = require("./taskRows");
 const taskTime_1 = require("./taskTime");
+/* Der Browser schickt den Klickzeitpunkt mit. Er darf eine langsame Anfrage
+   ausgleichen, aber keine frei erfundene Arbeitszeit erzeugen: höchstens fünf
+   Minuten vor Empfang und niemals nach Empfang werden akzeptiert. Alte Clients
+   ohne `actionAt` verwenden weiterhin unmittelbar die Empfangszeit. */
+const TIMER_ACTION_MAX_LAG_MS = 5 * 60_000;
+const timerActionAt = (candidate, receivedAt = new Date()) => {
+    if (!candidate || Number.isNaN(candidate.getTime()))
+        return receivedAt;
+    const receivedMs = receivedAt.getTime();
+    const candidateMs = candidate.getTime();
+    if (candidateMs < receivedMs - TIMER_ACTION_MAX_LAG_MS || candidateMs > receivedMs + 5_000)
+        return receivedAt;
+    return new Date(Math.min(candidateMs, receivedMs));
+};
 const mapRunning = (row) => {
     const startedAt = (0, taskRows_1.rawDate)(row.startedAt);
     return startedAt ? { id: row.id, tenantId: row.tenantId, taskId: row.taskId, employeeId: row.employeeId, startedAt } : null;
@@ -93,7 +107,7 @@ class RunningSessionMoved extends Error {
 }
 const isRetryableStartError = (error) => error instanceof RunningSessionMoved
     || (error instanceof client_1.Prisma.PrismaClientKnownRequestError && error.code === 'P2002');
-const startOnce = async (actor, taskId) => {
+const startOnce = async (actor, taskId, clickedAt) => {
     const me = actor.employeeId;
     // Vorab ohne Sperre: welche Messung läuft — damit beide Aufgaben in
     // fester Reihenfolge gesperrt werden können.
@@ -124,7 +138,9 @@ const startOnce = async (actor, taskId) => {
         // nicht gesperrt — neu anfangen statt ungeordnet zu sperren.
         if (running && running.taskId !== previous?.taskId)
             throw new RunningSessionMoved();
-        const now = new Date();
+        // Bei zwei Geräten kann ein inzwischen gestarteter Lauf jünger als der
+        // mitgeschickte Klick sein. Niemals vor dessen Beginn abschliessen.
+        const now = running && clickedAt < running.startedAt ? running.startedAt : clickedAt;
         let switchedFrom = null;
         if (running) {
             const other = await tx.task.findFirst({ where: { id: running.taskId }, select: { title: true } });
@@ -155,16 +171,19 @@ const startOnce = async (actor, taskId) => {
     });
 };
 /** Messung an einer Aufgabe starten (beendet eine andere laufende). */
-const startTaskTimer = async (actor, taskId) => {
+const startTaskTimer = async (actor, taskId, actionAt) => {
+    // Einmal festlegen: auch ein Wiederholungsversuch darf die Startzeit nicht
+    // um die Dauer des ersten Datenbankversuchs verschieben.
+    const clickedAt = timerActionAt(actionAt);
     try {
-        return await startOnce(actor, taskId);
+        return await startOnce(actor, taskId, clickedAt);
     }
     catch (error) {
         // Zwei gleichzeitige Starts derselben Person: der zweite trifft den
         // eindeutigen Index — ein zweiter Versuch sieht die Lage klar.
         if (!isRetryableStartError(error))
             throw error;
-        return startOnce(actor, taskId);
+        return startOnce(actor, taskId, clickedAt);
     }
 };
 exports.startTaskTimer = startTaskTimer;
@@ -174,6 +193,7 @@ exports.startTaskTimer = startTaskTimer;
  */
 const pauseTaskTimer = async (actor, options = {}) => {
     const me = actor.employeeId;
+    const clickedAt = timerActionAt(options.actionAt);
     const previous = await readRunningOfEmployee(prisma_client_1.default, me, false);
     if (!previous || (options.taskId && previous.taskId !== options.taskId))
         return null;
@@ -188,7 +208,8 @@ const pauseTaskTimer = async (actor, options = {}) => {
         const row = rows[0] ? mapRunning(rows[0]) : null;
         if (!row)
             return null;
-        return closeSessionRow(tx, row, new Date(), me, options.note ?? null);
+        const endedAt = clickedAt < row.startedAt ? row.startedAt : clickedAt;
+        return closeSessionRow(tx, row, endedAt, me, options.note ?? null);
     });
 };
 exports.pauseTaskTimer = pauseTaskTimer;

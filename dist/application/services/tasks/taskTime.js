@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.resolveReportRange = exports.REPORT_RANGE_KEYS = exports.liveDurationMs = exports.clampDurationMs = exports.endOfLocalDay = exports.startOfLocalDay = exports.DAY_MS = void 0;
+exports.windowedMs = exports.resolveDayWindow = exports.resolveReportRange = exports.REPORT_RANGE_KEYS = exports.liveDurationMs = exports.clampDurationMs = exports.endOfLocalDay = exports.startOfLocalDay = exports.DAY_MS = void 0;
 const taskConstants_1 = require("./taskConstants");
 /**
  * Zeit-Hilfen des Görevler-Moduls. «Heute», «Tagesanfang» und «Tagesende»
@@ -55,4 +55,25 @@ const resolveReportRange = (query, now = new Date()) => {
     return { key, from: (0, exports.startOfLocalDay)(new Date(now.getTime() - (days - 1) * exports.DAY_MS)), to: (0, exports.endOfLocalDay)(now) };
 };
 exports.resolveReportRange = resolveReportRange;
+const parseIsoDate = (value) => {
+    if (typeof value !== 'string' || !value.trim())
+        return null;
+    const date = new Date(value.trim().slice(0, 40));
+    return Number.isNaN(date.getTime()) ? null : date;
+};
+const resolveDayWindow = (fromRaw, toRaw, now = new Date()) => {
+    const from = parseIsoDate(fromRaw);
+    const to = parseIsoDate(toRaw);
+    if (from && to && to.getTime() > from.getTime() && to.getTime() - from.getTime() <= exports.DAY_MS * 1.5)
+        return { from, to };
+    return { from: (0, exports.startOfLocalDay)(now), to: (0, exports.endOfLocalDay)(now) };
+};
+exports.resolveDayWindow = resolveDayWindow;
+/** Anteil einer Messung innerhalb des Fensters; eine laufende zählt bis `now`. */
+const windowedMs = (startedAt, endedAt, day, now) => {
+    const start = Math.max(startedAt.getTime(), day.from.getTime());
+    const end = Math.min((endedAt ?? now).getTime(), day.to.getTime());
+    return Math.max(0, end - start);
+};
+exports.windowedMs = windowedMs;
 //# sourceMappingURL=taskTime.js.map

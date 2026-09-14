@@ -6,6 +6,7 @@ const commentService_1 = require("../../../application/services/tasks/commentSer
 const taskConstants_1 = require("../../../application/services/tasks/taskConstants");
 const taskHttp_1 = require("./taskHttp");
 const taskMiddleware_1 = require("./taskMiddleware");
+const ResponseCacheMiddleware_1 = require("../../middlewares/ResponseCacheMiddleware");
 /* KOMMENTARE EINER AUFGABE (Reiter «Yorumlar»), montiert unter /api/v1/tasks.
    Anmeldung und Modulzugang prüft index.ts davor, die Regeln stehen im
    commentService. Feste Pfade vor Parameterpfaden. */
@@ -18,7 +19,7 @@ router.delete('/comments/:commentId', (0, taskHttp_1.taskRoute)('tasks.comments.
     res.status(204).end();
 }));
 // GET /:taskId/comments — alle Kommentare samt Dateien, älteste zuerst.
-router.get('/:taskId/comments', (0, taskHttp_1.taskRoute)('tasks.comments.list', async (req, res) => {
+router.get('/:taskId/comments', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), (0, taskHttp_1.taskRoute)('tasks.comments.list', async (req, res) => {
     res.json(await (0, commentService_1.listTaskComments)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId')));
 }));
 // POST /:taskId/comments — Text, Dateien oder beides.

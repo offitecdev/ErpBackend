@@ -7,6 +7,7 @@ const express_1 = require("express");
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
@@ -72,7 +73,7 @@ const parseDate = (raw) => {
 // GET /crm/contacts?search=&customerId=&page=&pageSize= — tenant-wide list,
 // served from the (tenantId, lastName, firstName) index with the company name
 // joined in, so the page costs one round trip instead of one per relation.
-router.get('/contacts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), async (req, res) => {
+router.get('/contacts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['customers'], ttlSec: 60 }), async (req, res) => {
     try {
         const user = req.user;
         const search = String(req.query.search || '').trim();

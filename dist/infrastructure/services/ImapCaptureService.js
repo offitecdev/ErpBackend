@@ -13,6 +13,7 @@ const mailAutoCategory_1 = require("./outlook/mailAutoCategory");
 const mailText_1 = require("./outlook/mailText");
 const mailBodyParts_1 = require("./outlook/mailBodyParts");
 const calendarImportService_1 = require("./calendarImportService");
+const cacheStore_1 = require("../cache/cacheStore");
 const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 const mailboxIdentity_1 = require("./mailboxIdentity");
 /**
@@ -687,6 +688,8 @@ const captureInbox = async (selectedTenantId, options = {}) => {
                                 source: "MAIL",
                             });
                             if (result.action !== "ignored") {
+                                // Einladung eingetragen: Kalender-Lesespeicher neu.
+                                void (0, cacheStore_1.invalidateEverywhere)(["calendar"]);
                                 summary.calendar += 1;
                                 console.log(`[MAIL-IN] Termin ${result.action}: ${keeper.envelope?.subject || ""}`);
                             }

@@ -87,6 +87,9 @@ import batchRoutes from './presentation/routes/batch.routes';
 // Görevler (13.09.2026): eigenständiges Aufgabenmodul nach dem Vorbild Görevly —
 // Aufgaben, Checklisten, Zeitmessung, Chat, Berichte (routes/tasks/index.ts).
 import tasksModuleRoutes from './presentation/routes/tasks';
+// Zeitmessung nach Zeitstempeln (14.09.2026): wiederverwendbarer Zähler je
+// Person und Gegenstand — der Server rechnet, der Browser zeigt (services/timers).
+import serverTimerRoutes from './presentation/routes/serverTimer.routes';
 import { startTasksReminderEngine } from './infrastructure/services/tasks/tasksReminderEngine';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { startReminderEngine } from './infrastructure/services/ReminderEngine';
@@ -302,6 +305,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/dashboard`, dashboardRoutes);
     // Görevler-Modul — nicht zu verwechseln mit /crm/tasks (CRM-Aufgaben).
     app.use(`${prefix}/tasks`, tasksModuleRoutes);
+    // Zähler nach Zeitstempeln: GET/POST /timers/:subjectType/:subjectId[/start|pause|resume|stop|reset].
+    app.use(`${prefix}/timers`, serverTimerRoutes);
     app.use(`${prefix}/batch`, batchRoutes);
 }
 

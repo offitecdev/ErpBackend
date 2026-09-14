@@ -10,6 +10,7 @@ const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const measurementUnits_1 = require("../../shared/measurementUnits");
 const measurementUnitCatalog_1 = require("../../application/services/measurementUnitCatalog");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 /* MENGENEINHEITEN (Einstellungen → Module → Lager → Einheiten).
    Je Mandant EINE pflegbare Liste, aus der beim Artikel gewählt wird: Stück,
    Meter, Kilogramm, Liter, Set, Packung … Eigene Einheiten kommen einfach
@@ -95,7 +96,7 @@ const readName = (value) => String(value ?? '').trim().slice(0, measurementUnits
  * NUR die Einstellungsseite fragt danach: das Auswahlfeld holt dieselbe Liste
  * in jedem Artikelformular und soll dafür nicht drei Gruppierungen bezahlen.
  */
-router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.get('/', AuthMiddleware_1.requireAuth, (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog', 'settings'], ttlSec: 300 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const wantsUsage = String(req.query.usage ?? '') === 'true';

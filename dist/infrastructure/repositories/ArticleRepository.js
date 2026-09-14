@@ -200,7 +200,7 @@ class ArticleRepository {
     }
     async findArticleById(id, options) {
         const data = await prisma_client_1.default.article.findFirst({
-            where: { id, deletedAt: null },
+            where: { id, deletedAt: null, ...(options?.tenantId ? { tenantId: options.tenantId } : {}) },
             // `includeImages=false` must prevent MariaDB from reading the LONGTEXT
             // column, not merely remove it from the JSON response afterwards.
             select: this.articleSelect(options?.includeImages !== false),

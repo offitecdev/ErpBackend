@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.taskPeopleIds = exports.toTaskDetailDto = exports.toTaskRowDto = exports.loadRunningSessionsByTask = exports.requireVisibleTask = exports.visibleTasksSql = exports.memberVisibilitySql = exports.lockTaskRow = exports.loadTaskCore = exports.fetchTaskCoresByIds = exports.fetchTaskCores = exports.mapTaskCore = exports.TASK_CORE_COLUMNS = exports.rawJson = exports.rawCsv = exports.rawString = exports.rawDate = exports.rawBool = exports.rawNumber = void 0;
+exports.fetchTaskListRows = exports.taskPeopleIds = exports.toTaskDetailDto = exports.toTaskRowDto = exports.loadRunningSessionsByTask = exports.requireVisibleTask = exports.visibleTasksSql = exports.memberVisibilitySql = exports.lockTaskRow = exports.loadTaskCore = exports.fetchTaskCoresByIds = exports.fetchTaskCores = exports.mapTaskCore = exports.TASK_CORE_COLUMNS = exports.rawJson = exports.rawCsv = exports.rawString = exports.rawDate = exports.rawBool = exports.rawNumber = void 0;
 const client_1 = require("@prisma/client");
 const taskAccess_1 = require("./taskAccess");
 const taskErrors_1 = require("./taskErrors");
@@ -195,7 +195,7 @@ const loadRunningSessionsByTask = async (db, tenantId, taskIds) => {
     return byTask;
 };
 exports.loadRunningSessionsByTask = loadRunningSessionsByTask;
-const toTaskRowDto = (core, actor, running, now = new Date()) => {
+const toTaskRowDto = (core, actor, running, now = new Date(), ownClosedMs) => {
     const mine = running.find((session) => session.employeeId === actor.employeeId) ?? null;
     const row = {
         id: core.id,
@@ -235,11 +235,20 @@ const toTaskRowDto = (core, actor, running, now = new Date()) => {
             live: [...running],
         };
     }
+    else if (ownClosedMs !== undefined) {
+        const liveMs = mine ? (0, taskTime_1.liveDurationMs)(mine.startedAt, now) : 0;
+        row.work = {
+            closedMs: ownClosedMs,
+            liveMs,
+            totalMs: Math.max(0, ownClosedMs + liveMs),
+            live: mine ? [mine] : [],
+        };
+    }
     return row;
 };
 exports.toTaskRowDto = toTaskRowDto;
-const toTaskDetailDto = (core, actor, running, now = new Date()) => ({
-    ...(0, exports.toTaskRowDto)(core, actor, running, now),
+const toTaskDetailDto = (core, actor, running, now = new Date(), ownClosedMs) => ({
+    ...(0, exports.toTaskRowDto)(core, actor, running, now, ownClosedMs),
     description: core.description,
     approval: {
         state: core.approvalState,
@@ -277,4 +286,81 @@ const taskPeopleIds = (core, running = []) => [
     ...running.map((session) => session.employeeId),
 ];
 exports.taskPeopleIds = taskPeopleIds;
+/** Wessen abgeschlossene Messungen die Zeitsumme zählt: Leitung alle, Teammitglied nur die eigenen. */
+const ownSessionsSql = (actor) => actor.isManager ? client_1.Prisma.sql `TRUE` : client_1.Prisma.sql `ts.employeeId = ${actor.employeeId}`;
+const taskListColumns = (actor, day) => client_1.Prisma.sql `
+    t.id, t.title, t.status, t.flagged, t.startAt, t.dueAt, t.completedAt, t.createdById,
+    t.approvalState, t.reviewState, t.blockReason, t.deleteRequestedById,
+    (SELECT GROUP_CONCAT(ta.employeeId ORDER BY ta.createdAt, ta.id SEPARATOR ',')
+       FROM TaskAssignee ta WHERE ta.taskId = t.id) AS assigneeCsv,
+    (SELECT GROUP_CONCAT(tl.labelId ORDER BY tl.createdAt, tl.id SEPARATOR ',')
+       FROM TaskLabelLink tl WHERE tl.taskId = t.id) AS labelCsv,
+    (SELECT CONCAT(COUNT(*), ',', COALESCE(SUM(ci.done = 1), 0))
+       FROM TaskChecklistItem ci WHERE ci.taskId = t.id) AS checkCsv,
+    (SELECT COUNT(*) FROM TaskComment tc WHERE tc.taskId = t.id) AS commentCount,
+    (SELECT COUNT(*) FROM TaskAttachment tf WHERE tf.taskId = t.id AND tf.kind = 'TASK') AS attachmentCount,
+    (SELECT COUNT(*) FROM TaskTimeSession ts WHERE ts.taskId = t.id) AS sessionCount,
+    (SELECT COALESCE(SUM(GREATEST(0, TIMESTAMPDIFF(MICROSECOND, GREATEST(ts.startedAt, ${day.from}), LEAST(ts.endedAt, ${day.to})) DIV 1000)), 0)
+       FROM TaskTimeSession ts
+      WHERE ts.taskId = t.id AND ts.endedAt IS NOT NULL AND ${ownSessionsSql(actor)}
+        AND ts.startedAt <= ${day.to} AND ts.endedAt >= ${day.from}) AS dayClosedMs,
+    (SELECT GROUP_CONCAT(ts.employeeId, '|', TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', ts.startedAt) DIV 1000 SEPARATOR ',')
+       FROM TaskTimeSession ts WHERE ts.taskId = t.id AND ts.endedAt IS NULL) AS runningCsv,
+    COUNT(*) OVER () AS totalRows
+`;
+const fetchTaskListRows = async (db, actor, query, now, day = (0, taskTime_1.resolveDayWindow)(undefined, undefined, now)) => {
+    const raw = await db.$queryRaw(client_1.Prisma.sql `
+        SELECT ${taskListColumns(actor, day)}
+        FROM Task t
+        WHERE ${query.where}
+        ORDER BY ${query.orderBy}
+        LIMIT ${query.limit} OFFSET ${query.offset}
+    `);
+    const personIds = new Set();
+    const rows = raw.map((row) => {
+        const [checkTotal = 0, checkDone = 0] = (0, exports.rawCsv)(row.checkCsv).map(exports.rawNumber);
+        const sessionCount = (0, exports.rawNumber)(row.sessionCount);
+        const dayClosedMs = (0, exports.rawNumber)(row.dayClosedMs);
+        const running = (0, exports.rawCsv)(row.runningCsv).map((entry) => {
+            const [employeeId, startedMs] = entry.split('|');
+            return { employeeId, startedAt: new Date((0, exports.rawNumber)(startedMs)) };
+        });
+        const mine = running.find((session) => session.employeeId === actor.employeeId) ?? null;
+        const status = String(row.status ?? 'NOT_STARTED');
+        const dueAt = (0, exports.rawDate)(row.dueAt);
+        const createdById = String(row.createdById ?? '');
+        const assigneeIds = (0, exports.rawCsv)(row.assigneeCsv);
+        personIds.add(createdById);
+        for (const id of assigneeIds)
+            personIds.add(id);
+        const dto = {
+            id: String(row.id),
+            title: String(row.title ?? ''),
+            status,
+            effectiveStatus: (0, taskAccess_1.effectiveTaskStatus)({ status, startAt: (0, exports.rawDate)(row.startAt), hasSessions: sessionCount > 0 }, now),
+            flagged: (0, exports.rawBool)(row.flagged),
+            dueAt,
+            completedAt: (0, exports.rawDate)(row.completedAt),
+            createdById,
+            approvalState: String(row.approvalState ?? 'NONE'),
+            reviewState: String(row.reviewState ?? 'APPROVED'),
+            blockReason: (0, exports.rawString)(row.blockReason),
+            deleteRequestedById: (0, exports.rawString)(row.deleteRequestedById),
+            assigneeIds,
+            labelIds: (0, exports.rawCsv)(row.labelCsv),
+            checklist: { done: checkDone, total: checkTotal },
+            commentCount: (0, exports.rawNumber)(row.commentCount),
+            attachmentCount: (0, exports.rawNumber)(row.attachmentCount),
+            overdue: (0, taskAccess_1.isTaskOverdue)({ status, dueAt }, now),
+            timer: { runningForMe: Boolean(mine), myStartedAt: mine?.startedAt ?? null },
+        };
+        const counted = actor.isManager ? running : running.filter((session) => session.employeeId === actor.employeeId);
+        // Die eigene laufende Messung zählt der Browser ab seinem Klick — hier nur die der anderen.
+        const liveMs = counted.reduce((sum, session) => sum + (session === mine ? 0 : (0, taskTime_1.windowedMs)(session.startedAt, null, day, now)), 0);
+        dto.work = { dayMs: Math.max(0, dayClosedMs + liveMs), liveCount: counted.length };
+        return dto;
+    });
+    return { rows, total: raw.length ? (0, exports.rawNumber)(raw[0]?.totalRows) : 0, personIds: [...personIds].filter(Boolean) };
+};
+exports.fetchTaskListRows = fetchTaskListRows;
 //# sourceMappingURL=taskRows.js.map

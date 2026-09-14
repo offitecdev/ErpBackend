@@ -6,6 +6,7 @@ const labelService_1 = require("../../../application/services/tasks/labelService
 const taskConstants_1 = require("../../../application/services/tasks/taskConstants");
 const taskHttp_1 = require("./taskHttp");
 const taskMiddleware_1 = require("./taskMiddleware");
+const ResponseCacheMiddleware_1 = require("../../middlewares/ResponseCacheMiddleware");
 /* ETIKETTEN DER FIRMA, montiert unter /api/v1/tasks/labels. Lesen: jede Person
    des Moduls; anlegen, ändern, löschen: die Leitung (im labelService geprüft). */
 const router = (0, express_1.Router)();
@@ -19,7 +20,7 @@ const patchBody = zod_1.z.object({
     color: labelColor.optional(),
 });
 // GET /labels — alle Etiketten, nach Namen.
-router.get('/', (0, taskHttp_1.taskRoute)('tasks.labels.list', async (_req, res) => {
+router.get('/', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 120 }), (0, taskHttp_1.taskRoute)('tasks.labels.list', async (_req, res) => {
     res.json({ data: await (0, labelService_1.listTaskLabels)((0, taskMiddleware_1.tasksActor)(res)) });
 }));
 // POST /labels — { name, color? }; doppelter Name → 409 LABEL_EXISTS.

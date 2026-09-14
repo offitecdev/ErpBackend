@@ -4,7 +4,7 @@ import type { TasksActor } from './taskActor';
 import type { TasksDb } from './taskDb';
 import { effectiveTaskStatus, isTaskOverdue, taskPermissions, type TaskPermissions } from './taskAccess';
 import { taskForbidden, taskNotFound } from './taskErrors';
-import { liveDurationMs } from './taskTime';
+import { liveDurationMs, resolveDayWindow, type DayWindow } from './taskTime';
 
 /**
  * ── AUFGABENZEILEN: LADEN UND AUSGEBEN ──────────────────────────────────────
@@ -288,9 +288,14 @@ export interface TaskRowDto {
     attachmentCount: number;
     boardPosition: number;
     overdue: boolean;
-    /** Nur die EIGENE laufende Messung — Teammitglieder sehen keine Zeiten. */
+    /** Nur die EIGENE laufende Messung. */
     timer: { runningForMe: boolean; myStartedAt: Date | null };
-    /** Nur für die Leitung: gemessene Zeit (abgeschlossen) + laufende Messungen. */
+    /**
+     * Gemessene Zeit (abgeschlossen) + laufende Messungen. Leitung: alle
+     * Personen. Teammitglied (14.09.2026, Samet: «yönetici değilse kişi sadece
+     * kendisinin süresini görmeli»): nur die eigenen — und nur, wenn der
+     * Aufrufer `ownClosedMs` kennt.
+     */
     work?: { closedMs: number; liveMs: number; totalMs: number; live: RunningSessionRef[] };
 }
 
@@ -299,6 +304,7 @@ export const toTaskRowDto = (
     actor: TasksActor,
     running: readonly RunningSessionRef[],
     now: Date = new Date(),
+    ownClosedMs?: number,
 ): TaskRowDto => {
     const mine = running.find((session) => session.employeeId === actor.employeeId) ?? null;
     const row: TaskRowDto = {
@@ -338,6 +344,14 @@ export const toTaskRowDto = (
             totalMs: Math.max(0, core.closedMs + liveMs),
             live: [...running],
         };
+    } else if (ownClosedMs !== undefined) {
+        const liveMs = mine ? liveDurationMs(mine.startedAt, now) : 0;
+        row.work = {
+            closedMs: ownClosedMs,
+            liveMs,
+            totalMs: Math.max(0, ownClosedMs + liveMs),
+            live: mine ? [mine] : [],
+        };
     }
     return row;
 };
@@ -374,8 +388,9 @@ export const toTaskDetailDto = (
     actor: TasksActor,
     running: readonly RunningSessionRef[],
     now: Date = new Date(),
+    ownClosedMs?: number,
 ): TaskDetailDto => ({
-    ...toTaskRowDto(core, actor, running, now),
+    ...toTaskRowDto(core, actor, running, now, ownClosedMs),
     description: core.description,
     approval: {
         state: core.approvalState,
@@ -441,12 +456,21 @@ export interface TaskListRowDto {
     commentCount: number;
     attachmentCount: number;
     overdue: boolean;
-    timer: { runningForMe: boolean };
-    /** Nur für die Leitung: gemessene Zeit bis `serverNow` und wie viele Messungen gerade laufen. */
-    work?: { totalMs: number; liveCount: number };
+    /** Die EIGENE laufende Messung — ihr Anteil steckt NICHT in `work.dayMs` (der Browser zählt sie ab dem Klick). */
+    timer: { runningForMe: boolean; myStartedAt: Date | null };
+    /**
+     * Zeit des TAGES (Fenster `day`) bis `serverNow` und wie viele Messungen
+     * gerade laufen — Teammitglieder: nur die eigenen. Die Summe aller Tage
+     * steht im Rapport (14.09.2026, Samet: «her gün baştan başlasın»).
+     */
+    work?: { dayMs: number; liveCount: number };
 }
 
-const TASK_LIST_COLUMNS = Prisma.sql`
+/** Wessen abgeschlossene Messungen die Zeitsumme zählt: Leitung alle, Teammitglied nur die eigenen. */
+const ownSessionsSql = (actor: TasksActor): Prisma.Sql =>
+    actor.isManager ? Prisma.sql`TRUE` : Prisma.sql`ts.employeeId = ${actor.employeeId}`;
+
+const taskListColumns = (actor: TasksActor, day: DayWindow) => Prisma.sql`
     t.id, t.title, t.status, t.flagged, t.startAt, t.dueAt, t.completedAt, t.createdById,
     t.approvalState, t.reviewState, t.blockReason, t.deleteRequestedById,
     (SELECT GROUP_CONCAT(ta.employeeId ORDER BY ta.createdAt, ta.id SEPARATOR ',')
@@ -457,8 +481,11 @@ const TASK_LIST_COLUMNS = Prisma.sql`
        FROM TaskChecklistItem ci WHERE ci.taskId = t.id) AS checkCsv,
     (SELECT COUNT(*) FROM TaskComment tc WHERE tc.taskId = t.id) AS commentCount,
     (SELECT COUNT(*) FROM TaskAttachment tf WHERE tf.taskId = t.id AND tf.kind = 'TASK') AS attachmentCount,
-    (SELECT CONCAT(COUNT(*), ',', COALESCE(SUM(CASE WHEN ts.endedAt IS NOT NULL THEN ts.durationMs ELSE 0 END), 0))
-       FROM TaskTimeSession ts WHERE ts.taskId = t.id) AS sessionCsv,
+    (SELECT COUNT(*) FROM TaskTimeSession ts WHERE ts.taskId = t.id) AS sessionCount,
+    (SELECT COALESCE(SUM(GREATEST(0, TIMESTAMPDIFF(MICROSECOND, GREATEST(ts.startedAt, ${day.from}), LEAST(ts.endedAt, ${day.to})) DIV 1000)), 0)
+       FROM TaskTimeSession ts
+      WHERE ts.taskId = t.id AND ts.endedAt IS NOT NULL AND ${ownSessionsSql(actor)}
+        AND ts.startedAt <= ${day.to} AND ts.endedAt >= ${day.from}) AS dayClosedMs,
     (SELECT GROUP_CONCAT(ts.employeeId, '|', TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', ts.startedAt) DIV 1000 SEPARATOR ',')
        FROM TaskTimeSession ts WHERE ts.taskId = t.id AND ts.endedAt IS NULL) AS runningCsv,
     COUNT(*) OVER () AS totalRows
@@ -476,9 +503,10 @@ export const fetchTaskListRows = async (
     actor: TasksActor,
     query: { where: Prisma.Sql; orderBy: Prisma.Sql; limit: number; offset: number },
     now: Date,
+    day: DayWindow = resolveDayWindow(undefined, undefined, now),
 ): Promise<TaskListRowsResult> => {
     const raw = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
-        SELECT ${TASK_LIST_COLUMNS}
+        SELECT ${taskListColumns(actor, day)}
         FROM Task t
         WHERE ${query.where}
         ORDER BY ${query.orderBy}
@@ -487,11 +515,13 @@ export const fetchTaskListRows = async (
     const personIds = new Set<string>();
     const rows = raw.map((row): TaskListRowDto => {
         const [checkTotal = 0, checkDone = 0] = rawCsv(row.checkCsv).map(rawNumber);
-        const [sessionCount = 0, closedMs = 0] = rawCsv(row.sessionCsv).map(rawNumber);
+        const sessionCount = rawNumber(row.sessionCount);
+        const dayClosedMs = rawNumber(row.dayClosedMs);
         const running = rawCsv(row.runningCsv).map((entry) => {
             const [employeeId, startedMs] = entry.split('|');
             return { employeeId, startedAt: new Date(rawNumber(startedMs)) };
         });
+        const mine = running.find((session) => session.employeeId === actor.employeeId) ?? null;
         const status = String(row.status ?? 'NOT_STARTED');
         const dueAt = rawDate(row.dueAt);
         const createdById = String(row.createdById ?? '');
@@ -517,12 +547,12 @@ export const fetchTaskListRows = async (
             commentCount: rawNumber(row.commentCount),
             attachmentCount: rawNumber(row.attachmentCount),
             overdue: isTaskOverdue({ status, dueAt }, now),
-            timer: { runningForMe: running.some((session) => session.employeeId === actor.employeeId) },
+            timer: { runningForMe: Boolean(mine), myStartedAt: mine?.startedAt ?? null },
         };
-        if (actor.isManager) {
-            const liveMs = running.reduce((sum, session) => sum + liveDurationMs(session.startedAt, now), 0);
-            dto.work = { totalMs: Math.max(0, closedMs + liveMs), liveCount: running.length };
-        }
+        const counted = actor.isManager ? running : running.filter((session) => session.employeeId === actor.employeeId);
+        // KEINE laufende Zeit (14.09.2026, Samet: «kronometre olmayacak, arka planda süre hesaplamasın»):
+        // die Zahl ist die Summe der ABGESCHLOSSENEN Messungen; eine laufende zählt erst beim Pausieren.
+        dto.work = { dayMs: Math.max(0, dayClosedMs), liveCount: counted.length };
         return dto;
     });
     return { rows, total: raw.length ? rawNumber(raw[0]?.totalRows) : 0, personIds: [...personIds].filter(Boolean) };

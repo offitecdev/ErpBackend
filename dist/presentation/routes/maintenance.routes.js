@@ -9,6 +9,7 @@ const InventoryRepository_1 = require("../../infrastructure/repositories/Invento
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const RateLimitMiddleware_1 = require("../middlewares/RateLimitMiddleware");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 const router = (0, express_1.Router)();
 /**
  * Die drei Terminwege sind ohne Anmeldung erreichbar und waren ungebremst —
@@ -92,12 +93,12 @@ router.delete('/contracts/:contractId', AuthMiddleware_1.requireAuth, (0, RbacMi
  *     security:
  *       - bearerAuth: []
  */
-router.get('/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.listTasks(req, res));
-router.get('/tasks/:taskId/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.getTaskCalendarDetail(req, res));
-router.get('/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (req, res) => controller.getTask(req, res));
-router.get('/technician/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.listMyTasks(req, res));
-router.get('/technician/tasks/:taskId/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.getMyTaskCalendarDetail(req, res));
-router.get('/technician/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (req, res) => controller.getMyTask(req, res));
+router.get('/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.listTasks(req, res));
+router.get('/tasks/:taskId/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getTaskCalendarDetail(req, res));
+router.get('/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('maintenance.contracts.manage'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getTask(req, res));
+router.get('/technician/tasks', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.listMyTasks(req, res));
+router.get('/technician/tasks/:taskId/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getMyTaskCalendarDetail(req, res));
+router.get('/technician/tasks/:taskId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requireAnyPermission)(['maintenance.tasks.manage', 'maintenance.reports.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getMyTask(req, res));
 /**
  * @swagger
  * /maintenance/tasks/{taskId}:

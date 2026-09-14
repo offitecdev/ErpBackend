@@ -117,6 +117,9 @@ const fx_routes_1 = __importDefault(require("./presentation/routes/fx.routes"));
 const osp_routes_1 = __importDefault(require("./presentation/routes/osp.routes"));
 const files_routes_1 = __importDefault(require("./presentation/routes/files.routes"));
 const dashboard_routes_1 = __importDefault(require("./presentation/routes/dashboard.routes"));
+// Mehrere Lesewege in einem Rundlauf (14.09.2026) — Kopfzeilen-Zähler und
+// Projektliste zahlen die Strecke Browser↔Rechner einmal statt viermal.
+const batch_routes_1 = __importDefault(require("./presentation/routes/batch.routes"));
 // Görevler (13.09.2026): eigenständiges Aufgabenmodul nach dem Vorbild Görevly —
 // Aufgaben, Checklisten, Zeitmessung, Chat, Berichte (routes/tasks/index.ts).
 const tasks_1 = __importDefault(require("./presentation/routes/tasks"));
@@ -132,6 +135,8 @@ const bcryptGate_1 = require("./application/services/bcryptGate");
 // Nur für die API-Dokumentation: im Produktivbetrieb ist sie anmeldepflichtig.
 const AuthMiddleware_1 = require("./presentation/middlewares/AuthMiddleware");
 const prisma_client_1 = __importDefault(require("./infrastructure/database/prisma.client"));
+// Lesespeicher (Redis, sonst im Vorgang) — Schreibanfragen machen ihn ungültig (14.09.2026).
+const ResponseCacheMiddleware_1 = require("./presentation/middlewares/ResponseCacheMiddleware");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3000;
 const apiPrefixes = ['/api/v1', '/backend/api/v1'];
@@ -243,6 +248,7 @@ app.use(apiPrefixes, (_req, res, next) => {
     res.setHeader('Expires', '0');
     next();
 });
+app.use(apiPrefixes, ResponseCacheMiddleware_1.invalidateCachesOnWrite);
 app.use('/api-docs', ...apiDocsGuards, swagger_ui_express_1.default.serve, swagger_ui_express_1.default.setup(swagger_config_1.swaggerSpec, swaggerUiOptions));
 app.use('/backend/api-docs', ...apiDocsGuards, swagger_ui_express_1.default.serve, swagger_ui_express_1.default.setup(swagger_config_1.swaggerSpec, swaggerUiOptions));
 app.get(['/swagger.json', '/backend/swagger.json'], ...apiDocsGuards, (_req, res) => {
@@ -315,6 +321,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/dashboard`, dashboard_routes_1.default);
     // Görevler-Modul — nicht zu verwechseln mit /crm/tasks (CRM-Aufgaben).
     app.use(`${prefix}/tasks`, tasks_1.default);
+    app.use(`${prefix}/batch`, batch_routes_1.default);
 }
 app.use(ErrorHandlerMiddleware_1.globalErrorHandler);
 app.listen(PORT, () => {

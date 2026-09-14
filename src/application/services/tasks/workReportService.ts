@@ -20,6 +20,11 @@ import { DAY_MS } from './taskTime';
  *   checkedItems  Checklistenpunkte, die die Person im Zeitraum abgehakt hat
  *   comments      Kommentare der Person im Zeitraum
  *   tasks         die Aufgaben zu allem oben (Titel, Etiketten, Status, Stand)
+ *                 UND die Termine der Person (14.09.2026, Samet: «bittiğinde süre
+ *                 devam etsin ama gecikme göstersin — onaylanana kadar»): ihr
+ *                 zugewiesen und im Zeitraum fällig, im Zeitraum erledigt oder
+ *                 noch offen und schon überfällig — mit Termin, Abschluss und
+ *                 offener Abschlussanfrage, damit der Rapport den Verzug zeigt
  *
  * Tagesgrenzen kennt nur der Browser der Leserin: er schickt `from`/`to`
  * und gruppiert selbst nach Tagen.
@@ -48,6 +53,14 @@ export interface WorkReportTaskDto {
     labels: string[];
     checkTotal: number;
     checkDone: number;
+    priority: string;
+    startAt: Date | null;
+    dueAt: Date | null;
+    /** Beim Abschluss mit Freigabe = Zeitpunkt der Freigabe. */
+    completedAt: Date | null;
+    /** NONE | PENDING | APPROVED | REJECTED — PENDING: der Verzug läuft weiter. */
+    approvalState: string;
+    approvalRequestedAt: Date | null;
 }
 
 export interface WorkReportDto {
@@ -120,6 +133,13 @@ export const getWorkReport = async (actor: TasksActor, query: Record<string, unk
     const commentFilter = Prisma.sql`
         c.tenantId = ${tenantId} AND c.authorId = ${employeeId}
         AND c.createdAt >= ${from} AND c.createdAt <= ${to}`;
+    // Termine der Person: im Zeitraum fällig, im Zeitraum erledigt oder offen und überfällig.
+    const deadlineFilter = Prisma.sql`
+        a.tenantId = ${tenantId} AND a.employeeId = ${employeeId} AND d.dueAt IS NOT NULL AND (
+            (d.dueAt >= ${from} AND d.dueAt <= ${to})
+            OR (d.completedAt >= ${from} AND d.completedAt <= ${to})
+            OR (d.status NOT IN ('COMPLETED', 'REJECTED') AND d.dueAt < ${to})
+        )`;
 
     const [sessionRows, itemRows, commentRows, taskRows, refs] = await Promise.all([
         prisma.$queryRaw<Array<{ taskId: string; startedAt: unknown; endedAt: unknown }>>(Prisma.sql`
@@ -144,7 +164,8 @@ export const getWorkReport = async (actor: TasksActor, query: Record<string, unk
             LIMIT ${MAX_LIST_ROWS}
         `),
         prisma.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
-            SELECT t.id, t.title, t.status, t.startAt,
+            SELECT t.id, t.title, t.status, t.priority, t.startAt, t.dueAt, t.completedAt,
+                   t.approvalState, t.approvalRequestedAt,
                    EXISTS(SELECT 1 FROM TaskTimeSession x WHERE x.taskId = t.id) AS hasSessions,
                    (SELECT COUNT(*) FROM TaskChecklistItem k WHERE k.taskId = t.id) AS checkTotal,
                    (SELECT COUNT(*) FROM TaskChecklistItem k WHERE k.taskId = t.id AND k.done = 1) AS checkDone,
@@ -158,6 +179,8 @@ export const getWorkReport = async (actor: TasksActor, query: Record<string, unk
                 SELECT ci.taskId FROM TaskChecklistItem ci WHERE ${checkFilter}
                 UNION
                 SELECT c.taskId FROM TaskComment c WHERE ${commentFilter}
+                UNION
+                SELECT a.taskId FROM TaskAssignee a JOIN Task d ON d.id = a.taskId WHERE ${deadlineFilter}
             )
         `),
         loadPersonRefs([employeeId]),
@@ -175,6 +198,12 @@ export const getWorkReport = async (actor: TasksActor, query: Record<string, unk
             labels: (rawString(row.labels) ?? '').split('\n').filter(Boolean),
             checkTotal: rawNumber(row.checkTotal),
             checkDone: rawNumber(row.checkDone),
+            priority: String(row.priority ?? 'MEDIUM'),
+            startAt: rawDate(row.startAt),
+            dueAt: rawDate(row.dueAt),
+            completedAt: rawDate(row.completedAt),
+            approvalState: String(row.approvalState ?? 'NONE'),
+            approvalRequestedAt: rawDate(row.approvalRequestedAt),
         };
     }
 

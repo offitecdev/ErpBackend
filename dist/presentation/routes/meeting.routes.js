@@ -14,6 +14,7 @@ const caldavCalendarService_1 = require("../../infrastructure/services/caldavCal
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 const mailboxIdentity_1 = require("../../infrastructure/services/mailboxIdentity");
 const calendarImportService_1 = require("../../infrastructure/services/calendarImportService");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 /* Workspace "meeting activities" (meetings & lightweight tasks) shown on the CRM
    overview and the unified calendar. Participants mix staff and customers. */
 const router = (0, express_1.Router)();
@@ -91,7 +92,7 @@ const sanitizeParticipants = (raw) => {
     });
 };
 // GET /meetings?start=ISO&end=ISO — every activity of the tenant in the range.
-router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.get('/', AuthMiddleware_1.requireAuth, (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), async (req, res) => {
     try {
         const user = req.user;
         const start = req.query.start ? new Date(String(req.query.start)) : null;

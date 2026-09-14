@@ -63,3 +63,33 @@ export const resolveReportRange = (query: Record<string, unknown>, now: Date = n
     const days = Number(key);
     return { key, from: startOfLocalDay(new Date(now.getTime() - (days - 1) * DAY_MS)), to: endOfLocalDay(now) };
 };
+
+/* ── Tagesfenster (14.09.2026, Samet: «her gün baştan başlasın sayaçlar») ──
+   Liste und Detail zeigen die Zeit des TAGES; die Summe aller Tage steht im
+   Rapport. Die Grenzen schickt der Browser (sein Kalendertag), sonst gilt der
+   Tag des Servers. */
+
+export interface DayWindow {
+    from: Date;
+    to: Date;
+}
+
+const parseIsoDate = (value: unknown): Date | null => {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const date = new Date(value.trim().slice(0, 40));
+    return Number.isNaN(date.getTime()) ? null : date;
+};
+
+export const resolveDayWindow = (fromRaw: unknown, toRaw: unknown, now: Date = new Date()): DayWindow => {
+    const from = parseIsoDate(fromRaw);
+    const to = parseIsoDate(toRaw);
+    if (from && to && to.getTime() > from.getTime() && to.getTime() - from.getTime() <= DAY_MS * 1.5) return { from, to };
+    return { from: startOfLocalDay(now), to: endOfLocalDay(now) };
+};
+
+/** Anteil einer Messung innerhalb des Fensters; eine laufende zählt bis `now`. */
+export const windowedMs = (startedAt: Date, endedAt: Date | null, day: DayWindow, now: Date): number => {
+    const start = Math.max(startedAt.getTime(), day.from.getTime());
+    const end = Math.min((endedAt ?? now).getTime(), day.to.getTime());
+    return Math.max(0, end - start);
+};

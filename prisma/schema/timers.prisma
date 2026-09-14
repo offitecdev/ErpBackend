@@ -1,0 +1,35 @@
+/// ── ZEITMESSUNG NACH ZEITSTEMPELN (14.09.2026, Vorgabe Samet) ─────────────────
+///
+/// Ein wiederverwendbarer Zähler («Timer/Stopwatch»): je Firma, Person und
+/// Gegenstand (`subjectType` + `subjectId`, z. B. TASK/abc12) genau EIN Stand.
+/// Der Server hält KEINE vom Browser gemeldete Dauer, sondern nur
+///   • `status`          IDLE | RUNNING | PAUSED | COMPLETED
+///   • `startedAt`       Beginn des LAUFENDEN Abschnitts (nur bei RUNNING)
+///   • `accumulatedMs`   Summe aller abgeschlossenen Abschnitte
+/// Die verstrichene Zeit ist immer `accumulatedMs + (jetzt − startedAt)` — auf
+/// jedem Gerät gleich, weil «jetzt» die Serveruhr ist (`serverTime` der Antwort).
+/// Millisekunden statt Sekunden: jede Pause würde sonst bis zu einer Sekunde
+/// verlieren; BIGINT, weil INT nach 24,8 Tagen Laufzeit überliefe.
+///
+/// `lastTransitionAt` = Wirkzeitpunkt des letzten Wechsels: ein mitgeschickter
+/// Klickzeitpunkt darf nie davor liegen (zwei Geräte). `version` = Zählstand
+/// für Vergleich-und-Tausch beim Schreiben (keine Zeilensperre nötig).
+/// Ohne Fremdschlüssel auf Employee — wie im Görevler-Modul.
+model ServerTimer {
+  id               String    @id
+  tenantId         String
+  ownerId          String
+  subjectType      String    @db.VarChar(40)
+  subjectId        String    @db.VarChar(64)
+  status           String    @default("IDLE") @db.VarChar(16)
+  startedAt        DateTime?
+  accumulatedMs    BigInt    @default(0)
+  completedAt      DateTime?
+  lastTransitionAt DateTime
+  version          Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([tenantId, ownerId, subjectType, subjectId])
+  @@index([tenantId, ownerId, status])
+}

@@ -32,7 +32,7 @@ import { closeRunningSessionsOnTask, type ClosedSession, type SessionCloseNote }
  *
  *   anlegen (Administrator) NOT_STARTED · Prüfung APPROVED
  *   anlegen (alle anderen)  PENDING_APPROVAL · Prüfung PENDING · Meldung an die Administratorrolle
- *                           (Leitung darf dabei zuweisen, ein Teammitglied ist nur selbst verantwortlich)
+ *                           (wer anlegt, ist immer selbst verantwortlich; die Leitung weist weitere Personen zu)
  *   Abschluss beantragen    eigene Messung endet · Anfrage PENDING · REVIEW
  *   Anfrage zurückziehen    Anfrage NONE · IN_PROGRESS, wenn je gemessen, sonst NOT_STARTED
  *   Abschluss bestätigen    Anfrage APPROVED · COMPLETED · alle Messungen enden
@@ -342,9 +342,9 @@ export interface CreateTaskInput {
 /**
  * Nur die Administratorrolle legt eine sofort freigegebene Aufgabe an. Alle
  * anderen stellen einen Görev-Talep: PENDING_APPROVAL, und die
- * Administratorrolle bekommt eine Meldung («uygun / uygun değil»). Die Leitung
- * darf dabei zuweisen (die Personen hören davon erst bei der Freigabe); ein
- * Teammitglied ist nur selbst verantwortlich.
+ * Administratorrolle bekommt eine Meldung («uygun / uygun değil»). Wer anlegt,
+ * ist immer selbst verantwortlich; die Leitung darf weitere Personen zuweisen
+ * (sie hören davon erst bei der Freigabe).
  */
 export const createTask = async (actor: TasksActor, input: CreateTaskInput): Promise<TaskEnvelope> => {
     const now = new Date();
@@ -353,11 +353,18 @@ export const createTask = async (actor: TasksActor, input: CreateTaskInput): Pro
     const dueAt = input.dueAt ?? null;
     assertDueAfterStart(startAt, dueAt);
 
-    const [assigneeIds, labelIds, boardPosition] = await Promise.all([
-        actor.isManager ? assertAssignablePeople(actor.tenantId, input.assigneeIds ?? []) : [actor.employeeId],
+    // Wer anlegt, ist immer auch verantwortlich — die Leitung eingeschlossen (14.09.2026,
+    // Samet: «biri görev eklediğinde kendi de otomatik eklensin, yönetici dahil»). Die
+    // Leitung wählt weitere Personen dazu; die eigene Kennung wird nicht gegen das
+    // Verzeichnis geprüft (wer hier anlegt, benutzt das Modul gerade).
+    const [chosenIds, labelIds, boardPosition] = await Promise.all([
+        actor.isManager
+            ? assertAssignablePeople(actor.tenantId, (input.assigneeIds ?? []).filter((id) => id !== actor.employeeId))
+            : [],
         requireTenantLabels(prisma, actor.tenantId, input.labelIds ?? []),
         topBoardPosition(actor.tenantId),
     ]);
+    const assigneeIds = [actor.employeeId, ...chosenIds];
 
     const taskId = nanoid(12);
     await runTasksTransaction(async (tx) => {
@@ -394,8 +401,9 @@ export const createTask = async (actor: TasksActor, input: CreateTaskInput): Pro
 
     if (!approved) {
         notifyAfterWrite(actor, taskId, (context) => [reviewRequestNotice(context, input.title)]);
-    } else if (assigneeIds.length) {
-        notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, input.title, assigneeIds)]);
+    } else if (chosenIds.length) {
+        // Die Zuweisung an sich selbst meldet niemand.
+        notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, input.title, chosenIds)]);
     }
     return loadTaskEnvelope(actor, taskId);
 };

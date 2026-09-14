@@ -57,6 +57,7 @@ import { assertSystemAdmin } from '../../../application/services/tasks/taskActor
 import { tasksActor } from './taskMiddleware';
 import { completeTaskOnboarding } from '../../../application/services/tasks/taskOnboarding';
 import { responseCache } from '../../middlewares/ResponseCacheMiddleware';
+import { resolveDayWindow } from '../../../application/services/tasks/taskTime';
 
 /* AUFGABEN (Görevler), montiert unter /api/v1/tasks: Start und Zähler, Liste,
    Pano und Suche, Anfragen der Leitung, Anlegen, Detail, Bearbeiten, Löschen,
@@ -99,6 +100,7 @@ const updateBody = z.object({
 
 const duplicateBody = z.object({ title: zLine(TASK_LIMITS.titleMax).optional() });
 const noteBody = z.object({ note: noteText.optional() });
+/** Zeitpunkt des Klicks; der Dienst begrenzt ihn gegen die Empfangszeit. */
 const statusBody = z.object({ status: z.enum(MANUAL_TASK_STATUSES), reason: noteText.optional() });
 /** `reason` muss mitkommen: leer oder null hebt die Blockade auf — ein vergessenes Feld soll das nicht. */
 const blockBody = z.object({ reason: noteText.nullable() });
@@ -138,6 +140,7 @@ const parseListQuery = (query: Record<string, unknown>): TaskListQuery => ({
     flagged: queryFlag(query.flagged),
     q: queryString(query.q, 100),
     ...queryRange(query.from, query.to),
+    day: resolveDayWindow(query.dayFrom, query.dayTo),
     page: queryInt(query.page, 1, 1, 1_000_000),
     pageSize: queryInt(query.pageSize, TASK_LIMITS.listPageSizeDefault, 1, TASK_LIMITS.listPageSizeMax),
 });
@@ -167,7 +170,7 @@ router.get('/approvals', responseCache({ namespaces: ['tasks'], ttlSec: 15 }), t
 }));
 
 // POST /timer/pause — die eigene laufende Messung beenden, an welcher Aufgabe auch immer.
-router.post('/timer/pause', taskRoute('tasks.timer.pauseAny', async (_req, res) => {
+router.post('/timer/pause', taskRoute('tasks.timer.pauseAny', async (req, res) => {
     const stopped = await pauseTaskTimer(tasksActor(res));
     res.json({ stopped, serverNow: new Date() });
 }));
@@ -195,7 +198,7 @@ router.post('/', taskRoute('tasks.task.create', async (req, res) => {
 
 // GET /:taskId — Detail mit Rechten, Inhalt, Checklisten, Dateien, Räumen, Prognose (Zeiten nur Leitung).
 router.get('/:taskId', taskRoute('tasks.task.detail', async (req, res) => {
-    res.json(await getTaskDetail(tasksActor(res), routeParam(req, 'taskId')));
+    res.json(await getTaskDetail(tasksActor(res), routeParam(req, 'taskId'), resolveDayWindow(req.query.dayFrom, req.query.dayTo)));
 }));
 
 // PATCH /:taskId — Titel, Beschreibung, Termine, Fahne, Priorität.

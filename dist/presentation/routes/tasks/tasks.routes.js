@@ -6,11 +6,14 @@ const taskConstants_1 = require("../../../application/services/tasks/taskConstan
 const taskQueries_1 = require("../../../application/services/tasks/taskQueries");
 const taskService_1 = require("../../../application/services/tasks/taskService");
 const taskTimer_1 = require("../../../application/services/tasks/taskTimer");
+const quickModeService_1 = require("../../../application/services/tasks/quickModeService");
 const AuditLogService_1 = require("../../../infrastructure/services/AuditLogService");
 const taskHttp_1 = require("./taskHttp");
 const taskActor_1 = require("../../../application/services/tasks/taskActor");
 const taskMiddleware_1 = require("./taskMiddleware");
 const taskOnboarding_1 = require("../../../application/services/tasks/taskOnboarding");
+const ResponseCacheMiddleware_1 = require("../../middlewares/ResponseCacheMiddleware");
+const taskTime_1 = require("../../../application/services/tasks/taskTime");
 /* AUFGABEN (Görevler), montiert unter /api/v1/tasks: Start und Zähler, Liste,
    Pano und Suche, Anfragen der Leitung, Anlegen, Detail, Bearbeiten, Löschen,
    Duplizieren, alle Zustandswechsel, Verantwortliche, Etiketten, Verlauf und
@@ -45,6 +48,8 @@ const updateBody = zod_1.z.object({
 });
 const duplicateBody = zod_1.z.object({ title: (0, taskHttp_1.zLine)(taskConstants_1.TASK_LIMITS.titleMax).optional() });
 const noteBody = zod_1.z.object({ note: noteText.optional() });
+/** Zeitpunkt des Klicks; der Dienst begrenzt ihn gegen die Empfangszeit. */
+const timerActionBody = zod_1.z.object({ actionAt: taskHttp_1.zNullableDate.optional() });
 const statusBody = zod_1.z.object({ status: zod_1.z.enum(taskConstants_1.MANUAL_TASK_STATUSES), reason: noteText.optional() });
 /** `reason` muss mitkommen: leer oder null hebt die Blockade auf — ein vergessenes Feld soll das nicht. */
 const blockBody = zod_1.z.object({ reason: noteText.nullable() });
@@ -81,6 +86,7 @@ const parseListQuery = (query) => ({
     flagged: (0, taskHttp_1.queryFlag)(query.flagged),
     q: (0, taskHttp_1.queryString)(query.q, 100),
     ...queryRange(query.from, query.to),
+    day: (0, taskTime_1.resolveDayWindow)(query.dayFrom, query.dayTo),
     page: (0, taskHttp_1.queryInt)(query.page, 1, 1, 1_000_000),
     pageSize: (0, taskHttp_1.queryInt)(query.pageSize, taskConstants_1.TASK_LIMITS.listPageSizeDefault, 1, taskConstants_1.TASK_LIMITS.listPageSizeMax),
 });
@@ -90,7 +96,7 @@ router.get('/bootstrap', (0, taskHttp_1.taskRoute)('tasks.bootstrap', async (_re
     res.json(await (0, taskQueries_1.getTasksBootstrap)((0, taskMiddleware_1.tasksActor)(res)));
 }));
 // GET /summary — Zähler der Seitenleiste und die eigene laufende Messung.
-router.get('/summary', (0, taskHttp_1.taskRoute)('tasks.summary', async (_req, res) => {
+router.get('/summary', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), (0, taskHttp_1.taskRoute)('tasks.summary', async (_req, res) => {
     res.json(await (0, taskQueries_1.getTasksSummary)((0, taskMiddleware_1.tasksActor)(res)));
 }));
 // POST /onboarding/complete — role-specific guide finished; idempotent.
@@ -98,14 +104,15 @@ router.post('/onboarding/complete', (0, taskHttp_1.taskRoute)('tasks.onboarding.
     res.json(await (0, taskOnboarding_1.completeTaskOnboarding)((0, taskMiddleware_1.tasksActor)(res)));
 }));
 // GET /approvals — offene Abschlussanfragen und Vorschläge (Leitung).
-router.get('/approvals', (0, taskHttp_1.taskRoute)('tasks.approvals.list', async (_req, res) => {
+router.get('/approvals', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), (0, taskHttp_1.taskRoute)('tasks.approvals.list', async (_req, res) => {
     // Onaylar-Seite: nur die Administratorrolle.
     (0, taskActor_1.assertSystemAdmin)((0, taskMiddleware_1.tasksActor)(res));
     res.json(await (0, taskQueries_1.listTaskApprovals)((0, taskMiddleware_1.tasksActor)(res)));
 }));
 // POST /timer/pause — die eigene laufende Messung beenden, an welcher Aufgabe auch immer.
-router.post('/timer/pause', (0, taskHttp_1.taskRoute)('tasks.timer.pauseAny', async (_req, res) => {
-    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res));
+router.post('/timer/pause', (0, taskHttp_1.taskRoute)('tasks.timer.pauseAny', async (req, res) => {
+    const { actionAt } = (0, taskHttp_1.parseInput)(timerActionBody, req.body);
+    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res), { actionAt });
     res.json({ stopped, serverNow: new Date() });
 }));
 // GET /timer/active — was ich gerade messe (auch in einer anderen Firma).
@@ -113,8 +120,13 @@ router.get('/timer/active', (0, taskHttp_1.taskRoute)('tasks.timer.active', asyn
     const active = await (0, taskTimer_1.getActiveTimer)((0, taskMiddleware_1.tasksActor)(res).employeeId);
     res.json({ active, serverNow: new Date() });
 }));
+// GET /quick — «Hızlı mod»: Karten der heute aktiven Aufgaben mit meinen Tages- und Gesamtzeiten (`from`/`to` = Tag des Browsers).
+router.get('/quick', (0, taskHttp_1.taskRoute)('tasks.quick', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(await (0, quickModeService_1.getQuickMode)((0, taskMiddleware_1.tasksActor)(res), req.query));
+}));
 // GET / — Liste, Pano (`view=board`) oder Schnellsuche (`view=search`).
-router.get('/', (0, taskHttp_1.taskRoute)('tasks.task.list', async (req, res) => {
+router.get('/', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), (0, taskHttp_1.taskRoute)('tasks.task.list', async (req, res) => {
     const actor = (0, taskMiddleware_1.tasksActor)(res);
     const query = parseListQuery(req.query);
     res.json(query.view === 'search' ? await (0, taskQueries_1.searchTasks)(actor, query) : await (0, taskQueries_1.listTasks)(actor, query));
@@ -127,7 +139,7 @@ router.post('/', (0, taskHttp_1.taskRoute)('tasks.task.create', async (req, res)
 /* ── Eine Aufgabe ───────────────────────────────────────────────────────── */
 // GET /:taskId — Detail mit Rechten, Inhalt, Checklisten, Dateien, Räumen, Prognose (Zeiten nur Leitung).
 router.get('/:taskId', (0, taskHttp_1.taskRoute)('tasks.task.detail', async (req, res) => {
-    res.json(await (0, taskQueries_1.getTaskDetail)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId')));
+    res.json(await (0, taskQueries_1.getTaskDetail)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskTime_1.resolveDayWindow)(req.query.dayFrom, req.query.dayTo)));
 }));
 // PATCH /:taskId — Titel, Beschreibung, Termine, Fahne, Priorität.
 router.patch('/:taskId', (0, taskHttp_1.taskRoute)('tasks.task.update', async (req, res) => {
@@ -200,17 +212,19 @@ router.post('/:taskId/move', (0, taskHttp_1.taskRoute)('tasks.task.move', async 
     res.json(await (0, taskService_1.moveTask)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(moveBody, req.body)));
 }));
 // GET /:taskId/activity — Verlauf, neueste zuerst (Leitung).
-router.get('/:taskId/activity', (0, taskHttp_1.taskRoute)('tasks.task.activity', async (req, res) => {
+router.get('/:taskId/activity', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), (0, taskHttp_1.taskRoute)('tasks.task.activity', async (req, res) => {
     res.json(await (0, taskQueries_1.listTaskActivity)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId')));
 }));
 // POST /:taskId/timer/start — Messung starten; eine andere laufende endet dabei.
 router.post('/:taskId/timer/start', (0, taskHttp_1.taskRoute)('tasks.timer.start', async (req, res) => {
-    const timer = await (0, taskTimer_1.startTaskTimer)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'));
+    const { actionAt } = (0, taskHttp_1.parseInput)(timerActionBody, req.body);
+    const timer = await (0, taskTimer_1.startTaskTimer)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), actionAt);
     res.json({ timer, serverNow: new Date() });
 }));
 // POST /:taskId/timer/pause — die eigene Messung an genau dieser Aufgabe beenden.
 router.post('/:taskId/timer/pause', (0, taskHttp_1.taskRoute)('tasks.timer.pause', async (req, res) => {
-    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res), { taskId: (0, taskHttp_1.routeParam)(req, 'taskId') });
+    const { actionAt } = (0, taskHttp_1.parseInput)(timerActionBody, req.body);
+    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res), { taskId: (0, taskHttp_1.routeParam)(req, 'taskId'), actionAt });
     res.json({ stopped, serverNow: new Date() });
 }));
 exports.default = router;

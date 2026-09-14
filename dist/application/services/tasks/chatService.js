@@ -13,6 +13,7 @@ const taskDb_1 = require("./taskDb");
 const taskErrors_1 = require("./taskErrors");
 const taskFiles_1 = require("./taskFiles");
 const taskNotify_1 = require("./taskNotify");
+const taskOnboarding_1 = require("./taskOnboarding");
 const taskPeople_1 = require("./taskPeople");
 const taskRows_1 = require("./taskRows");
 /* ── Kleine Hilfen ──────────────────────────────────────────────────────── */
@@ -353,6 +354,7 @@ const createChatRoom = async (actor, input) => {
     (0, taskActor_1.assertManager)(actor);
     const me = actor.employeeId;
     const taskIds = [...new Set(input.taskIds)];
+    (0, taskOnboarding_1.assertNotOnboardingTasks)(taskIds);
     const [memberIds, taskRows] = await Promise.all([
         (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, input.memberIds.filter((id) => id !== me)),
         loadTenantTasks(actor, taskIds),
@@ -478,6 +480,7 @@ exports.removeChatMember = removeChatMember;
 /** Aufgabe verknüpfen (Görevly `Ch.linkTask`); schon verknüpft ⇒ unverändert, ohne Nachricht. */
 const linkChatTask = async (actor, roomId, taskId) => {
     (0, taskActor_1.assertManager)(actor);
+    (0, taskOnboarding_1.assertNotOnboardingTasks)([taskId]);
     const [task] = taskId ? await loadTenantTasks(actor, [taskId]) : [];
     if (!task)
         throw (0, taskErrors_1.taskBadRequest)('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { taskIds: [taskId] });

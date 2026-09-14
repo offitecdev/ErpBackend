@@ -19,6 +19,7 @@ const ProjectReportRepository_1 = require("../../infrastructure/repositories/Pro
 const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepository");
 const TenantRepository_1 = require("../../infrastructure/repositories/TenantRepository");
 const tenantModules_1 = require("../../shared/tenantModules");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 const router = (0, express_1.Router)();
 /* TERMINUNTERLAGEN (24.08.2026): die Datei bleibt im Arbeitsspeicher, bis sie
    auf die Platte geschrieben ist — nichts landet in einem Zwischenordner.
@@ -50,21 +51,21 @@ const requireProjectModule = async (req, res, next) => {
 };
 router.use(AuthMiddleware_1.requireAuth, requireProjectModule);
 router.get('/', (0, RbacMiddleware_1.requirePermission)('projects.view'), (req, res) => controller.list(req, res));
-router.get('/options/technicians', (0, RbacMiddleware_1.requireAnyPermission)(['projects.manage', 'projects.view']), (req, res) => controller.listTechnicians(req, res));
-router.get('/appointments', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.listAppointments(req, res));
-router.get('/appointments/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentDetail(req, res));
+router.get('/options/technicians', (0, RbacMiddleware_1.requireAnyPermission)(['projects.manage', 'projects.view']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar', 'staff'], ttlSec: 120 }), (req, res) => controller.listTechnicians(req, res));
+router.get('/appointments', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.listAppointments(req, res));
+router.get('/appointments/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getAppointmentDetail(req, res));
 // Technikerendpunkte: jede Abfrage ist auf die anfragende Person
 // eingeschraenkt (assignedTechId / employeeId), darum genuegt zum LESEN das
 // Projekt-Leserecht - so traegt Stufe 1 der Seite "Montage" auch etwas.
 // Geschrieben (abschliessen, Rapport, Unterschrift) wird weiterhin nur mit
 // 'projects.report' bzw. dem Wartungsrecht.
-router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyInstallations(req, res));
-router.get('/technician/installations/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
+router.get('/technician/installations', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.listMyInstallations(req, res));
+router.get('/technician/installations/:appointmentId/detail', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getAppointmentDetail(req, res, { technicianScope: true }));
 // Der ganze Einsatz aus Sicht der Monteurin: seine Tage (mehrtägige Einsätze)
 // samt Begleitwort und Unterlagen. Lesen genügt — angelegt wird im Büro.
-router.get('/technician/installations/:appointmentId/series', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentSeries(req, res, { technicianScope: true }));
-router.get('/technician/appointment-documents/:documentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getAppointmentDocument(req, res, { technicianScope: true }));
-router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyInstallation(req, res));
+router.get('/technician/installations/:appointmentId/series', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getAppointmentSeries(req, res, { technicianScope: true }));
+router.get('/technician/appointment-documents/:documentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getAppointmentDocument(req, res, { technicianScope: true }));
+router.get('/technician/installations/:appointmentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getMyInstallation(req, res));
 router.post('/technician/installations/:appointmentId/complete', (0, RbacMiddleware_1.requireAnyPermission)(['projects.report', 'maintenance.tasks.manage']), (req, res) => controller.completeInstallation(req, res));
 router.get('/technician/reports', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.listMyMontageReportOrders(req, res));
 router.get('/technician/report-orders/:salesOrderId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.report', 'maintenance.tasks.manage']), (req, res) => controller.getMyMontageReportOrder(req, res));
@@ -101,7 +102,7 @@ router.delete('/appointments/:appointmentId', (0, RbacMiddleware_1.requirePermis
    `…/documents`       — Begleitzettel, Bilder, PDF für die Monteurin. Sie gehen
                          an keine Kundenmail; der Inhalt kommt erst beim Öffnen
                          über `/appointment-documents/:id`. */
-router.get('/appointments/:appointmentId/series', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentSeries(req, res));
+router.get('/appointments/:appointmentId/series', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getAppointmentSeries(req, res));
 router.put('/appointments/:appointmentId/series/days', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.saveAppointmentSeriesDays(req, res));
 router.patch('/appointments/:appointmentId/series', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.saveAppointmentSeriesNote(req, res));
 // Die Datei reist ROH (multipart) — derselbe Weg wie der Angebotsanhang, und
@@ -112,7 +113,7 @@ router.patch('/appointments/:appointmentId/series', (0, RbacMiddleware_1.require
 // Dateien nur einmal statt zwanzigmal parallel durch MariaDB.
 router.post('/appointments/:appointmentId/documents/batch', (0, RbacMiddleware_1.requirePermission)('projects.manage'), appointmentDocumentUpload.array('files', 40), (req, res) => controller.addAppointmentDocuments(req, res));
 router.post('/appointments/:appointmentId/documents', (0, RbacMiddleware_1.requirePermission)('projects.manage'), appointmentDocumentUpload.single('file'), (req, res) => controller.addAppointmentDocument(req, res));
-router.get('/appointment-documents/:documentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (req, res) => controller.getAppointmentDocument(req, res));
+router.get('/appointment-documents/:documentId', (0, RbacMiddleware_1.requireAnyPermission)(['projects.view', 'projects.manage']), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar'], ttlSec: 30 }), (req, res) => controller.getAppointmentDocument(req, res));
 router.delete('/appointment-documents/:documentId', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.deleteAppointmentDocument(req, res));
 // «Termin an Kunden senden» — die Kalender-Einladung geht NUR hierüber raus.
 router.post('/appointments/:appointmentId/send-invite', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.sendAppointmentInvite(req, res));

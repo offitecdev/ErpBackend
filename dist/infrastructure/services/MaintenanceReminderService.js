@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startMaintenanceReminderService = void 0;
 const nanoid_1 = require("nanoid");
+const cacheStore_1 = require("../cache/cacheStore");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const AddProjectReportUseCase_1 = require("../../application/use-cases/project/AddProjectReportUseCase");
 const ProjectReportRepository_1 = require("../repositories/ProjectReportRepository");
@@ -317,8 +318,10 @@ const startMaintenanceReminderService = () => {
     started = true;
     // Die Erinnerungen dürfen stündlich laufen — «morgen ist Montage» hat keine Eile.
     const runReminders = () => {
-        void runReminderPass().catch((error) => console.error("[maintenance-reminders]", error));
-        void runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error));
+        void Promise.all([
+            runReminderPass().catch((error) => console.error("[maintenance-reminders]", error)),
+            runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error)),
+        ]).then(() => (0, cacheStore_1.invalidateEverywhere)(["calendar", "tasks"]));
     };
     /* Erst abschliessen, dann etikettieren — so trägt ein eben geschlossener
        Tag im selben Durchgang schon die richtige Farbe. */
@@ -327,7 +330,9 @@ const startMaintenanceReminderService = () => {
         .then(() => runRelabelCompletedPass())
         .catch((error) => console.error("[project-installation-relabel]", error))
         .then(() => runMarkTodayOngoingPass())
-        .catch((error) => console.error("[project-installation-ongoing]", error));
+        .catch((error) => console.error("[project-installation-ongoing]", error))
+        // Termine wurden abgeschlossen und umetikettiert — Kalender-Lesespeicher neu.
+        .then(() => (0, cacheStore_1.invalidateEverywhere)(["calendar", "tasks"]));
     runReminders();
     // Einmal beim Start (eine verpasste Nacht nachholen), dann jede Mitternacht.
     runAutoFinish();

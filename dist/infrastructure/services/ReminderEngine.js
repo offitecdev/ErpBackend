@@ -9,6 +9,7 @@ const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const reminderSchedule_1 = require("../../shared/reminderSchedule");
 const crmTaskMaintenance_1 = require("./crmTaskMaintenance");
+const cacheStore_1 = require("../cache/cacheStore");
 /**
  * Hintergrunddienst der Erinnerungen (Einstellungen → Module → Verkauf →
  * Erinnerungen). Je Belegart gibt es GENAU EINE Einstellung — Vorlauf und
@@ -187,6 +188,9 @@ const runPass = async () => {
     // Aufräumen NACH dem Zünden: ein "läuft heute ab" bleibt den Tag über
     // stehen (der letzte Gültigkeitstag zählt), erst danach fällt es weg.
     await Promise.all([(0, crmTaskMaintenance_1.flipOverdueTasks)(), (0, crmTaskMaintenance_1.purgeStaleReminders)()]);
+    // Erinnerungen und Aufgabenstatus wurden ohne Anfrage geschrieben: die
+    // Lesespeicher (Redis) für Aufgaben und Kunden gelten nicht mehr.
+    await (0, cacheStore_1.invalidateEverywhere)(['tasks', 'customers']);
 };
 let started = false;
 const startReminderEngine = () => {

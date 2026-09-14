@@ -6,6 +6,7 @@ const taskConstants_1 = require("../../../application/services/tasks/taskConstan
 const taskFiles_1 = require("../../../application/services/tasks/taskFiles");
 const taskHttp_1 = require("./taskHttp");
 const taskMiddleware_1 = require("./taskMiddleware");
+const ResponseCacheMiddleware_1 = require("../../middlewares/ResponseCacheMiddleware");
 /* DATEIEN DES GÖREVLER-MODULS, montiert unter /api/v1/tasks: der Reiter
    «Dosyalar» einer Aufgabe und der EINE Weg, auf dem der Browser die Bytes
    irgendeiner Moduldatei liest (Aufgabe, Kommentar, Chat). Anmeldung und
@@ -38,7 +39,7 @@ router.delete('/attachments/:attachmentId', (0, taskHttp_1.taskRoute)('tasks.att
     res.status(204).end();
 }));
 // GET /:taskId/attachments — die Dateien des Reiters «Dosyalar».
-router.get('/:taskId/attachments', (0, taskHttp_1.taskRoute)('tasks.attachments.list', async (req, res) => {
+router.get('/:taskId/attachments', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), (0, taskHttp_1.taskRoute)('tasks.attachments.list', async (req, res) => {
     res.json(await (0, attachmentService_1.listTaskAttachments)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId')));
 }));
 // POST /:taskId/attachments — multipart `files`.

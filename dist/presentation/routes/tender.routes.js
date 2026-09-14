@@ -23,6 +23,7 @@ const GetTenderSummaryReportUseCase_1 = require("../../application/use-cases/ten
 const CustomerActivityRepository_1 = require("../../infrastructure/repositories/CustomerActivityRepository");
 const InventoryRepository_1 = require("../../infrastructure/repositories/InventoryRepository");
 const TenderActivityLogRepository_1 = require("../../infrastructure/repositories/TenderActivityLogRepository");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 const router = (0, express_1.Router)();
 const tenderDocumentUpload = (0, multer_1.default)({
     storage: multer_1.default.memoryStorage(),
@@ -63,7 +64,7 @@ const tenderArticleController = new TenderArticleController_1.TenderArticleContr
  *         name: search
  *         schema: { type: string }
  */
-router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.list(req, res));
+router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.list(req, res));
 /**
  * @swagger
  * /tenders:
@@ -92,7 +93,7 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
  * Beides ist ein Eingriff in den Belegbestand: dieselbe Berechtigung wie das
  * Löschen.
  */
-router.get('/:id/lifecycle', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.lifecycle(req, res));
+router.get('/:id/lifecycle', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'calendar'], ttlSec: 30 }), (req, res) => tenderController.lifecycle(req, res));
 router.post('/:id/cancel', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.cancel(req, res));
 router.post('/:id/uncancel', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.uncancel(req, res));
 /**
@@ -185,26 +186,26 @@ router.patch('/:id/approve', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.
 (req, res) => tenderController.approve(req, res));
 router.patch('/:id/meta', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
 router.patch('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateMeta(req, res));
-router.get('/options/technicians', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listTechnicians(req, res));
+router.get('/options/technicians', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'staff'], ttlSec: 120 }), (req, res) => tenderController.listTechnicians(req, res));
 // Tenant-wide offer-mail drafts (subject + message templates). Registered
 // BEFORE the '/:id' routes so 'mail-drafts' is never captured as a tender id.
-router.get('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listMailDrafts(req, res));
+router.get('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 120 }), (req, res) => tenderController.listMailDrafts(req, res));
 router.post('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.createMailDraft(req, res));
 router.patch('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.updateMailDraft(req, res));
 router.delete('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.deleteMailDraft(req, res));
 // Tenant-wide intro-text templates (Textbausteine) for the Einleitungstext.
 // Same placement rule as mail-drafts: BEFORE '/:id'.
-router.get('/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listTextTemplates(req, res));
+router.get('/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'settings'], ttlSec: 120 }), (req, res) => tenderController.listTextTemplates(req, res));
 router.post('/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.createTextTemplate(req, res));
 router.patch('/text-templates/:templateId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.updateTextTemplate(req, res));
 router.delete('/text-templates/:templateId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.deleteTextTemplate(req, res));
-router.get('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getScheduleSlots(req, res));
+router.get('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'calendar'], ttlSec: 30 }), (req, res) => tenderController.getScheduleSlots(req, res));
 router.post('/:id/schedule-slots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.createScheduleSlot(req, res));
 router.patch('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.updateScheduleSlot(req, res));
 router.delete('/:id/schedule-slots/:slotId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.deleteScheduleSlot(req, res));
 router.post('/:id/send-offer-mail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('mail.send'), (req, res) => tenderController.sendOfferMail(req, res));
 // Vorschläge für das CC-Feld im Mailbereich der Offerte (Kunde + Kontaktpersonen).
-router.get('/:id/mail-recipients', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listMailRecipients(req, res));
+router.get('/:id/mail-recipients', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'customers'], ttlSec: 60 }), (req, res) => tenderController.listMailRecipients(req, res));
 // Auftragsbestätigung: läuft automatisch beim Erstellen des Auftrags aus der Offerte.
 router.post('/:id/send-order-mail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('mail.send'), (req, res) => tenderController.sendOrderMail(req, res));
 router.patch('/:id/mark-offer-accepted', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.markOfferAccepted(req, res));
@@ -227,7 +228,7 @@ router.post('/:id/export', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.re
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDetails(req, res));
+router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'catalog', 'customers'], ttlSec: 30 }), (req, res) => tenderController.getDetails(req, res));
 /**
  * @swagger
  * /tenders/{id}/pdf-content:
@@ -237,7 +238,7 @@ router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePer
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id/pdf-content', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getPdfContent(req, res));
+router.get('/:id/pdf-content', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.getPdfContent(req, res));
 /**
  * @swagger
  * /tenders/{id}/product-images:
@@ -288,7 +289,7 @@ router.post('/:id/positions/:positionId/articles', AuthMiddleware_1.requireAuth,
 router.delete('/:id/positions/:positionId/articles/:mappingId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.calculate'), (req, res) => tenderArticleController.removeArticleMapping(req, res));
 router.patch('/:id/positions/:positionId/articles/:mappingId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.calculate'), (req, res) => tenderArticleController.updateArticleMapping(req, res));
 router.post('/:id/materials', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.calculate'), (req, res) => tenderArticleController.mapMaterial(req, res));
-router.get('/:id/materials', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderArticleController.listMaterials(req, res));
+router.get('/:id/materials', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'catalog'], ttlSec: 30 }), (req, res) => tenderArticleController.listMaterials(req, res));
 router.delete('/:id/materials/:mappingId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.calculate'), (req, res) => tenderArticleController.removeMaterialMapping(req, res));
 /**
  * @swagger
@@ -299,7 +300,7 @@ router.delete('/:id/materials/:mappingId', AuthMiddleware_1.requireAuth, (0, Rba
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id/report', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), // Yönetici veya Teklif Uzmanı görebilir
+router.get('/:id/report', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), // Yönetici veya Teklif Uzmanı görebilir
 (req, res) => tenderReportController.getSummary(req, res));
 /**
  * @swagger
@@ -327,13 +328,13 @@ router.get('/:id/export', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id/activities', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getActivities(req, res));
-router.get('/:id/logs', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getLogs(req, res));
-router.get('/:id/chatter-summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getChatterSummary(req, res));
-router.get('/:id/chatter', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getChatter(req, res));
+router.get('/:id/activities', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.getActivities(req, res));
+router.get('/:id/logs', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.getLogs(req, res));
+router.get('/:id/chatter-summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.getChatterSummary(req, res));
+router.get('/:id/chatter', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.getChatter(req, res));
 router.post('/:id/notes', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.addNote(req, res));
-router.get('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDocuments(req, res));
-router.get('/:id/documents/:documentId/content', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.getDocumentContent(req, res));
+router.get('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.getDocuments(req, res));
+router.get('/:id/documents/:documentId/content', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 30 }), (req, res) => tenderController.getDocumentContent(req, res));
 router.post('/:id/documents', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), tenderDocumentUpload.single('file'), (req, res) => tenderController.addDocument(req, res));
 exports.default = router;
 //# sourceMappingURL=tender.routes.js.map

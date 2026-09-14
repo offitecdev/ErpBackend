@@ -7,6 +7,7 @@ const InventoryRepository_1 = require("../../infrastructure/repositories/Invento
 const TenderActivityLogRepository_1 = require("../../infrastructure/repositories/TenderActivityLogRepository");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 const router = (0, express_1.Router)();
 const articleRepo = new ArticleRepository_1.ArticleRepository();
 const inventoryRepo = new InventoryRepository_1.InventoryRepository();
@@ -37,7 +38,7 @@ const controller = new ArticleController_1.ArticleController(articleRepo, invent
  *         name: includeStock
  *         schema: { type: boolean, description: "Stok bakiyelerini de döndür" }
  */
-router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.list(req, res));
+router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), (req, res) => controller.list(req, res));
 /**
  * @swagger
  * /articles/lookup/{code}:
@@ -47,7 +48,7 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermis
  *     security:
  *       - bearerAuth: []
  */
-router.get('/lookup/:code', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.lookupByCode(req, res));
+router.get('/lookup/:code', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), (req, res) => controller.lookupByCode(req, res));
 /**
  * @swagger
  * /articles/{id}:
@@ -57,7 +58,7 @@ router.get('/lookup/:code', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.r
  *     security:
  *       - bearerAuth: []
  */
-router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getById(req, res));
+router.get('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), (req, res) => controller.getById(req, res));
 /**
  * @swagger
  * /articles:

@@ -23,6 +23,11 @@ const taskTime_1 = require("./taskTime");
  *   checkedItems  Checklistenpunkte, die die Person im Zeitraum abgehakt hat
  *   comments      Kommentare der Person im Zeitraum
  *   tasks         die Aufgaben zu allem oben (Titel, Etiketten, Status, Stand)
+ *                 UND die Termine der Person (14.09.2026, Samet: «bittiğinde süre
+ *                 devam etsin ama gecikme göstersin — onaylanana kadar»): ihr
+ *                 zugewiesen und im Zeitraum fällig, im Zeitraum erledigt oder
+ *                 noch offen und schon überfällig — mit Termin, Abschluss und
+ *                 offener Abschlussanfrage, damit der Rapport den Verzug zeigt
  *
  * Tagesgrenzen kennt nur der Browser der Leserin: er schickt `from`/`to`
  * und gruppiert selbst nach Tagen.
@@ -89,6 +94,13 @@ const getWorkReport = async (actor, query) => {
     const commentFilter = client_1.Prisma.sql `
         c.tenantId = ${tenantId} AND c.authorId = ${employeeId}
         AND c.createdAt >= ${from} AND c.createdAt <= ${to}`;
+    // Termine der Person: im Zeitraum fällig, im Zeitraum erledigt oder offen und überfällig.
+    const deadlineFilter = client_1.Prisma.sql `
+        a.tenantId = ${tenantId} AND a.employeeId = ${employeeId} AND d.dueAt IS NOT NULL AND (
+            (d.dueAt >= ${from} AND d.dueAt <= ${to})
+            OR (d.completedAt >= ${from} AND d.completedAt <= ${to})
+            OR (d.status NOT IN ('COMPLETED', 'REJECTED') AND d.dueAt < ${to})
+        )`;
     const [sessionRows, itemRows, commentRows, taskRows, refs] = await Promise.all([
         prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
             SELECT s.taskId, s.startedAt, s.endedAt
@@ -112,7 +124,8 @@ const getWorkReport = async (actor, query) => {
             LIMIT ${MAX_LIST_ROWS}
         `),
         prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
-            SELECT t.id, t.title, t.status, t.startAt,
+            SELECT t.id, t.title, t.status, t.priority, t.startAt, t.dueAt, t.completedAt,
+                   t.approvalState, t.approvalRequestedAt,
                    EXISTS(SELECT 1 FROM TaskTimeSession x WHERE x.taskId = t.id) AS hasSessions,
                    (SELECT COUNT(*) FROM TaskChecklistItem k WHERE k.taskId = t.id) AS checkTotal,
                    (SELECT COUNT(*) FROM TaskChecklistItem k WHERE k.taskId = t.id AND k.done = 1) AS checkDone,
@@ -126,6 +139,8 @@ const getWorkReport = async (actor, query) => {
                 SELECT ci.taskId FROM TaskChecklistItem ci WHERE ${checkFilter}
                 UNION
                 SELECT c.taskId FROM TaskComment c WHERE ${commentFilter}
+                UNION
+                SELECT a.taskId FROM TaskAssignee a JOIN Task d ON d.id = a.taskId WHERE ${deadlineFilter}
             )
         `),
         (0, taskPeople_1.loadPersonRefs)([employeeId]),
@@ -142,6 +157,12 @@ const getWorkReport = async (actor, query) => {
             labels: ((0, taskRows_1.rawString)(row.labels) ?? '').split('\n').filter(Boolean),
             checkTotal: (0, taskRows_1.rawNumber)(row.checkTotal),
             checkDone: (0, taskRows_1.rawNumber)(row.checkDone),
+            priority: String(row.priority ?? 'MEDIUM'),
+            startAt: (0, taskRows_1.rawDate)(row.startAt),
+            dueAt: (0, taskRows_1.rawDate)(row.dueAt),
+            completedAt: (0, taskRows_1.rawDate)(row.completedAt),
+            approvalState: String(row.approvalState ?? 'NONE'),
+            approvalRequestedAt: (0, taskRows_1.rawDate)(row.approvalRequestedAt),
         };
     }
     const sessions = [];

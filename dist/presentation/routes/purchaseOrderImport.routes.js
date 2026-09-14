@@ -34,6 +34,7 @@ const RateLimitMiddleware_1 = require("../middlewares/RateLimitMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const documentText_1 = require("../../infrastructure/services/documentText");
 const gptExtract_1 = require("../../infrastructure/services/gptExtract");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 exports.purchaseOrderImportRouter = (0, express_1.Router)();
 /* ── Grenzen ──────────────────────────────────────────────────────────────
    Ein Beleg ist eine Handvoll Seiten. Die Stückgrösse ist bewusst kleiner als
@@ -633,7 +634,7 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
  *     security:
  *       - bearerAuth: []
  */
-exports.purchaseOrderImportRouter.get('/supplier-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+exports.purchaseOrderImportRouter.get('/supplier-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog', 'settings'], ttlSec: 120 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const supplierId = String(req.query.supplierId ?? '').trim();

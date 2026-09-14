@@ -55,6 +55,7 @@ const listTasksDirectory = async (actor) => [...(await (0, taskPeople_1.getTasks
     lastName: person.lastName,
     name: (0, taskPeople_1.personDisplayName)(person),
     title: person.title,
+    roleName: person.roleName,
     isManager: person.isManager,
 }));
 exports.listTasksDirectory = listTasksDirectory;
@@ -137,6 +138,7 @@ const buildPersonStats = (people, facts, range, now) => {
             employeeId: person.id,
             name: (0, taskPeople_1.personDisplayName)(person),
             title: person.title,
+            roleName: person.roleName,
             isManager: person.isManager,
             openCount: counts?.openCount ?? 0,
             completedCount: counts?.completedCount ?? 0,

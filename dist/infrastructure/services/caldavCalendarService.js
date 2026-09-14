@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.testCalendarAccess = exports.startCaldavCaptureService = exports.captureCalendar = exports.discoverCalendars = exports.isCaldavRunning = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const cacheStore_1 = require("../cache/cacheStore");
 const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 const calendarInvite_1 = require("./calendarInvite");
 const calendarImportService_1 = require("./calendarImportService");
@@ -343,6 +344,9 @@ const captureCalendar = async (selectedTenantId) => {
                 summary.removed = removed.count;
             }
         }
+        // Abgleich hat Termine angelegt, geändert oder entfernt: Kalender-Lesespeicher neu.
+        if (summary.created || summary.updated || summary.removed)
+            await (0, cacheStore_1.invalidateEverywhere)(["calendar"]);
         if (failures.length)
             summary.error = failures.join("; ").slice(0, 500);
         summary.durationMs = Date.now() - startedAt;

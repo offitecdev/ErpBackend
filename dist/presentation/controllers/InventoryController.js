@@ -158,8 +158,9 @@ class InventoryController {
     }
     async getMovements(req, res) {
         try {
+            const tenantId = req.user.tenantId;
             const articleId = req.params.articleId;
-            const movements = await this.inventoryRepository.getMovements(articleId);
+            const movements = await this.inventoryRepository.getMovements(tenantId, articleId);
             res.status(200).json(movements);
         }
         catch (error) {

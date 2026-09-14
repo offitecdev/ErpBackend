@@ -49,9 +49,11 @@ const assignedNotice = (context, title, recipientIds) => ({
     message: `${context.actor} hat Ihnen «${title}» zugewiesen.`,
     params: { actor: context.actor, title },
 });
+/* Görev-Talepe entscheidet NUR die Administratorrolle (14.09.2026, Samet:
+   «sadece Administrator rolü, görevler için ayrı bir rol asla oluşturma»). */
 const reviewRequestNotice = (context, title) => ({
     type: taskConstants_1.NOTIFY.REVIEW_REQUEST,
-    recipientIds: context.managerIds,
+    recipientIds: context.adminIds,
     title: 'Neuer Aufgabenantrag',
     message: `${context.actor} hat die Aufgabe «${title}» beantragt und wartet auf Freigabe.`,
     params: { actor: context.actor, title },
@@ -240,20 +242,30 @@ const notifyIfCompletionApproved = (actor, task, plan) => {
     notifyAfterWrite(actor, task.id, (context) => [completionApprovedNotice(context, task)]);
 };
 /**
- * Die Leitung legt eine freigegebene Aufgabe an und weist zu. Ein Teammitglied
- * schlägt vor: PENDING_APPROVAL, verantwortlich nur es selbst (mitgeschickte
- * Personen zählen nicht), und die Leitung bekommt eine Meldung.
+ * Nur die Administratorrolle legt eine sofort freigegebene Aufgabe an. Alle
+ * anderen stellen einen Görev-Talep: PENDING_APPROVAL, und die
+ * Administratorrolle bekommt eine Meldung («uygun / uygun değil»). Wer anlegt,
+ * ist immer selbst verantwortlich; die Leitung darf weitere Personen zuweisen
+ * (sie hören davon erst bei der Freigabe).
  */
 const createTask = async (actor, input) => {
     const now = new Date();
+    const approved = actor.isSystemAdmin;
     const startAt = input.startAt ?? now;
     const dueAt = input.dueAt ?? null;
     assertDueAfterStart(startAt, dueAt);
-    const [assigneeIds, labelIds, boardPosition] = await Promise.all([
-        actor.isManager ? (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, input.assigneeIds ?? []) : [actor.employeeId],
+    // Wer anlegt, ist immer auch verantwortlich — die Leitung eingeschlossen (14.09.2026,
+    // Samet: «biri görev eklediğinde kendi de otomatik eklensin, yönetici dahil»). Die
+    // Leitung wählt weitere Personen dazu; die eigene Kennung wird nicht gegen das
+    // Verzeichnis geprüft (wer hier anlegt, benutzt das Modul gerade).
+    const [chosenIds, labelIds, boardPosition] = await Promise.all([
+        actor.isManager
+            ? (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, (input.assigneeIds ?? []).filter((id) => id !== actor.employeeId))
+            : [],
         requireTenantLabels(prisma_client_1.default, actor.tenantId, input.labelIds ?? []),
         topBoardPosition(actor.tenantId),
     ]);
+    const assigneeIds = [actor.employeeId, ...chosenIds];
     const taskId = (0, nanoid_1.nanoid)(12);
     await (0, taskDb_1.runTasksTransaction)(async (tx) => {
         await tx.task.create({
@@ -262,7 +274,7 @@ const createTask = async (actor, input) => {
                 tenantId: actor.tenantId,
                 title: input.title,
                 description: input.description || null,
-                status: actor.isManager ? 'NOT_STARTED' : 'PENDING_APPROVAL',
+                status: approved ? 'NOT_STARTED' : 'PENDING_APPROVAL',
                 priority: input.priority ?? 'MEDIUM',
                 origin: actor.isManager ? 'MANAGER' : 'MEMBER',
                 flagged: input.flagged ?? false,
@@ -270,7 +282,7 @@ const createTask = async (actor, input) => {
                 dueAt,
                 reminderAt: input.reminderAt ?? null,
                 approvalState: 'NONE',
-                ...(actor.isManager
+                ...(approved
                     ? { reviewState: 'APPROVED', reviewDecidedById: actor.employeeId, reviewDecidedAt: now }
                     : { reviewState: 'PENDING', reviewRequestedById: actor.employeeId, reviewRequestedAt: now }),
                 boardPosition,
@@ -286,11 +298,12 @@ const createTask = async (actor, input) => {
             meta: { title: input.title },
         });
     });
-    if (!actor.isManager) {
+    if (!approved) {
         notifyAfterWrite(actor, taskId, (context) => [reviewRequestNotice(context, input.title)]);
     }
-    else if (assigneeIds.length) {
-        notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, input.title, assigneeIds)]);
+    else if (chosenIds.length) {
+        // Die Zuweisung an sich selbst meldet niemand.
+        notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, input.title, chosenIds)]);
     }
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
@@ -785,7 +798,7 @@ const rejectTaskCompletion = async (actor, taskId, input) => {
 exports.rejectTaskCompletion = rejectTaskCompletion;
 /* ── Prüfung eines Vorschlags ───────────────────────────────────────────── */
 const approveTaskReview = async (actor, taskId, input) => {
-    (0, taskActor_1.assertManager)(actor);
+    (0, taskActor_1.assertSystemAdmin)(actor);
     const note = input.note || null;
     const core = await withLockedTask(actor, taskId, async (tx, { core }) => {
         if (core.reviewState !== 'PENDING')
@@ -803,7 +816,12 @@ const approveTaskReview = async (actor, taskId, input) => {
         });
         return core;
     });
-    notifyAfterWrite(actor, taskId, (context) => [reviewApprovedNotice(context, core)]);
+    // Zugewiesene (ausser der Anlegenden) hören erst jetzt von der Aufgabe.
+    const newlyAssigned = core.assigneeIds.filter((id) => id !== core.createdById && id !== actor.employeeId);
+    notifyAfterWrite(actor, taskId, (context) => [
+        reviewApprovedNotice(context, core),
+        ...(newlyAssigned.length ? [assignedNotice(context, core.title, newlyAssigned)] : []),
+    ]);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.approveTaskReview = approveTaskReview;
@@ -813,7 +831,7 @@ exports.approveTaskReview = approveTaskReview;
  * Blockadegrund bleibt leer — den Satz baut die Oberfläche aus `reviewNote`.
  */
 const rejectTaskReview = async (actor, taskId, input) => {
-    (0, taskActor_1.assertManager)(actor);
+    (0, taskActor_1.assertSystemAdmin)(actor);
     const note = requireNote(input.note);
     const { core, wastedMs } = await withLockedTask(actor, taskId, async (tx, { core }) => {
         if (core.reviewState !== 'PENDING')

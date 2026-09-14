@@ -30,8 +30,8 @@ const taskOnboarding_1 = require("./taskOnboarding");
  * (TASK_CORE_COLUMNS). «Jetzt» ist die Uhr dieses Servers und geht als Wert in
  * die Abfragen — dieselbe Uhr rechnet `overdue` der Zeilen und `serverNow`.
  *
- * Zeiten (ms) sieht nur die Leitung: ein Teammitglied bekommt kein `work`,
- * keine Aufschlüsselung und nicht die Namen derer, die gerade messen.
+ * Zeiten (ms): die Leitung sieht alle Personen; ein Teammitglied nur die
+ * EIGENEN Messungen (14.09.2026) — nie die Zeit oder Namen anderer.
  */
 /* ── Bausteine ──────────────────────────────────────────────────────────── */
 /** Offen = weder abgeschlossen noch abgelehnt (Görevly `isOpen`). */
@@ -60,14 +60,26 @@ const loadRunningSessionsAndPeople = async (actor, cores) => {
 };
 /** Die Aufgabe im Zustand NACH dem Commit — die Antwort jedes Schreibwegs. */
 const loadTaskEnvelope = async (actor, taskId) => {
-    const core = await (0, taskRows_1.loadTaskCore)(prisma_client_1.default, actor.tenantId, taskId);
+    const [core, ownClosedMs] = await Promise.all([
+        (0, taskRows_1.loadTaskCore)(prisma_client_1.default, actor.tenantId, taskId),
+        actor.isManager ? Promise.resolve(undefined) : loadOwnClosedMs(actor, taskId),
+    ]);
     if (!core)
         throw (0, taskErrors_1.taskNotFound)();
     const { running, people } = await loadRunningSessionsAndPeople(actor, [core]);
     const now = new Date();
-    return { task: (0, taskRows_1.toTaskDetailDto)(core, actor, running.get(core.id) ?? [], now), people, serverNow: now };
+    return { task: (0, taskRows_1.toTaskDetailDto)(core, actor, running.get(core.id) ?? [], now, ownClosedMs), people, serverNow: now };
 };
 exports.loadTaskEnvelope = loadTaskEnvelope;
+/** Summe der eigenen abgeschlossenen Messungen an einer Aufgabe (Teammitglieder sehen nur ihre Zeit). */
+const loadOwnClosedMs = async (actor, taskId) => {
+    const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT COALESCE(SUM(durationMs), 0) AS ms
+        FROM TaskTimeSession
+        WHERE tenantId = ${actor.tenantId} AND taskId = ${taskId} AND employeeId = ${actor.employeeId} AND endedAt IS NOT NULL
+    `);
+    return (0, taskRows_1.rawNumber)(rows[0]?.ms);
+};
 const getTasksSummary = async (actor) => {
     const now = new Date();
     const [countRows, unreadRows, activeTimer] = await Promise.all([
@@ -103,7 +115,8 @@ const getTasksSummary = async (actor) => {
         openCount: (0, taskRows_1.rawNumber)(counts.openCount),
         overdueCount: (0, taskRows_1.rawNumber)(counts.overdueCount),
         dueTodayCount: (0, taskRows_1.rawNumber)(counts.dueTodayCount),
-        pendingApprovalCount: actor.isManager ? (0, taskRows_1.rawNumber)(counts.pendingCount) : 0,
+        // Anfragen entscheidet nur die Administratorrolle — nur sie sieht den Zähler.
+        pendingApprovalCount: actor.isSystemAdmin ? (0, taskRows_1.rawNumber)(counts.pendingCount) : 0,
         unreadChatCount: (0, taskRows_1.rawNumber)(unreadRows[0]?.unread),
         activeTimer,
         serverNow: now,
@@ -210,24 +223,38 @@ const listOrderSql = (query) => {
     }
 };
 const listTasks = async (actor, query) => {
-    const onboarding = await (0, taskOnboarding_1.ensureTaskOnboarding)(actor);
+    // Nach der ersten Prüfung im Prozess ohne Rundgang: die Kennung ist deterministisch.
+    const onboardingTaskId = (0, taskOnboarding_1.knownOnboardingTaskId)(actor) ?? (await (0, taskOnboarding_1.ensureTaskOnboarding)(actor)).taskId;
     const now = new Date();
-    const where = listWhereSql(actor, query, now);
-    const [cores, countRows] = await Promise.all([
-        (0, taskRows_1.fetchTaskCores)(prisma_client_1.default, {
-            where,
+    const [result, directory] = await Promise.all([
+        (0, taskRows_1.fetchTaskListRows)(prisma_client_1.default, actor, {
+            where: listWhereSql(actor, query, now),
             // The unfinished guide is literally the person's first task: keep
             // it above normal sorting until the walkthrough completes.
-            orderBy: client_1.Prisma.sql `(t.id = ${onboarding.taskId}) DESC, ${listOrderSql(query)}`,
+            orderBy: client_1.Prisma.sql `(t.id = ${onboardingTaskId}) DESC, ${listOrderSql(query)}`,
             limit: query.pageSize,
             offset: (query.page - 1) * query.pageSize,
-        }),
-        prisma_client_1.default.$queryRaw(client_1.Prisma.sql `SELECT COUNT(*) AS total FROM Task t WHERE ${where}`),
+        }, now, query.day),
+        (0, taskPeople_1.getTasksPeople)(actor.tenantId),
     ]);
-    const { running, people } = await loadRunningSessionsAndPeople(actor, cores);
+    // Namen aus dem 30-s-Verzeichnis; nur ehemalige Personen kosten eine Nachlesung.
+    const people = {};
+    const missing = [];
+    for (const id of result.personIds) {
+        const person = directory.get(id);
+        if (person)
+            people[id] = { id, name: (0, taskPeople_1.personDisplayName)(person) };
+        else
+            missing.push(id);
+    }
+    if (missing.length) {
+        for (const ref of Object.values(await (0, taskPeople_1.loadPersonRefs)(missing)))
+            people[ref.id] = { id: ref.id, name: ref.name };
+    }
     return {
-        data: cores.map((core) => (0, taskRows_1.toTaskRowDto)(core, actor, running.get(core.id) ?? [], now)),
-        total: (0, taskRows_1.rawNumber)(countRows[0]?.total),
+        data: result.rows,
+        // Eine Seite hinter dem Ende hat keine Zeile, die OVER() trägt.
+        total: result.rows.length ? result.total : (query.page - 1) * query.pageSize,
         page: query.page,
         pageSize: query.pageSize,
         people,
@@ -255,8 +282,8 @@ const listTaskApprovals = async (actor) => {
     if (!actor.isManager && !actor.canDelete)
         (0, taskActor_1.assertManager)(actor);
     const now = new Date();
-    // Abschlussanfragen entscheidet nur die Administratorrolle; Vorschläge weiter die Leitung.
-    const managerPart = actor.isManager ? client_1.Prisma.sql `t.reviewState = 'PENDING'` : client_1.Prisma.sql `FALSE`;
+    // Görev-Talepe UND Abschlussanfragen entscheidet nur die Administratorrolle (14.09.2026).
+    const managerPart = actor.isSystemAdmin ? client_1.Prisma.sql `t.reviewState = 'PENDING'` : client_1.Prisma.sql `FALSE`;
     const completionPart = actor.isSystemAdmin ? client_1.Prisma.sql `OR t.approvalState = 'PENDING'` : client_1.Prisma.empty;
     const deletePart = actor.canDelete ? client_1.Prisma.sql `OR t.deleteRequestedAt IS NOT NULL` : client_1.Prisma.empty;
     const cores = await (0, taskRows_1.fetchTaskCores)(prisma_client_1.default, {
@@ -266,7 +293,7 @@ const listTaskApprovals = async (actor) => {
     const toCard = (core) => (0, taskRows_1.toTaskDetailDto)(core, actor, running.get(core.id) ?? [], now);
     return {
         completionRequests: actor.isSystemAdmin ? cores.filter((core) => core.approvalState === 'PENDING').map(toCard) : [],
-        reviewRequests: cores.filter((core) => core.reviewState === 'PENDING').map(toCard),
+        reviewRequests: actor.isSystemAdmin ? cores.filter((core) => core.reviewState === 'PENDING').map(toCard) : [],
         deleteRequests: actor.canDelete ? cores.filter((core) => core.deleteRequestedById).map(toCard) : [],
         people,
         serverNow: now,
@@ -287,21 +314,31 @@ const sessionMs = (session, now) => session.endedAt ? session.durationMs ?? 0 : 
  * meiste Zeit zuerst. Summen werden NICHT auf die INT-Grenze einer einzelnen
  * Messung gekürzt — viele Personen über Monate überschreiten sie zu Recht.
  */
-const buildWorkDto = (sessions, now) => {
+/**
+ * `ownEmployeeId`: die laufende Messung DIESER Person setzt nur `live`, zählt aber
+ * nichts — der Browser zählt sie ab seinem eigenen Klick (14.09.2026), damit Start
+ * und Pause nie auf eine Antwort warten und überall dieselbe Sekunde zeigen.
+ */
+const buildWorkDto = (sessions, now, day = (0, taskTime_1.resolveDayWindow)(undefined, undefined, now), ownEmployeeId) => {
     const byPerson = new Map();
     let closedMs = 0;
     let liveMs = 0;
+    let dayMs = 0;
     for (const session of sessions) {
         const live = session.endedAt === null;
-        const ms = sessionMs(session, now);
+        const ownLive = live && session.employeeId === ownEmployeeId;
+        const ms = ownLive ? 0 : sessionMs(session, now);
+        const inDay = ownLive ? 0 : (0, taskTime_1.windowedMs)(session.startedAt, session.endedAt, day, now);
         const last = session.endedAt ?? now;
         if (live)
             liveMs += ms;
         else
             closedMs += ms;
+        dayMs += inDay;
         const entry = byPerson.get(session.employeeId)
-            ?? { employeeId: session.employeeId, ms: 0, sessions: 0, first: session.startedAt, last, live: false };
+            ?? { employeeId: session.employeeId, ms: 0, dayMs: 0, sessions: 0, first: session.startedAt, last, live: false };
         entry.ms += ms;
+        entry.dayMs += inDay;
         if (live)
             entry.live = true;
         else
@@ -316,7 +353,8 @@ const buildWorkDto = (sessions, now) => {
         totalMs: closedMs + liveMs,
         closedMs,
         liveMs,
-        breakdown: [...byPerson.values()].sort((a, b) => b.ms - a.ms),
+        dayMs,
+        breakdown: [...byPerson.values()].sort((a, b) => b.dayMs - a.dayMs || b.ms - a.ms),
     };
 };
 exports.buildWorkDto = buildWorkDto;
@@ -338,23 +376,31 @@ const activePersonRef = (person) => ({
     title: person.title,
     active: true,
 });
-const getTaskDetail = async (actor, taskId) => {
-    // Erst die Sichtbarkeit — kein Teil einer fremden Aufgabe wird gelesen.
-    const { core, permissions } = await (0, taskRows_1.requireVisibleTask)(prisma_client_1.default, actor, taskId);
-    const [content, checklists, attachments, comments, chatRooms, sessions, directory] = await Promise.all([
-        (0, taskParts_1.loadTaskContent)(prisma_client_1.default, actor.tenantId, core.id),
-        (0, taskParts_1.loadTaskChecklists)(prisma_client_1.default, actor.tenantId, core.id),
-        (0, taskParts_1.loadTaskAttachments)(prisma_client_1.default, actor.tenantId, core.id),
-        (0, commentService_1.loadVisibleTaskComments)(actor, core.id),
-        loadLinkedChatRooms(actor, core.id),
-        (0, exports.loadTaskSessions)(actor.tenantId, core.id),
+const getTaskDetail = async (actor, taskId, day) => {
+    /* Aufgabe und alle Teile in EINEM parallelen Schritt (14.09.2026, Samet:
+       «görev detayı 350 ms, max 200–250»). Früher lief die Sichtbarkeit als
+       eigener Rundgang davor. Jede Teilabfrage ist auf die Firma beschränkt;
+       ist die Aufgabe nicht sichtbar, verlässt nichts davon den Server —
+       die Prüfung steht vor der Antwort. */
+    const [visible, content, checklists, attachments, comments, chatRooms, sessions, directory] = await Promise.all([
+        (0, taskRows_1.requireVisibleTask)(prisma_client_1.default, actor, taskId),
+        (0, taskParts_1.loadTaskContent)(prisma_client_1.default, actor.tenantId, taskId),
+        (0, taskParts_1.loadTaskChecklists)(prisma_client_1.default, actor.tenantId, taskId),
+        (0, taskParts_1.loadTaskAttachments)(prisma_client_1.default, actor.tenantId, taskId),
+        (0, commentService_1.loadVisibleTaskComments)(actor, taskId),
+        loadLinkedChatRooms(actor, taskId),
+        (0, exports.loadTaskSessions)(actor.tenantId, taskId),
         (0, taskPeople_1.getTasksPeople)(actor.tenantId),
     ]);
+    const { core, permissions } = visible;
     const now = new Date();
     const running = sessions
         .filter((session) => session.endedAt === null)
         .map((session) => ({ employeeId: session.employeeId, startedAt: session.startedAt }));
-    const work = actor.isManager ? (0, exports.buildWorkDto)(sessions, now) : null;
+    // Leitung: alle Personen; Teammitglied: nur die eigenen Messungen (14.09.2026).
+    const ownSessions = sessions.filter((session) => session.employeeId === actor.employeeId);
+    const work = (0, exports.buildWorkDto)(actor.isManager ? sessions : ownSessions, now, day ?? (0, taskTime_1.resolveDayWindow)(undefined, undefined, now), actor.employeeId);
+    const ownClosedMs = actor.isManager ? undefined : ownSessions.reduce((sum, session) => sum + (session.endedAt ? session.durationMs ?? 0 : 0), 0);
     // Prognose aus denselben Checklisten, die die Antwort zeigt; sie nennt keine Zeiten.
     const forecast = (0, taskForecast_1.computeTaskForecast)({
         status: core.status,
@@ -388,7 +434,7 @@ const getTaskDetail = async (actor, taskId) => {
     if (historicalIds.length)
         Object.assign(people, await (0, taskPeople_1.loadPersonRefs)(historicalIds));
     return {
-        task: (0, taskRows_1.toTaskDetailDto)(core, actor, running, now),
+        task: (0, taskRows_1.toTaskDetailDto)(core, actor, running, now, ownClosedMs),
         permissions,
         content,
         checklists,

@@ -45,6 +45,40 @@ const tableRows = (value) => {
     const width = Math.max(1, ...rows.map((row) => row.length));
     return rows.map((row) => [...row, ...new Array(width - row.length).fill('')]);
 };
+const TABLE_CELL_COLOR_RE = /^#[0-9a-f]{6}$/i;
+const TABLE_VALIGNS = ['top', 'middle', 'bottom'];
+/** Zellraster passend zu `rows` (Farbe, senkrechte Ausrichtung); nichts gesetzt = weg. */
+const tableCellGrid = (value, rows, accept) => {
+    if (!Array.isArray(value))
+        return undefined;
+    const grid = rows.map((row, rowIndex) => {
+        const source = Array.isArray(value[rowIndex]) ? value[rowIndex] : [];
+        return row.map((_, columnIndex) => accept(source[columnIndex]));
+    });
+    return grid.some((row) => row.some(Boolean)) ? grid : undefined;
+};
+/**
+ * Tabelle (14.09.2026): Zellen, Spaltenbreiten (px, beim Einpassen Gewichte),
+ * Hintergrund und senkrechte Ausrichtung je Zelle, Breite «note»/«window».
+ */
+const tableMeta = (meta) => {
+    const rows = tableRows(meta.rows);
+    const out = { rows };
+    const width = rows[0]?.length ?? 1;
+    if (Array.isArray(meta.colWidths) && meta.colWidths.length === width
+        && meta.colWidths.every((entry) => typeof entry === 'number' && Number.isFinite(entry))) {
+        out.colWidths = meta.colWidths.map((entry) => Math.round(Math.min(4000, Math.max(24, entry))));
+    }
+    if (meta.fit === 'note' || meta.fit === 'window')
+        out.fit = meta.fit;
+    const bg = tableCellGrid(meta.cellBg, rows, (cell) => (typeof cell === 'string' && TABLE_CELL_COLOR_RE.test(cell) ? cell.toLowerCase() : ''));
+    if (bg)
+        out.cellBg = bg;
+    const valign = tableCellGrid(meta.cellVAlign, rows, (cell) => (TABLE_VALIGNS.includes(cell) ? String(cell) : ''));
+    if (valign)
+        out.cellVAlign = valign;
+    return out;
+};
 /** Text und `meta` eines Blocks nach seiner Art; null = der Block fällt weg. */
 const blockBody = (type, raw, rules) => {
     const meta = isRecord(raw.meta) ? raw.meta : {};
@@ -59,7 +93,7 @@ const blockBody = (type, raw, rules) => {
         case 'divider':
             return { text: '', meta: {} };
         case 'table':
-            return { text: '', meta: { rows: tableRows(meta.rows) } };
+            return { text: '', meta: tableMeta(meta) };
         case 'checklist': {
             const groupId = meta.groupId;
             return typeof groupId === 'string' && rules.checklistIds.has(groupId) ? { text: '', meta: { groupId } } : null;

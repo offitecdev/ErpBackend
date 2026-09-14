@@ -27,7 +27,7 @@ import {
     type TaskDetailDto,
     type TaskListRowDto,
 } from './taskRows';
-import { endOfLocalDay, liveDurationMs } from './taskTime';
+import { endOfLocalDay, liveDurationMs, resolveDayWindow, windowedMs, type DayWindow } from './taskTime';
 import { getActiveTimer, type ActiveTimerInfo } from './taskTimer';
 import { ensureTaskOnboarding, knownOnboardingTaskId, type TaskOnboardingDto } from './taskOnboarding';
 
@@ -44,8 +44,8 @@ import { ensureTaskOnboarding, knownOnboardingTaskId, type TaskOnboardingDto } f
  * (TASK_CORE_COLUMNS). «Jetzt» ist die Uhr dieses Servers und geht als Wert in
  * die Abfragen — dieselbe Uhr rechnet `overdue` der Zeilen und `serverNow`.
  *
- * Zeiten (ms) sieht nur die Leitung: ein Teammitglied bekommt kein `work`,
- * keine Aufschlüsselung und nicht die Namen derer, die gerade messen.
+ * Zeiten (ms): die Leitung sieht alle Personen; ein Teammitglied nur die
+ * EIGENEN Messungen (14.09.2026) — nie die Zeit oder Namen anderer.
  */
 
 /* ── Bausteine ──────────────────────────────────────────────────────────── */
@@ -90,11 +90,24 @@ export interface TaskEnvelope {
 
 /** Die Aufgabe im Zustand NACH dem Commit — die Antwort jedes Schreibwegs. */
 export const loadTaskEnvelope = async (actor: TasksActor, taskId: string): Promise<TaskEnvelope> => {
-    const core = await loadTaskCore(prisma, actor.tenantId, taskId);
+    const [core, ownClosedMs] = await Promise.all([
+        loadTaskCore(prisma, actor.tenantId, taskId),
+        actor.isManager ? Promise.resolve(undefined) : loadOwnClosedMs(actor, taskId),
+    ]);
     if (!core) throw taskNotFound();
     const { running, people } = await loadRunningSessionsAndPeople(actor, [core]);
     const now = new Date();
-    return { task: toTaskDetailDto(core, actor, running.get(core.id) ?? [], now), people, serverNow: now };
+    return { task: toTaskDetailDto(core, actor, running.get(core.id) ?? [], now, ownClosedMs), people, serverNow: now };
+};
+
+/** Summe der eigenen abgeschlossenen Messungen an einer Aufgabe (Teammitglieder sehen nur ihre Zeit). */
+const loadOwnClosedMs = async (actor: TasksActor, taskId: string): Promise<number> => {
+    const rows = await prisma.$queryRaw<Array<{ ms: unknown }>>(Prisma.sql`
+        SELECT COALESCE(SUM(durationMs), 0) AS ms
+        FROM TaskTimeSession
+        WHERE tenantId = ${actor.tenantId} AND taskId = ${taskId} AND employeeId = ${actor.employeeId} AND endedAt IS NOT NULL
+    `);
+    return rawNumber(rows[0]?.ms);
 };
 
 /* ── Zähler der Seitenleiste ────────────────────────────────────────────── */
@@ -246,6 +259,8 @@ export interface TaskListQuery {
      */
     from: Date | null;
     to: Date | null;
+    /** Kalendertag des Browsers — die Zeilen zeigen die Zeit DIESES Tages. */
+    day: DayWindow;
     page: number;
     pageSize: number;
 }
@@ -317,7 +332,7 @@ export const listTasks = async (actor: TasksActor, query: TaskListQuery): Promis
             orderBy: Prisma.sql`(t.id = ${onboardingTaskId}) DESC, ${listOrderSql(query)}`,
             limit: query.pageSize,
             offset: (query.page - 1) * query.pageSize,
-        }, now),
+        }, now, query.day),
         getTasksPeople(actor.tenantId),
     ]);
     // Namen aus dem 30-s-Verzeichnis; nur ehemalige Personen kosten eine Nachlesung.
@@ -408,7 +423,10 @@ export interface TaskSessionRow {
 
 export interface WorkBreakdownEntry {
     employeeId: string;
+    /** Alle Tage. */
     ms: number;
+    /** Nur das Tagesfenster (die Ansicht zeigt den Tag; alles andere steht im Rapport). */
+    dayMs: number;
     /** Abgeschlossene Messungen; eine laufende setzt `live`. */
     sessions: number;
     first: Date;
@@ -420,6 +438,8 @@ export interface WorkDto {
     totalMs: number;
     closedMs: number;
     liveMs: number;
+    /** Zeit des Tagesfensters über alle gezeigten Personen. */
+    dayMs: number;
     breakdown: WorkBreakdownEntry[];
 }
 
@@ -440,20 +460,36 @@ const sessionMs = (session: TaskSessionRow, now: Date): number =>
  * meiste Zeit zuerst. Summen werden NICHT auf die INT-Grenze einer einzelnen
  * Messung gekürzt — viele Personen über Monate überschreiten sie zu Recht.
  */
-export const buildWorkDto = (sessions: readonly TaskSessionRow[], now: Date): WorkDto => {
+/**
+ * KEINE laufende Zeit (14.09.2026, Samet: «kronometre olmayacak, sadece
+ * çalışılıyor»): eine laufende Messung setzt nur `live` und zählt nichts —
+ * weder `ms` noch `dayMs`. Ihre Dauer entsteht beim Pausieren (Stopp − Start).
+ * `ownEmployeeId` bleibt für ältere Aufrufer erhalten und ändert nichts mehr.
+ */
+export const buildWorkDto = (
+    sessions: readonly TaskSessionRow[],
+    now: Date,
+    day: DayWindow = resolveDayWindow(undefined, undefined, now),
+    ownEmployeeId?: string,
+): WorkDto => {
     const byPerson = new Map<string, WorkBreakdownEntry>();
     let closedMs = 0;
     let liveMs = 0;
+    let dayMs = 0;
     for (const session of sessions) {
         const live = session.endedAt === null;
-        const ms = sessionMs(session, now);
+        void ownEmployeeId;
+        const ms = live ? 0 : sessionMs(session, now);
+        const inDay = live ? 0 : windowedMs(session.startedAt, session.endedAt, day, now);
         const last = session.endedAt ?? now;
         if (live) liveMs += ms;
         else closedMs += ms;
+        dayMs += inDay;
 
         const entry = byPerson.get(session.employeeId)
-            ?? { employeeId: session.employeeId, ms: 0, sessions: 0, first: session.startedAt, last, live: false };
+            ?? { employeeId: session.employeeId, ms: 0, dayMs: 0, sessions: 0, first: session.startedAt, last, live: false };
         entry.ms += ms;
+        entry.dayMs += inDay;
         if (live) entry.live = true;
         else entry.sessions += 1;
         if (session.startedAt.getTime() < entry.first.getTime()) entry.first = session.startedAt;
@@ -464,7 +500,8 @@ export const buildWorkDto = (sessions: readonly TaskSessionRow[], now: Date): Wo
         totalMs: closedMs + liveMs,
         closedMs,
         liveMs,
-        breakdown: [...byPerson.values()].sort((a, b) => b.ms - a.ms),
+        dayMs,
+        breakdown: [...byPerson.values()].sort((a, b) => b.dayMs - a.dayMs || b.ms - a.ms),
     };
 };
 
@@ -506,13 +543,13 @@ export interface TaskDetailResult {
     comments: CommentDto[];
     chatRooms: ChatRoomRef[];
     forecast: TaskForecast;
-    /** Nur für die Leitung, sonst null. */
+    /** Leitung: alle Personen; Teammitglied: nur die eigenen Messungen. */
     work: WorkDto | null;
     people: Record<string, PersonRef>;
     serverNow: Date;
 }
 
-export const getTaskDetail = async (actor: TasksActor, taskId: string): Promise<TaskDetailResult> => {
+export const getTaskDetail = async (actor: TasksActor, taskId: string, day?: DayWindow): Promise<TaskDetailResult> => {
     /* Aufgabe und alle Teile in EINEM parallelen Schritt (14.09.2026, Samet:
        «görev detayı 350 ms, max 200–250»). Früher lief die Sichtbarkeit als
        eigener Rundgang davor. Jede Teilabfrage ist auf die Firma beschränkt;
@@ -534,7 +571,10 @@ export const getTaskDetail = async (actor: TasksActor, taskId: string): Promise<
     const running: RunningSessionRef[] = sessions
         .filter((session) => session.endedAt === null)
         .map((session) => ({ employeeId: session.employeeId, startedAt: session.startedAt }));
-    const work = actor.isManager ? buildWorkDto(sessions, now) : null;
+    // Leitung: alle Personen; Teammitglied: nur die eigenen Messungen (14.09.2026).
+    const ownSessions = sessions.filter((session) => session.employeeId === actor.employeeId);
+    const work = buildWorkDto(actor.isManager ? sessions : ownSessions, now, day ?? resolveDayWindow(undefined, undefined, now), actor.employeeId);
+    const ownClosedMs = actor.isManager ? undefined : ownSessions.reduce((sum, session) => sum + (session.endedAt ? session.durationMs ?? 0 : 0), 0);
     // Prognose aus denselben Checklisten, die die Antwort zeigt; sie nennt keine Zeiten.
     const forecast = computeTaskForecast({
         status: core.status,
@@ -568,7 +608,7 @@ export const getTaskDetail = async (actor: TasksActor, taskId: string): Promise<
     if (historicalIds.length) Object.assign(people, await loadPersonRefs(historicalIds));
 
     return {
-        task: toTaskDetailDto(core, actor, running, now),
+        task: toTaskDetailDto(core, actor, running, now, ownClosedMs),
         permissions,
         content,
         checklists,

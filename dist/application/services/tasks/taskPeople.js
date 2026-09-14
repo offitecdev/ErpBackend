@@ -19,6 +19,7 @@ const loadTasksPeople = async (tenantId) => {
         return new Map();
     const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
         SELECT e.id, e.firstName, e.lastName, e.title,
+               GROUP_CONCAT(DISTINCT r.roleName ORDER BY r.roleName SEPARATOR ', ') AS roleNames,
                MAX(CASE WHEN r.isSystemAdmin = 1 THEN 1 ELSE 0 END) AS isAdmin,
                MAX(CASE WHEN p.permissionName = ${taskConstants_1.TASKS_PERMISSIONS.view} THEN 1 ELSE 0 END) AS canView,
                MAX(CASE WHEN p.permissionName = ${taskConstants_1.TASKS_PERMISSIONS.manage} THEN 1 ELSE 0 END) AS canManage,
@@ -47,6 +48,7 @@ const loadTasksPeople = async (tenantId) => {
             firstName: row.firstName ?? '',
             lastName: row.lastName ?? '',
             title: row.title ?? null,
+            roleName: row.roleNames ? String(row.roleNames) : null,
             isManager,
             canDelete,
         });
@@ -78,10 +80,10 @@ const invalidateTasksPeople = (tenantId) => {
         peopleCache.clear();
 };
 exports.invalidateTasksPeople = invalidateTasksPeople;
-/** Die Leitung der Firma (Empfänger von Vorschlägen und Abschlussanfragen). */
+/** Die Leitung der Firma (tasks.manage/delete oder Administratorrolle). */
 const getTasksManagerIds = async (tenantId) => [...(await (0, exports.getTasksPeople)(tenantId)).values()].filter((person) => person.isManager).map((person) => person.id);
 exports.getTasksManagerIds = getTasksManagerIds;
-/** Die Admins der Firma (Empfänger von Löschanfragen). */
+/** Die Administratorrolle der Firma (Empfänger von Görev-Talepen, Abschluss- und Löschanfragen). */
 const getTasksAdminIds = async (tenantId) => [...(await (0, exports.getTasksPeople)(tenantId)).values()].filter((person) => person.canDelete).map((person) => person.id);
 exports.getTasksAdminIds = getTasksAdminIds;
 /**

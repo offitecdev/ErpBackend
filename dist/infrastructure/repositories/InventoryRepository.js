@@ -662,9 +662,11 @@ class InventoryRepository {
         });
         return new Inventory_1.StockMovement(result.id, result.tenantId, result.articleId, result.movementType, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined, result.unitCost ?? undefined, result.supplierId ?? undefined);
     }
-    async getMovements(articleId) {
+    async getMovements(tenantId, articleId) {
         const data = await prisma_client_1.default.stockMovement.findMany({
-            where: { articleId },
+            // Mandant im Filter (14.09.2026): vorher lieferte eine fremde
+            // Artikelkennung die Lagerbewegungen einer anderen Firma aus.
+            where: { tenantId, articleId },
             orderBy: { transactionDate: 'desc' },
             include: {
                 employee: { select: { firstName: true, lastName: true } },

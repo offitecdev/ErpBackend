@@ -10,6 +10,7 @@ const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const calendarLabelCatalog_1 = require("../../application/services/calendarLabelCatalog");
 const calendarLabels_1 = require("../../shared/calendarLabels");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 /* KALENDER-ETIKETTEN (Kalender → Leiste «Etiketten», Zahnrad daneben).
    Je Mandant EINE Liste, aus der ein Kalendereintrag sein Etikett bekommt.
    Sie beginnt LEER: es gibt keinen Erstbestand, nur ein Plus. Ein Etikett ist
@@ -49,7 +50,7 @@ const usageCount = async (tenantId, labelId) => {
     return appointments + meetings + tasks;
 };
 // GET /calendar/labels — die ganze Liste, in Anzeigereihenfolge.
-router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.get('/', AuthMiddleware_1.requireAuth, (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['calendar', 'settings'], ttlSec: 300 }), async (req, res) => {
     try {
         const rows = await (0, calendarLabelCatalog_1.listLabels)(req.user.tenantId);
         res.status(200).json(rows.map(toDto));

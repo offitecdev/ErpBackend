@@ -18,6 +18,7 @@ const crmTaskMaintenance_1 = require("../../infrastructure/services/crmTaskMaint
 const GetUserPermissionsUseCase_1 = require("../../application/use-cases/auth/GetUserPermissionsUseCase");
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 /* Aufgaben & Erinnerungen (mounted under /crm alongside crm.routes.ts).
 
    Stand 19.08.2026 — OHNE Freigabe:
@@ -345,7 +346,7 @@ const noteRow = (note) => ({
  * "Für mich" = ich stehe in den Verantwortlichen (und MEIN Stempel fehlt noch)
  * ODER niemand ist verantwortlich und ich habe sie erfasst. Auth-only.
  */
-router.get('/reminders/due', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.get('/reminders/due', AuthMiddleware_1.requireAuth, (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), async (req, res) => {
     try {
         const user = req.user;
         if (String(req.query.view || '').trim() === 'count') {
@@ -468,7 +469,7 @@ router.post('/reminders/dismiss', AuthMiddleware_1.requireAuth, async (req, res)
  * `scope` die ganze Firma (crm.customers.view). `from`/`to` sind ISO-Zeitpunkte
  * und grenzen den Termin auf eine Woche ein — Aufgaben ohne Termin kommen mit.
  */
-router.get('/tasks', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.get('/tasks', AuthMiddleware_1.requireAuth, (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks', 'customers'], ttlSec: 15 }), async (req, res) => {
     try {
         const user = req.user;
         const scope = String(req.query.scope || '').trim();
@@ -623,7 +624,7 @@ router.get('/tasks', AuthMiddleware_1.requireAuth, async (req, res) => {
     }
 });
 /** GET /crm/tasks/:id — die Aufgabenseite: Kopf, Verantwortliche, Notizen. Beteiligte oder crm.customers.view. */
-router.get('/tasks/:id', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.get('/tasks/:id', AuthMiddleware_1.requireAuth, (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks', 'customers'], ttlSec: 15 }), async (req, res) => {
     try {
         const user = req.user;
         const task = await prisma_client_1.default.crmTask.findFirst({

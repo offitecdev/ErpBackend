@@ -11,6 +11,7 @@ const ItGateMiddleware_1 = require("../middlewares/ItGateMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const articleCodeCatalog_1 = require("../../application/services/articleCodeCatalog");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 /* CODE-EINSTELLUNGEN (Einstellungen → Module → Lager → Code-Einstellungen).
    Kategorien (ELK, KLI …) und ihre Nummernkreise (PLC, TCL, VIDA …), aus denen
    der ERP-Code `KAT-UNTER-NNNNN` entsteht.
@@ -54,7 +55,7 @@ const categoryDto = (category) => ({
  * `?active=true` liefert nur freigegebene Kreise (und nur Kategorien, die
  * welche haben) — das ist die Sicht der Schnellerfassung.
  */
-router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
+router.get('/', AuthMiddleware_1.requireAuth, (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog', 'settings'], ttlSec: 300 }), async (req, res) => {
     try {
         const activeOnly = String(req.query.active ?? '') === 'true';
         const rows = await (0, articleCodeCatalog_1.listCodeCategories)(req.user.tenantId, { activeOnly });

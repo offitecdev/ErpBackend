@@ -19,6 +19,7 @@ const CustomerLocationRepository_1 = require("../../infrastructure/repositories/
 const CustomerProductDiscountRepository_1 = require("../../infrastructure/repositories/CustomerProductDiscountRepository");
 const TenderRepository_1 = require("../../infrastructure/repositories/TenderRepository");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const router = (0, express_1.Router)();
 const customerRepo = new CustomerRepository_1.CustomerRepository();
@@ -70,7 +71,9 @@ const customerController = new CustomerController_1.CustomerController(createCus
  *       401:
  *         description: Yetkisiz
  */
-router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => customerController.list(req, res));
+router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), 
+// Kundensuche der Auswahlfelder: Redis-Lesespeicher (Bereich `customers`).
+(0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['customers'], ttlSec: 60 }), (req, res) => customerController.list(req, res));
 /**
  * @swagger
  * /customers:

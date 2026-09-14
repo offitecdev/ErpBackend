@@ -11,6 +11,7 @@ const ManagePurchaseProposalsUseCase_1 = require("../../application/use-cases/in
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const ItGateMiddleware_1 = require("../middlewares/ItGateMiddleware");
+const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 // Schnellerfassung: der markierte Bildausschnitt geht ueber den Server zu
 // Google Cloud Vision — der Schluessel bleibt hier, nie im Browser.
 const ocrSpaceOcr_1 = require("../../infrastructure/services/ocrSpaceOcr");
@@ -104,7 +105,7 @@ const supplierWithStats = async (supplier) => {
  *     security:
  *       - bearerAuth: []
  */
-router.get('/locations', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.listLocations(req, res));
+router.get('/locations', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 120 }), (req, res) => controller.listLocations(req, res));
 /**
  * @swagger
  * /inventory/locations:
@@ -138,7 +139,7 @@ router.post('/locations', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
  *         name: locationId
  *         schema: { type: string }
  */
-router.get('/balances', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getBalances(req, res));
+router.get('/balances', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), (req, res) => controller.getBalances(req, res));
 /**
  * @swagger
  * /inventory/dashboard:
@@ -148,7 +149,7 @@ router.get('/balances', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requi
  *     security:
  *       - bearerAuth: []
  */
-router.get('/dashboard', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getDashboard(req, res));
+router.get('/dashboard', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), (req, res) => controller.getDashboard(req, res));
 /**
  * @swagger
  * /inventory/articles/summary:
@@ -158,7 +159,7 @@ router.get('/dashboard', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
  *     security:
  *       - bearerAuth: []
  */
-router.get('/articles/summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getArticleStockSummary(req, res));
+router.get('/articles/summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), (req, res) => controller.getArticleStockSummary(req, res));
 /**
  * @swagger
  * /inventory/articles/summary/paged:
@@ -214,7 +215,10 @@ router.get('/articles/summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
  *         name: sortDirection
  *         schema: { type: string, enum: [asc, desc], default: desc }
  */
-router.get('/articles/summary/paged', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getArticleStockSummaryPaged(req, res));
+router.get('/articles/summary/paged', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), 
+// Produktwähler + Produktliste: Redis-Lesespeicher, ungültig bei jeder
+// Schreibanfrage, die Artikel oder Bestand berührt (Bereich `catalog`).
+(0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 120 }), (req, res) => controller.getArticleStockSummaryPaged(req, res));
 /**
  * @swagger
  * /inventory/articles/{id}/stock:
@@ -229,7 +233,7 @@ router.get('/articles/summary/paged', AuthMiddleware_1.requireAuth, (0, RbacMidd
  *         required: true
  *         schema: { type: string }
  */
-router.get('/articles/:id/stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getArticleStockInfo(req, res));
+router.get('/articles/:id/stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), (req, res) => controller.getArticleStockInfo(req, res));
 /**
  * Bir ürünün AÇIK sipariş adedi: henüz stoğa alınmamış satın alma
  * siparişlerindeki (PENDING | ORDERED | TO_BE_STOCKED) satır miktarlarının
@@ -430,7 +434,7 @@ const buildArticleDetail = async (tenantId, id) => {
  *         required: true
  *         schema: { type: string }
  */
-router.get('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const detail = await buildArticleDetail(req.user.tenantId, String(req.params.id));
         if (!detail)
@@ -442,7 +446,7 @@ router.get('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddlew
     }
 });
 /** Hesaplanan alanlar ana detay isteğini bekletmeden paralel yüklenir. */
-router.get('/articles/:id/detail-stats', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/articles/:id/detail-stats', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const id = String(req.params.id);
@@ -674,7 +678,7 @@ router.patch('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddl
  *         required: true
  *         schema: { type: string }
  */
-router.get('/articles/:id/suppliers-summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/articles/:id/suppliers-summary', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const id = String(req.params.id);
@@ -696,7 +700,7 @@ router.get('/articles/:id/suppliers-summary', AuthMiddleware_1.requireAuth, (0, 
         res.status(400).json({ error: error.message });
     }
 });
-router.get('/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const suppliers = await prisma_client_1.default.supplier.findMany({
             where: { tenantId: req.user.tenantId },
@@ -750,7 +754,7 @@ router.get('/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
  *         name: limit
  *         schema: { type: integer, default: 10 }
  */
-router.get('/suppliers/search', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/suppliers/search', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 120 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const q = req.query.q ? String(req.query.q).trim() : '';
@@ -814,7 +818,7 @@ router.post('/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
         res.status(400).json({ error: error.message });
     }
 });
-router.get('/suppliers/:supplierId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/suppliers/:supplierId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const supplier = await prisma_client_1.default.supplier.findFirst({
             where: { id: req.params.supplierId, tenantId: req.user.tenantId },
@@ -855,7 +859,7 @@ router.patch('/suppliers/:supplierId', AuthMiddleware_1.requireAuth, (0, RbacMid
         res.status(400).json({ error: error.message });
     }
 });
-router.get('/articles/:articleId/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/articles/:articleId/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const rows = await prisma_client_1.default.articleSupplier.findMany({
             where: { tenantId: req.user.tenantId, articleId: req.params.articleId },
@@ -1152,7 +1156,7 @@ router.delete('/articles/:articleId/suppliers/:linkId', AuthMiddleware_1.require
  *         name: q
  *         schema: { type: string }
  */
-router.get('/search-items', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/search-items', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const q = String(req.query.q || '').trim();
@@ -1234,7 +1238,7 @@ router.post('/movements/scan', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
  *     security:
  *       - bearerAuth: []
  */
-router.get('/movements/:articleId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (req, res) => controller.getMovements(req, res));
+router.get('/movements/:articleId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), (req, res) => controller.getMovements(req, res));
 /**
  * Toplu uçlarda tedarikçiler satırlar işlenmeden ÖNCE, sabit sayıda sorguyla çözülür:
  * tüm ad/kimlikler beraber okunur ve satır döngüsü tamamen bellekte kalır.
@@ -1368,7 +1372,7 @@ const bulkUpdateArticlePurchases = async (tx, tenantId, preferredByArticle) => {
  *         name: dateTo
  *         schema: { type: string, format: date }
  */
-router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/movements', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const page = Math.max(1, Number(req.query.page) || 1);
@@ -2131,7 +2135,7 @@ router.post('/articles/quick', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
  *         required: true
  *         schema: { type: string }
  */
-router.get('/articles/scan-lookup', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/articles/scan-lookup', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const code = String(req.query.code ?? '').trim();
@@ -2698,7 +2702,7 @@ router.post('/movements/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
  *     security:
  *       - bearerAuth: []
  */
-router.get('/proposals', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.proposals.manage'), (req, res) => controller.listProposals(req, res));
+router.get('/proposals', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.proposals.manage'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), (req, res) => controller.listProposals(req, res));
 /**
  * @swagger
  * /inventory/proposals/{id}/resolve:
@@ -2737,7 +2741,7 @@ const mapLowStock = (kind, id, code, name, unit, qty, min, critical) => {
  *     security:
  *       - bearerAuth: []
  */
-router.get('/supply/low-stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/supply/low-stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         // Yalnızca bir eşik tanımlı olan kalemleri çek — tüm katalog değil.
@@ -2780,7 +2784,7 @@ router.get('/supply/low-stock', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
  *     security:
  *       - bearerAuth: []
  */
-router.get('/supply/item/:kind/:id/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/supply/item/:kind/:id/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         // `:kind` yalnızca yol uyumluluğu için duruyor — malzeme/ürün
@@ -2904,7 +2908,7 @@ router.get('/supply/item/:kind/:id/suppliers', AuthMiddleware_1.requireAuth, (0,
  *         name: status
  *         schema: { type: string, enum: [PENDING, RECEIVED, CANCELLED] }
  */
-router.get('/supply/requests', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/supply/requests', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const status = req.query.status ? String(req.query.status).toUpperCase() : 'PENDING';
@@ -3403,8 +3407,27 @@ const parsePurchaseOrderRow = (row) => {
     }
     if (!Array.isArray(tableColumns) || !tableColumns.length)
         tableColumns = null;
-    return { ...row, items, additionalFees, hiddenColumnKeys, tableColumns, itemCount: items.length };
+    // «Von Hand gesendet» steht als Vorsilbe in `emailRecipient` (siehe
+    // PO_MANUAL_MAIL_PREFIX) — nach aussen geht die blanke Adresse plus der Merker.
+    const rawRecipient = typeof row.emailRecipient === 'string' ? row.emailRecipient : null;
+    const emailSentManually = Boolean(row.emailSentAt) && Boolean(rawRecipient?.startsWith(PO_MANUAL_MAIL_PREFIX));
+    const emailRecipient = rawRecipient?.startsWith(PO_MANUAL_MAIL_PREFIX)
+        ? (rawRecipient.slice(PO_MANUAL_MAIL_PREFIX.length) || null)
+        : rawRecipient;
+    return { ...row, items, additionalFees, hiddenColumnKeys, tableColumns, emailRecipient, emailSentManually, itemCount: items.length };
 };
+/**
+ * MAIL VON HAND GESENDET (Vorgabe Samet, 14.09.2026): «Es gibt kein
+ * automatisches Senden; auf der Auftragsseite steht ein Mailfenster, und ein
+ * Häkchen ‹Mail manuell gesendet› schaltet das Etikett ‹gesendet› genauso ein.»
+ *
+ * Der Merker braucht KEINE eigene Spalte: `emailSentAt` sagt schon, DASS die
+ * Mail draussen ist, und `emailRecipient` trägt dann `manual:` vor der Adresse.
+ * Eine neue Spalte auf PurchaseOrder hätte jede Abfrage der Tabelle von einer
+ * Wanderung auf der Remote-DB abhängig gemacht. `parsePurchaseOrderRow` zieht
+ * die Vorsilbe wieder ab — kein Aufrufer sieht sie.
+ */
+const PO_MANUAL_MAIL_PREFIX = 'manual:';
 /**
  * SİPARİŞ KODU: **BE-{yıl}-{sıra3}** — BE-2026-001, BE-2026-002 … (kullanıcı
  * isteği 2026-08-03: belge "Bestellung"dur, kod da BE- önekini taşır; arada
@@ -3499,7 +3522,7 @@ const resolvePurchaseOrderSupplier = async (tenantId, input) => {
  *     security:
  *       - bearerAuth: []
  */
-router.get('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const page = Math.max(1, Number(req.query.page) || 1);
@@ -3649,7 +3672,7 @@ const poCoverLetter = (value) => {
  *     security:
  *       - bearerAuth: []
  */
-router.get('/purchase-orders/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/purchase-orders/text-templates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog', 'settings'], ttlSec: 120 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const page = Math.max(1, Number(req.query.page) || 1);
@@ -3780,7 +3803,7 @@ router.use('/purchase-orders', purchaseOrderImport_routes_1.purchaseOrderImportR
  *     security:
  *       - bearerAuth: []
  */
-router.get('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
+router.get('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const row = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
@@ -4183,6 +4206,7 @@ router.post('/purchase-orders/:id/receive', AuthMiddleware_1.requireAuth, (0, Rb
         if (!items.length)
             return res.status(400).json({ error: 'Siparişte aktarılacak satır yok.' });
         const complete = req.body?.complete === true;
+        const codeSchemeId = String(req.body?.codeSchemeId ?? '').trim();
         const rawLines = Array.isArray(req.body?.lines) ? req.body.lines : [];
         if (!complete && !rawLines.length)
             return res.status(400).json({ error: 'Aktarılacak satır seçilmedi.' });
@@ -4214,6 +4238,36 @@ router.post('/purchase-orders/:id/receive', AuthMiddleware_1.requireAuth, (0, Rb
             }
             if (!plan.size)
                 return res.status(400).json({ error: 'Seçilen satırların tamamı zaten stoğa aktarılmış.' });
+        }
+        /* ── ERST HIER ENTSTEHT DER ARTIKEL (Vorgabe Samet, 14.09.2026) ─────
+           «Bevor es in den Wareneingang übertragen ist, kommt nichts ins
+           Lager und nichts in die Produkte — nicht einmal als Definition.»
+           Die Bestellmaske legt darum keine Artikel mehr an; eine Zeile ohne
+           Produktcode reist codelos bis hierher. Ihr ERP-Code kommt jetzt aus
+           dem gewählten Nummernkreis — ohne Kreis antwortet der Server mit
+           SCHEME_REQUIRED und die Seite fragt ihn ab. */
+        const codelessIndexes = Array.from(plan.keys()).filter((index) => {
+            const item = items[index];
+            return !item.articleId && !String(item.code || '').trim();
+        });
+        if (codelessIndexes.length) {
+            if (!codeSchemeId) {
+                return res.status(400).json({
+                    error: 'Zeilen ohne Produktcode: bitte zuerst einen Nummernkreis wählen.',
+                    code: 'SCHEME_REQUIRED',
+                    count: codelessIndexes.length,
+                });
+            }
+            let issued;
+            try {
+                issued = await (0, articleCodeCatalog_1.issueCodes)(tenantId, codeSchemeId, codelessIndexes.length);
+            }
+            catch (error) {
+                return res.status(error?.status || 400).json({ error: error.message, ...(error?.code ? { code: error.code } : {}) });
+            }
+            codelessIndexes.forEach((index, position) => {
+                items[index].code = issued.codes[position];
+            });
         }
         // Ürün çözümü: önce articleId, sonra kod. Bulunamayan KODLU satırlar
         // otomatik ürün olarak açılır; kodsuz satır aktarılamaz (kod = kimlik).
@@ -4643,6 +4697,206 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
 });
 /**
  * @swagger
+ * /inventory/purchase-orders/{id}/mail-manual:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Mail manuell gesendet – Haken setzen oder entfernen"
+ *     security:
+ *       - bearerAuth: []
+ */
+// ── MAIL MANUELL GESENDET (Vorgabe Samet, 14.09.2026) ──────────────────────
+// Das Häkchen wirkt wie eine echte Sendung: DRAFT → PRICE_REQUEST und
+// PENDING → ORDERED, `emailSentAt` wird gestempelt. Entfernen lässt es sich
+// NUR, wenn es auch von Hand gesetzt wurde — eine echte Sendung nimmt kein
+// Häkchen zurück.
+router.post('/purchase-orders/:id/mail-manual', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const existing = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!existing)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        const sent = req.body?.sent === true;
+        const isManual = String(existing.emailRecipient || '').startsWith(PO_MANUAL_MAIL_PREFIX);
+        if (sent) {
+            const next = existing.status === 'DRAFT'
+                ? 'PRICE_REQUEST'
+                : existing.status === 'PENDING'
+                    ? 'ORDERED'
+                    : null;
+            if (!next) {
+                // Schon gesendet → nichts zu tun. Auftragsentwurf → erst bestätigen.
+                if (existing.status === 'PRICE_REQUEST' || existing.status === 'ORDERED') {
+                    return res.status(200).json(parsePurchaseOrderRow(existing));
+                }
+                return res.status(400).json({ error: 'Der Auftrag muss zuerst bestätigt werden.', code: 'NOT_SENDABLE' });
+            }
+            const recipient = poStripHeader(String(req.body?.recipient ?? existing.supplierEmail ?? '')).slice(0, 180);
+            const updated = await prisma_client_1.default.purchaseOrder.update({
+                where: { id: existing.id },
+                data: {
+                    status: next,
+                    emailSentAt: new Date(),
+                    emailRecipient: `${PO_MANUAL_MAIL_PREFIX}${recipient}`,
+                },
+            });
+            return res.status(200).json(parsePurchaseOrderRow(updated));
+        }
+        if (!isManual) {
+            return res.status(400).json({ error: 'Diese Mail wurde über das System gesendet — das lässt sich nicht zurücknehmen.', code: 'NOT_MANUAL' });
+        }
+        const back = existing.status === 'PRICE_REQUEST'
+            ? 'DRAFT'
+            : existing.status === 'ORDERED'
+                ? 'PENDING'
+                : null;
+        const updated = await prisma_client_1.default.purchaseOrder.update({
+            where: { id: existing.id },
+            data: {
+                ...(back ? { status: back } : {}),
+                emailSentAt: null,
+                emailRecipient: null,
+            },
+        });
+        res.status(200).json(parsePurchaseOrderRow(updated));
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/* ── MAIL-ENTWÜRFE JE AUFTRAG (Vorgabe Samet, 14.09.2026) ───────────────────
+   «Taslaklar da olacak»: das Mailfenster der Auftragsseite speichert, was man
+   geschrieben hat, und bietet es wieder an. Anders als die Anschreiben-Vorlagen
+   gehören diese Entwürfe EINEM Auftrag — sie sind halbfertige Mails, keine
+   Textbausteine. */
+const poMailDraftRow = (row) => {
+    let ccEmails = [];
+    try {
+        ccEmails = JSON.parse(row.ccEmails || '[]');
+    }
+    catch {
+        ccEmails = [];
+    }
+    return { ...row, ccEmails: Array.isArray(ccEmails) ? ccEmails : [] };
+};
+const poMailDraftData = (body) => {
+    const ccRaw = Array.isArray(body?.ccEmails) ? body.ccEmails : [];
+    const ccEmails = Array.from(new Set(ccRaw.map((value) => poStripHeader(String(value ?? ''))).filter((email) => PO_EMAIL_RE.test(email)))).slice(0, 10);
+    return {
+        toEmail: poStripHeader(String(body?.toEmail ?? '')).slice(0, 180) || null,
+        ccEmails: JSON.stringify(ccEmails),
+        subject: poStripHeader(String(body?.subject ?? '')).slice(0, 200),
+        message: String(body?.message ?? '').slice(0, 5000),
+    };
+};
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/mail-drafts:
+ *   get:
+ *     tags: [Inventory]
+ *     summary: Mail-Entwürfe eines Auftrags
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/purchase-orders/:id/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const rows = await prisma_client_1.default.purchaseOrderMailDraft.findMany({
+            where: { tenantId, orderId: String(req.params.id) },
+            orderBy: { updatedAt: 'desc' },
+            take: 50,
+        });
+        res.status(200).json(rows.map(poMailDraftRow));
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/mail-drafts:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Mail-Entwurf speichern
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/purchase-orders/:id/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const order = await prisma_client_1.default.purchaseOrder.findFirst({
+            where: { id: String(req.params.id), tenantId },
+            select: { id: true },
+        });
+        if (!order)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        const data = poMailDraftData(req.body);
+        if (!data.subject && !data.message.trim()) {
+            return res.status(400).json({ error: 'Ein leerer Entwurf wird nicht gespeichert.' });
+        }
+        const row = await prisma_client_1.default.purchaseOrderMailDraft.create({
+            data: { id: (0, nanoid_1.nanoid)(12), tenantId, orderId: order.id, ...data, createdBy: req.user.id || null },
+        });
+        res.status(201).json(poMailDraftRow(row));
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/mail-drafts/{draftId}:
+ *   patch:
+ *     tags: [Inventory]
+ *     summary: Mail-Entwurf aktualisieren
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch('/purchase-orders/:id/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const existing = await prisma_client_1.default.purchaseOrderMailDraft.findFirst({
+            where: { id: String(req.params.draftId), orderId: String(req.params.id), tenantId },
+            select: { id: true },
+        });
+        if (!existing)
+            return res.status(404).json({ error: 'Entwurf nicht gefunden.' });
+        const row = await prisma_client_1.default.purchaseOrderMailDraft.update({
+            where: { id: existing.id },
+            data: poMailDraftData(req.body),
+        });
+        res.status(200).json(poMailDraftRow(row));
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/mail-drafts/{draftId}:
+ *   delete:
+ *     tags: [Inventory]
+ *     summary: Mail-Entwurf löschen
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/purchase-orders/:id/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const existing = await prisma_client_1.default.purchaseOrderMailDraft.findFirst({
+            where: { id: String(req.params.draftId), orderId: String(req.params.id), tenantId },
+            select: { id: true },
+        });
+        if (!existing)
+            return res.status(404).json({ error: 'Entwurf nicht gefunden.' });
+        await prisma_client_1.default.purchaseOrderMailDraft.delete({ where: { id: existing.id } });
+        res.status(200).json({ draftId: existing.id });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * @swagger
  * /inventory/purchase-orders/{id}:
  *   delete:
  *     tags: [Inventory]
@@ -4657,6 +4911,11 @@ router.delete('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMidd
         if (!existing)
             return res.status(404).json({ error: 'Sipariş bulunamadı.' });
         await prisma_client_1.default.purchaseOrder.delete({ where: { id: existing.id } });
+        // Die Mail-Entwürfe gehören dem Auftrag und gehen mit. Ein Fehler hier
+        // (etwa eine noch nicht ausgerollte Tabelle) darf das Löschen nicht kippen.
+        await prisma_client_1.default.purchaseOrderMailDraft
+            .deleteMany({ where: { tenantId, orderId: existing.id } })
+            .catch(() => undefined);
         res.status(204).send();
     }
     catch (error) {
