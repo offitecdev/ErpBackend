@@ -25,6 +25,8 @@ export interface TasksPerson {
     firstName: string;
     lastName: string;
     title: string | null;
+    /** Name(n) der Rolle(n) im System (z. B. «Administrator», «Techniker») — die Pickers zeigen ihn statt «Yönetici». */
+    roleName: string | null;
     isManager: boolean;
     canDelete: boolean;
 }
@@ -54,12 +56,14 @@ const loadTasksPeople = async (tenantId: string): Promise<Map<string, TasksPerso
         firstName: string;
         lastName: string;
         title: string | null;
+        roleNames: string | null;
         isAdmin: unknown;
         canView: unknown;
         canManage: unknown;
         canDel: unknown;
     }>>(Prisma.sql`
         SELECT e.id, e.firstName, e.lastName, e.title,
+               GROUP_CONCAT(DISTINCT r.roleName ORDER BY r.roleName SEPARATOR ', ') AS roleNames,
                MAX(CASE WHEN r.isSystemAdmin = 1 THEN 1 ELSE 0 END) AS isAdmin,
                MAX(CASE WHEN p.permissionName = ${TASKS_PERMISSIONS.view} THEN 1 ELSE 0 END) AS canView,
                MAX(CASE WHEN p.permissionName = ${TASKS_PERMISSIONS.manage} THEN 1 ELSE 0 END) AS canManage,
@@ -88,6 +92,7 @@ const loadTasksPeople = async (tenantId: string): Promise<Map<string, TasksPerso
             firstName: row.firstName ?? '',
             lastName: row.lastName ?? '',
             title: row.title ?? null,
+            roleName: row.roleNames ? String(row.roleNames) : null,
             isManager,
             canDelete,
         });
@@ -116,11 +121,11 @@ export const invalidateTasksPeople = (tenantId?: string): void => {
     else peopleCache.clear();
 };
 
-/** Die Leitung der Firma (Empfänger von Vorschlägen und Abschlussanfragen). */
+/** Die Leitung der Firma (tasks.manage/delete oder Administratorrolle). */
 export const getTasksManagerIds = async (tenantId: string): Promise<string[]> =>
     [...(await getTasksPeople(tenantId)).values()].filter((person) => person.isManager).map((person) => person.id);
 
-/** Die Admins der Firma (Empfänger von Löschanfragen). */
+/** Die Administratorrolle der Firma (Empfänger von Görev-Talepen, Abschluss- und Löschanfragen). */
 export const getTasksAdminIds = async (tenantId: string): Promise<string[]> =>
     [...(await getTasksPeople(tenantId)).values()].filter((person) => person.canDelete).map((person) => person.id);
 

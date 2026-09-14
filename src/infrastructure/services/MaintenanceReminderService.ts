@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { invalidateEverywhere } from "../cache/cacheStore";
 import prisma from "../database/prisma.client";
 import { AddProjectReportUseCase } from "../../application/use-cases/project/AddProjectReportUseCase";
 import { ProjectReportRepository } from "../repositories/ProjectReportRepository";
@@ -337,8 +338,10 @@ export const startMaintenanceReminderService = () => {
     started = true;
     // Die Erinnerungen dürfen stündlich laufen — «morgen ist Montage» hat keine Eile.
     const runReminders = () => {
-        void runReminderPass().catch((error) => console.error("[maintenance-reminders]", error));
-        void runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error));
+        void Promise.all([
+            runReminderPass().catch((error) => console.error("[maintenance-reminders]", error)),
+            runProjectInstallationReminderPass().catch((error) => console.error("[project-installation-reminders]", error)),
+        ]).then(() => invalidateEverywhere(["calendar", "tasks"]));
     };
     /* Erst abschliessen, dann etikettieren — so trägt ein eben geschlossener
        Tag im selben Durchgang schon die richtige Farbe. */
@@ -348,7 +351,9 @@ export const startMaintenanceReminderService = () => {
             .then(() => runRelabelCompletedPass())
             .catch((error) => console.error("[project-installation-relabel]", error))
             .then(() => runMarkTodayOngoingPass())
-            .catch((error) => console.error("[project-installation-ongoing]", error));
+            .catch((error) => console.error("[project-installation-ongoing]", error))
+            // Termine wurden abgeschlossen und umetikettiert — Kalender-Lesespeicher neu.
+            .then(() => invalidateEverywhere(["calendar", "tasks"]));
     runReminders();
     // Einmal beim Start (eine verpasste Nacht nachholen), dann jede Mitternacht.
     runAutoFinish();

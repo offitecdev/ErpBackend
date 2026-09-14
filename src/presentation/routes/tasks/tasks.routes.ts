@@ -56,6 +56,7 @@ import {
 import { assertSystemAdmin } from '../../../application/services/tasks/taskActor';
 import { tasksActor } from './taskMiddleware';
 import { completeTaskOnboarding } from '../../../application/services/tasks/taskOnboarding';
+import { responseCache } from '../../middlewares/ResponseCacheMiddleware';
 
 /* AUFGABEN (Görevler), montiert unter /api/v1/tasks: Start und Zähler, Liste,
    Pano und Suche, Anfragen der Leitung, Anlegen, Detail, Bearbeiten, Löschen,
@@ -149,7 +150,7 @@ router.get('/bootstrap', taskRoute('tasks.bootstrap', async (_req, res) => {
 }));
 
 // GET /summary — Zähler der Seitenleiste und die eigene laufende Messung.
-router.get('/summary', taskRoute('tasks.summary', async (_req, res) => {
+router.get('/summary', responseCache({ namespaces: ['tasks'], ttlSec: 15 }), taskRoute('tasks.summary', async (_req, res) => {
     res.json(await getTasksSummary(tasksActor(res)));
 }));
 
@@ -159,7 +160,7 @@ router.post('/onboarding/complete', taskRoute('tasks.onboarding.complete', async
 }));
 
 // GET /approvals — offene Abschlussanfragen und Vorschläge (Leitung).
-router.get('/approvals', taskRoute('tasks.approvals.list', async (_req, res) => {
+router.get('/approvals', responseCache({ namespaces: ['tasks'], ttlSec: 15 }), taskRoute('tasks.approvals.list', async (_req, res) => {
     // Onaylar-Seite: nur die Administratorrolle.
     assertSystemAdmin(tasksActor(res));
     res.json(await listTaskApprovals(tasksActor(res)));
@@ -178,7 +179,7 @@ router.get('/timer/active', taskRoute('tasks.timer.active', async (_req, res) =>
 }));
 
 // GET / — Liste, Pano (`view=board`) oder Schnellsuche (`view=search`).
-router.get('/', taskRoute('tasks.task.list', async (req, res) => {
+router.get('/', responseCache({ namespaces: ['tasks'], ttlSec: 15 }), taskRoute('tasks.task.list', async (req, res) => {
     const actor = tasksActor(res);
     const query = parseListQuery(req.query);
     res.json(query.view === 'search' ? await searchTasks(actor, query) : await listTasks(actor, query));
@@ -285,7 +286,7 @@ router.post('/:taskId/move', taskRoute('tasks.task.move', async (req, res) => {
 }));
 
 // GET /:taskId/activity — Verlauf, neueste zuerst (Leitung).
-router.get('/:taskId/activity', taskRoute('tasks.task.activity', async (req, res) => {
+router.get('/:taskId/activity', responseCache({ namespaces: ['tasks'], ttlSec: 15 }), taskRoute('tasks.task.activity', async (req, res) => {
     res.json(await listTaskActivity(tasksActor(res), routeParam(req, 'taskId')));
 }));
 

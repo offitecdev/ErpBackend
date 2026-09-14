@@ -9,9 +9,10 @@ import { taskNotFound } from './taskErrors';
 import type { AttachmentDto } from './taskFiles';
 import { computeTaskForecast, type TaskForecast } from './taskForecast';
 import { loadTaskAttachments, loadTaskChecklists, loadTaskContent, type ChecklistDto, type ContentDto } from './taskParts';
-import { getTasksPeople, loadPersonRefs, type PersonRef, type TasksPerson } from './taskPeople';
+import { getTasksPeople, loadPersonRefs, personDisplayName, type PersonRef, type TasksPerson } from './taskPeople';
 import {
     fetchTaskCores,
+    fetchTaskListRows,
     loadRunningSessionsByTask,
     loadTaskCore,
     memberVisibilitySql,
@@ -20,16 +21,15 @@ import {
     requireVisibleTask,
     taskPeopleIds,
     toTaskDetailDto,
-    toTaskRowDto,
     visibleTasksSql,
     type RunningSessionRef,
     type TaskCore,
     type TaskDetailDto,
-    type TaskRowDto,
+    type TaskListRowDto,
 } from './taskRows';
 import { endOfLocalDay, liveDurationMs } from './taskTime';
 import { getActiveTimer, type ActiveTimerInfo } from './taskTimer';
-import { ensureTaskOnboarding, type TaskOnboardingDto } from './taskOnboarding';
+import { ensureTaskOnboarding, knownOnboardingTaskId, type TaskOnboardingDto } from './taskOnboarding';
 
 /**
  * ── GÖREVLER: LESEWEGE DER AUFGABEN ─────────────────────────────────────────
@@ -146,7 +146,8 @@ export const getTasksSummary = async (actor: TasksActor): Promise<TasksSummaryDt
         openCount: rawNumber(counts.openCount),
         overdueCount: rawNumber(counts.overdueCount),
         dueTodayCount: rawNumber(counts.dueTodayCount),
-        pendingApprovalCount: actor.isManager ? rawNumber(counts.pendingCount) : 0,
+        // Anfragen entscheidet nur die Administratorrolle — nur sie sieht den Zähler.
+        pendingApprovalCount: actor.isSystemAdmin ? rawNumber(counts.pendingCount) : 0,
         unreadChatCount: rawNumber(unreadRows[0]?.unread),
         activeTimer,
         serverNow: now,
@@ -295,33 +296,45 @@ const listOrderSql = (query: TaskListQuery): Prisma.Sql => {
 };
 
 export interface TaskListResult {
-    data: TaskRowDto[];
+    data: TaskListRowDto[];
     total: number;
     page: number;
     pageSize: number;
-    people: Record<string, PersonRef>;
+    /** Nur Anzeigenamen der genannten Personen. */
+    people: Record<string, { id: string; name: string }>;
     serverNow: Date;
 }
 
 export const listTasks = async (actor: TasksActor, query: TaskListQuery): Promise<TaskListResult> => {
-    const onboarding = await ensureTaskOnboarding(actor);
+    // Nach der ersten Prüfung im Prozess ohne Rundgang: die Kennung ist deterministisch.
+    const onboardingTaskId = knownOnboardingTaskId(actor) ?? (await ensureTaskOnboarding(actor)).taskId;
     const now = new Date();
-    const where = listWhereSql(actor, query, now);
-    const [cores, countRows] = await Promise.all([
-        fetchTaskCores(prisma, {
-            where,
+    const [result, directory] = await Promise.all([
+        fetchTaskListRows(prisma, actor, {
+            where: listWhereSql(actor, query, now),
             // The unfinished guide is literally the person's first task: keep
             // it above normal sorting until the walkthrough completes.
-            orderBy: Prisma.sql`(t.id = ${onboarding.taskId}) DESC, ${listOrderSql(query)}`,
+            orderBy: Prisma.sql`(t.id = ${onboardingTaskId}) DESC, ${listOrderSql(query)}`,
             limit: query.pageSize,
             offset: (query.page - 1) * query.pageSize,
-        }),
-        prisma.$queryRaw<Array<{ total: unknown }>>(Prisma.sql`SELECT COUNT(*) AS total FROM Task t WHERE ${where}`),
+        }, now),
+        getTasksPeople(actor.tenantId),
     ]);
-    const { running, people } = await loadRunningSessionsAndPeople(actor, cores);
+    // Namen aus dem 30-s-Verzeichnis; nur ehemalige Personen kosten eine Nachlesung.
+    const people: Record<string, { id: string; name: string }> = {};
+    const missing: string[] = [];
+    for (const id of result.personIds) {
+        const person = directory.get(id);
+        if (person) people[id] = { id, name: personDisplayName(person) };
+        else missing.push(id);
+    }
+    if (missing.length) {
+        for (const ref of Object.values(await loadPersonRefs(missing))) people[ref.id] = { id: ref.id, name: ref.name };
+    }
     return {
-        data: cores.map((core) => toTaskRowDto(core, actor, running.get(core.id) ?? [], now)),
-        total: rawNumber(countRows[0]?.total),
+        data: result.rows,
+        // Eine Seite hinter dem Ende hat keine Zeile, die OVER() trägt.
+        total: result.rows.length ? result.total : (query.page - 1) * query.pageSize,
         page: query.page,
         pageSize: query.pageSize,
         people,
@@ -366,8 +379,8 @@ export interface TaskApprovalsResult {
 export const listTaskApprovals = async (actor: TasksActor): Promise<TaskApprovalsResult> => {
     if (!actor.isManager && !actor.canDelete) assertManager(actor);
     const now = new Date();
-    // Abschlussanfragen entscheidet nur die Administratorrolle; Vorschläge weiter die Leitung.
-    const managerPart = actor.isManager ? Prisma.sql`t.reviewState = 'PENDING'` : Prisma.sql`FALSE`;
+    // Görev-Talepe UND Abschlussanfragen entscheidet nur die Administratorrolle (14.09.2026).
+    const managerPart = actor.isSystemAdmin ? Prisma.sql`t.reviewState = 'PENDING'` : Prisma.sql`FALSE`;
     const completionPart = actor.isSystemAdmin ? Prisma.sql`OR t.approvalState = 'PENDING'` : Prisma.empty;
     const deletePart = actor.canDelete ? Prisma.sql`OR t.deleteRequestedAt IS NOT NULL` : Prisma.empty;
     const cores = await fetchTaskCores(prisma, {
@@ -377,7 +390,7 @@ export const listTaskApprovals = async (actor: TasksActor): Promise<TaskApproval
     const toCard = (core: TaskCore): TaskDetailDto => toTaskDetailDto(core, actor, running.get(core.id) ?? [], now);
     return {
         completionRequests: actor.isSystemAdmin ? cores.filter((core) => core.approvalState === 'PENDING').map(toCard) : [],
-        reviewRequests: cores.filter((core) => core.reviewState === 'PENDING').map(toCard),
+        reviewRequests: actor.isSystemAdmin ? cores.filter((core) => core.reviewState === 'PENDING').map(toCard) : [],
         deleteRequests: actor.canDelete ? cores.filter((core) => core.deleteRequestedById).map(toCard) : [],
         people,
         serverNow: now,
@@ -500,17 +513,22 @@ export interface TaskDetailResult {
 }
 
 export const getTaskDetail = async (actor: TasksActor, taskId: string): Promise<TaskDetailResult> => {
-    // Erst die Sichtbarkeit — kein Teil einer fremden Aufgabe wird gelesen.
-    const { core, permissions } = await requireVisibleTask(prisma, actor, taskId);
-    const [content, checklists, attachments, comments, chatRooms, sessions, directory] = await Promise.all([
-        loadTaskContent(prisma, actor.tenantId, core.id),
-        loadTaskChecklists(prisma, actor.tenantId, core.id),
-        loadTaskAttachments(prisma, actor.tenantId, core.id),
-        loadVisibleTaskComments(actor, core.id),
-        loadLinkedChatRooms(actor, core.id),
-        loadTaskSessions(actor.tenantId, core.id),
+    /* Aufgabe und alle Teile in EINEM parallelen Schritt (14.09.2026, Samet:
+       «görev detayı 350 ms, max 200–250»). Früher lief die Sichtbarkeit als
+       eigener Rundgang davor. Jede Teilabfrage ist auf die Firma beschränkt;
+       ist die Aufgabe nicht sichtbar, verlässt nichts davon den Server —
+       die Prüfung steht vor der Antwort. */
+    const [visible, content, checklists, attachments, comments, chatRooms, sessions, directory] = await Promise.all([
+        requireVisibleTask(prisma, actor, taskId),
+        loadTaskContent(prisma, actor.tenantId, taskId),
+        loadTaskChecklists(prisma, actor.tenantId, taskId),
+        loadTaskAttachments(prisma, actor.tenantId, taskId),
+        loadVisibleTaskComments(actor, taskId),
+        loadLinkedChatRooms(actor, taskId),
+        loadTaskSessions(actor.tenantId, taskId),
         getTasksPeople(actor.tenantId),
     ]);
+    const { core, permissions } = visible;
 
     const now = new Date();
     const running: RunningSessionRef[] = sessions

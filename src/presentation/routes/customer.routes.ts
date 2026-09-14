@@ -18,6 +18,7 @@ import { CustomerLocationRepository } from '../../infrastructure/repositories/Cu
 import { CustomerProductDiscountRepository } from '../../infrastructure/repositories/CustomerProductDiscountRepository';
 import { TenderRepository } from '../../infrastructure/repositories/TenderRepository';
 import { requireAuth } from '../middlewares/AuthMiddleware';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 
 const router = Router();
@@ -93,6 +94,8 @@ router.get(
     '/',
     requireAuth,
     requirePermission('crm.customers.view'),
+    // Kundensuche der Auswahlfelder: Redis-Lesespeicher (Bereich `customers`).
+    responseCache({ namespaces: ['customers'], ttlSec: 60 }),
     (req, res) => customerController.list(req, res)
 );
 

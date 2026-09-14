@@ -244,9 +244,9 @@ export class ArticleRepository implements IArticleRepository {
         return entities;
     }
 
-    async findArticleById(id: string, options?: { includeImages?: boolean }): Promise<Article | null> {
+    async findArticleById(id: string, options?: { includeImages?: boolean; tenantId?: string }): Promise<Article | null> {
         const data = await (prisma as any).article.findFirst({
-            where: { id, deletedAt: null },
+            where: { id, deletedAt: null, ...(options?.tenantId ? { tenantId: options.tenantId } : {}) },
             // `includeImages=false` must prevent MariaDB from reading the LONGTEXT
             // column, not merely remove it from the JSON response afterwards.
             select: this.articleSelect(options?.includeImages !== false),

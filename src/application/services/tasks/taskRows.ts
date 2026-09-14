@@ -412,3 +412,118 @@ export const taskPeopleIds = (core: TaskCore, running: readonly RunningSessionRe
     ...(core.deleteRequestedById ? [core.deleteRequestedById] : []),
     ...running.map((session) => session.employeeId),
 ];
+
+/* ── Liste: nur was die Zeile zeigt, in EINEM Rundgang ──────────────────── */
+
+/**
+ * Die Görevler-Liste (14.09.2026, Samet: «sadece gerekli olan veriler gelsin,
+ * 600 ms çok uzun»). Eine Anweisung liefert die Zeile, die Gesamtzahl
+ * (`COUNT(*) OVER()`) und die laufenden Messungen — früher waren das drei
+ * Rundgänge (Zeilen · Zählung · Messungen). Nur Spalten, die die Liste liest;
+ * Beschreibung, Anfrage-Notizen, Position usw. kommen erst mit dem Detail.
+ */
+export interface TaskListRowDto {
+    id: string;
+    title: string;
+    status: string;
+    effectiveStatus: string;
+    flagged: boolean;
+    dueAt: Date | null;
+    completedAt: Date | null;
+    createdById: string;
+    approvalState: string;
+    reviewState: string;
+    blockReason: string | null;
+    deleteRequestedById: string | null;
+    assigneeIds: string[];
+    labelIds: string[];
+    checklist: { done: number; total: number };
+    commentCount: number;
+    attachmentCount: number;
+    overdue: boolean;
+    timer: { runningForMe: boolean };
+    /** Nur für die Leitung: gemessene Zeit bis `serverNow` und wie viele Messungen gerade laufen. */
+    work?: { totalMs: number; liveCount: number };
+}
+
+const TASK_LIST_COLUMNS = Prisma.sql`
+    t.id, t.title, t.status, t.flagged, t.startAt, t.dueAt, t.completedAt, t.createdById,
+    t.approvalState, t.reviewState, t.blockReason, t.deleteRequestedById,
+    (SELECT GROUP_CONCAT(ta.employeeId ORDER BY ta.createdAt, ta.id SEPARATOR ',')
+       FROM TaskAssignee ta WHERE ta.taskId = t.id) AS assigneeCsv,
+    (SELECT GROUP_CONCAT(tl.labelId ORDER BY tl.createdAt, tl.id SEPARATOR ',')
+       FROM TaskLabelLink tl WHERE tl.taskId = t.id) AS labelCsv,
+    (SELECT CONCAT(COUNT(*), ',', COALESCE(SUM(ci.done = 1), 0))
+       FROM TaskChecklistItem ci WHERE ci.taskId = t.id) AS checkCsv,
+    (SELECT COUNT(*) FROM TaskComment tc WHERE tc.taskId = t.id) AS commentCount,
+    (SELECT COUNT(*) FROM TaskAttachment tf WHERE tf.taskId = t.id AND tf.kind = 'TASK') AS attachmentCount,
+    (SELECT CONCAT(COUNT(*), ',', COALESCE(SUM(CASE WHEN ts.endedAt IS NOT NULL THEN ts.durationMs ELSE 0 END), 0))
+       FROM TaskTimeSession ts WHERE ts.taskId = t.id) AS sessionCsv,
+    (SELECT GROUP_CONCAT(ts.employeeId, '|', TIMESTAMPDIFF(MICROSECOND, '1970-01-01 00:00:00', ts.startedAt) DIV 1000 SEPARATOR ',')
+       FROM TaskTimeSession ts WHERE ts.taskId = t.id AND ts.endedAt IS NULL) AS runningCsv,
+    COUNT(*) OVER () AS totalRows
+`;
+
+export interface TaskListRowsResult {
+    rows: TaskListRowDto[];
+    total: number;
+    /** Wer in den Zeilen genannt wird (Verantwortliche, Anlegende). */
+    personIds: string[];
+}
+
+export const fetchTaskListRows = async (
+    db: TasksDb,
+    actor: TasksActor,
+    query: { where: Prisma.Sql; orderBy: Prisma.Sql; limit: number; offset: number },
+    now: Date,
+): Promise<TaskListRowsResult> => {
+    const raw = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+        SELECT ${TASK_LIST_COLUMNS}
+        FROM Task t
+        WHERE ${query.where}
+        ORDER BY ${query.orderBy}
+        LIMIT ${query.limit} OFFSET ${query.offset}
+    `);
+    const personIds = new Set<string>();
+    const rows = raw.map((row): TaskListRowDto => {
+        const [checkTotal = 0, checkDone = 0] = rawCsv(row.checkCsv).map(rawNumber);
+        const [sessionCount = 0, closedMs = 0] = rawCsv(row.sessionCsv).map(rawNumber);
+        const running = rawCsv(row.runningCsv).map((entry) => {
+            const [employeeId, startedMs] = entry.split('|');
+            return { employeeId, startedAt: new Date(rawNumber(startedMs)) };
+        });
+        const status = String(row.status ?? 'NOT_STARTED');
+        const dueAt = rawDate(row.dueAt);
+        const createdById = String(row.createdById ?? '');
+        const assigneeIds = rawCsv(row.assigneeCsv);
+        personIds.add(createdById);
+        for (const id of assigneeIds) personIds.add(id);
+        const dto: TaskListRowDto = {
+            id: String(row.id),
+            title: String(row.title ?? ''),
+            status,
+            effectiveStatus: effectiveTaskStatus({ status, startAt: rawDate(row.startAt), hasSessions: sessionCount > 0 }, now),
+            flagged: rawBool(row.flagged),
+            dueAt,
+            completedAt: rawDate(row.completedAt),
+            createdById,
+            approvalState: String(row.approvalState ?? 'NONE'),
+            reviewState: String(row.reviewState ?? 'APPROVED'),
+            blockReason: rawString(row.blockReason),
+            deleteRequestedById: rawString(row.deleteRequestedById),
+            assigneeIds,
+            labelIds: rawCsv(row.labelCsv),
+            checklist: { done: checkDone, total: checkTotal },
+            commentCount: rawNumber(row.commentCount),
+            attachmentCount: rawNumber(row.attachmentCount),
+            overdue: isTaskOverdue({ status, dueAt }, now),
+            timer: { runningForMe: running.some((session) => session.employeeId === actor.employeeId) },
+        };
+        if (actor.isManager) {
+            const liveMs = running.reduce((sum, session) => sum + liveDurationMs(session.startedAt, now), 0);
+            dto.work = { totalMs: Math.max(0, closedMs + liveMs), liveCount: running.length };
+        }
+        return dto;
+    });
+    return { rows, total: raw.length ? rawNumber(raw[0]?.totalRows) : 0, personIds: [...personIds].filter(Boolean) };
+};

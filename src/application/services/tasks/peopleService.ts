@@ -55,6 +55,7 @@ export interface DirectoryPersonDto {
     lastName: string;
     name: string;
     title: string | null;
+    roleName: string | null;
     isManager: boolean;
 }
 
@@ -70,6 +71,7 @@ export const listTasksDirectory = async (actor: TasksActor): Promise<DirectoryPe
         lastName: person.lastName,
         name: personDisplayName(person),
         title: person.title,
+        roleName: person.roleName,
         isManager: person.isManager,
     }));
 
@@ -79,6 +81,7 @@ export interface PersonStatsDto {
     employeeId: string;
     name: string;
     title: string | null;
+    roleName: string | null;
     isManager: boolean;
     openCount: number;
     completedCount: number;
@@ -190,6 +193,7 @@ export const buildPersonStats = (
             employeeId: person.id,
             name: personDisplayName(person),
             title: person.title,
+            roleName: person.roleName,
             isManager: person.isManager,
             openCount: counts?.openCount ?? 0,
             completedCount: counts?.completedCount ?? 0,

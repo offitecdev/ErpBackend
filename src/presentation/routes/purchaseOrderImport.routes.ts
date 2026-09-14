@@ -52,6 +52,7 @@ import {
     type TemplateColumn,
     type TemplateLabel,
 } from '../../infrastructure/services/gptExtract';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 export const purchaseOrderImportRouter = Router();
 
@@ -695,6 +696,7 @@ purchaseOrderImportRouter.get(
     '/supplier-templates',
     requireAuth,
     requirePermission('inventory.view'),
+    responseCache({ namespaces: ['catalog', 'settings'], ttlSec: 120 }),
     async (req: any, res: any) => {
         try {
             const tenantId = req.user!.tenantId;

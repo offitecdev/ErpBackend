@@ -9,6 +9,7 @@ import {
 import { getWorkReport } from '../../../application/services/tasks/workReportService';
 import { routeParam, taskRoute } from './taskHttp';
 import { tasksActor } from './taskMiddleware';
+import { responseCache } from '../../middlewares/ResponseCacheMiddleware';
 
 /* BERICHTE, montiert unter /api/v1/tasks/reports. Vorgabe Samet: «raporlar da
    sadece pdf olsun grafik falan olmasın» — hier stehen nur Zahlen und
@@ -23,23 +24,23 @@ import { tasksActor } from './taskMiddleware';
 
 const router = Router();
 
-router.get('/work', taskRoute('tasks.reports.work', async (req, res) => {
+router.get('/work', responseCache({ namespaces: ['tasks'], ttlSec: 30 }), taskRoute('tasks.reports.work', async (req, res) => {
     res.json(await getWorkReport(tasksActor(res), req.query as Record<string, unknown>));
 }));
 
-router.get('/team', taskRoute('tasks.reports.team', async (req, res) => {
+router.get('/team', responseCache({ namespaces: ['tasks'], ttlSec: 30 }), taskRoute('tasks.reports.team', async (req, res) => {
     res.json(await getTeamReport(tasksActor(res), req.query as Record<string, unknown>));
 }));
 
-router.get('/me', taskRoute('tasks.reports.me', async (req, res) => {
+router.get('/me', responseCache({ namespaces: ['tasks'], ttlSec: 30 }), taskRoute('tasks.reports.me', async (req, res) => {
     res.json(await getMyReport(tasksActor(res), req.query as Record<string, unknown>));
 }));
 
-router.get('/person/:employeeId', taskRoute('tasks.reports.person', async (req, res) => {
+router.get('/person/:employeeId', responseCache({ namespaces: ['tasks'], ttlSec: 30 }), taskRoute('tasks.reports.person', async (req, res) => {
     res.json(await getPersonReport(tasksActor(res), routeParam(req, 'employeeId'), req.query as Record<string, unknown>));
 }));
 
-router.get('/task/:taskId', taskRoute('tasks.reports.task', async (req, res) => {
+router.get('/task/:taskId', responseCache({ namespaces: ['tasks'], ttlSec: 30 }), taskRoute('tasks.reports.task', async (req, res) => {
     res.json(await getTaskReport(tasksActor(res), routeParam(req, 'taskId')));
 }));
 

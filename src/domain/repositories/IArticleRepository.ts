@@ -17,7 +17,8 @@ export interface IArticleRepository {
     /** Die ganze Produktliste einer Firma in den Papierkorb. */
     softDeleteAllArticles(tenantId: string): Promise<number>;
     findAllArticles(filter: IArticleFilter): Promise<Article[]>;
-    findArticleById(id: string, options?: { includeImages?: boolean }): Promise<Article | null>;
+    /** `tenantId`: nur eine Karte DIESER Firma (Kennungen allein sind kein Zugriffsrecht). */
+    findArticleById(id: string, options?: { includeImages?: boolean; tenantId?: string }): Promise<Article | null>;
     findArticleByCode(tenantId: string, codeOrBarcode: string): Promise<Article | null>;
 
     mapArticleToPosition(mapping: Partial<PositionArticleMapping>): Promise<PositionArticleMapping>;

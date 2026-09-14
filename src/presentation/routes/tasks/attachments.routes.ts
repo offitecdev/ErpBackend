@@ -11,6 +11,7 @@ import { TASK_LIMITS } from '../../../application/services/tasks/taskConstants';
 import { contentDisposition, isInlineContentType } from '../../../application/services/tasks/taskFiles';
 import { queryFlag, routeParam, taskRoute, uploadedFiles, withTaskUpload } from './taskHttp';
 import { tasksActor } from './taskMiddleware';
+import { responseCache } from '../../middlewares/ResponseCacheMiddleware';
 
 /* DATEIEN DES GÖREVLER-MODULS, montiert unter /api/v1/tasks: der Reiter
    «Dosyalar» einer Aufgabe und der EINE Weg, auf dem der Browser die Bytes
@@ -48,7 +49,7 @@ router.delete('/attachments/:attachmentId', taskRoute('tasks.attachments.delete'
 }));
 
 // GET /:taskId/attachments — die Dateien des Reiters «Dosyalar».
-router.get('/:taskId/attachments', taskRoute('tasks.attachments.list', async (req, res) => {
+router.get('/:taskId/attachments', responseCache({ namespaces: ['tasks'], ttlSec: 15 }), taskRoute('tasks.attachments.list', async (req, res) => {
     res.json(await listTaskAttachments(tasksActor(res), routeParam(req, 'taskId')));
 }));
 

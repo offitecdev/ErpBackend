@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { Prisma } from '@prisma/client';
 import { nanoid } from 'nanoid';
 import { requireAuth } from '../middlewares/AuthMiddleware';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
 import { getMailTenantId } from '../controllers/serviceTenantScope';
@@ -86,7 +87,7 @@ const parseDate = (raw: unknown): Date | null => {
 // GET /crm/contacts?search=&customerId=&page=&pageSize= — tenant-wide list,
 // served from the (tenantId, lastName, firstName) index with the company name
 // joined in, so the page costs one round trip instead of one per relation.
-router.get('/contacts', requireAuth, requirePermission('crm.customers.view'), async (req, res) => {
+router.get('/contacts', requireAuth, requirePermission('crm.customers.view'), responseCache({ namespaces: ['customers'], ttlSec: 60 }), async (req, res) => {
     try {
         const user = req.user!;
         const search = String(req.query.search || '').trim();

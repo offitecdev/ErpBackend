@@ -7,6 +7,7 @@ import { InventoryRepository } from '../../infrastructure/repositories/Inventory
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
 import { rateLimit } from '../middlewares/RateLimitMiddleware';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 const router = Router();
 
@@ -167,6 +168,7 @@ router.get(
     '/tasks',
     requireAuth,
     requirePermission('maintenance.contracts.manage'),
+    responseCache({ namespaces: ['calendar'], ttlSec: 30 }),
     (req, res) => controller.listTasks(req, res)
 );
 
@@ -174,6 +176,7 @@ router.get(
     '/tasks/:taskId/detail',
     requireAuth,
     requirePermission('maintenance.contracts.manage'),
+    responseCache({ namespaces: ['calendar'], ttlSec: 30 }),
     (req, res) => controller.getTaskCalendarDetail(req, res)
 );
 
@@ -181,6 +184,7 @@ router.get(
     '/tasks/:taskId',
     requireAuth,
     requirePermission('maintenance.contracts.manage'),
+    responseCache({ namespaces: ['calendar'], ttlSec: 30 }),
     (req, res) => controller.getTask(req, res)
 );
 
@@ -188,6 +192,7 @@ router.get(
     '/technician/tasks',
     requireAuth,
     requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    responseCache({ namespaces: ['calendar'], ttlSec: 30 }),
     (req, res) => controller.listMyTasks(req, res)
 );
 
@@ -195,6 +200,7 @@ router.get(
     '/technician/tasks/:taskId/detail',
     requireAuth,
     requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    responseCache({ namespaces: ['calendar'], ttlSec: 30 }),
     (req, res) => controller.getMyTaskCalendarDetail(req, res)
 );
 
@@ -202,6 +208,7 @@ router.get(
     '/technician/tasks/:taskId',
     requireAuth,
     requireAnyPermission(['maintenance.tasks.manage', 'maintenance.reports.manage']),
+    responseCache({ namespaces: ['calendar'], ttlSec: 30 }),
     (req, res) => controller.getMyTask(req, res)
 );
 

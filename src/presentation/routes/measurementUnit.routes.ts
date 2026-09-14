@@ -6,6 +6,7 @@ import prisma from '../../infrastructure/database/prisma.client';
 import { MAX_UNIT_CODE_LENGTH, MAX_UNIT_NAME_LENGTH, unitKey } from '../../shared/measurementUnits';
 import { listUnits } from '../../application/services/measurementUnitCatalog';
 import type { UnitRow } from '../../application/services/measurementUnitCatalog';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 /* MENGENEINHEITEN (Einstellungen → Module → Lager → Einheiten).
    Je Mandant EINE pflegbare Liste, aus der beim Artikel gewählt wird: Stück,
@@ -105,7 +106,7 @@ const readName = (value: unknown): string => String(value ?? '').trim().slice(0,
  * NUR die Einstellungsseite fragt danach: das Auswahlfeld holt dieselbe Liste
  * in jedem Artikelformular und soll dafür nicht drei Gruppierungen bezahlen.
  */
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, responseCache({ namespaces: ['catalog', 'settings'], ttlSec: 300 }), async (req, res) => {
     try {
         const tenantId = req.user!.tenantId;
         const wantsUsage = String(req.query.usage ?? '') === 'true';

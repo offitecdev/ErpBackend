@@ -762,9 +762,11 @@ export class InventoryRepository implements IInventoryRepository {
         return new StockMovement(result.id, result.tenantId, result.articleId, result.movementType as any, result.quantity, result.employeeId, result.transactionDate, result.sourceLocationId, result.destinationLocationId, result.referenceId || undefined, result.description || undefined, (result as any).unitCost ?? undefined, (result as any).supplierId ?? undefined);
     }
 
-    async getMovements(articleId: string): Promise<StockMovement[]> {
+    async getMovements(tenantId: string, articleId: string): Promise<StockMovement[]> {
         const data = await prisma.stockMovement.findMany({
-            where: { articleId },
+            // Mandant im Filter (14.09.2026): vorher lieferte eine fremde
+            // Artikelkennung die Lagerbewegungen einer anderen Firma aus.
+            where: { tenantId, articleId },
             orderBy: { transactionDate: 'desc' },
             include: {
                 employee: { select: { firstName: true, lastName: true } },

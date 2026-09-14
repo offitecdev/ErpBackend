@@ -10,6 +10,7 @@ import {
 import { LABEL_COLORS, TASK_LIMITS } from '../../../application/services/tasks/taskConstants';
 import { parseInput, routeParam, taskRoute, zLine, zRequiredLine } from './taskHttp';
 import { tasksActor } from './taskMiddleware';
+import { responseCache } from '../../middlewares/ResponseCacheMiddleware';
 
 /* ETIKETTEN DER FIRMA, montiert unter /api/v1/tasks/labels. Lesen: jede Person
    des Moduls; anlegen, ändern, löschen: die Leitung (im labelService geprüft). */
@@ -29,7 +30,7 @@ const patchBody = z.object({
 });
 
 // GET /labels — alle Etiketten, nach Namen.
-router.get('/', taskRoute('tasks.labels.list', async (_req, res) => {
+router.get('/', responseCache({ namespaces: ['tasks'], ttlSec: 120 }), taskRoute('tasks.labels.list', async (_req, res) => {
     res.json({ data: await listTaskLabels(tasksActor(res)) });
 }));
 

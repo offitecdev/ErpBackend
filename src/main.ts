@@ -81,6 +81,9 @@ import fxRoutes from './presentation/routes/fx.routes';
 import ospRoutes from './presentation/routes/osp.routes';
 import filesRoutes from './presentation/routes/files.routes';
 import dashboardRoutes from './presentation/routes/dashboard.routes';
+// Mehrere Lesewege in einem Rundlauf (14.09.2026) — Kopfzeilen-Zähler und
+// Projektliste zahlen die Strecke Browser↔Rechner einmal statt viermal.
+import batchRoutes from './presentation/routes/batch.routes';
 // Görevler (13.09.2026): eigenständiges Aufgabenmodul nach dem Vorbild Görevly —
 // Aufgaben, Checklisten, Zeitmessung, Chat, Berichte (routes/tasks/index.ts).
 import tasksModuleRoutes from './presentation/routes/tasks';
@@ -96,6 +99,8 @@ import { bcryptGateStats } from './application/services/bcryptGate';
 // Nur für die API-Dokumentation: im Produktivbetrieb ist sie anmeldepflichtig.
 import { requireAuth } from './presentation/middlewares/AuthMiddleware';
 import prisma from './infrastructure/database/prisma.client';
+// Lesespeicher (Redis, sonst im Vorgang) — Schreibanfragen machen ihn ungültig (14.09.2026).
+import { invalidateCachesOnWrite } from './presentation/middlewares/ResponseCacheMiddleware';
 
 
 const app  = express();
@@ -218,6 +223,7 @@ app.use(apiPrefixes, (_req, res, next) => {
     res.setHeader('Expires', '0');
     next();
 });
+app.use(apiPrefixes, invalidateCachesOnWrite);
 
 
 app.use('/api-docs', ...apiDocsGuards, swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
@@ -296,6 +302,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/dashboard`, dashboardRoutes);
     // Görevler-Modul — nicht zu verwechseln mit /crm/tasks (CRM-Aufgaben).
     app.use(`${prefix}/tasks`, tasksModuleRoutes);
+    app.use(`${prefix}/batch`, batchRoutes);
 }
 
 app.use(globalErrorHandler);

@@ -19,7 +19,7 @@ export interface IInventoryRepository {
         quantity: number
     ): Promise<StockMovement>;
 
-    getMovements(articleId:string): Promise<StockMovement[]>;
+    getMovements(tenantId: string, articleId: string): Promise<StockMovement[]>;
     createPurchaseProposal(proposal: Partial<PurchaseProposal>): Promise<PurchaseProposal>;
     getPendingProposals(tenantId: string): Promise<PurchaseProposal[]>;
     /** Ürünün bekleyen satın alma önerisi var mı — liste çekmeden. */

@@ -43,7 +43,10 @@ export class ArticleController {
         try {
             const id = req.params.id as string;
             const includeImages = req.query.includeImages !== 'false';
-            const article = await this.articleRepository.findArticleById(id, { includeImages });
+            // Nur die Karte der angemeldeten Firma (14.09.2026) — vorher genügte
+            // die Kennung, und jede Firma las die Produktkarten jeder anderen.
+            const tenantId = (req as any).user!.tenantId;
+            const article = await this.articleRepository.findArticleById(id, { includeImages, tenantId });
             if (!article) return res.status(404).json({ error: 'Ürün bulunamadı.' });
             res.status(200).json(article);
         } catch (error: any) {
@@ -110,7 +113,10 @@ export class ArticleController {
     async update(req: Request, res: Response) {
         try {
             const id = req.params.id as string;
-            const before = await this.articleRepository.findArticleById(id);
+            // Ändern darf nur, wem die Karte gehört: eine fremde Kennung ist
+            // «nicht gefunden», nicht «geändert» (14.09.2026).
+            const before = await this.articleRepository.findArticleById(id, { tenantId: (req as any).user!.tenantId });
+            if (!before) return res.status(404).json({ error: 'Ürün bulunamadı.' });
             const patch: any = { ...req.body };
             const tenderId = patch.tenderId as string | undefined;
             const positionId = patch.positionId as string | undefined;

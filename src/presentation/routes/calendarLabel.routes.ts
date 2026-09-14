@@ -5,6 +5,7 @@ import { requireAnyPermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
 import { listLabels, LABEL_ORDER_BY, type LabelRow } from '../../application/services/calendarLabelCatalog';
 import { DEFAULT_CALENDAR_LABELS, FALLBACK_LABEL_COLOR, normalizeLabelColor, normalizeLabelName, normalizeLabelRole } from '../../shared/calendarLabels';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 /* KALENDER-ETIKETTEN (Kalender → Leiste «Etiketten», Zahnrad daneben).
    Je Mandant EINE Liste, aus der ein Kalendereintrag sein Etikett bekommt.
@@ -52,7 +53,7 @@ const usageCount = async (tenantId: string, labelId: string): Promise<number> =>
 };
 
 // GET /calendar/labels — die ganze Liste, in Anzeigereihenfolge.
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, responseCache({ namespaces: ['calendar', 'settings'], ttlSec: 300 }), async (req, res) => {
     try {
         const rows = await listLabels(req.user!.tenantId);
         res.status(200).json(rows.map(toDto));

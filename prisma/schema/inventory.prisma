@@ -272,6 +272,26 @@ model PurchaseOrder {
   @@index([supplierId])
 }
 
+/// MAIL-ENTWÜRFE EINES AUFTRAGS (Vorgabe Samet, 14.09.2026) — halbfertige Mails
+/// aus dem Mailfenster der Auftragsseite. Anders als die Anschreiben-Vorlagen
+/// darunter gehören sie EINEM Auftrag (`orderId`, ohne FK wie PurchaseOrder
+/// selbst); das Löschen des Auftrags räumt sie mit ab.
+model PurchaseOrderMailDraft {
+  id        String   @id
+  tenantId  String
+  orderId   String
+  toEmail   String?  @db.VarChar(191)
+  /// JSON ["a@b.ch", …] — höchstens 10
+  ccEmails  String?  @db.Text
+  subject   String   @default("") @db.VarChar(200)
+  message   String?  @db.Text
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, orderId])
+}
+
 /// Sipariş ANSCHREIBEN (ön yazı) TASLAKLARI — tenant genelinde paylaşılan,
 /// yeniden kullanılabilir metin şablonları. Teklif tarafındaki
 /// `TenderTextTemplate` ile aynı erişim modeli: kayıt siparişe DEĞİL tenant'a

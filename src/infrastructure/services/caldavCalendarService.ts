@@ -1,4 +1,5 @@
 import prisma from "../database/prisma.client";
+import { invalidateEverywhere } from "../cache/cacheStore";
 import { getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
 import { parseCalendarObjects } from "./calendarInvite";
 import { importCalendarEvent } from "./calendarImportService";
@@ -421,6 +422,8 @@ export const captureCalendar = async (selectedTenantId: string): Promise<CaldavS
             }
         }
 
+        // Abgleich hat Termine angelegt, geändert oder entfernt: Kalender-Lesespeicher neu.
+        if (summary.created || summary.updated || summary.removed) await invalidateEverywhere(["calendar"]);
         if (failures.length) summary.error = failures.join("; ").slice(0, 500);
         summary.durationMs = Date.now() - startedAt;
         const line = `${summary.calendars} Kalender, ${summary.examined} gelesen, `

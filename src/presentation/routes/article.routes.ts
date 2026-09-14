@@ -5,6 +5,7 @@ import { InventoryRepository } from '../../infrastructure/repositories/Inventory
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 const router = Router();
 const articleRepo = new ArticleRepository();
@@ -41,6 +42,7 @@ router.get(
     '/',
     requireAuth,
     requirePermission('inventory.view'),
+    responseCache({ namespaces: ['catalog'], ttlSec: 60 }),
     (req, res) => controller.list(req, res)
 );
 
@@ -57,6 +59,7 @@ router.get(
     '/lookup/:code',
     requireAuth,
     requirePermission('inventory.view'),
+    responseCache({ namespaces: ['catalog'], ttlSec: 60 }),
     (req, res) => controller.lookupByCode(req, res)
 );
 
@@ -73,6 +76,7 @@ router.get(
     '/:id',
     requireAuth,
     requirePermission('inventory.view'),
+    responseCache({ namespaces: ['catalog'], ttlSec: 60 }),
     (req, res) => controller.getById(req, res)
 );
 

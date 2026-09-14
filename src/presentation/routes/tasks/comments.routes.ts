@@ -5,6 +5,7 @@ import { addTaskComment, deleteTaskComment, listTaskComments } from '../../../ap
 import { TASK_LIMITS } from '../../../application/services/tasks/taskConstants';
 import { parseInput, routeParam, taskRoute, uploadedFiles, withTaskUpload, zText } from './taskHttp';
 import { tasksActor } from './taskMiddleware';
+import { responseCache } from '../../middlewares/ResponseCacheMiddleware';
 
 /* KOMMENTARE EINER AUFGABE (Reiter «Yorumlar»), montiert unter /api/v1/tasks.
    Anmeldung und Modulzugang prüft index.ts davor, die Regeln stehen im
@@ -22,7 +23,7 @@ router.delete('/comments/:commentId', taskRoute('tasks.comments.delete', async (
 }));
 
 // GET /:taskId/comments — alle Kommentare samt Dateien, älteste zuerst.
-router.get('/:taskId/comments', taskRoute('tasks.comments.list', async (req, res) => {
+router.get('/:taskId/comments', responseCache({ namespaces: ['tasks'], ttlSec: 15 }), taskRoute('tasks.comments.list', async (req, res) => {
     res.json(await listTaskComments(tasksActor(res), routeParam(req, 'taskId')));
 }));
 

@@ -19,6 +19,7 @@ import { GetTenderSummaryReportUseCase } from '../../application/use-cases/tende
 import { CustomerActivityRepository } from '../../infrastructure/repositories/CustomerActivityRepository';
 import { InventoryRepository } from '../../infrastructure/repositories/InventoryRepository';
 import { TenderActivityLogRepository } from '../../infrastructure/repositories/TenderActivityLogRepository';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 const router = Router();
 const tenderDocumentUpload = multer({
@@ -74,6 +75,7 @@ router.get(
     '/',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.list(req, res)
 );
 
@@ -121,6 +123,7 @@ router.get(
     '/:id/lifecycle',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender', 'calendar'], ttlSec: 30 }),
     (req, res) => tenderController.lifecycle(req, res)
 );
 
@@ -306,6 +309,7 @@ router.get(
     '/options/technicians',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender', 'staff'], ttlSec: 120 }),
     (req, res) => tenderController.listTechnicians(req, res)
 );
 
@@ -315,6 +319,7 @@ router.get(
     '/mail-drafts',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 120 }),
     (req, res) => tenderController.listMailDrafts(req, res)
 );
 
@@ -345,6 +350,7 @@ router.get(
     '/text-templates',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender', 'settings'], ttlSec: 120 }),
     (req, res) => tenderController.listTextTemplates(req, res)
 );
 
@@ -373,6 +379,7 @@ router.get(
     '/:id/schedule-slots',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender', 'calendar'], ttlSec: 30 }),
     (req, res) => tenderController.getScheduleSlots(req, res)
 );
 
@@ -409,6 +416,7 @@ router.get(
     '/:id/mail-recipients',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender', 'customers'], ttlSec: 60 }),
     (req, res) => tenderController.listMailRecipients(req, res)
 );
 
@@ -456,6 +464,7 @@ router.get(
     '/:id',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender', 'catalog', 'customers'], ttlSec: 30 }),
     (req, res) => tenderController.getDetails(req, res)
 );
 
@@ -472,6 +481,7 @@ router.get(
     '/:id/pdf-content',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.getPdfContent(req, res)
 );
 
@@ -565,6 +575,7 @@ router.get(
     '/:id/materials',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender', 'catalog'], ttlSec: 30 }),
     (req, res) => tenderArticleController.listMaterials(req, res)
 );
 
@@ -587,7 +598,7 @@ router.delete(
 router.get(
     '/:id/report',
     requireAuth,
-    requirePermission('tenders.view'), // Yönetici veya Teklif Uzmanı görebilir
+    requirePermission('tenders.view'), responseCache({ namespaces: ['tender'], ttlSec: 30 }), // Yönetici veya Teklif Uzmanı görebilir
     (req, res) => tenderReportController.getSummary(req, res)
 );
 
@@ -626,6 +637,7 @@ router.get(
     '/:id/activities',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.getActivities(req, res)
 );
 
@@ -633,6 +645,7 @@ router.get(
     '/:id/logs',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.getLogs(req, res)
 );
 
@@ -640,6 +653,7 @@ router.get(
     '/:id/chatter-summary',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.getChatterSummary(req, res)
 );
 
@@ -647,6 +661,7 @@ router.get(
     '/:id/chatter',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.getChatter(req, res)
 );
 
@@ -661,6 +676,7 @@ router.get(
     '/:id/documents',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.getDocuments(req, res)
 );
 
@@ -668,6 +684,7 @@ router.get(
     '/:id/documents/:documentId/content',
     requireAuth,
     requirePermission('tenders.view'),
+    responseCache({ namespaces: ['tender'], ttlSec: 30 }),
     (req, res) => tenderController.getDocumentContent(req, res)
 );
 

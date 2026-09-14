@@ -13,6 +13,7 @@ import { flipOverdueTasks } from '../../infrastructure/services/crmTaskMaintenan
 import { GetUserPermissionsUseCase } from '../../application/use-cases/auth/GetUserPermissionsUseCase';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
 import { getPersonnelTenantScope, employeeScopeWhere } from '../controllers/serviceTenantScope';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 /* Aufgaben & Erinnerungen (mounted under /crm alongside crm.routes.ts).
 
@@ -373,7 +374,7 @@ const noteRow = (note: any) => ({
  * "Für mich" = ich stehe in den Verantwortlichen (und MEIN Stempel fehlt noch)
  * ODER niemand ist verantwortlich und ich habe sie erfasst. Auth-only.
  */
-router.get('/reminders/due', requireAuth, async (req, res) => {
+router.get('/reminders/due', requireAuth, responseCache({ namespaces: ['tasks'], ttlSec: 15 }), async (req, res) => {
     try {
         const user = req.user!;
         if (String(req.query.view || '').trim() === 'count') {
@@ -494,7 +495,7 @@ router.post('/reminders/dismiss', requireAuth, async (req, res) => {
  * `scope` die ganze Firma (crm.customers.view). `from`/`to` sind ISO-Zeitpunkte
  * und grenzen den Termin auf eine Woche ein — Aufgaben ohne Termin kommen mit.
  */
-router.get('/tasks', requireAuth, async (req, res) => {
+router.get('/tasks', requireAuth, responseCache({ namespaces: ['tasks', 'customers'], ttlSec: 15 }), async (req, res) => {
     try {
         const user = req.user!;
         const scope = String(req.query.scope || '').trim();
@@ -644,7 +645,7 @@ router.get('/tasks', requireAuth, async (req, res) => {
 });
 
 /** GET /crm/tasks/:id — die Aufgabenseite: Kopf, Verantwortliche, Notizen. Beteiligte oder crm.customers.view. */
-router.get('/tasks/:id', requireAuth, async (req, res) => {
+router.get('/tasks/:id', requireAuth, responseCache({ namespaces: ['tasks', 'customers'], ttlSec: 15 }), async (req, res) => {
     try {
         const user = req.user!;
         const task = await prisma.crmTask.findFirst({

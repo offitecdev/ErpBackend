@@ -15,6 +15,7 @@ import {
     previewNextCode,
 } from '../../application/services/articleCodeCatalog';
 import type { CodeCategoryRow, CodeSchemeRow } from '../../application/services/articleCodeCatalog';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 /* CODE-EINSTELLUNGEN (Einstellungen → Module → Lager → Code-Einstellungen).
    Kategorien (ELK, KLI …) und ihre Nummernkreise (PLC, TCL, VIDA …), aus denen
@@ -65,7 +66,7 @@ const categoryDto = (category: CodeCategoryRow) => ({
  * `?active=true` liefert nur freigegebene Kreise (und nur Kategorien, die
  * welche haben) — das ist die Sicht der Schnellerfassung.
  */
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, responseCache({ namespaces: ['catalog', 'settings'], ttlSec: 300 }), async (req, res) => {
     try {
         const activeOnly = String(req.query.active ?? '') === 'true';
         const rows = await listCodeCategories(req.user!.tenantId, { activeOnly });

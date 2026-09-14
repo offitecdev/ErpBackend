@@ -5,6 +5,7 @@ import { getMyTaskSettings, saveMyTaskSettings } from '../../../application/serv
 import { REMINDER_LEAD_MINUTES } from '../../../application/services/tasks/taskConstants';
 import { parseInput, taskRoute } from './taskHttp';
 import { tasksActor } from './taskMiddleware';
+import { responseCache } from '../../middlewares/ResponseCacheMiddleware';
 
 /* PERSÖNLICHE EINSTELLUNGEN, montiert unter /api/v1/tasks/settings — heute nur
    der Vorlauf für «Termin naht» (10 | 30 | 60 | 120 Minuten). */
@@ -18,7 +19,7 @@ const settingsBody = z.object({
     ),
 });
 
-router.get('/me', taskRoute('tasks.settings.get', async (_req, res) => {
+router.get('/me', responseCache({ namespaces: ['tasks'], ttlSec: 60 }), taskRoute('tasks.settings.get', async (_req, res) => {
     res.json({ settings: await getMyTaskSettings(tasksActor(res)) });
 }));
 

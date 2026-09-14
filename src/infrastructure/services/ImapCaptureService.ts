@@ -7,6 +7,7 @@ import { autoCategoryId, getCategoryIndex } from "./outlook/mailAutoCategory";
 import { clampBody, clampHtml, htmlToText, previewOf, sanitizeMailHtml } from "./outlook/mailText";
 import { mainBodyOf, stripImagePlaceholders } from "./outlook/mailBodyParts";
 import { importCalendarPayload } from "./calendarImportService";
+import { invalidateEverywhere } from "../cache/cacheStore";
 import { getCompanyTreeTenantIds, getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
 import { mailboxIdentityOf } from "./mailboxIdentity";
 
@@ -830,6 +831,8 @@ export const captureInbox = async (selectedTenantId: string, options: CaptureOpt
                             source: "MAIL",
                         });
                         if (result.action !== "ignored") {
+                            // Einladung eingetragen: Kalender-Lesespeicher neu.
+                            void invalidateEverywhere(["calendar"]);
                             summary.calendar += 1;
                             console.log(`[MAIL-IN] Termin ${result.action}: ${keeper.envelope?.subject || ""}`);
                         } else {

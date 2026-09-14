@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import prisma from '../database/prisma.client';
 import { daysBetween, latestDueStep } from '../../shared/reminderSchedule';
 import { flipOverdueTasks, purgeStaleReminders } from './crmTaskMaintenance';
+import { invalidateEverywhere } from '../cache/cacheStore';
 
 /**
  * Hintergrunddienst der Erinnerungen (Einstellungen → Module → Verkauf →
@@ -208,6 +209,9 @@ const runPass = async (): Promise<void> => {
     // Aufräumen NACH dem Zünden: ein "läuft heute ab" bleibt den Tag über
     // stehen (der letzte Gültigkeitstag zählt), erst danach fällt es weg.
     await Promise.all([flipOverdueTasks(), purgeStaleReminders()]);
+    // Erinnerungen und Aufgabenstatus wurden ohne Anfrage geschrieben: die
+    // Lesespeicher (Redis) für Aufgaben und Kunden gelten nicht mehr.
+    await invalidateEverywhere(['tasks', 'customers']);
 };
 
 let started = false;

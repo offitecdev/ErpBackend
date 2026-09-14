@@ -14,6 +14,7 @@ import { captureCalendar, isCaldavRunning } from '../../infrastructure/services/
 import { getMailTenantId } from '../controllers/serviceTenantScope';
 import { currentMailboxIdentity } from '../../infrastructure/services/mailboxIdentity';
 import { repairImportedMeetingOwners } from '../../infrastructure/services/calendarImportService';
+import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 
 /* Workspace "meeting activities" (meetings & lightweight tasks) shown on the CRM
    overview and the unified calendar. Participants mix staff and customers. */
@@ -143,7 +144,7 @@ const sanitizeParticipants = (raw: unknown): ParticipantInput[] => {
 };
 
 // GET /meetings?start=ISO&end=ISO — every activity of the tenant in the range.
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, responseCache({ namespaces: ['calendar'], ttlSec: 30 }), async (req, res) => {
     try {
         const user = req.user!;
         const start = req.query.start ? new Date(String(req.query.start)) : null;
