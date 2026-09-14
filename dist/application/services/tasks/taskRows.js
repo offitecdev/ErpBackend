@@ -355,9 +355,9 @@ const fetchTaskListRows = async (db, actor, query, now, day = (0, taskTime_1.res
             timer: { runningForMe: Boolean(mine), myStartedAt: mine?.startedAt ?? null },
         };
         const counted = actor.isManager ? running : running.filter((session) => session.employeeId === actor.employeeId);
-        // Die eigene laufende Messung zählt der Browser ab seinem Klick — hier nur die der anderen.
-        const liveMs = counted.reduce((sum, session) => sum + (session === mine ? 0 : (0, taskTime_1.windowedMs)(session.startedAt, null, day, now)), 0);
-        dto.work = { dayMs: Math.max(0, dayClosedMs + liveMs), liveCount: counted.length };
+        // KEINE laufende Zeit (14.09.2026, Samet: «kronometre olmayacak, arka planda süre hesaplamasın»):
+        // die Zahl ist die Summe der ABGESCHLOSSENEN Messungen; eine laufende zählt erst beim Pausieren.
+        dto.work = { dayMs: Math.max(0, dayClosedMs), liveCount: counted.length };
         return dto;
     });
     return { rows, total: raw.length ? (0, exports.rawNumber)(raw[0]?.totalRows) : 0, personIds: [...personIds].filter(Boolean) };

@@ -71,7 +71,6 @@ const getLiveOverview = async (actor, query) => {
             ORDER BY ll.createdAt ASC
         `),
     ]);
-    const nowMs = Math.min(now.getTime(), day.to.getTime());
     const byPerson = new Map();
     const ensurePerson = (employeeId) => {
         let entry = byPerson.get(employeeId);
@@ -105,8 +104,8 @@ const getLiveOverview = async (actor, query) => {
         const endedAt = (0, taskRows_1.rawDate)(row.endedAt);
         const live = !endedAt;
         const clipStart = Math.max(startedAt.getTime(), day.from.getTime());
-        const clipEnd = live ? nowMs : Math.min(endedAt.getTime(), day.to.getTime());
-        const durationMs = Math.max(0, clipEnd - clipStart);
+        // KEINE laufende Zeit (14.09.2026, Samet): eine laufende Messung zählt erst beim Pausieren.
+        const durationMs = live ? 0 : Math.max(0, Math.min(endedAt.getTime(), day.to.getTime()) - clipStart);
         const entry = ensurePerson(row.employeeId);
         entry.sessions.push({ id: row.id, taskId: row.taskId, taskTitle: row.title ?? '', startedAt, endedAt, durationMs });
         entry.todayMs += durationMs;

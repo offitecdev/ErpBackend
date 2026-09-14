@@ -6,7 +6,6 @@ const taskConstants_1 = require("../../../application/services/tasks/taskConstan
 const taskQueries_1 = require("../../../application/services/tasks/taskQueries");
 const taskService_1 = require("../../../application/services/tasks/taskService");
 const taskTimer_1 = require("../../../application/services/tasks/taskTimer");
-const quickModeService_1 = require("../../../application/services/tasks/quickModeService");
 const AuditLogService_1 = require("../../../infrastructure/services/AuditLogService");
 const taskHttp_1 = require("./taskHttp");
 const taskActor_1 = require("../../../application/services/tasks/taskActor");
@@ -49,7 +48,6 @@ const updateBody = zod_1.z.object({
 const duplicateBody = zod_1.z.object({ title: (0, taskHttp_1.zLine)(taskConstants_1.TASK_LIMITS.titleMax).optional() });
 const noteBody = zod_1.z.object({ note: noteText.optional() });
 /** Zeitpunkt des Klicks; der Dienst begrenzt ihn gegen die Empfangszeit. */
-const timerActionBody = zod_1.z.object({ actionAt: taskHttp_1.zNullableDate.optional() });
 const statusBody = zod_1.z.object({ status: zod_1.z.enum(taskConstants_1.MANUAL_TASK_STATUSES), reason: noteText.optional() });
 /** `reason` muss mitkommen: leer oder null hebt die Blockade auf — ein vergessenes Feld soll das nicht. */
 const blockBody = zod_1.z.object({ reason: noteText.nullable() });
@@ -111,19 +109,13 @@ router.get('/approvals', (0, ResponseCacheMiddleware_1.responseCache)({ namespac
 }));
 // POST /timer/pause — die eigene laufende Messung beenden, an welcher Aufgabe auch immer.
 router.post('/timer/pause', (0, taskHttp_1.taskRoute)('tasks.timer.pauseAny', async (req, res) => {
-    const { actionAt } = (0, taskHttp_1.parseInput)(timerActionBody, req.body);
-    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res), { actionAt });
+    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res));
     res.json({ stopped, serverNow: new Date() });
 }));
 // GET /timer/active — was ich gerade messe (auch in einer anderen Firma).
 router.get('/timer/active', (0, taskHttp_1.taskRoute)('tasks.timer.active', async (_req, res) => {
     const active = await (0, taskTimer_1.getActiveTimer)((0, taskMiddleware_1.tasksActor)(res).employeeId);
     res.json({ active, serverNow: new Date() });
-}));
-// GET /quick — «Hızlı mod»: Karten der heute aktiven Aufgaben mit meinen Tages- und Gesamtzeiten (`from`/`to` = Tag des Browsers).
-router.get('/quick', (0, taskHttp_1.taskRoute)('tasks.quick', async (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    res.json(await (0, quickModeService_1.getQuickMode)((0, taskMiddleware_1.tasksActor)(res), req.query));
 }));
 // GET / — Liste, Pano (`view=board`) oder Schnellsuche (`view=search`).
 router.get('/', (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tasks'], ttlSec: 15 }), (0, taskHttp_1.taskRoute)('tasks.task.list', async (req, res) => {
@@ -217,14 +209,12 @@ router.get('/:taskId/activity', (0, ResponseCacheMiddleware_1.responseCache)({ n
 }));
 // POST /:taskId/timer/start — Messung starten; eine andere laufende endet dabei.
 router.post('/:taskId/timer/start', (0, taskHttp_1.taskRoute)('tasks.timer.start', async (req, res) => {
-    const { actionAt } = (0, taskHttp_1.parseInput)(timerActionBody, req.body);
-    const timer = await (0, taskTimer_1.startTaskTimer)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), actionAt);
+    const timer = await (0, taskTimer_1.startTaskTimer)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'));
     res.json({ timer, serverNow: new Date() });
 }));
 // POST /:taskId/timer/pause — die eigene Messung an genau dieser Aufgabe beenden.
 router.post('/:taskId/timer/pause', (0, taskHttp_1.taskRoute)('tasks.timer.pause', async (req, res) => {
-    const { actionAt } = (0, taskHttp_1.parseInput)(timerActionBody, req.body);
-    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res), { taskId: (0, taskHttp_1.routeParam)(req, 'taskId'), actionAt });
+    const stopped = await (0, taskTimer_1.pauseTaskTimer)((0, taskMiddleware_1.tasksActor)(res), { taskId: (0, taskHttp_1.routeParam)(req, 'taskId') });
     res.json({ stopped, serverNow: new Date() });
 }));
 exports.default = router;

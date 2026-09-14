@@ -315,9 +315,10 @@ const sessionMs = (session, now) => session.endedAt ? session.durationMs ?? 0 : 
  * Messung gekürzt — viele Personen über Monate überschreiten sie zu Recht.
  */
 /**
- * `ownEmployeeId`: die laufende Messung DIESER Person setzt nur `live`, zählt aber
- * nichts — der Browser zählt sie ab seinem eigenen Klick (14.09.2026), damit Start
- * und Pause nie auf eine Antwort warten und überall dieselbe Sekunde zeigen.
+ * KEINE laufende Zeit (14.09.2026, Samet: «kronometre olmayacak, sadece
+ * çalışılıyor»): eine laufende Messung setzt nur `live` und zählt nichts —
+ * weder `ms` noch `dayMs`. Ihre Dauer entsteht beim Pausieren (Stopp − Start).
+ * `ownEmployeeId` bleibt für ältere Aufrufer erhalten und ändert nichts mehr.
  */
 const buildWorkDto = (sessions, now, day = (0, taskTime_1.resolveDayWindow)(undefined, undefined, now), ownEmployeeId) => {
     const byPerson = new Map();
@@ -326,9 +327,9 @@ const buildWorkDto = (sessions, now, day = (0, taskTime_1.resolveDayWindow)(unde
     let dayMs = 0;
     for (const session of sessions) {
         const live = session.endedAt === null;
-        const ownLive = live && session.employeeId === ownEmployeeId;
-        const ms = ownLive ? 0 : sessionMs(session, now);
-        const inDay = ownLive ? 0 : (0, taskTime_1.windowedMs)(session.startedAt, session.endedAt, day, now);
+        void ownEmployeeId;
+        const ms = live ? 0 : sessionMs(session, now);
+        const inDay = live ? 0 : (0, taskTime_1.windowedMs)(session.startedAt, session.endedAt, day, now);
         const last = session.endedAt ?? now;
         if (live)
             liveMs += ms;

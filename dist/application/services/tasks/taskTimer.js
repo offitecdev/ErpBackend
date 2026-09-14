@@ -18,16 +18,6 @@ const taskTime_1 = require("./taskTime");
    ausgleichen, aber keine frei erfundene Arbeitszeit erzeugen: höchstens fünf
    Minuten vor Empfang und niemals nach Empfang werden akzeptiert. Alte Clients
    ohne `actionAt` verwenden weiterhin unmittelbar die Empfangszeit. */
-const TIMER_ACTION_MAX_LAG_MS = 5 * 60_000;
-const timerActionAt = (candidate, receivedAt = new Date()) => {
-    if (!candidate || Number.isNaN(candidate.getTime()))
-        return receivedAt;
-    const receivedMs = receivedAt.getTime();
-    const candidateMs = candidate.getTime();
-    if (candidateMs < receivedMs - TIMER_ACTION_MAX_LAG_MS || candidateMs > receivedMs + 5_000)
-        return receivedAt;
-    return new Date(Math.min(candidateMs, receivedMs));
-};
 const mapRunning = (row) => {
     const startedAt = (0, taskRows_1.rawDate)(row.startedAt);
     return startedAt ? { id: row.id, tenantId: row.tenantId, taskId: row.taskId, employeeId: row.employeeId, startedAt } : null;
@@ -107,7 +97,7 @@ class RunningSessionMoved extends Error {
 }
 const isRetryableStartError = (error) => error instanceof RunningSessionMoved
     || (error instanceof client_1.Prisma.PrismaClientKnownRequestError && error.code === 'P2002');
-const startOnce = async (actor, taskId, clickedAt) => {
+const startOnce = async (actor, taskId, operationAt) => {
     const me = actor.employeeId;
     // Vorab ohne Sperre: welche Messung läuft — damit beide Aufgaben in
     // fester Reihenfolge gesperrt werden können.
@@ -140,7 +130,7 @@ const startOnce = async (actor, taskId, clickedAt) => {
             throw new RunningSessionMoved();
         // Bei zwei Geräten kann ein inzwischen gestarteter Lauf jünger als der
         // mitgeschickte Klick sein. Niemals vor dessen Beginn abschliessen.
-        const now = running && clickedAt < running.startedAt ? running.startedAt : clickedAt;
+        const now = running && operationAt < running.startedAt ? running.startedAt : operationAt;
         let switchedFrom = null;
         if (running) {
             const other = await tx.task.findFirst({ where: { id: running.taskId }, select: { title: true } });
@@ -171,19 +161,19 @@ const startOnce = async (actor, taskId, clickedAt) => {
     });
 };
 /** Messung an einer Aufgabe starten (beendet eine andere laufende). */
-const startTaskTimer = async (actor, taskId, actionAt) => {
+const startTaskTimer = async (actor, taskId) => {
     // Einmal festlegen: auch ein Wiederholungsversuch darf die Startzeit nicht
     // um die Dauer des ersten Datenbankversuchs verschieben.
-    const clickedAt = timerActionAt(actionAt);
+    const operationAt = new Date();
     try {
-        return await startOnce(actor, taskId, clickedAt);
+        return await startOnce(actor, taskId, operationAt);
     }
     catch (error) {
         // Zwei gleichzeitige Starts derselben Person: der zweite trifft den
         // eindeutigen Index — ein zweiter Versuch sieht die Lage klar.
         if (!isRetryableStartError(error))
             throw error;
-        return startOnce(actor, taskId, clickedAt);
+        return startOnce(actor, taskId, operationAt);
     }
 };
 exports.startTaskTimer = startTaskTimer;
@@ -193,7 +183,7 @@ exports.startTaskTimer = startTaskTimer;
  */
 const pauseTaskTimer = async (actor, options = {}) => {
     const me = actor.employeeId;
-    const clickedAt = timerActionAt(options.actionAt);
+    const operationAt = new Date();
     const previous = await readRunningOfEmployee(prisma_client_1.default, me, false);
     if (!previous || (options.taskId && previous.taskId !== options.taskId))
         return null;
@@ -208,7 +198,7 @@ const pauseTaskTimer = async (actor, options = {}) => {
         const row = rows[0] ? mapRunning(rows[0]) : null;
         if (!row)
             return null;
-        const endedAt = clickedAt < row.startedAt ? row.startedAt : clickedAt;
+        const endedAt = operationAt < row.startedAt ? row.startedAt : operationAt;
         return closeSessionRow(tx, row, endedAt, me, options.note ?? null);
     });
 };
