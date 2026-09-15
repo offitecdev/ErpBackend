@@ -135,13 +135,6 @@ export interface PerTaskWorkDto {
     progress: { done: number; total: number };
 }
 
-export interface WastedTaskDto {
-    taskId: string;
-    title: string;
-    ms: number;
-    /** Begründung der Ablehnung. */
-    note: string | null;
-}
 
 export interface UserReportDto {
     range: ReportRange;
@@ -155,9 +148,7 @@ export interface UserReportDto {
     completedCount: number;
     overdueCount: number;
     checkDone: number;
-    wastedMs: number;
     perTask: PerTaskWorkDto[];
-    wastedTasks: WastedTaskDto[];
     peopleMap: Record<string, PersonRef>;
 }
 
@@ -325,9 +316,6 @@ const loadUserReport = async (
     }
     perTask.sort((a, b) => b.ms - a.ms);
 
-    const wastedTasks = tasks
-        .filter((task) => (task.status === 'REJECTED' || task.reviewState === 'REJECTED') && task.myClosedMs > 0)
-        .map((task): WastedTaskDto => ({ taskId: task.id, title: task.title, ms: task.myClosedMs, note: task.reviewNote }));
     const assigned = tasks.filter((task) => task.isAssignee);
 
     return {
@@ -342,9 +330,7 @@ const loadUserReport = async (
         completedCount: assigned.filter((task) => task.status === 'COMPLETED' && isWithinRange(task.completedAt, range)).length,
         overdueCount: assigned.filter((task) => isTaskOverdue(task, now)).length,
         checkDone,
-        wastedMs: wastedTasks.reduce((sum, entry) => sum + entry.ms, 0),
         perTask,
-        wastedTasks,
         peopleMap,
     };
 };

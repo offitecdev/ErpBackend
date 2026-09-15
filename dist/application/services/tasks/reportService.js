@@ -202,9 +202,6 @@ const loadUserReport = async (tenantId, employeeId, rangeQuery) => {
         });
     }
     perTask.sort((a, b) => b.ms - a.ms);
-    const wastedTasks = tasks
-        .filter((task) => (task.status === 'REJECTED' || task.reviewState === 'REJECTED') && task.myClosedMs > 0)
-        .map((task) => ({ taskId: task.id, title: task.title, ms: task.myClosedMs, note: task.reviewNote }));
     const assigned = tasks.filter((task) => task.isAssignee);
     return {
         range,
@@ -218,9 +215,7 @@ const loadUserReport = async (tenantId, employeeId, rangeQuery) => {
         completedCount: assigned.filter((task) => task.status === 'COMPLETED' && (0, peopleService_1.isWithinRange)(task.completedAt, range)).length,
         overdueCount: assigned.filter((task) => (0, taskAccess_1.isTaskOverdue)(task, now)).length,
         checkDone,
-        wastedMs: wastedTasks.reduce((sum, entry) => sum + entry.ms, 0),
         perTask,
-        wastedTasks,
         peopleMap,
     };
 };

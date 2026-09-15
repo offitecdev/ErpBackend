@@ -31,15 +31,12 @@ import { closeRunningSessionsOnTask, type ClosedSession, type SessionCloseNote }
  *
  * Der Server besitzt die Zustände (Görevly services/tasks.js, Vertrag §3):
  *
- *   anlegen (Administrator) NOT_STARTED · Prüfung APPROVED
- *   anlegen (alle anderen)  PENDING_APPROVAL · Prüfung PENDING · Meldung an die Administratorrolle
- *                           (wer anlegt, ist immer selbst verantwortlich; die Leitung weist weitere Personen zu)
+ *   anlegen                 NOT_STARTED · Prüfung APPROVED — ohne Görev-Talep (15.09.2026)
+ *                           (wer anlegt, ist immer selbst verantwortlich; die Administratorrolle weist weitere Personen zu)
  *   Abschluss beantragen    eigene Messung endet · Anfrage PENDING · REVIEW
  *   Anfrage zurückziehen    Anfrage NONE · IN_PROGRESS, wenn je gemessen, sonst NOT_STARTED
  *   Abschluss bestätigen    Anfrage APPROVED · COMPLETED · alle Messungen enden
  *   Abschluss ablehnen      Anfrage REJECTED mit Begründung · IN_PROGRESS
- *   Vorschlag freigeben     Prüfung APPROVED · aus PENDING_APPROVAL wird weitergearbeitet
- *   Vorschlag ablehnen      alle Messungen enden · Prüfung REJECTED · REJECTED
  *   Status von Hand         NOT_STARTED | IN_PROGRESS | COMPLETED | BLOCKED (mit Grund)
  *
  * Jeder Wechsel läuft in EINER Transaktion: Aufgabenzeile sperren, im
@@ -91,16 +88,6 @@ const assignedNotice = (context: NoticeContext, title: string, recipientIds: rea
     params: { actor: context.actor, title },
 });
 
-/* Görev-Talepe entscheidet NUR die Administratorrolle (14.09.2026, Samet:
-   «sadece Administrator rolü, görevler için ayrı bir rol asla oluşturma»). */
-const reviewRequestNotice = (context: NoticeContext, title: string): TaskNotice => ({
-    type: NOTIFY.REVIEW_REQUEST,
-    recipientIds: context.adminIds,
-    title: 'Neuer Aufgabenantrag',
-    message: `${context.actor} hat die Aufgabe «${title}» beantragt und wartet auf Freigabe.`,
-    params: { actor: context.actor, title },
-});
-
 const completionRequestNotice = (context: NoticeContext, title: string, note: string | null): TaskNotice => ({
     type: NOTIFY.COMPLETION_REQUEST,
     recipientIds: context.adminIds,
@@ -142,22 +129,6 @@ const notifyAdminsAfterWrite = (actor: TasksActor, taskId: string, build: (actor
         });
 };
 
-const reviewApprovedNotice = (context: NoticeContext, task: TaskCore): TaskNotice => ({
-    type: NOTIFY.REVIEW_APPROVED,
-    recipientIds: [task.createdById],
-    title: 'Vorschlag freigegeben',
-    message: `«${task.title}» wurde freigegeben.`,
-    params: { actor: context.actor, title: task.title },
-});
-
-const reviewRejectedNotice = (context: NoticeContext, task: TaskCore, note: string, wastedMs: number): TaskNotice => ({
-    type: NOTIFY.REVIEW_REJECTED,
-    recipientIds: [task.createdById],
-    title: 'Vorschlag abgelehnt',
-    message: `«${task.title}»: ${note}`,
-    params: { actor: context.actor, title: task.title, note, wastedMs },
-});
-
 /* ── Prüfungen und kleine Bausteine ─────────────────────────────────────── */
 
 const assertDueAfterStart = (startAt: Date | null, dueAt: Date | null): void => {
@@ -177,7 +148,6 @@ const requireReason = (reason: string): void => {
 };
 
 const noPendingRequest = () => taskConflict('NO_PENDING_REQUEST', 'Es gibt keine offene Abschlussanfrage.');
-const noPendingReview = () => taskConflict('NO_PENDING_REVIEW', 'Es gibt keinen offenen Vorschlag zu prüfen.');
 const editForbidden = () => taskForbidden('TASK_EDIT_FORBIDDEN', 'Diese Aufgabe dürfen Sie nicht bearbeiten.');
 
 /** Etiketten müssen der ausgewählten Firma gehören. */
@@ -341,15 +311,13 @@ export interface CreateTaskInput {
 }
 
 /**
- * Nur die Administratorrolle legt eine sofort freigegebene Aufgabe an. Alle
- * anderen stellen einen Görev-Talep: PENDING_APPROVAL, und die
- * Administratorrolle bekommt eine Meldung («uygun / uygun değil»). Wer anlegt,
- * ist immer selbst verantwortlich; die Leitung darf weitere Personen zuweisen
- * (sie hören davon erst bei der Freigabe).
+ * Jede Aufgabe ist sofort freigegeben — kein Görev-Talep, keine Ablehnung
+ * (15.09.2026, Samet: «görev oluşturma talebini kaldır, direkt oluşturulsun»).
+ * Wer anlegt, ist immer selbst verantwortlich; nur die Administratorrolle
+ * weist weitere Personen zu.
  */
 export const createTask = async (actor: TasksActor, input: CreateTaskInput): Promise<TaskEnvelope> => {
     const now = new Date();
-    const approved = actor.isSystemAdmin;
     const startAt = input.startAt ?? now;
     const dueAt = input.dueAt ?? null;
     assertDueAfterStart(startAt, dueAt);
@@ -376,7 +344,7 @@ export const createTask = async (actor: TasksActor, input: CreateTaskInput): Pro
                 tenantId: actor.tenantId,
                 title: input.title,
                 description: input.description || null,
-                status: approved ? 'NOT_STARTED' : 'PENDING_APPROVAL',
+                status: 'NOT_STARTED',
                 priority: input.priority ?? 'MEDIUM',
                 origin: actor.isManager ? 'MANAGER' : 'MEMBER',
                 flagged: input.flagged ?? false,
@@ -384,9 +352,9 @@ export const createTask = async (actor: TasksActor, input: CreateTaskInput): Pro
                 dueAt,
                 reminderAt: input.reminderAt ?? null,
                 approvalState: 'NONE',
-                ...(approved
-                    ? { reviewState: 'APPROVED', reviewDecidedById: actor.employeeId, reviewDecidedAt: now }
-                    : { reviewState: 'PENDING', reviewRequestedById: actor.employeeId, reviewRequestedAt: now }),
+                reviewState: 'APPROVED',
+                reviewDecidedById: actor.employeeId,
+                reviewDecidedAt: now,
                 boardPosition,
                 createdById: actor.employeeId,
             },
@@ -401,9 +369,7 @@ export const createTask = async (actor: TasksActor, input: CreateTaskInput): Pro
         });
     });
 
-    if (!approved) {
-        notifyAfterWrite(actor, taskId, (context) => [reviewRequestNotice(context, input.title)]);
-    } else if (chosenIds.length) {
+    if (chosenIds.length) {
         // Die Zuweisung an sich selbst meldet niemand.
         notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, input.title, chosenIds)]);
     }
@@ -1093,72 +1059,6 @@ export const rejectTaskCompletion = async (
         return core;
     });
     notifyAfterWrite(actor, taskId, (context) => [completionRejectedNotice(context, core, note)]);
-    return loadTaskEnvelope(actor, taskId);
-};
-
-/* ── Prüfung eines Vorschlags ───────────────────────────────────────────── */
-
-export const approveTaskReview = async (
-    actor: TasksActor,
-    taskId: string,
-    input: { note?: string | undefined },
-): Promise<TaskEnvelope> => {
-    assertSystemAdmin(actor);
-    const note = input.note || null;
-    const core = await withLockedTask(actor, taskId, async (tx, { core }) => {
-        if (core.reviewState !== 'PENDING') throw noPendingReview();
-        await applyPlan(tx, actor, taskId, {
-            data: {
-                reviewState: 'APPROVED',
-                reviewDecidedById: actor.employeeId,
-                reviewDecidedAt: new Date(),
-                reviewNote: note,
-                // Nur was noch auf die Prüfung wartet, wechselt; ein von Hand gesetzter Status bleibt.
-                ...(core.status === 'PENDING_APPROVAL' ? { status: resumedStatus(core) } : {}),
-            },
-            activity: { type: ACTIVITY.REVIEW_APPROVED, meta: { note } },
-        });
-        return core;
-    });
-    // Zugewiesene (ausser der Anlegenden) hören erst jetzt von der Aufgabe.
-    const newlyAssigned = core.assigneeIds.filter((id) => id !== core.createdById && id !== actor.employeeId);
-    notifyAfterWrite(actor, taskId, (context) => [
-        reviewApprovedNotice(context, core),
-        ...(newlyAssigned.length ? [assignedNotice(context, core.title, newlyAssigned)] : []),
-    ]);
-    return loadTaskEnvelope(actor, taskId);
-};
-
-/**
- * Vorschlag abgelehnt: laufende Messungen enden (gebucht, nicht verworfen),
- * und die ganze gemessene Zeit gilt als verloren («kayıp süre»). Der
- * Blockadegrund bleibt leer — den Satz baut die Oberfläche aus `reviewNote`.
- */
-export const rejectTaskReview = async (
-    actor: TasksActor,
-    taskId: string,
-    input: { note?: string | undefined },
-): Promise<TaskEnvelope> => {
-    assertSystemAdmin(actor);
-    const note = requireNote(input.note);
-    const { core, wastedMs } = await withLockedTask(actor, taskId, async (tx, { core }) => {
-        if (core.reviewState !== 'PENDING') throw noPendingReview();
-        const closed = await applyPlan(tx, actor, taskId, {
-            closeSessions: { note: 'REVIEW_REJECTED' },
-            data: {
-                reviewState: 'REJECTED',
-                reviewDecidedById: actor.employeeId,
-                reviewDecidedAt: new Date(),
-                reviewNote: note,
-                status: 'REJECTED',
-                completedAt: null,
-            },
-            activity: { type: ACTIVITY.REVIEW_REJECTED, meta: { note } },
-        });
-        const wastedMs = closed.reduce((sum, session) => sum + (session.discarded ? 0 : session.durationMs), core.closedMs);
-        return { core, wastedMs };
-    });
-    notifyAfterWrite(actor, taskId, (context) => [reviewRejectedNotice(context, core, note, wastedMs)]);
     return loadTaskEnvelope(actor, taskId);
 };
 

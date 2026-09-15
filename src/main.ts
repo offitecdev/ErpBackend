@@ -315,7 +315,9 @@ for (const prefix of apiPrefixes) {
 
 app.use(globalErrorHandler);
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
+    // /batch schickt seine Teilwege an genau diese Adresse (Port oder Socket).
+    app.locals.listenAddress = server.address();
     console.log(`Server running on http://localhost:${PORT}`);
     const pool = threadpoolAdvice();
     console.log(`Threadpool  -> ${pool.effective} Plaetze, hoechstens ${bcryptGateStats().globalLimit} gleichzeitige bcrypt-Aufgaben`);

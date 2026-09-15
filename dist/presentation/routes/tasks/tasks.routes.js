@@ -202,14 +202,6 @@ router.post('/:taskId/completion-request/approve', (0, taskHttp_1.taskRoute)('ta
 router.post('/:taskId/completion-request/reject', (0, taskHttp_1.taskRoute)('tasks.completion.reject', async (req, res) => {
     res.json(await (0, taskService_1.rejectTaskCompletion)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(noteBody, req.body)));
 }));
-// POST /:taskId/review/approve — Vorschlag freigeben (Leitung).
-router.post('/:taskId/review/approve', (0, taskHttp_1.taskRoute)('tasks.review.approve', async (req, res) => {
-    res.json(await (0, taskService_1.approveTaskReview)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(noteBody, req.body)));
-}));
-// POST /:taskId/review/reject — Vorschlag ablehnen, mit Begründung (Leitung).
-router.post('/:taskId/review/reject', (0, taskHttp_1.taskRoute)('tasks.review.reject', async (req, res) => {
-    res.json(await (0, taskService_1.rejectTaskReview)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(noteBody, req.body)));
-}));
 // PUT /:taskId/assignees — Verantwortliche ersetzen (Leitung).
 router.put('/:taskId/assignees', (0, taskHttp_1.taskRoute)('tasks.task.assignees', async (req, res) => {
     res.json(await (0, taskService_1.setTaskAssignees)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(assigneesBody, req.body)));

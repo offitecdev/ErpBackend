@@ -1,4 +1,6 @@
 import { Router, Request } from 'express';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 
 /**
@@ -79,6 +81,43 @@ const forwardHeaders = (req: Request): Record<string, string> => {
     return headers;
 };
 
+/**
+ * Wohin die Schleife geht. Nicht einfach 127.0.0.1:PORT annehmen: hinter
+ * Passenger/iisnode o. ä. hört der Dienst auf einem Socket/Pipe statt auf einem
+ * TCP-Port, und PORT fehlt oder zeigt woandershin — dann scheiterte JEDER
+ * Teilweg mit 502 (demo.offitec.ch, 15.09.2026). Maßgeblich ist die Adresse,
+ * auf der DIESER Server tatsächlich lauscht (main.ts legt sie in app.locals ab).
+ */
+type LoopTarget = { socketPath: string } | { host: string; port: number };
+
+const loopTarget = (req: Request): LoopTarget => {
+    const listening = req.app.locals.listenAddress as string | AddressInfo | null | undefined;
+    if (typeof listening === 'string' && listening) return { socketPath: listening };
+    if (listening && typeof listening === 'object' && listening.port) {
+        const wildcard = !listening.address || listening.address === '::' || listening.address === '0.0.0.0';
+        const host = wildcard ? '127.0.0.1' : listening.address;
+        return { host, port: listening.port };
+    }
+    if (req.socket.localPort) return { host: '127.0.0.1', port: req.socket.localPort };
+    return { host: '127.0.0.1', port: Number(process.env.PORT) || 3000 };
+};
+
+const loopGet = (target: LoopTarget, path: string, headers: Record<string, string>) =>
+    new Promise<{ status: number; text: string }>((resolve, reject) => {
+        const request = http.request({ ...target, path, method: 'GET', headers }, (response) => {
+            const chunks: Buffer[] = [];
+            response.on('data', (chunk: Buffer) => chunks.push(chunk));
+            response.on('end', () => resolve({
+                status: response.statusCode ?? 0,
+                text: Buffer.concat(chunks).toString('utf8'),
+            }));
+            response.on('error', reject);
+        });
+        request.setTimeout(60_000, () => request.destroy(new Error('Zeitüberschreitung')));
+        request.on('error', reject);
+        request.end();
+    });
+
 const router = Router();
 
 router.get('/', requireAuth, async (req, res) => {
@@ -93,18 +132,18 @@ router.get('/', requireAuth, async (req, res) => {
         gets.push(parsed);
     }
 
-    const port = req.socket.localPort || Number(process.env.PORT) || 3000;
-    const base = `http://127.0.0.1:${port}${req.baseUrl.replace(/\/batch$/, '')}`;
+    const target = loopTarget(req);
+    const base = req.baseUrl.replace(/\/batch$/, '');
     const headers = forwardHeaders(req);
 
     const settled = await Promise.all(rawGets.map(async (raw, index): Promise<[string, BatchResult]> => {
         try {
-            const response = await fetch(base + gets[index], { headers });
-            const text = await response.text();
+            const { status, text } = await loopGet(target, base + gets[index], headers);
             let body: unknown = null;
             try { body = text ? JSON.parse(text) : null; } catch { body = null; }
-            return [raw, { status: response.status, body }];
-        } catch {
+            return [raw, { status, body }];
+        } catch (error) {
+            console.error(`[batch] Teilweg ${gets[index]} über ${JSON.stringify(target)} gescheitert:`, error);
             return [raw, { status: 502, body: null }];
         }
     }));

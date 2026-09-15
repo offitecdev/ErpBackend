@@ -4922,32 +4922,31 @@ router.post(
 
             const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
 
-            // Alıcı beyaz listesi: sipariş snapshot'ındaki e-posta + tedarikçi
-            // kaydındaki e-posta. Keyfî adrese gönderim yok (açık relay engeli).
-            const allowedRecipients = new Map<string, string>();
-            const registerEmail = (value: unknown) => {
-                const trimmed = String(value || '').trim();
-                if (trimmed && PO_EMAIL_RE.test(trimmed)) allowedRecipients.set(trimmed.toLowerCase(), trimmed);
-            };
-            registerEmail(existing.supplierEmail);
-            if (existing.supplierId) {
-                const supplier = await (prisma as any).supplier.findFirst({
-                    where: { id: existing.supplierId, tenantId },
-                    select: { email: true },
-                });
-                registerEmail(supplier?.email);
-            }
-            if (allowedRecipients.size === 0) {
-                return res.status(400).json({ error: 'Bu tedarikçi için tanımlı geçerli bir e-posta adresi yok.' });
-            }
-            let to = allowedRecipients.get(String(existing.supplierEmail || '').trim().toLowerCase())
-                || Array.from(allowedRecipients.values())[0]!;
+            // Alıcı: kullanıcının girdiği herhangi geçerli adres (kullanıcı isteği
+            // 2026-09-15 — önceki "yalnızca tedarikçinin adresi" kısıtı kaldırıldı).
+            // Girilmezse sipariş snapshot'ındaki / tedarikçi kaydındaki e-posta.
+            // Uç nokta yetkili (inventory.transfer) ve gönderici tenant ayarından.
+            let to = '';
             if (req.body?.to !== undefined && String(req.body.to).trim() !== '') {
-                const canonical = allowedRecipients.get(poStripHeader(String(req.body.to)).toLowerCase());
-                if (!canonical) {
-                    return res.status(403).json({ error: 'Alıcı yalnızca siparişin tedarikçisine ait bir e-posta adresi olabilir.' });
+                to = poStripHeader(String(req.body.to));
+                if (!PO_EMAIL_RE.test(to)) {
+                    return res.status(400).json({ error: 'Geçersiz alıcı e-posta adresi.' });
                 }
-                to = canonical;
+            } else {
+                const snapshot = String(existing.supplierEmail || '').trim();
+                if (snapshot && PO_EMAIL_RE.test(snapshot)) {
+                    to = snapshot;
+                } else if (existing.supplierId) {
+                    const supplier = await (prisma as any).supplier.findFirst({
+                        where: { id: existing.supplierId, tenantId },
+                        select: { email: true },
+                    });
+                    const supplierEmail = String(supplier?.email || '').trim();
+                    if (supplierEmail && PO_EMAIL_RE.test(supplierEmail)) to = supplierEmail;
+                }
+                if (!to) {
+                    return res.status(400).json({ error: 'Bu tedarikçi için tanımlı geçerli bir e-posta adresi yok.' });
+                }
             }
 
             // Gönderici her zaman tenant MailSetting'inden (gövdeden asla).

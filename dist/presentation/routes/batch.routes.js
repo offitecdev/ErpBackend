@@ -1,6 +1,10 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const node_http_1 = __importDefault(require("node:http"));
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 /**
  * ── MEHRERE LESEWEGE IN EINEM RUNDLAUF ─────────────────────────────────────
@@ -77,6 +81,33 @@ const forwardHeaders = (req) => {
         headers['x-forwarded-for'] = req.ip;
     return headers;
 };
+const loopTarget = (req) => {
+    const listening = req.app.locals.listenAddress;
+    if (typeof listening === 'string' && listening)
+        return { socketPath: listening };
+    if (listening && typeof listening === 'object' && listening.port) {
+        const wildcard = !listening.address || listening.address === '::' || listening.address === '0.0.0.0';
+        const host = wildcard ? '127.0.0.1' : listening.address;
+        return { host, port: listening.port };
+    }
+    if (req.socket.localPort)
+        return { host: '127.0.0.1', port: req.socket.localPort };
+    return { host: '127.0.0.1', port: Number(process.env.PORT) || 3000 };
+};
+const loopGet = (target, path, headers) => new Promise((resolve, reject) => {
+    const request = node_http_1.default.request({ ...target, path, method: 'GET', headers }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => resolve({
+            status: response.statusCode ?? 0,
+            text: Buffer.concat(chunks).toString('utf8'),
+        }));
+        response.on('error', reject);
+    });
+    request.setTimeout(60_000, () => request.destroy(new Error('Zeitüberschreitung')));
+    request.on('error', reject);
+    request.end();
+});
 const router = (0, express_1.Router)();
 router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
     const rawGets = [].concat(req.query.get ?? []).map(String);
@@ -90,13 +121,12 @@ router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
             return res.status(400).json({ error: `Pfad nicht erlaubt: ${raw.slice(0, 80)}` });
         gets.push(parsed);
     }
-    const port = req.socket.localPort || Number(process.env.PORT) || 3000;
-    const base = `http://127.0.0.1:${port}${req.baseUrl.replace(/\/batch$/, '')}`;
+    const target = loopTarget(req);
+    const base = req.baseUrl.replace(/\/batch$/, '');
     const headers = forwardHeaders(req);
     const settled = await Promise.all(rawGets.map(async (raw, index) => {
         try {
-            const response = await fetch(base + gets[index], { headers });
-            const text = await response.text();
+            const { status, text } = await loopGet(target, base + gets[index], headers);
             let body = null;
             try {
                 body = text ? JSON.parse(text) : null;
@@ -104,9 +134,10 @@ router.get('/', AuthMiddleware_1.requireAuth, async (req, res) => {
             catch {
                 body = null;
             }
-            return [raw, { status: response.status, body }];
+            return [raw, { status, body }];
         }
-        catch {
+        catch (error) {
+            console.error(`[batch] Teilweg ${gets[index]} über ${JSON.stringify(target)} gescheitert:`, error);
             return [raw, { status: 502, body: null }];
         }
     }));

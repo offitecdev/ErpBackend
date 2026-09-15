@@ -24,9 +24,8 @@ const taskTime_1 = require("./taskTime");
  *                                   ist — heutiger Stand, ohne Zeitraum
  *   ms          Messungen, die im Zeitraum begannen, plus die laufende
  *   checkDone   Checklistenpunkte, die sie im Zeitraum abgehakt hat
- *   wastedMs    alle je gemessene Zeit an abgelehnten Aufgaben («Kayıp süre»)
  *   activeTask  woran sie gerade misst — nur Aufgaben DIESER Firma
- * `loadPersonStatsFacts` holt die Zahlen mit fünf parallelen Abfragen,
+ * `loadPersonStatsFacts` holt die Zahlen mit vier parallelen Abfragen,
  * `buildPersonStats` rechnet daraus ohne Datenbank; der Teambericht
  * (reportService) nimmt beide unverändert.
  */
@@ -61,7 +60,7 @@ const listTasksDirectory = async (actor) => [...(await (0, taskPeople_1.getTasks
 exports.listTasksDirectory = listTasksDirectory;
 const OPEN_TASK_SQL = client_1.Prisma.sql `t.status NOT IN (${client_1.Prisma.join([...taskConstants_1.CLOSED_TASK_STATUSES])})`;
 const loadPersonStatsFacts = async (tenantId, range, now) => {
-    const [countRows, closedRows, checkRows, wastedRows, runningRows] = await Promise.all([
+    const [countRows, closedRows, checkRows, runningRows] = await Promise.all([
         prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
             SELECT a.employeeId,
                    SUM(CASE WHEN ${OPEN_TASK_SQL} THEN 1 ELSE 0 END) AS openCount,
@@ -81,17 +80,6 @@ const loadPersonStatsFacts = async (tenantId, range, now) => {
             by: ['doneById'],
             where: { tenantId, done: true, doneById: { not: null }, doneAt: (0, exports.rangeDateFilter)(range) },
             _count: { _all: true },
-        }),
-        // Görevly zählt hier nur abgeschlossene Messungen; laufende kann es an
-        // abgelehnten Aufgaben nicht geben (die Ablehnung beendet sie).
-        prisma_client_1.default.taskTimeSession.groupBy({
-            by: ['employeeId'],
-            where: {
-                tenantId,
-                endedAt: { not: null },
-                task: { OR: [{ status: 'REJECTED' }, { reviewState: 'REJECTED' }] },
-            },
-            _sum: { durationMs: true },
         }),
         // runningKey ist nur während der Messung gesetzt — der eindeutige Index hält die Suche klein.
         prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
@@ -120,7 +108,6 @@ const loadPersonStatsFacts = async (tenantId, range, now) => {
             }])),
         closedMsInRange: new Map(closedRows.map((row) => [row.employeeId, row._sum.durationMs ?? 0])),
         checkDoneInRange,
-        wastedMs: new Map(wastedRows.map((row) => [row.employeeId, row._sum.durationMs ?? 0])),
         running,
     };
 };
@@ -145,7 +132,6 @@ const buildPersonStats = (people, facts, range, now) => {
             overdueCount: counts?.overdueCount ?? 0,
             ms: (facts.closedMsInRange.get(person.id) ?? 0) + liveMs,
             checkDone: facts.checkDoneInRange.get(person.id) ?? 0,
-            wastedMs: facts.wastedMs.get(person.id) ?? 0,
             activeTask: live ? { taskId: live.taskId, title: live.title, startedAt: live.startedAt } : null,
         };
     });

@@ -20,7 +20,6 @@ import {
 import {
     approveTaskCompletion,
     approveTaskPartner,
-    approveTaskReview,
     blockTask,
     cancelTaskCompletionRequest,
     cancelTaskDeletionRequest,
@@ -32,7 +31,6 @@ import {
     rejectTaskCompletion,
     rejectTaskDeletion,
     rejectTaskPartner,
-    rejectTaskReview,
     requestTaskCompletion,
     requestTaskDeletion,
     requestTaskPartner,
@@ -288,16 +286,6 @@ router.post('/:taskId/completion-request/approve', taskRoute('tasks.completion.a
 // POST /:taskId/completion-request/reject — Abschluss ablehnen, mit Begründung (Leitung).
 router.post('/:taskId/completion-request/reject', taskRoute('tasks.completion.reject', async (req, res) => {
     res.json(await rejectTaskCompletion(tasksActor(res), routeParam(req, 'taskId'), parseInput(noteBody, req.body)));
-}));
-
-// POST /:taskId/review/approve — Vorschlag freigeben (Leitung).
-router.post('/:taskId/review/approve', taskRoute('tasks.review.approve', async (req, res) => {
-    res.json(await approveTaskReview(tasksActor(res), routeParam(req, 'taskId'), parseInput(noteBody, req.body)));
-}));
-
-// POST /:taskId/review/reject — Vorschlag ablehnen, mit Begründung (Leitung).
-router.post('/:taskId/review/reject', taskRoute('tasks.review.reject', async (req, res) => {
-    res.json(await rejectTaskReview(tasksActor(res), routeParam(req, 'taskId'), parseInput(noteBody, req.body)));
 }));
 
 // PUT /:taskId/assignees — Verantwortliche ersetzen (Leitung).

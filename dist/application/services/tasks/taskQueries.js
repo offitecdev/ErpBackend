@@ -89,7 +89,7 @@ const getTasksSummary = async (actor) => {
                 COALESCE(SUM(CASE WHEN ${OPEN_TASK_SQL} AND t.dueAt < ${now} THEN 1 ELSE 0 END), 0) AS overdueCount,
                 COALESCE(SUM(CASE WHEN ${OPEN_TASK_SQL} AND t.dueAt >= ${now} AND t.dueAt <= ${(0, taskTime_1.endOfLocalDay)(now)}
                     THEN 1 ELSE 0 END), 0) AS dueTodayCount,
-                COALESCE(SUM(CASE WHEN t.reviewState = 'PENDING'
+                COALESCE(SUM(CASE WHEN FALSE
                     ${actor.isSystemAdmin ? client_1.Prisma.sql `OR t.approvalState = 'PENDING'` : client_1.Prisma.empty}
                     ${actor.canDelete ? client_1.Prisma.sql `OR t.deleteRequestedAt IS NOT NULL` : client_1.Prisma.empty}
                     ${actor.isSystemAdmin ? client_1.Prisma.sql `OR t.partnerRequestedAt IS NOT NULL` : client_1.Prisma.empty}
@@ -276,26 +276,24 @@ const searchTasks = async (actor, query) => {
 };
 exports.searchTasks = searchTasks;
 /**
- * Offene Abschlussanfragen und Vorschläge (Leitung, nur sichtbare Aufgaben) und
+ * Offene Abschluss- und Partneranfragen (Administrator, nur sichtbare Aufgaben) und
  * Löschanfragen (nur Admins); eine Aufgabe kann in mehreren Gruppen stehen.
  */
 const listTaskApprovals = async (actor) => {
     if (!actor.isManager && !actor.canDelete)
         (0, taskActor_1.assertManager)(actor);
     const now = new Date();
-    // Görev-Talepe UND Abschlussanfragen entscheidet nur die Administratorrolle (14.09.2026).
-    const managerPart = actor.isSystemAdmin ? client_1.Prisma.sql `t.reviewState = 'PENDING'` : client_1.Prisma.sql `FALSE`;
+    // Abschlussanfragen entscheidet nur die Administratorrolle (14.09.2026); Görev-Talepe gibt es nicht mehr.
     const completionPart = actor.isSystemAdmin ? client_1.Prisma.sql `OR t.approvalState = 'PENDING'` : client_1.Prisma.empty;
     const deletePart = actor.canDelete ? client_1.Prisma.sql `OR t.deleteRequestedAt IS NOT NULL` : client_1.Prisma.empty;
     const partnerPart = actor.isSystemAdmin ? client_1.Prisma.sql `OR t.partnerRequestedAt IS NOT NULL` : client_1.Prisma.empty;
     const cores = await (0, taskRows_1.fetchTaskCores)(prisma_client_1.default, {
-        where: client_1.Prisma.sql `${(0, taskRows_1.visibleTasksSql)(actor)} AND (${managerPart} ${completionPart} ${deletePart} ${partnerPart})`,
+        where: client_1.Prisma.sql `${(0, taskRows_1.visibleTasksSql)(actor)} AND (FALSE ${completionPart} ${deletePart} ${partnerPart})`,
     });
     const { running, people } = await loadRunningSessionsAndPeople(actor, cores);
     const toCard = (core) => (0, taskRows_1.toTaskDetailDto)(core, actor, running.get(core.id) ?? [], now);
     return {
         completionRequests: actor.isSystemAdmin ? cores.filter((core) => core.approvalState === 'PENDING').map(toCard) : [],
-        reviewRequests: actor.isSystemAdmin ? cores.filter((core) => core.reviewState === 'PENDING').map(toCard) : [],
         deleteRequests: actor.canDelete ? cores.filter((core) => core.deleteRequestedById).map(toCard) : [],
         partnerRequests: actor.isSystemAdmin ? cores.filter((core) => core.partnerRequestedById).map(toCard) : [],
         people,
