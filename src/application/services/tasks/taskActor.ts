@@ -25,7 +25,7 @@ export interface TasksActor {
     tenantId: string;
     isManager: boolean;
     canDelete: boolean;
-    /** Sieht ALLE Aufgaben der Firma: Leitung und Administratorrolle; Teammitglieder nur Zugewiesenes/Angelegtes. */
+    /** Sieht ALLE Aufgaben der Firma: nur die Administratorrolle; alle anderen nur Zugewiesenes oder selbst Angelegtes. */
     seesAll: boolean;
     isSystemAdmin: boolean;
 }
@@ -49,10 +49,10 @@ export const resolveTasksActor = async (employeeId: string, tenantId: string): P
     const isManager = isSystemAdmin || has(TASKS_PERMISSIONS.delete) || has(TASKS_PERMISSIONS.manage);
     const canView = isManager || has(TASKS_PERMISSIONS.view);
     if (!canView) return null;
-    /* ALLE AUFGABEN SEHEN (13.09.2026, Samet: «yönetici tüm görevleri görebilmeli,
-       Administrator tüm görevleri görebilmeli»): Leitung UND Administratorrolle.
-       Teammitglieder sehen weiter nur Zugewiesenes und selbst Angelegtes. */
-    return { employeeId, tenantId, isManager, canDelete, seesAll: isManager, isSystemAdmin };
+    /* ALLE AUFGABEN SEHEN — NUR DIE ADMINISTRATORROLLE (15.09.2026, Samet:
+       «administratör rolü olmadığı sürece, mühendis ya da diğer roller sadece
+       kendisine atanan görevi görebilmeli»). Supersedes 13.09 (Leitung sah alles). */
+    return { employeeId, tenantId, isManager, canDelete, seesAll: isSystemAdmin, isSystemAdmin };
 };
 
 export const assertManager = (actor: TasksActor): void => {

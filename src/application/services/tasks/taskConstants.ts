@@ -107,6 +107,9 @@ export const ACTIVITY = {
     DELETE_REQUESTED: 'DELETE_REQUESTED',
     DELETE_REQUEST_CANCELLED: 'DELETE_REQUEST_CANCELLED',
     DELETE_REJECTED: 'DELETE_REJECTED',
+    PARTNER_REQUESTED: 'PARTNER_REQUESTED',
+    PARTNER_REQUEST_CANCELLED: 'PARTNER_REQUEST_CANCELLED',
+    PARTNER_REJECTED: 'PARTNER_REJECTED',
 } as const;
 export type ActivityType = typeof ACTIVITY[keyof typeof ACTIVITY];
 
@@ -132,6 +135,9 @@ export const NOTIFY = {
     DELETE_REQUEST: 'TASKS_DELETE_REQUEST',
     DELETE_APPROVED: 'TASKS_DELETE_APPROVED',
     DELETE_REJECTED: 'TASKS_DELETE_REJECTED',
+    PARTNER_REQUEST: 'TASKS_PARTNER_REQUEST',
+    PARTNER_APPROVED: 'TASKS_PARTNER_APPROVED',
+    PARTNER_REJECTED: 'TASKS_PARTNER_REJECTED',
 } as const;
 export type NotifyType = typeof NOTIFY[keyof typeof NOTIFY];
 
@@ -154,6 +160,9 @@ export const NOTIFY_I18N: Record<NotifyType, string> = {
     TASKS_DELETE_REQUEST: 'notify.tasksModule.deleteRequest',
     TASKS_DELETE_APPROVED: 'notify.tasksModule.deleteApproved',
     TASKS_DELETE_REJECTED: 'notify.tasksModule.deleteRejected',
+    TASKS_PARTNER_REQUEST: 'notify.tasksModule.partnerRequest',
+    TASKS_PARTNER_APPROVED: 'notify.tasksModule.partnerApproved',
+    TASKS_PARTNER_REJECTED: 'notify.tasksModule.partnerRejected',
 };
 
 /** Adressen der Oberfläche, auf die eine Benachrichtigung springt. */

@@ -18,6 +18,7 @@ const taskPermissions = (actor, task) => {
     const canTrack = (0, exports.canTrackTask)(actor, task);
     const approvalPending = task.approvalState === 'PENDING';
     const deletePending = Boolean(task.deleteRequestedById);
+    const partnerPending = Boolean(task.partnerRequestedById);
     return {
         isAssignee,
         isCreator,
@@ -39,6 +40,11 @@ const taskPermissions = (actor, task) => {
         canDelete: actor.canDelete,
         canRequestDelete: !actor.canDelete && (isAssignee || isCreator) && !deletePending,
         canCancelDeleteRequest: deletePending && (task.deleteRequestedById === actor.employeeId || actor.canDelete),
+        canAssign: actor.isSystemAdmin,
+        canRequestPartner: !actor.isSystemAdmin && isAssignee && !partnerPending
+            && (0, taskConstants_1.isOpenTaskStatus)(task.status) && task.reviewState !== 'REJECTED',
+        canCancelPartnerRequest: partnerPending && (task.partnerRequestedById === actor.employeeId || actor.isSystemAdmin),
+        canDecidePartnerRequest: partnerPending && actor.isSystemAdmin,
     };
 };
 exports.taskPermissions = taskPermissions;

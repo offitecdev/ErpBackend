@@ -7,6 +7,7 @@ exports.getWorkReport = void 0;
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 const taskAccess_1 = require("./taskAccess");
+const dailyReportService_1 = require("./dailyReportService");
 const taskErrors_1 = require("./taskErrors");
 const taskPeople_1 = require("./taskPeople");
 const taskRows_1 = require("./taskRows");
@@ -30,7 +31,8 @@ const taskTime_1 = require("./taskTime");
  *                 offener Abschlussanfrage, damit der Rapport den Verzug zeigt
  *
  * Tagesgrenzen kennt nur der Browser der Leserin: er schickt `from`/`to`
- * und gruppiert selbst nach Tagen.
+ * und gruppiert selbst nach Tagen. Mit `fromDate`/`toDate` (YYYY-MM-DD) kommen
+ * die Gün sonu raporları der Person dazu (dailyReports).
  *
  * Wer: `person` = eine Kennung. Die Leitung wählt jede Person der Firma,
  * ein Teammitglied bekommt immer sich selbst (eine fremde Kennung = 403).
@@ -101,7 +103,9 @@ const getWorkReport = async (actor, query) => {
             OR (d.completedAt >= ${from} AND d.completedAt <= ${to})
             OR (d.status NOT IN ('COMPLETED', 'REJECTED') AND d.dueAt < ${to})
         )`;
-    const [sessionRows, itemRows, commentRows, taskRows, refs] = await Promise.all([
+    const fromDate = (0, dailyReportService_1.isDateKey)(query.fromDate) ? query.fromDate : null;
+    const toDate = (0, dailyReportService_1.isDateKey)(query.toDate) ? query.toDate : null;
+    const [sessionRows, itemRows, commentRows, taskRows, refs, dailyReports] = await Promise.all([
         prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
             SELECT s.taskId, s.startedAt, s.endedAt
             FROM TaskTimeSession s
@@ -144,6 +148,9 @@ const getWorkReport = async (actor, query) => {
             )
         `),
         (0, taskPeople_1.loadPersonRefs)([employeeId]),
+        fromDate && toDate && fromDate <= toDate
+            ? (0, dailyReportService_1.listDailyReports)(tenantId, employeeId, fromDate, toDate)
+            : Promise.resolve([]),
     ]);
     const tasks = {};
     for (const row of taskRows) {
@@ -200,6 +207,7 @@ const getWorkReport = async (actor, query) => {
             return createdAt ? [{ taskId: row.taskId, text: plainLine(row.text), createdAt }] : [];
         }),
         tasks,
+        dailyReports,
     };
 };
 exports.getWorkReport = getWorkReport;

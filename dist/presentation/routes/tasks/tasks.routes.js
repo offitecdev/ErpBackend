@@ -47,6 +47,8 @@ const updateBody = zod_1.z.object({
 });
 const duplicateBody = zod_1.z.object({ title: (0, taskHttp_1.zLine)(taskConstants_1.TASK_LIMITS.titleMax).optional() });
 const noteBody = zod_1.z.object({ note: noteText.optional() });
+/** `delayReason` Pflicht, sobald die Aufgabe überfällig ist (prüft der Dienst). */
+const completionRequestBody = zod_1.z.object({ note: noteText.optional(), delayReason: noteText.optional() });
 /** Zeitpunkt des Klicks; der Dienst begrenzt ihn gegen die Empfangszeit. */
 const statusBody = zod_1.z.object({ status: zod_1.z.enum(taskConstants_1.MANUAL_TASK_STATUSES), reason: noteText.optional() });
 /** `reason` muss mitkommen: leer oder null hebt die Blockade auf — ein vergessenes Feld soll das nicht. */
@@ -154,6 +156,23 @@ router.delete('/:taskId/delete-request', (0, taskHttp_1.taskRoute)('tasks.delete
 router.post('/:taskId/delete-request/reject', (0, taskHttp_1.taskRoute)('tasks.delete.reject', async (req, res) => {
     res.json(await (0, taskService_1.rejectTaskDeletion)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(noteBody, req.body)));
 }));
+// POST /:taskId/partner-request — «Ortak ekle» beantragen: GENAU EINE Person (Nicht-Admins, verantwortlich).
+const partnerBody = zod_1.z.object({ employeeId: taskHttp_1.zId }).strict();
+router.post('/:taskId/partner-request', (0, taskHttp_1.taskRoute)('tasks.partner.request', async (req, res) => {
+    res.json(await (0, taskService_1.requestTaskPartner)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(partnerBody, req.body)));
+}));
+// DELETE /:taskId/partner-request — Ortak-Anfrage zurückziehen.
+router.delete('/:taskId/partner-request', (0, taskHttp_1.taskRoute)('tasks.partner.cancel', async (req, res) => {
+    res.json(await (0, taskService_1.cancelTaskPartnerRequest)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId')));
+}));
+// POST /:taskId/partner-request/approve — Person aufnehmen (Administratorrolle).
+router.post('/:taskId/partner-request/approve', (0, taskHttp_1.taskRoute)('tasks.partner.approve', async (req, res) => {
+    res.json(await (0, taskService_1.approveTaskPartner)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId')));
+}));
+// POST /:taskId/partner-request/reject — Ortak-Anfrage ablehnen (Administratorrolle).
+router.post('/:taskId/partner-request/reject', (0, taskHttp_1.taskRoute)('tasks.partner.reject', async (req, res) => {
+    res.json(await (0, taskService_1.rejectTaskPartner)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(noteBody, req.body)));
+}));
 // POST /:taskId/duplicate — Kopie mit Checklisten, Dateien und Inhalt (Leitung).
 router.post('/:taskId/duplicate', (0, taskHttp_1.taskRoute)('tasks.task.duplicate', async (req, res) => {
     const created = await (0, taskService_1.duplicateTask)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(duplicateBody, req.body));
@@ -169,7 +188,7 @@ router.post('/:taskId/block', (0, taskHttp_1.taskRoute)('tasks.task.block', asyn
 }));
 // POST /:taskId/completion-request — Abschluss beantragen (Verantwortliche); die eigene Messung endet.
 router.post('/:taskId/completion-request', (0, taskHttp_1.taskRoute)('tasks.completion.request', async (req, res) => {
-    res.json(await (0, taskService_1.requestTaskCompletion)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(noteBody, req.body)));
+    res.json(await (0, taskService_1.requestTaskCompletion)((0, taskMiddleware_1.tasksActor)(res), (0, taskHttp_1.routeParam)(req, 'taskId'), (0, taskHttp_1.parseInput)(completionRequestBody, req.body)));
 }));
 // DELETE /:taskId/completion-request — Anfrage zurückziehen (wer beantragt hat oder die Leitung).
 router.delete('/:taskId/completion-request', (0, taskHttp_1.taskRoute)('tasks.completion.cancel', async (req, res) => {

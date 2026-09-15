@@ -12,6 +12,7 @@ const attachments_routes_1 = __importDefault(require("./attachments.routes"));
 const chat_routes_1 = __importDefault(require("./chat.routes"));
 const comments_routes_1 = __importDefault(require("./comments.routes"));
 const content_routes_1 = __importDefault(require("./content.routes"));
+const dailyReports_routes_1 = __importDefault(require("./dailyReports.routes"));
 const labels_routes_1 = __importDefault(require("./labels.routes"));
 const live_routes_1 = __importDefault(require("./live.routes"));
 const people_routes_1 = __importDefault(require("./people.routes"));
@@ -38,6 +39,7 @@ const tasks_routes_1 = __importDefault(require("./tasks.routes"));
  *   /people                       Personalverzeichnis des Moduls, «Kişiler»
  *   /reports                      Team-, Personen-, eigener und Aufgabenbericht (PDF-Daten)
  *   /settings/me                  persönliche Einstellungen
+ *   /daily-reports/me             Gün sonu raporu (jede Person, eigener Rapport)
  *   /chat                         Räume, Mitglieder, Nachrichten, Lesestand
  *   /attachments/:id[/content]    Dateien ausliefern / löschen; /:taskId/attachments
  *   /comments/:id; /:taskId/comments
@@ -72,6 +74,7 @@ router.use('/live', adminGate, live_routes_1.default);
 router.use('/people', people_routes_1.default);
 router.use('/reports', adminGate, reports_routes_1.default);
 router.use('/settings', settings_routes_1.default);
+router.use('/daily-reports', dailyReports_routes_1.default);
 router.use('/chat', chat_routes_1.default);
 router.use('/', attachments_routes_1.default);
 router.use('/', comments_routes_1.default);

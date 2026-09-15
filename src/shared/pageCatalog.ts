@@ -417,6 +417,57 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
             },
         ],
     },
+    {
+        // EINSTELLUNGEN (15.09.2026, Vorgabe Samet): «Aegis-Einrichtung neu
+        // starten» soll nicht jeder sehen, sondern über die Rolle vergeben
+        // werden. Kein Katalogmodul dahinter (die Rechte hängen an keiner
+        // Firmenkategorie) — die Seite steht unter der Verwaltung.
+        //   1 = ansehen, wer Aegis eingerichtet hat
+        //   2 = die Einrichtung einer Person neu starten
+        // Server: presentation/routes/twoFactorAdmin.routes.ts.
+        //
+        // ZUWEISBARE EINSTELLUNGSSEITEN (15.09.2026, Vorgabe Samet): auch PDF-
+        // und Moduleinstellungen werden über die Rolle freigegeben. Beide sind
+        // reine Sichtbarkeitszeilen (Stufe 1, keine Rechte): was man DARIN
+        // speichern darf, entscheiden weiterhin die Rechte der Endpunkte
+        // (tenants.update, roles.manage, …).
+        //
+        // NICHT zuweisbar — und deshalb bewusst NICHT im Katalog:
+        //   /settings/authorization, /settings/company-categories → nur mit
+        //     roles.manage (sonst vergäbe eine Rolle das Rollenbauen selbst);
+        //   /settings/mail, /settings/upload → hinter dem IT-Kennwort (ItGate).
+        // Die Rollentabelle zeigt sie als feste Zeilen (Frontend:
+        // FIXED_SETTINGS_PAGES in src/lib/pageCatalog.ts).
+        key: 'settings',
+        labelKey: 'nav.settings',
+        catalogKeys: [],
+        pages: [
+            {
+                key: 'settings.pdf',
+                path: '/settings/pdf',
+                labelKey: 'nav.pdfSettings',
+                maxLevel: 1,
+                grants: {},
+            },
+            {
+                key: 'settings.modules',
+                path: '/settings/modules',
+                labelKey: 'nav.moduleSettings',
+                maxLevel: 1,
+                grants: {},
+            },
+            {
+                key: 'settings.twoFactor',
+                path: '/settings/two-factor',
+                labelKey: 'nav.twoFactorSettings',
+                maxLevel: 2,
+                grants: {
+                    read: ['security.mfa.view'],
+                    write: ['security.mfa.reset'],
+                },
+            },
+        ],
+    },
 ];
 
 export const ALL_PAGES: ReadonlyArray<PageDefinition> = PAGE_MODULES.flatMap((moduleDef) => moduleDef.pages);
@@ -488,6 +539,8 @@ export const PAGE_LEVEL_FALLBACKS: Readonly<Record<string, string>> = {
     'crm.activities': 'crm.communication',
     // Nachträge sind Aufträge — wer die Auftragsliste sieht, sieht auch sie.
     'sales.addonOrders': 'sales.orders',
+    // Die PDF-Einstellungen gestalten die Offerte — wer Offerten führt, behält sie.
+    'settings.pdf': 'sales.quotes',
 };
 
 /**

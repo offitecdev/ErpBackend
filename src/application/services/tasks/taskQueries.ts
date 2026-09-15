@@ -136,6 +136,7 @@ export const getTasksSummary = async (actor: TasksActor): Promise<TasksSummaryDt
                 COALESCE(SUM(CASE WHEN t.reviewState = 'PENDING'
                     ${actor.isSystemAdmin ? Prisma.sql`OR t.approvalState = 'PENDING'` : Prisma.empty}
                     ${actor.canDelete ? Prisma.sql`OR t.deleteRequestedAt IS NOT NULL` : Prisma.empty}
+                    ${actor.isSystemAdmin ? Prisma.sql`OR t.partnerRequestedAt IS NOT NULL` : Prisma.empty}
                     THEN 1 ELSE 0 END), 0) AS pendingCount
             FROM Task t
             WHERE ${visibleTasksSql(actor)}
@@ -383,6 +384,8 @@ export interface TaskApprovalsResult {
     reviewRequests: TaskDetailDto[];
     /** Offene Löschanfragen — nur für Admins, sonst leer. */
     deleteRequests: TaskDetailDto[];
+    /** Offene Ortak-ekle-Anfragen — nur für die Administratorrolle, sonst leer. */
+    partnerRequests: TaskDetailDto[];
     people: Record<string, PersonRef>;
     serverNow: Date;
 }
@@ -398,8 +401,9 @@ export const listTaskApprovals = async (actor: TasksActor): Promise<TaskApproval
     const managerPart = actor.isSystemAdmin ? Prisma.sql`t.reviewState = 'PENDING'` : Prisma.sql`FALSE`;
     const completionPart = actor.isSystemAdmin ? Prisma.sql`OR t.approvalState = 'PENDING'` : Prisma.empty;
     const deletePart = actor.canDelete ? Prisma.sql`OR t.deleteRequestedAt IS NOT NULL` : Prisma.empty;
+    const partnerPart = actor.isSystemAdmin ? Prisma.sql`OR t.partnerRequestedAt IS NOT NULL` : Prisma.empty;
     const cores = await fetchTaskCores(prisma, {
-        where: Prisma.sql`${visibleTasksSql(actor)} AND (${managerPart} ${completionPart} ${deletePart})`,
+        where: Prisma.sql`${visibleTasksSql(actor)} AND (${managerPart} ${completionPart} ${deletePart} ${partnerPart})`,
     });
     const { running, people } = await loadRunningSessionsAndPeople(actor, cores);
     const toCard = (core: TaskCore): TaskDetailDto => toTaskDetailDto(core, actor, running.get(core.id) ?? [], now);
@@ -407,6 +411,7 @@ export const listTaskApprovals = async (actor: TasksActor): Promise<TaskApproval
         completionRequests: actor.isSystemAdmin ? cores.filter((core) => core.approvalState === 'PENDING').map(toCard) : [],
         reviewRequests: actor.isSystemAdmin ? cores.filter((core) => core.reviewState === 'PENDING').map(toCard) : [],
         deleteRequests: actor.canDelete ? cores.filter((core) => core.deleteRequestedById).map(toCard) : [],
+        partnerRequests: actor.isSystemAdmin ? cores.filter((core) => core.partnerRequestedById).map(toCard) : [],
         people,
         serverNow: now,
     };

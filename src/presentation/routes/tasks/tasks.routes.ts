@@ -19,19 +19,23 @@ import {
 } from '../../../application/services/tasks/taskQueries';
 import {
     approveTaskCompletion,
+    approveTaskPartner,
     approveTaskReview,
     blockTask,
     cancelTaskCompletionRequest,
     cancelTaskDeletionRequest,
+    cancelTaskPartnerRequest,
     createTask,
     deleteTask,
     duplicateTask,
     moveTask,
     rejectTaskCompletion,
     rejectTaskDeletion,
+    rejectTaskPartner,
     rejectTaskReview,
     requestTaskCompletion,
     requestTaskDeletion,
+    requestTaskPartner,
     setTaskAssignees,
     setTaskLabels,
     setTaskStatus,
@@ -100,6 +104,8 @@ const updateBody = z.object({
 
 const duplicateBody = z.object({ title: zLine(TASK_LIMITS.titleMax).optional() });
 const noteBody = z.object({ note: noteText.optional() });
+/** `delayReason` Pflicht, sobald die Aufgabe überfällig ist (prüft der Dienst). */
+const completionRequestBody = z.object({ note: noteText.optional(), delayReason: noteText.optional() });
 /** Zeitpunkt des Klicks; der Dienst begrenzt ihn gegen die Empfangszeit. */
 const statusBody = z.object({ status: z.enum(MANUAL_TASK_STATUSES), reason: noteText.optional() });
 /** `reason` muss mitkommen: leer oder null hebt die Blockade auf — ein vergessenes Feld soll das nicht. */
@@ -227,6 +233,27 @@ router.post('/:taskId/delete-request/reject', taskRoute('tasks.delete.reject', a
     res.json(await rejectTaskDeletion(tasksActor(res), routeParam(req, 'taskId'), parseInput(noteBody, req.body)));
 }));
 
+// POST /:taskId/partner-request — «Ortak ekle» beantragen: GENAU EINE Person (Nicht-Admins, verantwortlich).
+const partnerBody = z.object({ employeeId: zId }).strict();
+router.post('/:taskId/partner-request', taskRoute('tasks.partner.request', async (req, res) => {
+    res.json(await requestTaskPartner(tasksActor(res), routeParam(req, 'taskId'), parseInput(partnerBody, req.body)));
+}));
+
+// DELETE /:taskId/partner-request — Ortak-Anfrage zurückziehen.
+router.delete('/:taskId/partner-request', taskRoute('tasks.partner.cancel', async (req, res) => {
+    res.json(await cancelTaskPartnerRequest(tasksActor(res), routeParam(req, 'taskId')));
+}));
+
+// POST /:taskId/partner-request/approve — Person aufnehmen (Administratorrolle).
+router.post('/:taskId/partner-request/approve', taskRoute('tasks.partner.approve', async (req, res) => {
+    res.json(await approveTaskPartner(tasksActor(res), routeParam(req, 'taskId')));
+}));
+
+// POST /:taskId/partner-request/reject — Ortak-Anfrage ablehnen (Administratorrolle).
+router.post('/:taskId/partner-request/reject', taskRoute('tasks.partner.reject', async (req, res) => {
+    res.json(await rejectTaskPartner(tasksActor(res), routeParam(req, 'taskId'), parseInput(noteBody, req.body)));
+}));
+
 // POST /:taskId/duplicate — Kopie mit Checklisten, Dateien und Inhalt (Leitung).
 router.post('/:taskId/duplicate', taskRoute('tasks.task.duplicate', async (req, res) => {
     const created = await duplicateTask(tasksActor(res), routeParam(req, 'taskId'), parseInput(duplicateBody, req.body));
@@ -245,7 +272,7 @@ router.post('/:taskId/block', taskRoute('tasks.task.block', async (req, res) => 
 
 // POST /:taskId/completion-request — Abschluss beantragen (Verantwortliche); die eigene Messung endet.
 router.post('/:taskId/completion-request', taskRoute('tasks.completion.request', async (req, res) => {
-    res.json(await requestTaskCompletion(tasksActor(res), routeParam(req, 'taskId'), parseInput(noteBody, req.body)));
+    res.json(await requestTaskCompletion(tasksActor(res), routeParam(req, 'taskId'), parseInput(completionRequestBody, req.body)));
 }));
 
 // DELETE /:taskId/completion-request — Anfrage zurückziehen (wer beantragt hat oder die Leitung).

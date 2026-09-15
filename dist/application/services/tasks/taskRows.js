@@ -59,6 +59,8 @@ exports.TASK_CORE_COLUMNS = client_1.Prisma.sql `
     t.approvalDecidedById, t.approvalDecidedAt, t.approvalDecisionNote,
     t.reviewState, t.reviewRequestedById, t.reviewRequestedAt, t.reviewDecidedById,
     t.reviewDecidedAt, t.reviewNote, t.deleteRequestedById, t.deleteRequestedAt, t.deleteRequestNote,
+    t.partnerRequestedById, t.partnerRequestEmployeeId, t.partnerRequestedAt,
+    t.delayReason, t.delayReasonById, t.delayReasonAt,
     t.boardPosition, t.createdById, t.createdAt, t.updatedAt,
     (SELECT GROUP_CONCAT(ta.employeeId ORDER BY ta.createdAt, ta.id SEPARATOR ',')
        FROM TaskAssignee ta WHERE ta.taskId = t.id) AS assigneeCsv,
@@ -102,6 +104,12 @@ const mapTaskCore = (row) => ({
     deleteRequestedById: (0, exports.rawString)(row.deleteRequestedById),
     deleteRequestedAt: (0, exports.rawDate)(row.deleteRequestedAt),
     deleteRequestNote: (0, exports.rawString)(row.deleteRequestNote),
+    partnerRequestedById: (0, exports.rawString)(row.partnerRequestedById),
+    partnerRequestEmployeeId: (0, exports.rawString)(row.partnerRequestEmployeeId),
+    partnerRequestedAt: (0, exports.rawDate)(row.partnerRequestedAt),
+    delayReason: (0, exports.rawString)(row.delayReason),
+    delayReasonById: (0, exports.rawString)(row.delayReasonById),
+    delayReasonAt: (0, exports.rawDate)(row.delayReasonAt),
     boardPosition: (0, exports.rawNumber)(row.boardPosition),
     createdById: String(row.createdById ?? ''),
     createdAt: (0, exports.rawDate)(row.createdAt) ?? new Date(0),
@@ -150,7 +158,11 @@ const lockTaskRow = async (tx, tenantId, taskId) => {
     return rows.length > 0;
 };
 exports.lockTaskRow = lockTaskRow;
-/** Sichtbarkeitsbedingung eines Teammitglieds über `t` (verantwortlich ODER angelegt). */
+/**
+ * Sichtbarkeitsbedingung einer Nicht-Admin-Person über `t`: zugewiesen ODER
+ * selbst angelegt (15.09.2026, Samet: «yönetici olmadığım sürece sadece bana
+ * atanan ve benim oluşturduğum görevleri görebilmeliyim»).
+ */
 const memberVisibilitySql = (employeeId) => client_1.Prisma.sql `(
     t.createdById = ${employeeId}
     OR EXISTS (SELECT 1 FROM TaskAssignee va WHERE va.taskId = t.id AND va.employeeId = ${employeeId})
@@ -216,6 +228,7 @@ const toTaskRowDto = (core, actor, running, now = new Date(), ownClosedMs) => {
         reviewState: core.reviewState,
         blockReason: core.blockReason,
         deleteRequestedById: core.deleteRequestedById,
+        hasDelayReason: Boolean(core.delayReason),
         assigneeIds: core.assigneeIds,
         labelIds: core.labelIds,
         checklist: { done: core.checkDone, total: core.checkTotal },
@@ -272,6 +285,16 @@ const toTaskDetailDto = (core, actor, running, now = new Date(), ownClosedMs) =>
         requestedAt: core.deleteRequestedAt,
         note: core.deleteRequestNote,
     },
+    partnerRequest: {
+        requestedById: core.partnerRequestedById,
+        employeeId: core.partnerRequestEmployeeId,
+        requestedAt: core.partnerRequestedAt,
+    },
+    delay: {
+        reason: core.delayReason,
+        byId: core.delayReasonById,
+        at: core.delayReasonAt,
+    },
 });
 exports.toTaskDetailDto = toTaskDetailDto;
 /** Alle Personenkennungen, die eine Aufgabenausgabe nennt (für die `people`-Karte). */
@@ -283,6 +306,9 @@ const taskPeopleIds = (core, running = []) => [
     ...(core.reviewRequestedById ? [core.reviewRequestedById] : []),
     ...(core.reviewDecidedById ? [core.reviewDecidedById] : []),
     ...(core.deleteRequestedById ? [core.deleteRequestedById] : []),
+    ...(core.partnerRequestedById ? [core.partnerRequestedById] : []),
+    ...(core.partnerRequestEmployeeId ? [core.partnerRequestEmployeeId] : []),
+    ...(core.delayReasonById ? [core.delayReasonById] : []),
     ...running.map((session) => session.employeeId),
 ];
 exports.taskPeopleIds = taskPeopleIds;
@@ -291,6 +317,7 @@ const ownSessionsSql = (actor) => actor.isManager ? client_1.Prisma.sql `TRUE` :
 const taskListColumns = (actor, day) => client_1.Prisma.sql `
     t.id, t.title, t.status, t.flagged, t.startAt, t.dueAt, t.completedAt, t.createdById,
     t.approvalState, t.reviewState, t.blockReason, t.deleteRequestedById,
+    (t.delayReason IS NOT NULL) AS hasDelayReason,
     (SELECT GROUP_CONCAT(ta.employeeId ORDER BY ta.createdAt, ta.id SEPARATOR ',')
        FROM TaskAssignee ta WHERE ta.taskId = t.id) AS assigneeCsv,
     (SELECT GROUP_CONCAT(tl.labelId ORDER BY tl.createdAt, tl.id SEPARATOR ',')
@@ -346,6 +373,7 @@ const fetchTaskListRows = async (db, actor, query, now, day = (0, taskTime_1.res
             reviewState: String(row.reviewState ?? 'APPROVED'),
             blockReason: (0, exports.rawString)(row.blockReason),
             deleteRequestedById: (0, exports.rawString)(row.deleteRequestedById),
+            hasDelayReason: (0, exports.rawBool)(row.hasDelayReason),
             assigneeIds,
             labelIds: (0, exports.rawCsv)(row.labelCsv),
             checklist: { done: checkDone, total: checkTotal },

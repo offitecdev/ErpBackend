@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.moveTask = exports.setTaskLabels = exports.setTaskAssignees = exports.rejectTaskReview = exports.approveTaskReview = exports.rejectTaskCompletion = exports.approveTaskCompletion = exports.cancelTaskCompletionRequest = exports.requestTaskCompletion = exports.blockTask = exports.setTaskStatus = exports.duplicateTask = exports.rejectTaskDeletion = exports.cancelTaskDeletionRequest = exports.requestTaskDeletion = exports.deleteTask = exports.updateTask = exports.createTask = void 0;
+exports.moveTask = exports.setTaskLabels = exports.setTaskAssignees = exports.rejectTaskReview = exports.approveTaskReview = exports.rejectTaskCompletion = exports.approveTaskCompletion = exports.cancelTaskCompletionRequest = exports.requestTaskCompletion = exports.blockTask = exports.setTaskStatus = exports.duplicateTask = exports.rejectTaskPartner = exports.approveTaskPartner = exports.cancelTaskPartnerRequest = exports.requestTaskPartner = exports.rejectTaskDeletion = exports.cancelTaskDeletionRequest = exports.requestTaskDeletion = exports.deleteTask = exports.updateTask = exports.createTask = void 0;
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
@@ -11,6 +11,7 @@ const AuditLogService_1 = require("../../../infrastructure/services/AuditLogServ
 const taskActor_1 = require("./taskActor");
 const taskActivity_1 = require("./taskActivity");
 const taskConstants_1 = require("./taskConstants");
+const taskAccess_1 = require("./taskAccess");
 const taskDb_1 = require("./taskDb");
 const taskErrors_1 = require("./taskErrors");
 const taskFiles_1 = require("./taskFiles");
@@ -259,7 +260,8 @@ const createTask = async (actor, input) => {
     // Leitung wählt weitere Personen dazu; die eigene Kennung wird nicht gegen das
     // Verzeichnis geprüft (wer hier anlegt, benutzt das Modul gerade).
     const [chosenIds, labelIds, boardPosition] = await Promise.all([
-        actor.isManager
+        // Zuweisen darf nur die Administratorrolle (15.09.2026); alle anderen legen nur für sich an.
+        actor.isSystemAdmin
             ? (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, (input.assigneeIds ?? []).filter((id) => id !== actor.employeeId))
             : [],
         requireTenantLabels(prisma_client_1.default, actor.tenantId, input.labelIds ?? []),
@@ -486,6 +488,113 @@ const rejectTaskDeletion = async (actor, taskId, input) => {
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.rejectTaskDeletion = rejectTaskDeletion;
+/* ── Ortak-ekle-Anfrage (15.09.2026, Samet: «administratör olmayan kişi ortak
+   ekleme talebi yöneticiye gönderilsin, yönetici kabul etsin; tek seferde bir
+   istek ve bir kişi») ───────────────────────────────────────────────────── */
+const noPendingPartnerRequest = () => (0, taskErrors_1.taskConflict)('NO_PENDING_PARTNER_REQUEST', 'Es gibt keine offene Ortak-Anfrage.');
+const clearPartnerRequest = { partnerRequestedById: null, partnerRequestEmployeeId: null, partnerRequestedAt: null };
+/** Eine verantwortliche Nicht-Admin-Person schlägt GENAU EINE weitere Person vor; die Administratorrolle entscheidet. */
+const requestTaskPartner = async (actor, taskId, input) => {
+    const employeeId = input.employeeId;
+    await (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, [employeeId]);
+    const core = await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
+        if (core.partnerRequestedById) {
+            throw (0, taskErrors_1.taskConflict)('PARTNER_ALREADY_REQUESTED', 'Für diese Aufgabe ist schon eine Ortak-Anfrage offen.');
+        }
+        if (!permissions.canRequestPartner) {
+            throw (0, taskErrors_1.taskForbidden)('PARTNER_REQUEST_FORBIDDEN', 'Eine Ortak-Anfrage stellen nur Verantwortliche einer offenen Aufgabe.');
+        }
+        if (core.assigneeIds.includes(employeeId)) {
+            throw (0, taskErrors_1.taskBadRequest)('PARTNER_ALREADY_ASSIGNED', 'Diese Person ist schon verantwortlich.', { employeeId });
+        }
+        await applyPlan(tx, actor, taskId, {
+            data: { partnerRequestedById: actor.employeeId, partnerRequestEmployeeId: employeeId, partnerRequestedAt: new Date() },
+            activity: { type: taskConstants_1.ACTIVITY.PARTNER_REQUESTED, meta: { employeeId } },
+        });
+        return core;
+    });
+    void (0, taskPeople_1.loadPersonName)(employeeId)
+        .then((personName) => notifyAdminsAfterWrite(actor, taskId, (actorName, adminIds) => ({
+        type: taskConstants_1.NOTIFY.PARTNER_REQUEST,
+        recipientIds: adminIds,
+        title: 'Ortak-Anfrage',
+        message: `${actorName} möchte ${personName} zu «${core.title}» hinzufügen.`,
+        params: { actor: actorName, person: personName, title: core.title },
+    })))
+        .catch((error) => console.warn('[tasks.notify] Ortak-Anfrage nicht vorbereitet', error));
+    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
+};
+exports.requestTaskPartner = requestTaskPartner;
+/** Anfrage zurückziehen: wer sie gestellt hat (oder die Administratorrolle). */
+const cancelTaskPartnerRequest = async (actor, taskId) => {
+    await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
+        if (!core.partnerRequestedById)
+            throw noPendingPartnerRequest();
+        if (!permissions.canCancelPartnerRequest) {
+            throw (0, taskErrors_1.taskForbidden)('PARTNER_REQUEST_CANCEL_FORBIDDEN', 'Zurückziehen darf nur, wer die Anfrage gestellt hat.');
+        }
+        await applyPlan(tx, actor, taskId, {
+            data: clearPartnerRequest,
+            activity: { type: taskConstants_1.ACTIVITY.PARTNER_REQUEST_CANCELLED, meta: { employeeId: core.partnerRequestEmployeeId } },
+        });
+    });
+    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
+};
+exports.cancelTaskPartnerRequest = cancelTaskPartnerRequest;
+/** Administratorrolle nimmt die vorgeschlagene Person als Verantwortliche auf. */
+const approveTaskPartner = async (actor, taskId) => {
+    (0, taskActor_1.assertSystemAdmin)(actor);
+    const result = await withLockedTask(actor, taskId, async (tx, { core }) => {
+        if (!core.partnerRequestedById || !core.partnerRequestEmployeeId)
+            throw noPendingPartnerRequest();
+        const employeeId = core.partnerRequestEmployeeId;
+        // Die Person muss das Modul noch benutzen dürfen.
+        await (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, [employeeId]);
+        const added = !core.assigneeIds.includes(employeeId);
+        if (added)
+            await addAssignees(tx, actor.tenantId, taskId, [employeeId]);
+        await tx.task.update({ where: { id: taskId }, data: clearPartnerRequest, select: { id: true } });
+        if (added) {
+            await (0, taskActivity_1.logTaskActivity)(tx, actor.tenantId, actor.employeeId, { taskId, type: taskConstants_1.ACTIVITY.ASSIGNED, meta: { employeeId } });
+        }
+        return { core, employeeId, requesterId: core.partnerRequestedById, added };
+    });
+    notifyAfterWrite(actor, taskId, (context) => [
+        ...(result.added ? [assignedNotice(context, result.core.title, [result.employeeId])] : []),
+        {
+            type: taskConstants_1.NOTIFY.PARTNER_APPROVED,
+            recipientIds: [result.requesterId],
+            title: 'Ortak-Anfrage angenommen',
+            message: `«${result.core.title}»: die Person wurde hinzugefügt.`,
+            params: { actor: context.actor, title: result.core.title },
+        },
+    ]);
+    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
+};
+exports.approveTaskPartner = approveTaskPartner;
+/** Administratorrolle lehnt ab: niemand kommt dazu; wer angefragt hat, erfährt es. */
+const rejectTaskPartner = async (actor, taskId, input) => {
+    (0, taskActor_1.assertSystemAdmin)(actor);
+    const note = input.note || null;
+    const result = await withLockedTask(actor, taskId, async (tx, { core }) => {
+        if (!core.partnerRequestedById)
+            throw noPendingPartnerRequest();
+        await applyPlan(tx, actor, taskId, {
+            data: clearPartnerRequest,
+            activity: { type: taskConstants_1.ACTIVITY.PARTNER_REJECTED, meta: { employeeId: core.partnerRequestEmployeeId, note } },
+        });
+        return { title: core.title, requesterId: core.partnerRequestedById };
+    });
+    notifyAfterWrite(actor, taskId, (context) => [{
+            type: taskConstants_1.NOTIFY.PARTNER_REJECTED,
+            recipientIds: [result.requesterId],
+            title: 'Ortak-Anfrage abgelehnt',
+            message: note ? `«${result.title}»: ${note}` : `«${result.title}»: niemand wurde hinzugefügt.`,
+            params: { actor: context.actor, title: result.title, note },
+        }]);
+    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
+};
+exports.rejectTaskPartner = rejectTaskPartner;
 /**
  * Eigene Kopien der Dateien — eine nach der anderen, damit nie alle Bytes
  * zugleich im Speicher liegen. Scheitert eine, verschwinden die schon
@@ -534,9 +643,8 @@ const remapContentBlocks = (blocks, checklistIds, attachmentIds) => blocks.flatM
 const duplicateTask = async (actor, taskId, input) => {
     (0, taskActor_1.assertManager)(actor);
     const { tenantId } = actor;
-    const source = await (0, taskRows_1.loadTaskCore)(prisma_client_1.default, tenantId, taskId);
-    if (!source)
-        throw (0, taskErrors_1.taskNotFound)();
+    // Nur eine sichtbare Aufgabe (Nicht-Admins: eigene) — 404/403 wie überall.
+    const { core: source } = await (0, taskRows_1.requireVisibleTask)(prisma_client_1.default, actor, taskId);
     const [people, checklists, items, attachments, content, boardPosition] = await Promise.all([
         (0, taskPeople_1.getTasksPeople)(tenantId),
         prisma_client_1.default.taskChecklist.findMany({
@@ -561,7 +669,9 @@ const duplicateTask = async (actor, taskId, input) => {
     const copies = await copyAttachmentFiles(tenantId, attachments);
     const newTaskId = (0, nanoid_1.nanoid)(12);
     const title = input.title || `${source.title} (kopya)`.slice(0, taskConstants_1.TASK_LIMITS.titleMax);
-    const assigneeIds = source.assigneeIds.filter((id) => people.has(id));
+    // Die Kopie einer Nicht-Admin-Person gehört nur ihr: zuweisen darf nur die Administratorrolle.
+    const assigneeIds = actor.isSystemAdmin ? source.assigneeIds.filter((id) => people.has(id)) : [actor.employeeId];
+    const assigneeSet = new Set(assigneeIds);
     const checklistCopies = checklists.map((list) => ({ ...list, sourceId: list.id, id: (0, nanoid_1.nanoid)(12) }));
     const checklistIds = new Map(checklistCopies.map((copy) => [copy.sourceId, copy.id]));
     const attachmentIds = new Map(copies.map((copy) => [copy.sourceId, copy.id]));
@@ -576,7 +686,7 @@ const duplicateTask = async (actor, taskId, input) => {
                 checklistId,
                 text: item.text,
                 position: item.position,
-                assigneeId: item.assigneeId && people.has(item.assigneeId) ? item.assigneeId : null,
+                assigneeId: item.assigneeId && assigneeSet.has(item.assigneeId) ? item.assigneeId : null,
                 dueAt: item.dueAt,
                 reminderAt: item.reminderAt,
                 flagged: item.flagged,
@@ -705,9 +815,14 @@ const blockTask = async (actor, taskId, input) => {
 };
 exports.blockTask = blockTask;
 /* ── Abschlussanfrage ───────────────────────────────────────────────────── */
-/** Eine verantwortliche Person meldet «fertig»: ihre Messung endet, die Leitung entscheidet. */
+/**
+ * Eine verantwortliche Person meldet «fertig»: ihre Messung endet, die Leitung entscheidet.
+ * Ist der Termin überschritten, geht das NUR mit Gecikme açıklaması (15.09.2026, Samet) —
+ * sie bleibt an der Aufgabe stehen, auch nach der Entscheidung.
+ */
 const requestTaskCompletion = async (actor, taskId, input) => {
     const note = input.note || null;
+    const delayReason = input.delayReason?.trim() || null;
     const core = await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
         if (core.approvalState === 'PENDING') {
             throw (0, taskErrors_1.taskConflict)('COMPLETION_ALREADY_REQUESTED', 'Der Abschluss ist bereits beantragt.');
@@ -715,9 +830,15 @@ const requestTaskCompletion = async (actor, taskId, input) => {
         if (!permissions.canRequestCompletion) {
             throw (0, taskErrors_1.taskForbidden)('COMPLETION_REQUEST_FORBIDDEN', 'Den Abschluss beantragen Verantwortliche oder die Leitung einer offenen Aufgabe.');
         }
+        const now = new Date();
+        const overdue = (0, taskAccess_1.isTaskOverdue)(core, now);
+        if (overdue && !delayReason) {
+            throw (0, taskErrors_1.taskBadRequest)('DELAY_REASON_REQUIRED', 'Die Aufgabe ist überfällig — bitte den Verzug kurz erklären.');
+        }
         await applyPlan(tx, actor, taskId, {
             closeSessions: { note: 'COMPLETION_REQUESTED', employeeIds: [actor.employeeId] },
             data: {
+                ...(overdue && delayReason ? { delayReason, delayReasonById: actor.employeeId, delayReasonAt: now } : {}),
                 approvalState: 'PENDING',
                 approvalRequestedById: actor.employeeId,
                 approvalRequestedAt: new Date(),
@@ -727,7 +848,7 @@ const requestTaskCompletion = async (actor, taskId, input) => {
                 approvalDecisionNote: null,
                 status: 'REVIEW',
             },
-            activity: { type: taskConstants_1.ACTIVITY.COMPLETION_REQUESTED, meta: { note } },
+            activity: { type: taskConstants_1.ACTIVITY.COMPLETION_REQUESTED, meta: overdue ? { note, delayReason } : { note } },
         });
         return core;
     });
@@ -862,7 +983,8 @@ exports.rejectTaskReview = rejectTaskReview;
  * Verlauf und Meldung je Person.
  */
 const setTaskAssignees = async (actor, taskId, input) => {
-    (0, taskActor_1.assertManager)(actor);
+    // Nur die Administratorrolle (15.09.2026, Samet: «görev atama sadece yönetici yapabilir»).
+    (0, taskActor_1.assertSystemAdmin)(actor);
     const wanted = [...new Set(input.employeeIds)];
     const { core, added } = await withLockedTask(actor, taskId, async (tx, { core }) => {
         const current = new Set(core.assigneeIds);

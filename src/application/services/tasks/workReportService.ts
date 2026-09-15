@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 
 import prisma from '../../../infrastructure/database/prisma.client';
 import { effectiveTaskStatus } from './taskAccess';
+import { isDateKey, listDailyReports, type DailyReportDto } from './dailyReportService';
 import type { TasksActor } from './taskActor';
 import { taskBadRequest, taskForbidden, taskNotFound } from './taskErrors';
 import { getTasksPeople, loadPersonRefs, type PersonRef } from './taskPeople';
@@ -27,7 +28,8 @@ import { DAY_MS } from './taskTime';
  *                 offener Abschlussanfrage, damit der Rapport den Verzug zeigt
  *
  * Tagesgrenzen kennt nur der Browser der Leserin: er schickt `from`/`to`
- * und gruppiert selbst nach Tagen.
+ * und gruppiert selbst nach Tagen. Mit `fromDate`/`toDate` (YYYY-MM-DD) kommen
+ * die Gün sonu raporları der Person dazu (dailyReports).
  *
  * Wer: `person` = eine Kennung. Die Leitung wählt jede Person der Firma,
  * ein Teammitglied bekommt immer sich selbst (eine fremde Kennung = 403).
@@ -72,6 +74,8 @@ export interface WorkReportDto {
     checkedItems: Array<{ taskId: string; text: string; doneAt: Date }>;
     comments: Array<{ taskId: string; text: string; createdAt: Date }>;
     tasks: Record<string, WorkReportTaskDto>;
+    /** Gün sonu raporları im Zeitraum (nur mit `fromDate`/`toDate`, Kalendertage des Browsers). */
+    dailyReports: DailyReportDto[];
 }
 
 const parseDate = (value: unknown): Date | null => {
@@ -141,7 +145,10 @@ export const getWorkReport = async (actor: TasksActor, query: Record<string, unk
             OR (d.status NOT IN ('COMPLETED', 'REJECTED') AND d.dueAt < ${to})
         )`;
 
-    const [sessionRows, itemRows, commentRows, taskRows, refs] = await Promise.all([
+    const fromDate = isDateKey(query.fromDate) ? query.fromDate : null;
+    const toDate = isDateKey(query.toDate) ? query.toDate : null;
+
+    const [sessionRows, itemRows, commentRows, taskRows, refs, dailyReports] = await Promise.all([
         prisma.$queryRaw<Array<{ taskId: string; startedAt: unknown; endedAt: unknown }>>(Prisma.sql`
             SELECT s.taskId, s.startedAt, s.endedAt
             FROM TaskTimeSession s
@@ -184,6 +191,9 @@ export const getWorkReport = async (actor: TasksActor, query: Record<string, unk
             )
         `),
         loadPersonRefs([employeeId]),
+        fromDate && toDate && fromDate <= toDate
+            ? listDailyReports(tenantId, employeeId, fromDate, toDate)
+            : Promise.resolve([] as DailyReportDto[]),
     ]);
 
     const tasks: Record<string, WorkReportTaskDto> = {};
@@ -241,5 +251,6 @@ export const getWorkReport = async (actor: TasksActor, query: Record<string, unk
             return createdAt ? [{ taskId: row.taskId, text: plainLine(row.text), createdAt }] : [];
         }),
         tasks,
+        dailyReports,
     };
 };

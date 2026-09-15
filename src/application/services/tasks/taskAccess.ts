@@ -16,8 +16,10 @@ import { isOpenTaskStatus, type TaskStatusKey } from './taskConstants';
  *   löschen        nur Admins (Administratorrolle oder tasks.delete); wer die
  *                  Aufgabe angelegt hat oder verantwortlich ist, BEANTRAGT das
  *                  Löschen — ein Admin entscheidet (13.09.2026)
- *   sehen          Admins alles; alle anderen (auch die Leitung) nur
- *                  zugewiesen oder selbst angelegt (13.09.2026)
+ *   sehen          Administratorrolle alles; alle anderen (auch die Leitung)
+ *                  NUR was ihnen zugewiesen ist oder was sie angelegt haben (15.09.2026)
+ *   zuweisen       nur die Administratorrolle; Verantwortliche BEANTRAGEN
+ *                  «Ortak ekle» — eine Anfrage, eine Person (15.09.2026)
  *
  * Diese Datei rechnet NUR — sie liest nichts aus der Datenbank.
  */
@@ -31,6 +33,7 @@ export interface TaskAccessFacts {
     approvalRequestedById: string | null;
     assigneeIds: readonly string[];
     deleteRequestedById?: string | null;
+    partnerRequestedById?: string | null;
 }
 
 export interface TaskPermissions {
@@ -53,6 +56,14 @@ export interface TaskPermissions {
     canRequestDelete: boolean;
     /** Offene Löschanfrage zurückziehen: wer sie gestellt hat (oder ein Admin). */
     canCancelDeleteRequest: boolean;
+    /** Verantwortliche zuweisen/entfernen — nur die Administratorrolle. */
+    canAssign: boolean;
+    /** Nicht-Admin, verantwortlich, offene Aufgabe, noch keine offene Ortak-Anfrage. */
+    canRequestPartner: boolean;
+    /** Offene Ortak-Anfrage zurückziehen: wer sie gestellt hat (oder die Administratorrolle). */
+    canCancelPartnerRequest: boolean;
+    /** Ortak-Anfrage annehmen/ablehnen — nur die Administratorrolle. */
+    canDecidePartnerRequest: boolean;
 }
 
 export const isTaskAssignee = (actor: TasksActor, task: Pick<TaskAccessFacts, 'assigneeIds'>): boolean =>
@@ -75,6 +86,7 @@ export const taskPermissions = (actor: TasksActor, task: TaskAccessFacts): TaskP
     const canTrack = canTrackTask(actor, task);
     const approvalPending = task.approvalState === 'PENDING';
     const deletePending = Boolean(task.deleteRequestedById);
+    const partnerPending = Boolean(task.partnerRequestedById);
     return {
         isAssignee,
         isCreator,
@@ -96,6 +108,11 @@ export const taskPermissions = (actor: TasksActor, task: TaskAccessFacts): TaskP
         canDelete: actor.canDelete,
         canRequestDelete: !actor.canDelete && (isAssignee || isCreator) && !deletePending,
         canCancelDeleteRequest: deletePending && (task.deleteRequestedById === actor.employeeId || actor.canDelete),
+        canAssign: actor.isSystemAdmin,
+        canRequestPartner: !actor.isSystemAdmin && isAssignee && !partnerPending
+            && isOpenTaskStatus(task.status) && task.reviewState !== 'REJECTED',
+        canCancelPartnerRequest: partnerPending && (task.partnerRequestedById === actor.employeeId || actor.isSystemAdmin),
+        canDecidePartnerRequest: partnerPending && actor.isSystemAdmin,
     };
 };
 

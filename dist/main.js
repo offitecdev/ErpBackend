@@ -65,6 +65,7 @@ const swagger_ui_express_1 = __importDefault(require("swagger-ui-express"));
 const swagger_config_1 = require("./infrastructure/config/swagger.config");
 const auth_routes_1 = __importDefault(require("./presentation/routes/auth.routes"));
 const employee_routes_1 = __importDefault(require("./presentation/routes/employee.routes"));
+const twoFactorAdmin_routes_1 = __importDefault(require("./presentation/routes/twoFactorAdmin.routes"));
 // Personalmodul (Neubau 16.08.2026): ersetzt die früheren Router
 // attendance.routes.ts und leave.routes.ts vollständig.
 const personnel_routes_1 = __importDefault(require("./presentation/routes/personnel.routes"));
@@ -268,6 +269,8 @@ for (const prefix of apiPrefixes) {
     // ('/authorization/list', '/:id/authorization') sind zweigliedrig und
     // kollidieren deshalb nicht mit dem '/:id' des Personal-Routers davor.
     app.use(`${prefix}/employees`, authorization_routes_1.default);
+    // Einstellungen → Zwei-Faktor (Aegis): Stand ansehen, Einrichtung neu starten.
+    app.use(`${prefix}/security/two-factor`, twoFactorAdmin_routes_1.default);
     // Personalmodul: Liste, Stempeluhr, Schichtplan, Berichte, Anträge.
     app.use(`${prefix}/personnel`, personnel_routes_1.default);
     // Personalakte (Profil, Unterlagen, Urlaubskonto), Feiertage und die

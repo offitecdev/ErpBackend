@@ -99,7 +99,7 @@ const requireEditableItem = async (actor, itemId) => {
 /* ── Person eines Punkts ────────────────────────────────────────────────── */
 /**
  * Prüft die Person eines Punkts (Firma + Modulzugang). Zurück kommt sie nur,
- * wenn sie erst auf die Aufgabe genommen werden muss — das darf die Leitung.
+ * wenn sie erst auf die Aufgabe genommen werden muss — das darf nur die Administratorrolle.
  */
 const assigneeJoiningTask = async (actor, core, assigneeId) => {
     if (!assigneeId)
@@ -107,7 +107,8 @@ const assigneeJoiningTask = async (actor, core, assigneeId) => {
     await (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, [assigneeId]);
     if (core.assigneeIds.includes(assigneeId))
         return null;
-    if (!actor.isManager) {
+    // Neue Verantwortliche nur über die Administratorrolle (15.09.2026).
+    if (!actor.isSystemAdmin) {
         throw (0, taskErrors_1.taskBadRequest)('ITEM_ASSIGNEE_NOT_ON_TASK', 'Einen Punkt können Sie nur Verantwortlichen dieser Aufgabe zuteilen.', { employeeId: assigneeId });
     }
     return assigneeId;

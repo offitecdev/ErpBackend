@@ -1,7 +1,4 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const EmployeeController_1 = require("../controllers/EmployeeController");
@@ -17,8 +14,7 @@ const employeeSchemas_1 = require("../validation/employeeSchemas");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const AuditLogService_1 = require("../../infrastructure/services/AuditLogService");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
-const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
-const RefreshSessionService_1 = require("../../infrastructure/services/RefreshSessionService");
+const twoFactorAdmin_routes_1 = require("./twoFactorAdmin.routes");
 const router = (0, express_1.Router)();
 const employeeRepo = new EmployeeRepository_1.EmployeeRepository();
 const roleRepo = new RoleRepository_1.RoleRepository();
@@ -301,42 +297,19 @@ router.patch('/:id/ban', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
  *       - bearerAuth: []
  */
 router.patch('/:id/mfa-reset', AuthMiddleware_1.requireAuth, 
-/* Dasselbe Recht wie Sperren und Löschen: wer den zweiten Faktor einer
-   anderen Person zurücksetzen kann, kann ihr Konto übernehmen, sobald er
-   auch das Kennwort neu setzt. Das ist Verwaltungsarbeit, keine
-   Bearbeitung von Stammdaten. */
-(0, RbacMiddleware_1.requirePermission)('employees.delete'), async (req, res) => {
+/* Seit 15.09.2026 ein EIGENES Recht aus der Rollentabelle (Einstellungen →
+   Zwei-Faktor, Stufe 2) statt `employees.delete` — wer den zweiten Faktor
+   einer anderen Person zurücksetzen kann, kann ihr Konto übernehmen,
+   sobald er auch das Kennwort neu setzt. Logik: twoFactorAdmin.routes.ts. */
+(0, twoFactorAdmin_routes_1.requireMfaAdmin)(twoFactorAdmin_routes_1.MFA_RESET_PERMISSION), async (req, res) => {
     try {
-        const id = req.params.id;
-        const existing = await employeeRepo.findById(id);
-        const scopeTenantIds = await (0, serviceTenantScope_1.getPersonnelTenantScope)(req.user.tenantId);
-        if (!existing || !(0, serviceTenantScope_1.isEmployeeInScope)(existing, scopeTenantIds)) {
+        const result = await (0, twoFactorAdmin_routes_1.resetEmployeeTotp)(req, req.params.id);
+        if (!result) {
             return res.status(404).json({ error: 'Personel bulunamadı.' });
         }
-        if (!existing.totpEnabledAt && !existing.totpSecret) {
+        if (!result.reset) {
             return res.status(200).json({ message: 'Bu hesapta kurulu bir doğrulama uygulaması yok.', reset: false });
         }
-        /* Direkt über Prisma und nicht über `employeeRepo.update`: die drei
-           Spalten stehen bewusst nicht in der Schreibliste des
-           Personalwegs (WRITABLE_EMPLOYEE_FIELDS) — der zweite Faktor ist
-           eine Zugangsangabe wie der QR-Schlüssel, kein Stammdatenfeld. */
-        await prisma_client_1.default.employee.update({
-            where: { id },
-            data: { totpSecret: null, totpEnabledAt: null, totpLastStep: null },
-        });
-        /* Die offenen Anmeldungen fallen mit. Wer das Telefon verloren hat,
-           will nicht, dass eine Sitzung von dort weiterläuft — und wenn die
-           Verwaltung zurücksetzt, weil etwas passiert ist, erst recht
-           nicht. */
-        await (0, RefreshSessionService_1.revokeAllRefreshSessions)(id, 'account').catch((error) => console.error('[employees/mfa-reset] Sitzungen konnten nicht beendet werden:', error?.message || error));
-        AuditLogService_1.auditLog.log({
-            action: 'employee.mfa_reset',
-            tenantId: req.user.tenantId,
-            employeeId: req.user.id,
-            entityType: 'Employee',
-            entityId: id,
-            ...AuditLogService_1.auditLog.context(req),
-        });
         res.status(200).json({
             message: 'Doğrulama uygulaması sıfırlandı. Kullanıcı bir sonraki girişinde yeniden kuracak.',
             reset: true,

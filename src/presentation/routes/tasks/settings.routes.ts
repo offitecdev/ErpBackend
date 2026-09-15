@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { getMyTaskSettings, saveMyTaskSettings } from '../../../application/services/tasks/settingsService';
+import { assertSystemAdmin } from '../../../application/services/tasks/taskActor';
 import { REMINDER_LEAD_MINUTES } from '../../../application/services/tasks/taskConstants';
 import { parseInput, taskRoute } from './taskHttp';
 import { tasksActor } from './taskMiddleware';
@@ -24,8 +25,11 @@ router.get('/me', responseCache({ namespaces: ['tasks'], ttlSec: 60 }), taskRout
 }));
 
 router.put('/me', taskRoute('tasks.settings.save', async (req, res) => {
+    const actor = tasksActor(res);
+    // 15.09.2026 (Samet): die Einstellungen nur für die Administratorrolle.
+    assertSystemAdmin(actor);
     const body = parseInput(settingsBody, req.body);
-    const settings = await saveMyTaskSettings(tasksActor(res), {
+    const settings = await saveMyTaskSettings(actor, {
         reminderLeadMinutes: body.reminderLeadMinutes as typeof REMINDER_LEAD_MINUTES[number],
     });
     res.json({ settings });

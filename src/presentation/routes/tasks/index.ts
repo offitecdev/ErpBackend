@@ -8,6 +8,7 @@ import attachmentsRouter from './attachments.routes';
 import chatRouter from './chat.routes';
 import commentsRouter from './comments.routes';
 import contentRouter from './content.routes';
+import dailyReportsRouter from './dailyReports.routes';
 import labelsRouter from './labels.routes';
 import liveRouter from './live.routes';
 import peopleRouter from './people.routes';
@@ -35,6 +36,7 @@ import tasksRouter from './tasks.routes';
  *   /people                       Personalverzeichnis des Moduls, «Kişiler»
  *   /reports                      Team-, Personen-, eigener und Aufgabenbericht (PDF-Daten)
  *   /settings/me                  persönliche Einstellungen
+ *   /daily-reports/me             Gün sonu raporu (jede Person, eigener Rapport)
  *   /chat                         Räume, Mitglieder, Nachrichten, Lesestand
  *   /attachments/:id[/content]    Dateien ausliefern / löschen; /:taskId/attachments
  *   /comments/:id; /:taskId/comments
@@ -72,6 +74,7 @@ router.use('/live', adminGate, liveRouter);
 router.use('/people', peopleRouter);
 router.use('/reports', adminGate, reportsRouter);
 router.use('/settings', settingsRouter);
+router.use('/daily-reports', dailyReportsRouter);
 router.use('/chat', chatRouter);
 router.use('/', attachmentsRouter);
 router.use('/', commentsRouter);

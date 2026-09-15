@@ -393,8 +393,8 @@ const toRoomDetail = async (actor: TasksActor, parts: RoomParts): Promise<RoomDe
         id: task.id,
         title: task.title,
         status: task.status,
-        // Dieselbe Sichtbarkeit wie canSeeTask: Leitung, verantwortlich oder angelegt.
-        canOpen: actor.seesAll || task.createdById === actor.employeeId || task.isAssignee,
+        // Dieselbe Sichtbarkeit wie canSeeTask: Administratorrolle, verantwortlich oder angelegt.
+        canOpen: actor.seesAll || task.isAssignee || task.createdById === actor.employeeId,
     })),
     people: await loadPersonRefs([
         parts.room.createdById,

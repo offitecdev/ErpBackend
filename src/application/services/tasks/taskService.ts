@@ -15,6 +15,7 @@ import {
     type ManualTaskStatus,
     type TaskPriority,
 } from './taskConstants';
+import { isTaskOverdue } from './taskAccess';
 import { runTasksTransaction, type TasksDb } from './taskDb';
 import { taskBadRequest, taskConflict, taskForbidden, taskNotFound } from './taskErrors';
 import { collectAttachmentRefs, readStoredFile, removeStoredFiles, storeTaskFiles } from './taskFiles';
@@ -358,7 +359,8 @@ export const createTask = async (actor: TasksActor, input: CreateTaskInput): Pro
     // Leitung wählt weitere Personen dazu; die eigene Kennung wird nicht gegen das
     // Verzeichnis geprüft (wer hier anlegt, benutzt das Modul gerade).
     const [chosenIds, labelIds, boardPosition] = await Promise.all([
-        actor.isManager
+        // Zuweisen darf nur die Administratorrolle (15.09.2026); alle anderen legen nur für sich an.
+        actor.isSystemAdmin
             ? assertAssignablePeople(actor.tenantId, (input.assigneeIds ?? []).filter((id) => id !== actor.employeeId))
             : [],
         requireTenantLabels(prisma, actor.tenantId, input.labelIds ?? []),
@@ -617,6 +619,120 @@ export const rejectTaskDeletion = async (
     return loadTaskEnvelope(actor, taskId);
 };
 
+/* ── Ortak-ekle-Anfrage (15.09.2026, Samet: «administratör olmayan kişi ortak
+   ekleme talebi yöneticiye gönderilsin, yönetici kabul etsin; tek seferde bir
+   istek ve bir kişi») ───────────────────────────────────────────────────── */
+
+const noPendingPartnerRequest = () => taskConflict('NO_PENDING_PARTNER_REQUEST', 'Es gibt keine offene Ortak-Anfrage.');
+
+const clearPartnerRequest = { partnerRequestedById: null, partnerRequestEmployeeId: null, partnerRequestedAt: null };
+
+/** Eine verantwortliche Nicht-Admin-Person schlägt GENAU EINE weitere Person vor; die Administratorrolle entscheidet. */
+export const requestTaskPartner = async (
+    actor: TasksActor,
+    taskId: string,
+    input: { employeeId: string },
+): Promise<TaskEnvelope> => {
+    const employeeId = input.employeeId;
+    await assertAssignablePeople(actor.tenantId, [employeeId]);
+    const core = await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
+        if (core.partnerRequestedById) {
+            throw taskConflict('PARTNER_ALREADY_REQUESTED', 'Für diese Aufgabe ist schon eine Ortak-Anfrage offen.');
+        }
+        if (!permissions.canRequestPartner) {
+            throw taskForbidden('PARTNER_REQUEST_FORBIDDEN', 'Eine Ortak-Anfrage stellen nur Verantwortliche einer offenen Aufgabe.');
+        }
+        if (core.assigneeIds.includes(employeeId)) {
+            throw taskBadRequest('PARTNER_ALREADY_ASSIGNED', 'Diese Person ist schon verantwortlich.', { employeeId });
+        }
+        await applyPlan(tx, actor, taskId, {
+            data: { partnerRequestedById: actor.employeeId, partnerRequestEmployeeId: employeeId, partnerRequestedAt: new Date() },
+            activity: { type: ACTIVITY.PARTNER_REQUESTED, meta: { employeeId } },
+        });
+        return core;
+    });
+    void loadPersonName(employeeId)
+        .then((personName) => notifyAdminsAfterWrite(actor, taskId, (actorName, adminIds) => ({
+            type: NOTIFY.PARTNER_REQUEST,
+            recipientIds: adminIds,
+            title: 'Ortak-Anfrage',
+            message: `${actorName} möchte ${personName} zu «${core.title}» hinzufügen.`,
+            params: { actor: actorName, person: personName, title: core.title },
+        })))
+        .catch((error: unknown) => console.warn('[tasks.notify] Ortak-Anfrage nicht vorbereitet', error));
+    return loadTaskEnvelope(actor, taskId);
+};
+
+/** Anfrage zurückziehen: wer sie gestellt hat (oder die Administratorrolle). */
+export const cancelTaskPartnerRequest = async (actor: TasksActor, taskId: string): Promise<TaskEnvelope> => {
+    await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
+        if (!core.partnerRequestedById) throw noPendingPartnerRequest();
+        if (!permissions.canCancelPartnerRequest) {
+            throw taskForbidden('PARTNER_REQUEST_CANCEL_FORBIDDEN', 'Zurückziehen darf nur, wer die Anfrage gestellt hat.');
+        }
+        await applyPlan(tx, actor, taskId, {
+            data: clearPartnerRequest,
+            activity: { type: ACTIVITY.PARTNER_REQUEST_CANCELLED, meta: { employeeId: core.partnerRequestEmployeeId } },
+        });
+    });
+    return loadTaskEnvelope(actor, taskId);
+};
+
+/** Administratorrolle nimmt die vorgeschlagene Person als Verantwortliche auf. */
+export const approveTaskPartner = async (actor: TasksActor, taskId: string): Promise<TaskEnvelope> => {
+    assertSystemAdmin(actor);
+    const result = await withLockedTask(actor, taskId, async (tx, { core }) => {
+        if (!core.partnerRequestedById || !core.partnerRequestEmployeeId) throw noPendingPartnerRequest();
+        const employeeId = core.partnerRequestEmployeeId;
+        // Die Person muss das Modul noch benutzen dürfen.
+        await assertAssignablePeople(actor.tenantId, [employeeId]);
+        const added = !core.assigneeIds.includes(employeeId);
+        if (added) await addAssignees(tx, actor.tenantId, taskId, [employeeId]);
+        await tx.task.update({ where: { id: taskId }, data: clearPartnerRequest, select: { id: true } });
+        if (added) {
+            await logTaskActivity(tx, actor.tenantId, actor.employeeId, { taskId, type: ACTIVITY.ASSIGNED, meta: { employeeId } });
+        }
+        return { core, employeeId, requesterId: core.partnerRequestedById, added };
+    });
+    notifyAfterWrite(actor, taskId, (context) => [
+        ...(result.added ? [assignedNotice(context, result.core.title, [result.employeeId])] : []),
+        {
+            type: NOTIFY.PARTNER_APPROVED,
+            recipientIds: [result.requesterId],
+            title: 'Ortak-Anfrage angenommen',
+            message: `«${result.core.title}»: die Person wurde hinzugefügt.`,
+            params: { actor: context.actor, title: result.core.title },
+        },
+    ]);
+    return loadTaskEnvelope(actor, taskId);
+};
+
+/** Administratorrolle lehnt ab: niemand kommt dazu; wer angefragt hat, erfährt es. */
+export const rejectTaskPartner = async (
+    actor: TasksActor,
+    taskId: string,
+    input: { note?: string | undefined },
+): Promise<TaskEnvelope> => {
+    assertSystemAdmin(actor);
+    const note = input.note || null;
+    const result = await withLockedTask(actor, taskId, async (tx, { core }) => {
+        if (!core.partnerRequestedById) throw noPendingPartnerRequest();
+        await applyPlan(tx, actor, taskId, {
+            data: clearPartnerRequest,
+            activity: { type: ACTIVITY.PARTNER_REJECTED, meta: { employeeId: core.partnerRequestEmployeeId, note } },
+        });
+        return { title: core.title, requesterId: core.partnerRequestedById };
+    });
+    notifyAfterWrite(actor, taskId, (context) => [{
+        type: NOTIFY.PARTNER_REJECTED,
+        recipientIds: [result.requesterId],
+        title: 'Ortak-Anfrage abgelehnt',
+        message: note ? `«${result.title}»: ${note}` : `«${result.title}»: niemand wurde hinzugefügt.`,
+        params: { actor: context.actor, title: result.title, note },
+    }]);
+    return loadTaskEnvelope(actor, taskId);
+};
+
 /* ── Duplizieren ────────────────────────────────────────────────────────── */
 
 interface AttachmentSource {
@@ -689,8 +805,8 @@ export const duplicateTask = async (
 ): Promise<TaskEnvelope> => {
     assertManager(actor);
     const { tenantId } = actor;
-    const source = await loadTaskCore(prisma, tenantId, taskId);
-    if (!source) throw taskNotFound();
+    // Nur eine sichtbare Aufgabe (Nicht-Admins: eigene) — 404/403 wie überall.
+    const { core: source } = await requireVisibleTask(prisma, actor, taskId);
 
     const [people, checklists, items, attachments, content, boardPosition] = await Promise.all([
         getTasksPeople(tenantId),
@@ -717,7 +833,9 @@ export const duplicateTask = async (
     const copies = await copyAttachmentFiles(tenantId, attachments);
     const newTaskId = nanoid(12);
     const title = input.title || `${source.title} (kopya)`.slice(0, TASK_LIMITS.titleMax);
-    const assigneeIds = source.assigneeIds.filter((id) => people.has(id));
+    // Die Kopie einer Nicht-Admin-Person gehört nur ihr: zuweisen darf nur die Administratorrolle.
+    const assigneeIds = actor.isSystemAdmin ? source.assigneeIds.filter((id) => people.has(id)) : [actor.employeeId];
+    const assigneeSet = new Set(assigneeIds);
     const checklistCopies = checklists.map((list) => ({ ...list, sourceId: list.id, id: nanoid(12) }));
     const checklistIds = new Map(checklistCopies.map((copy): [string, string] => [copy.sourceId, copy.id]));
     const attachmentIds = new Map(copies.map((copy): [string, string] => [copy.sourceId, copy.id]));
@@ -731,7 +849,7 @@ export const duplicateTask = async (
             checklistId,
             text: item.text,
             position: item.position,
-            assigneeId: item.assigneeId && people.has(item.assigneeId) ? item.assigneeId : null,
+            assigneeId: item.assigneeId && assigneeSet.has(item.assigneeId) ? item.assigneeId : null,
             dueAt: item.dueAt,
             reminderAt: item.reminderAt,
             flagged: item.flagged,
@@ -867,13 +985,18 @@ export const blockTask = async (
 
 /* ── Abschlussanfrage ───────────────────────────────────────────────────── */
 
-/** Eine verantwortliche Person meldet «fertig»: ihre Messung endet, die Leitung entscheidet. */
+/**
+ * Eine verantwortliche Person meldet «fertig»: ihre Messung endet, die Leitung entscheidet.
+ * Ist der Termin überschritten, geht das NUR mit Gecikme açıklaması (15.09.2026, Samet) —
+ * sie bleibt an der Aufgabe stehen, auch nach der Entscheidung.
+ */
 export const requestTaskCompletion = async (
     actor: TasksActor,
     taskId: string,
-    input: { note?: string | undefined },
+    input: { note?: string | undefined; delayReason?: string | undefined },
 ): Promise<TaskEnvelope> => {
     const note = input.note || null;
+    const delayReason = input.delayReason?.trim() || null;
     const core = await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
         if (core.approvalState === 'PENDING') {
             throw taskConflict('COMPLETION_ALREADY_REQUESTED', 'Der Abschluss ist bereits beantragt.');
@@ -881,9 +1004,15 @@ export const requestTaskCompletion = async (
         if (!permissions.canRequestCompletion) {
             throw taskForbidden('COMPLETION_REQUEST_FORBIDDEN', 'Den Abschluss beantragen Verantwortliche oder die Leitung einer offenen Aufgabe.');
         }
+        const now = new Date();
+        const overdue = isTaskOverdue(core, now);
+        if (overdue && !delayReason) {
+            throw taskBadRequest('DELAY_REASON_REQUIRED', 'Die Aufgabe ist überfällig — bitte den Verzug kurz erklären.');
+        }
         await applyPlan(tx, actor, taskId, {
             closeSessions: { note: 'COMPLETION_REQUESTED', employeeIds: [actor.employeeId] },
             data: {
+                ...(overdue && delayReason ? { delayReason, delayReasonById: actor.employeeId, delayReasonAt: now } : {}),
                 approvalState: 'PENDING',
                 approvalRequestedById: actor.employeeId,
                 approvalRequestedAt: new Date(),
@@ -893,7 +1022,7 @@ export const requestTaskCompletion = async (
                 approvalDecisionNote: null,
                 status: 'REVIEW',
             },
-            activity: { type: ACTIVITY.COMPLETION_REQUESTED, meta: { note } },
+            activity: { type: ACTIVITY.COMPLETION_REQUESTED, meta: overdue ? { note, delayReason } : { note } },
         });
         return core;
     });
@@ -1045,7 +1174,8 @@ export const setTaskAssignees = async (
     taskId: string,
     input: { employeeIds: readonly string[] },
 ): Promise<TaskEnvelope> => {
-    assertManager(actor);
+    // Nur die Administratorrolle (15.09.2026, Samet: «görev atama sadece yönetici yapabilir»).
+    assertSystemAdmin(actor);
     const wanted = [...new Set(input.employeeIds)];
     const { core, added } = await withLockedTask(actor, taskId, async (tx, { core }) => {
         const current = new Set(core.assigneeIds);

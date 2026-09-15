@@ -92,6 +92,7 @@ const getTasksSummary = async (actor) => {
                 COALESCE(SUM(CASE WHEN t.reviewState = 'PENDING'
                     ${actor.isSystemAdmin ? client_1.Prisma.sql `OR t.approvalState = 'PENDING'` : client_1.Prisma.empty}
                     ${actor.canDelete ? client_1.Prisma.sql `OR t.deleteRequestedAt IS NOT NULL` : client_1.Prisma.empty}
+                    ${actor.isSystemAdmin ? client_1.Prisma.sql `OR t.partnerRequestedAt IS NOT NULL` : client_1.Prisma.empty}
                     THEN 1 ELSE 0 END), 0) AS pendingCount
             FROM Task t
             WHERE ${(0, taskRows_1.visibleTasksSql)(actor)}
@@ -286,8 +287,9 @@ const listTaskApprovals = async (actor) => {
     const managerPart = actor.isSystemAdmin ? client_1.Prisma.sql `t.reviewState = 'PENDING'` : client_1.Prisma.sql `FALSE`;
     const completionPart = actor.isSystemAdmin ? client_1.Prisma.sql `OR t.approvalState = 'PENDING'` : client_1.Prisma.empty;
     const deletePart = actor.canDelete ? client_1.Prisma.sql `OR t.deleteRequestedAt IS NOT NULL` : client_1.Prisma.empty;
+    const partnerPart = actor.isSystemAdmin ? client_1.Prisma.sql `OR t.partnerRequestedAt IS NOT NULL` : client_1.Prisma.empty;
     const cores = await (0, taskRows_1.fetchTaskCores)(prisma_client_1.default, {
-        where: client_1.Prisma.sql `${(0, taskRows_1.visibleTasksSql)(actor)} AND (${managerPart} ${completionPart} ${deletePart})`,
+        where: client_1.Prisma.sql `${(0, taskRows_1.visibleTasksSql)(actor)} AND (${managerPart} ${completionPart} ${deletePart} ${partnerPart})`,
     });
     const { running, people } = await loadRunningSessionsAndPeople(actor, cores);
     const toCard = (core) => (0, taskRows_1.toTaskDetailDto)(core, actor, running.get(core.id) ?? [], now);
@@ -295,6 +297,7 @@ const listTaskApprovals = async (actor) => {
         completionRequests: actor.isSystemAdmin ? cores.filter((core) => core.approvalState === 'PENDING').map(toCard) : [],
         reviewRequests: actor.isSystemAdmin ? cores.filter((core) => core.reviewState === 'PENDING').map(toCard) : [],
         deleteRequests: actor.canDelete ? cores.filter((core) => core.deleteRequestedById).map(toCard) : [],
+        partnerRequests: actor.isSystemAdmin ? cores.filter((core) => core.partnerRequestedById).map(toCard) : [],
         people,
         serverNow: now,
     };

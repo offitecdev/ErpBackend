@@ -80,6 +80,12 @@ export interface TaskCore {
     deleteRequestedById: string | null;
     deleteRequestedAt: Date | null;
     deleteRequestNote: string | null;
+    partnerRequestedById: string | null;
+    partnerRequestEmployeeId: string | null;
+    partnerRequestedAt: Date | null;
+    delayReason: string | null;
+    delayReasonById: string | null;
+    delayReasonAt: Date | null;
     boardPosition: number;
     createdById: string;
     createdAt: Date;
@@ -104,6 +110,8 @@ export const TASK_CORE_COLUMNS = Prisma.sql`
     t.approvalDecidedById, t.approvalDecidedAt, t.approvalDecisionNote,
     t.reviewState, t.reviewRequestedById, t.reviewRequestedAt, t.reviewDecidedById,
     t.reviewDecidedAt, t.reviewNote, t.deleteRequestedById, t.deleteRequestedAt, t.deleteRequestNote,
+    t.partnerRequestedById, t.partnerRequestEmployeeId, t.partnerRequestedAt,
+    t.delayReason, t.delayReasonById, t.delayReasonAt,
     t.boardPosition, t.createdById, t.createdAt, t.updatedAt,
     (SELECT GROUP_CONCAT(ta.employeeId ORDER BY ta.createdAt, ta.id SEPARATOR ',')
        FROM TaskAssignee ta WHERE ta.taskId = t.id) AS assigneeCsv,
@@ -148,6 +156,12 @@ export const mapTaskCore = (row: Record<string, unknown>): TaskCore => ({
     deleteRequestedById: rawString(row.deleteRequestedById),
     deleteRequestedAt: rawDate(row.deleteRequestedAt),
     deleteRequestNote: rawString(row.deleteRequestNote),
+    partnerRequestedById: rawString(row.partnerRequestedById),
+    partnerRequestEmployeeId: rawString(row.partnerRequestEmployeeId),
+    partnerRequestedAt: rawDate(row.partnerRequestedAt),
+    delayReason: rawString(row.delayReason),
+    delayReasonById: rawString(row.delayReasonById),
+    delayReasonAt: rawDate(row.delayReasonAt),
     boardPosition: rawNumber(row.boardPosition),
     createdById: String(row.createdById ?? ''),
     createdAt: rawDate(row.createdAt) ?? new Date(0),
@@ -202,7 +216,11 @@ export const lockTaskRow = async (tx: TasksDb, tenantId: string, taskId: string)
     return rows.length > 0;
 };
 
-/** Sichtbarkeitsbedingung eines Teammitglieds über `t` (verantwortlich ODER angelegt). */
+/**
+ * Sichtbarkeitsbedingung einer Nicht-Admin-Person über `t`: zugewiesen ODER
+ * selbst angelegt (15.09.2026, Samet: «yönetici olmadığım sürece sadece bana
+ * atanan ve benim oluşturduğum görevleri görebilmeliyim»).
+ */
 export const memberVisibilitySql = (employeeId: string): Prisma.Sql => Prisma.sql`(
     t.createdById = ${employeeId}
     OR EXISTS (SELECT 1 FROM TaskAssignee va WHERE va.taskId = t.id AND va.employeeId = ${employeeId})
@@ -281,6 +299,8 @@ export interface TaskRowDto {
     blockReason: string | null;
     /** Wer das Löschen beantragt hat (null = keine offene Anfrage). */
     deleteRequestedById: string | null;
+    /** Liegt eine Gecikme açıklaması vor? (Text nur im Detail.) */
+    hasDelayReason: boolean;
     assigneeIds: string[];
     labelIds: string[];
     checklist: { done: number; total: number };
@@ -326,6 +346,7 @@ export const toTaskRowDto = (
         reviewState: core.reviewState,
         blockReason: core.blockReason,
         deleteRequestedById: core.deleteRequestedById,
+        hasDelayReason: Boolean(core.delayReason),
         assigneeIds: core.assigneeIds,
         labelIds: core.labelIds,
         checklist: { done: core.checkDone, total: core.checkTotal },
@@ -381,6 +402,18 @@ export interface TaskDetailDto extends TaskRowDto {
         requestedAt: Date | null;
         note: string | null;
     };
+    /** Offene Ortak-ekle-Anfrage: wer beantragt, welche EINE Person (requestedById null = keine). */
+    partnerRequest: {
+        requestedById: string | null;
+        employeeId: string | null;
+        requestedAt: Date | null;
+    };
+    /** Gecikme açıklaması der verspätet fertig gemeldeten Aufgabe (reason null = keine). */
+    delay: {
+        reason: string | null;
+        byId: string | null;
+        at: Date | null;
+    };
 }
 
 export const toTaskDetailDto = (
@@ -414,6 +447,16 @@ export const toTaskDetailDto = (
         requestedAt: core.deleteRequestedAt,
         note: core.deleteRequestNote,
     },
+    partnerRequest: {
+        requestedById: core.partnerRequestedById,
+        employeeId: core.partnerRequestEmployeeId,
+        requestedAt: core.partnerRequestedAt,
+    },
+    delay: {
+        reason: core.delayReason,
+        byId: core.delayReasonById,
+        at: core.delayReasonAt,
+    },
 });
 
 /** Alle Personenkennungen, die eine Aufgabenausgabe nennt (für die `people`-Karte). */
@@ -425,6 +468,9 @@ export const taskPeopleIds = (core: TaskCore, running: readonly RunningSessionRe
     ...(core.reviewRequestedById ? [core.reviewRequestedById] : []),
     ...(core.reviewDecidedById ? [core.reviewDecidedById] : []),
     ...(core.deleteRequestedById ? [core.deleteRequestedById] : []),
+    ...(core.partnerRequestedById ? [core.partnerRequestedById] : []),
+    ...(core.partnerRequestEmployeeId ? [core.partnerRequestEmployeeId] : []),
+    ...(core.delayReasonById ? [core.delayReasonById] : []),
     ...running.map((session) => session.employeeId),
 ];
 
@@ -450,6 +496,7 @@ export interface TaskListRowDto {
     reviewState: string;
     blockReason: string | null;
     deleteRequestedById: string | null;
+    hasDelayReason: boolean;
     assigneeIds: string[];
     labelIds: string[];
     checklist: { done: number; total: number };
@@ -473,6 +520,7 @@ const ownSessionsSql = (actor: TasksActor): Prisma.Sql =>
 const taskListColumns = (actor: TasksActor, day: DayWindow) => Prisma.sql`
     t.id, t.title, t.status, t.flagged, t.startAt, t.dueAt, t.completedAt, t.createdById,
     t.approvalState, t.reviewState, t.blockReason, t.deleteRequestedById,
+    (t.delayReason IS NOT NULL) AS hasDelayReason,
     (SELECT GROUP_CONCAT(ta.employeeId ORDER BY ta.createdAt, ta.id SEPARATOR ',')
        FROM TaskAssignee ta WHERE ta.taskId = t.id) AS assigneeCsv,
     (SELECT GROUP_CONCAT(tl.labelId ORDER BY tl.createdAt, tl.id SEPARATOR ',')
@@ -541,6 +589,7 @@ export const fetchTaskListRows = async (
             reviewState: String(row.reviewState ?? 'APPROVED'),
             blockReason: rawString(row.blockReason),
             deleteRequestedById: rawString(row.deleteRequestedById),
+            hasDelayReason: rawBool(row.hasDelayReason),
             assigneeIds,
             labelIds: rawCsv(row.labelCsv),
             checklist: { done: checkDone, total: checkTotal },

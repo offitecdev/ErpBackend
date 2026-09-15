@@ -23,10 +23,10 @@ const resolveTasksActor = async (employeeId, tenantId) => {
     const canView = isManager || has(taskConstants_1.TASKS_PERMISSIONS.view);
     if (!canView)
         return null;
-    /* ALLE AUFGABEN SEHEN (13.09.2026, Samet: «yönetici tüm görevleri görebilmeli,
-       Administrator tüm görevleri görebilmeli»): Leitung UND Administratorrolle.
-       Teammitglieder sehen weiter nur Zugewiesenes und selbst Angelegtes. */
-    return { employeeId, tenantId, isManager, canDelete, seesAll: isManager, isSystemAdmin };
+    /* ALLE AUFGABEN SEHEN — NUR DIE ADMINISTRATORROLLE (15.09.2026, Samet:
+       «administratör rolü olmadığı sürece, mühendis ya da diğer roller sadece
+       kendisine atanan görevi görebilmeli»). Supersedes 13.09 (Leitung sah alles). */
+    return { employeeId, tenantId, isManager, canDelete, seesAll: isSystemAdmin, isSystemAdmin };
 };
 exports.resolveTasksActor = resolveTasksActor;
 const assertManager = (actor) => {

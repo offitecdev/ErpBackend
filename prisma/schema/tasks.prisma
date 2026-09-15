@@ -59,6 +59,16 @@ model Task {
   deleteRequestedById   String?
   deleteRequestedAt     DateTime?
   deleteRequestNote     String?   @db.Text
+  /// Ortak-ekle-Anfrage einer Nicht-Admin-Person: genau EINE Person je offener Anfrage;
+  /// die Administratorrolle nimmt sie als Verantwortliche auf oder lehnt ab (15.09.2026).
+  partnerRequestedById  String?
+  partnerRequestEmployeeId String?
+  partnerRequestedAt    DateTime?
+  /// Gecikme açıklaması: wer eine überfällige Aufgabe als fertig meldet, MUSS den Verzug
+  /// kurz erklären; bleibt nach der Entscheidung stehen (Administrator sieht es, 15.09.2026).
+  delayReason           String?   @db.Text
+  delayReasonById       String?
+  delayReasonAt         DateTime?
   /// Reihenfolge auf der Pano (Kanban), aufsteigend je Statusspalte.
   boardPosition         Float     @default(0)
   createdById           String
@@ -82,6 +92,7 @@ model Task {
   @@index([tenantId, status, boardPosition])
   @@index([tenantId, createdById])
   @@index([tenantId, deleteRequestedAt])
+  @@index([tenantId, partnerRequestedAt])
   @@index([reminderAt])
 }
 
@@ -381,4 +392,36 @@ model TaskUserSetting {
   onboardingDoneVersion String?  @db.VarChar(40)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+}
+
+/// Gün sonu raporu (14.09.2026, Samet): hafta içi 16:00'da madde madde
+/// «bugün ne yaptım». `reportDate` = Kalendertag des Browsers (YYYY-MM-DD).
+/// `items` = JSON string[]; `taskTimes` = JSON [{ taskId, title, ms }] — beim
+/// Speichern aus den Messungen des Tages kopiert. Wochenrapport = Summe.
+model TaskDailyReport {
+  id          String   @id
+  tenantId    String
+  employeeId  String
+  reportDate  String   @db.VarChar(10)
+  items       String   @db.Text
+  taskTimes   String   @db.Text
+  totalMs     BigInt   @default(0)
+  submittedAt DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, employeeId, reportDate])
+}
+
+/// Gün sonu raporu — firmenweite Einstellung (15.09.2026, Samet: «16:00'ı modül
+/// ayarlarından değiştirebilelim»). `promptTime` = «HH:MM» Browserzeit, ab der
+/// das Fenster Montag–Freitag erscheint; `endTime` = bis wann der Rapport
+/// geschrieben werden kann (15.09.2026: «16.00–17.00 arası aktif»). Keine Zeile = 16:00–17:00.
+model TaskDailyReportSetting {
+  id         String   @id
+  tenantId   String   @unique
+  promptTime String   @default("16:00") @db.VarChar(5)
+  endTime    String   @default("17:00") @db.VarChar(5)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
