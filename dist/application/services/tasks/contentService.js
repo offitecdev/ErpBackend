@@ -11,6 +11,7 @@ const taskHttp_1 = require("../../../presentation/routes/tasks/taskHttp");
 const inlineHtml_1 = require("../../../shared/inlineHtml");
 const taskConstants_1 = require("./taskConstants");
 const taskErrors_1 = require("./taskErrors");
+const taskFiles_1 = require("./taskFiles");
 const taskParts_1 = require("./taskParts");
 const taskRows_1 = require("./taskRows");
 const BLOCK_ID_RE = new RegExp(`^[A-Za-z0-9_-]{1,${taskConstants_1.TASK_LIMITS.blockIdMax}}$`);
@@ -79,6 +80,32 @@ const tableMeta = (meta) => {
         out.cellVAlign = valign;
     return out;
 };
+const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+const round4 = (value) => Math.round(value * 10_000) / 10_000;
+const IMAGE_CROP_MIN = 0.02;
+/**
+ * Bild (15.09.2026, Samet: «tutup küçültüp büyütme, kırpma»): `width` = Anzeigebreite
+ * in px, `crop` = sichtbarer Ausschnitt in Anteilen des Originals (0–1), `ratio` =
+ * Breite/Höhe des Originals (für den Rahmen des Ausschnitts). Die Datei bleibt unberührt.
+ */
+const imageMeta = (attId, meta) => {
+    const out = { attId };
+    if (isFiniteNumber(meta.width))
+        out.width = Math.round(Math.min(4000, Math.max(40, meta.width)));
+    const crop = isRecord(meta.crop) ? meta.crop : null;
+    if (crop && [crop.x, crop.y, crop.w, crop.h].every(isFiniteNumber)) {
+        const x = Math.min(1, Math.max(0, crop.x));
+        const y = Math.min(1, Math.max(0, crop.y));
+        const w = Math.min(1 - x, crop.w);
+        const h = Math.min(1 - y, crop.h);
+        const partial = x > 0 || y > 0 || w < 1 || h < 1;
+        if (w >= IMAGE_CROP_MIN && h >= IMAGE_CROP_MIN && partial)
+            out.crop = { x: round4(x), y: round4(y), w: round4(w), h: round4(h) };
+    }
+    if (isFiniteNumber(meta.ratio) && meta.ratio > 0.01 && meta.ratio < 100)
+        out.ratio = round4(meta.ratio);
+    return out;
+};
 /** Text und `meta` eines Blocks nach seiner Art; null = der Block fällt weg. */
 const blockBody = (type, raw, rules) => {
     const meta = isRecord(raw.meta) ? raw.meta : {};
@@ -98,7 +125,10 @@ const blockBody = (type, raw, rules) => {
             const groupId = meta.groupId;
             return typeof groupId === 'string' && rules.checklistIds.has(groupId) ? { text: '', meta: { groupId } } : null;
         }
-        case 'image':
+        case 'image': {
+            const attId = meta.attId;
+            return typeof attId === 'string' && rules.attachmentIds.has(attId) ? { text: '', meta: imageMeta(attId, meta) } : null;
+        }
         case 'file': {
             const attId = meta.attId;
             return typeof attId === 'string' && rules.attachmentIds.has(attId) ? { text: '', meta: { attId } } : null;
@@ -286,7 +316,32 @@ const saveTaskContent = async (actor, taskId, input) => {
         storedBlockTypes: new Map(current.blocks.map((block) => [block.id, block.type])),
         isManager: actor.isManager,
     });
-    return { content: await (0, exports.writeTaskContent)(prisma_client_1.default, actor, taskId, current, blocks) };
+    const content = await (0, exports.writeTaskContent)(prisma_client_1.default, actor, taskId, current, blocks);
+    // Erst nach dem Schreiben (Versionsschloss bestanden): `current` ist dann genau der ersetzte Stand.
+    await removeDroppedBlockAttachments(actor.tenantId, taskId, current.blocks, blocks);
+    return { content };
 };
 exports.saveTaskContent = saveTaskContent;
+const blockAttachmentIds = (blocks) => new Set(blocks
+    .filter((block) => block.type === 'image' || block.type === 'file')
+    .map((block) => block.meta.attId)
+    .filter((attId) => typeof attId === 'string'));
+/**
+ * Bild- und Dateiblöcke, die aus dem Inhalt gelöscht wurden, nehmen ihre Datei
+ * mit (Samet 15.09.2026: eingefügt und im Editor gelöscht = auch aus «Dosyalar»
+ * weg). Nur Dateien, auf die der ALTE Stand zeigte und der neue nicht mehr —
+ * im Reiter «Dosyalar» hochgeladene Dateien stehen in keinem Block und bleiben.
+ */
+const removeDroppedBlockAttachments = async (tenantId, taskId, before, after) => {
+    const kept = blockAttachmentIds(after);
+    const dropped = [...blockAttachmentIds(before)].filter((id) => !kept.has(id));
+    if (!dropped.length)
+        return;
+    const where = { tenantId, taskId, kind: 'TASK', id: { in: dropped } };
+    const refs = await (0, taskFiles_1.collectAttachmentRefs)(prisma_client_1.default, where);
+    if (!refs.length)
+        return;
+    await prisma_client_1.default.taskAttachment.deleteMany({ where });
+    await (0, taskFiles_1.removeStoredFiles)(refs);
+};
 //# sourceMappingURL=contentService.js.map

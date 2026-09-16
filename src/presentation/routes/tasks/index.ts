@@ -8,6 +8,7 @@ import attachmentsRouter from './attachments.routes';
 import chatRouter from './chat.routes';
 import commentsRouter from './comments.routes';
 import contentRouter from './content.routes';
+import issuesRouter from './issues.routes';
 import dailyReportsRouter from './dailyReports.routes';
 import labelsRouter from './labels.routes';
 import liveRouter from './live.routes';
@@ -40,6 +41,7 @@ import tasksRouter from './tasks.routes';
  *   /chat                         Räume, Mitglieder, Nachrichten, Lesestand
  *   /attachments/:id[/content]    Dateien ausliefern / löschen; /:taskId/attachments
  *   /comments/:id; /:taskId/comments
+ *   /issues/:id…; /:taskId/issues        «Sorular & Sorunlar» der Aufgabe
  *   /checklists…, /checklist-items…; /:taskId/content, /:taskId/checklists
  *   /bootstrap, /summary, /approvals, /timer/…, / und /:taskId…  (Aufgaben)
  */
@@ -78,6 +80,7 @@ router.use('/daily-reports', dailyReportsRouter);
 router.use('/chat', chatRouter);
 router.use('/', attachmentsRouter);
 router.use('/', commentsRouter);
+router.use('/', issuesRouter);
 router.use('/', contentRouter);
 router.use('/', tasksRouter);
 

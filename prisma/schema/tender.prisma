@@ -106,6 +106,18 @@ model Tender {
   cancelledAt           DateTime?
   cancelledById         String?
   cancelReason          String?               @db.Text
+  // ── ZURÜCK IN DEN ENTWURF (16.09.2026) ──────────────────────────────────
+  // Wird ein Auftrag zurückgesetzt, verschwindet er samt AB-Nummer. Damit
+  // niemand vergisst, welche Offerte es war, trägt die Offerte die Spur:
+  // die frühere AB-Nummer (Liste + Suche), wann und von wem, und das PROJEKT,
+  // das auf sie wartet. `projectId` bleibt dabei leer — es bedeutet
+  // «in Auftrag gegeben» und würde den Entwurf in der Liste als Auftrag zeigen.
+  // Wird die Offerte wieder erteilt, leeren sich die vier Felder, und der
+  // Auftrag landet im wartenden Projekt statt in einem neuen.
+  revertedOrderNumber   String?
+  revertedAt            DateTime?
+  revertedById          String?
+  revertedProjectId     String?
   // Kopya (CC) alıcıları — takvimdeki Appointment/MeetingActivity ile AYNI
   // biçim: JSON dizi (["planer@firma.ch"]). Teklifin bütün müşteri mailleri
   // (teklif maili ve otomatik sipariş bildirimi) bu listeyi CC'ler; alıcı (To)
@@ -134,6 +146,7 @@ model Tender {
   @@index([tenantId, createdAt])
   @@index([tenantId, tenderNumber])
   @@index([tenantId, legacyNumber])
+  @@index([tenantId, revertedProjectId])
 }
 
 model Position {
@@ -313,6 +326,29 @@ model TenderTextTemplate {
   updatedAt DateTime @updatedAt
 
   @@index([tenantId])
+}
+
+/// STAND BEIM AUFTRAG (16.09.2026): geht ein Auftrag zurück in den Entwurf,
+/// wird die Offerte danach geändert — der Stand, auf dem die verschickte AB
+/// beruhte, bliebe sonst nirgends. Dieser Schnappschuss hält ihn fest:
+/// Positionen und Summen, wie sie beim Zurücksetzen waren, mit der
+/// Offertversion und der AB-Nummer. Wird nie geändert und nie gelöscht.
+model TenderSnapshot {
+  id          String   @id
+  tenantId    String
+  tenderId    String
+  version     Int
+  orderNumber String?
+  /// Anlass — heute nur ORDER_REVERTED.
+  reason      String   @db.VarChar(32)
+  /// [{positionNumber, shortDescription, longDescription, rowType, hierarchyLevel, quantity, unit, unitPrice, discount}]
+  positions   Json
+  /// {orderTotal, currency, totalDiscounts, directDiscount, extraDiscount}
+  totals      Json
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId, tenderId])
 }
 
 model TenderActivityLog {

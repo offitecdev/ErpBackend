@@ -20,6 +20,7 @@ import {
     uncancelSalesOrderWithin,
 } from '../../shared/documentLifecycle';
 import { buildAppointmentCancellation, queueAppointmentCancellation } from '../../infrastructure/services/calendarMailService';
+import { billingTargetsForGroup } from '../../shared/minderung';
 
 const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository());
 
@@ -86,6 +87,58 @@ export const collectFamilyAppointmentCancellations = async (familyIds: string[],
         select: { id: true },
     });
     return Promise.all(rows.map((row: any) => buildAppointmentCancellation(row.id).catch(() => null)));
+};
+
+/**
+ * ZURÜCK IN DEN ENTWURF — der ganze Ablauf an EINER Stelle, weil ihn die
+ * Auftragsansicht und die Projektseite beide anbieten (16.09.2026).
+ *
+ * Mit einer Offerte bleiben die angesetzten Termine STEHEN (geparkt im
+ * Projekt) — es gibt nichts abzusagen. Nur ein Auftrag OHNE Offerte nimmt sie
+ * noch mit; dann werden die Absagen eingesammelt, solange die Zeilen noch da
+ * sind, und erst nach dem erfolgreichen Zurücksetzen verschickt. Danach
+ * erfährt es die Kundenchronik — dort sucht man später, wohin die AB-Nummer
+ * verschwunden ist.
+ */
+export const revertOrderToDraft = async (order: any, tenantId: string, employeeId: string) => {
+    const lifecycle = await readSalesOrderLifecycle(prisma as any, order, tenantId);
+    assertSalesOrderRevertible(lifecycle);
+
+    const cancellations = order.tenderId
+        ? []
+        : await collectFamilyAppointmentCancellations(lifecycle.familyIds, tenantId);
+
+    const result = await (prisma as any).$transaction(async (tx: any) => revertSalesOrderToDraftWithin(tx, {
+        order,
+        tenantId,
+        employeeId,
+        lifecycle,
+    }));
+
+    for (const cancellation of cancellations) {
+        queueAppointmentCancellation(cancellation, employeeId);
+    }
+
+    // Ein Fehler in der Chronik nimmt das Zurücksetzen nicht zurück.
+    if (order.customerId) {
+        try {
+            await (prisma as any).customerActivity.create({
+                data: {
+                    id: nanoid(10),
+                    customerId: order.customerId,
+                    employeeId,
+                    activityType: 'SALES_ORDER_REVERTED',
+                    description: `${order.orderNumber} zurueck in den Entwurf.`,
+                    referenceId: result.tenderId || order.id,
+                    activityDate: new Date(),
+                },
+            });
+        } catch (activityError) {
+            console.warn('[revertToDraft] Kundenchronik nicht geschrieben:', activityError);
+        }
+    }
+
+    return result;
 };
 
 type OrderMode = 'PROJECT_NEW' | 'PROJECT_EXISTING' | 'INVOICE';
@@ -325,13 +378,9 @@ export class SalesOrderController {
                 }),
             ]);
 
-            const targets = orders.flatMap((order: any) => [
-                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0) },
-                ...(order.addonSalesOrders || []).map((addon: any) => ({
-                    salesOrderId: addon.id,
-                    baseAmount: Number(addon.totalAmount || 0),
-                })),
-            ]);
+            // Minderungen senken die Grundlage ihres Hauptauftrags und werden
+            // selbst nicht verrechnet (16.09.2026).
+            const targets = orders.flatMap((order: any) => billingTargetsForGroup(order, order.addonSalesOrders));
             const summaries = summariesFromInvoices(targets, invoiceRows);
 
             const enriched = orders.map((order: any) => ({
@@ -415,14 +464,13 @@ export class SalesOrderController {
 
             if (!order) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
 
-            const summaries = await safeBatchSummaries(tenantId, [
-                { salesOrderId: order.id, baseAmount: Number(order.totalAmount || 0), paymentStages: order.paymentStages ?? null },
-                ...(order.addonSalesOrders || []).map((addon: any) => ({
-                    salesOrderId: addon.id,
-                    baseAmount: Number(addon.totalAmount || 0),
-                    paymentStages: addon.paymentStages ?? null,
-                })),
-            ]);
+            const summaries = await safeBatchSummaries(
+                tenantId,
+                order.parentSalesOrderId
+                    // Ein Nachtrag für sich: Minderung = Grundlage 0.
+                    ? billingTargetsForGroup({ ...order, totalAmount: Number(order.totalAmount || 0) < 0 ? 0 : order.totalAmount }, [], true)
+                    : billingTargetsForGroup(order, order.addonSalesOrders, true),
+            );
             const billingSummary = summaries.get(order.id) ?? null;
             const addonSalesOrders = (order.addonSalesOrders || []).map((addon: any) => ({
                 ...addon,
@@ -514,26 +562,7 @@ export class SalesOrderController {
             const order: any = await (prisma as any).salesOrder.findFirst({ where: { id, tenantId } });
             if (!order) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
 
-            const lifecycle = await readSalesOrderLifecycle(prisma as any, order, tenantId);
-            assertSalesOrderRevertible(lifecycle);
-
-            // Mit dem Auftrag fallen seine angesetzten Termine. Die Absagen
-            // werden EINGESAMMELT, solange die Zeilen noch da sind, und erst
-            // nach dem erfolgreichen Zuruecksetzen verschickt — sonst stuende
-            // der Termin weiter in fremden Kalendern (derselbe Weg wie beim
-            // Loeschen eines einzelnen Termins).
-            const cancellations = await collectFamilyAppointmentCancellations(lifecycle.familyIds, tenantId);
-
-            const result = await (prisma as any).$transaction(async (tx: any) => revertSalesOrderToDraftWithin(tx, {
-                order,
-                tenantId,
-                employeeId: req.user!.id,
-                lifecycle,
-            }));
-
-            for (const cancellation of cancellations) {
-                queueAppointmentCancellation(cancellation, req.user!.id);
-            }
+            const result = await revertOrderToDraft(order, tenantId, req.user!.id);
 
             // `tenderId` ist der Weg zurück: dort steht der Entwurf, den jemand
             // gerade wieder bearbeiten will. `projectReverted` sagt, dass das
@@ -854,6 +883,25 @@ export class SalesOrderController {
                         orderBy: { startTime: 'asc' },
                         include: { technicianAssignments: true },
                     });
+                }
+
+                // DAS WARTENDE PROJEKT (16.09.2026): ging der frühere Auftrag
+                // dieser Offerte «zurück in den Entwurf», steht sein Projekt als
+                // Planung da. «Neues Projekt» heisst dann: DIESES Projekt — mit
+                // seiner Nummer, seinen Rapporten und geparkten Terminen — statt
+                // eines zweiten. Ein inzwischen storniertes Projekt zählt nicht.
+                let reusedWaitingProject = false;
+                if (mode === 'PROJECT_NEW' && tender.revertedProjectId) {
+                    const waiting = await (tx as any).project.findFirst({
+                        where: { id: tender.revertedProjectId, tenantId, NOT: { status: 'CANCELLED' } },
+                    });
+                    if (waiting) {
+                        project = waiting;
+                        reusedWaitingProject = true;
+                    }
+                }
+
+                if (mode === 'PROJECT_NEW' && !project) {
                     // Projenin ADI KODUDUR (PR-2026-10001) ve sayaç kaldığı yerden
                     // devam eder. Eskiden teklif kodu (A-2026-5980) ada
                     // kopyalanıyordu; proje listesinde ad sütunu teklif
@@ -885,6 +933,33 @@ export class SalesOrderController {
                     });
                     if (!project) throw new Error('Proje bulunamadi.');
                 }
+
+                // Eine PLANUNG, die einen Auftrag bekommt, läuft wieder. Das
+                // wartende Projekt nimmt ausserdem seine Offerte zurück, sofern
+                // kein anderes Projekt sie trägt (`Project.tenderId` ist eindeutig).
+                if (project && (project.status === 'AWAITING_APPROVAL' || (reusedWaitingProject && !project.tenderId))) {
+                    const data: Record<string, unknown> = {};
+                    if (project.status === 'AWAITING_APPROVAL') data.status = 'ACTIVE';
+                    if (reusedWaitingProject && !project.tenderId) {
+                        const holder = await (tx as any).project.findFirst({
+                            where: { tenderId, NOT: { id: project.id } },
+                            select: { id: true },
+                        });
+                        if (!holder) data.tenderId = tenderId;
+                    }
+                    if (Object.keys(data).length) {
+                        project = await (tx as any).project.update({ where: { id: project.id }, data });
+                    }
+                }
+
+                // GEPARKTE TERMINE: was beim Zurücksetzen dieser Offerte im
+                // selben Projekt stehen blieb, gehört zum neuen Auftrag. Gibt es
+                // sie, sind sie der Plan — die Offert-Slots würden ihn doppeln.
+                const parkedAppointments: Array<{ id: string }> = await (tx as any).appointment.findMany({
+                    where: { tenantId, detachedFromTenderId: tenderId, projectId: project?.id ?? null },
+                    select: { id: true },
+                });
+                if (parkedAppointments.length) scheduleSlots = [];
 
                 // Sipariş kodu teklifin kodunu AYNEN izler (kullanıcı isteği):
                 // AN-2026-10007 → AB-2026-10007. Yıl ve sıra tekliften kopyalanır,
@@ -932,11 +1007,20 @@ export class SalesOrderController {
                         orderType: mode,
                         status: 'ORDERED',
                         totalAmount,
+                        // Auf welchem Stand der Offerte die AB beruht (B4).
+                        tenderVersion: Number(tender.version || 1),
                         paymentStages: tender.paymentStages ?? null,
                         createdByEmployeeId: employeeId,
                     },
                     include: { createdBy: { select: { id: true, firstName: true, lastName: true, email: true } } },
                 });
+
+                if (parkedAppointments.length) {
+                    await (tx as any).appointment.updateMany({
+                        where: { id: { in: parkedAppointments.map((row) => row.id) } },
+                        data: { salesOrderId: salesOrder.id, detachedFromTenderId: null },
+                    });
+                }
 
                 if (project?.id && scheduleSlots.length > 0) {
                     // Carry each proposal slot's technician assignment forward into
@@ -983,6 +1067,12 @@ export class SalesOrderController {
                         status: 'Approved',
                         sourceStatus: 'Verkaufsauftrag',
                         projectId: project?.id || null,
+                        // Wieder erteilt: die Spur des Zurücksetzens ist erledigt
+                        // (der Verlauf der Offerte behält sie).
+                        revertedOrderNumber: null,
+                        revertedAt: null,
+                        revertedById: null,
+                        revertedProjectId: null,
                     },
                 });
 
@@ -1012,7 +1102,13 @@ export class SalesOrderController {
                     },
                 });
 
-                return { salesOrder, project, reused: false };
+                return {
+                    salesOrder,
+                    project,
+                    reused: false,
+                    reusedWaitingProject,
+                    relinkedAppointments: parkedAppointments.length,
+                };
             });
 
             res.status(result.reused ? 200 : 201).json({

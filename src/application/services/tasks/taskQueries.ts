@@ -117,7 +117,7 @@ export interface TasksSummaryDto {
     overdueCount: number;
     /** Heute fällig und noch nicht überfällig (Görevly-Gruppe «Bugün»). */
     dueTodayCount: number;
-    /** Aufgaben mit offener Abschluss-, Lösch- oder Partneranfrage — nur Administrator, sonst 0. */
+    /** Aufgaben mit offener Löschanfrage — nur Administrator, sonst 0. */
     pendingApprovalCount: number;
     unreadChatCount: number;
     activeTimer: ActiveTimerInfo | null;
@@ -134,9 +134,7 @@ export const getTasksSummary = async (actor: TasksActor): Promise<TasksSummaryDt
                 COALESCE(SUM(CASE WHEN ${OPEN_TASK_SQL} AND t.dueAt >= ${now} AND t.dueAt <= ${endOfLocalDay(now)}
                     THEN 1 ELSE 0 END), 0) AS dueTodayCount,
                 COALESCE(SUM(CASE WHEN FALSE
-                    ${actor.isSystemAdmin ? Prisma.sql`OR t.approvalState = 'PENDING'` : Prisma.empty}
                     ${actor.canDelete ? Prisma.sql`OR t.deleteRequestedAt IS NOT NULL` : Prisma.empty}
-                    ${actor.isSystemAdmin ? Prisma.sql`OR t.partnerRequestedAt IS NOT NULL` : Prisma.empty}
                     THEN 1 ELSE 0 END), 0) AS pendingCount
             FROM Task t
             WHERE ${visibleTasksSql(actor)}
@@ -380,35 +378,26 @@ export const searchTasks = async (actor: TasksActor, query: TaskListQuery): Prom
 /* ── Anfragen der Leitung («Onaylar») ───────────────────────────────────── */
 
 export interface TaskApprovalsResult {
-    completionRequests: TaskDetailDto[];
     /** Offene Löschanfragen — nur für Admins, sonst leer. */
     deleteRequests: TaskDetailDto[];
-    /** Offene Ortak-ekle-Anfragen — nur für die Administratorrolle, sonst leer. */
-    partnerRequests: TaskDetailDto[];
     people: Record<string, PersonRef>;
     serverNow: Date;
 }
 
 /**
- * Offene Abschluss- und Partneranfragen (Administrator, nur sichtbare Aufgaben) und
- * Löschanfragen (nur Admins); eine Aufgabe kann in mehreren Gruppen stehen.
+ * Offene Löschanfragen (nur Admins). Abschlussanfragen gibt es seit dem
+ * 16.09.2026 nicht mehr — abgeschlossen wird direkt (siehe taskService).
  */
 export const listTaskApprovals = async (actor: TasksActor): Promise<TaskApprovalsResult> => {
     if (!actor.isManager && !actor.canDelete) assertManager(actor);
     const now = new Date();
-    // Abschlussanfragen entscheidet nur die Administratorrolle (14.09.2026); Görev-Talepe gibt es nicht mehr.
-    const completionPart = actor.isSystemAdmin ? Prisma.sql`OR t.approvalState = 'PENDING'` : Prisma.empty;
-    const deletePart = actor.canDelete ? Prisma.sql`OR t.deleteRequestedAt IS NOT NULL` : Prisma.empty;
-    const partnerPart = actor.isSystemAdmin ? Prisma.sql`OR t.partnerRequestedAt IS NOT NULL` : Prisma.empty;
+    if (!actor.canDelete) return { deleteRequests: [], people: {}, serverNow: now };
     const cores = await fetchTaskCores(prisma, {
-        where: Prisma.sql`${visibleTasksSql(actor)} AND (FALSE ${completionPart} ${deletePart} ${partnerPart})`,
+        where: Prisma.sql`${visibleTasksSql(actor)} AND t.deleteRequestedAt IS NOT NULL`,
     });
     const { running, people } = await loadRunningSessionsAndPeople(actor, cores);
-    const toCard = (core: TaskCore): TaskDetailDto => toTaskDetailDto(core, actor, running.get(core.id) ?? [], now);
     return {
-        completionRequests: actor.isSystemAdmin ? cores.filter((core) => core.approvalState === 'PENDING').map(toCard) : [],
-        deleteRequests: actor.canDelete ? cores.filter((core) => core.deleteRequestedById).map(toCard) : [],
-        partnerRequests: actor.isSystemAdmin ? cores.filter((core) => core.partnerRequestedById).map(toCard) : [],
+        deleteRequests: cores.map((core) => toTaskDetailDto(core, actor, running.get(core.id) ?? [], now)),
         people,
         serverNow: now,
     };

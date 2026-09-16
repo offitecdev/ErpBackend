@@ -34,6 +34,15 @@ export interface SendMailInput {
     text?: string | null;
     html?: string | null;
     replyTo?: string | null;
+    /**
+     * WICHTIGE POST (16.09.2026, Vorgabe Samet: «önemli mail olarak gider,
+     * ünlem işareti olur mailde»). `high` setzt die drei Köpfe, an denen
+     * Outlook, Thunderbird und Apple Mail das rote Ausrufezeichen zeigen —
+     * jedes Programm liest ein anderes davon. Ohne Angabe: normale Post,
+     * dann steht gar kein Kopf da (eine ausdrückliche «normale» Stufe wäre
+     * nur Lärm im Kopfteil).
+     */
+    importance?: 'high' | 'normal' | null;
     attachments?: Array<{
         filename: string;
         contentType: string;
@@ -175,6 +184,9 @@ export const buildMimeMessage = (mail: SendMailInput, ccList: string[]): string 
         `Message-ID: ${mail.messageId || newMessageId(mail.fromEmail)}`,
         `MIME-Version: 1.0`,
         mail.replyTo ? `Reply-To: ${mail.replyTo}` : null,
+        ...(mail.importance === 'high'
+            ? [`X-Priority: 1 (Highest)`, `X-MSMail-Priority: High`, `Importance: high`]
+            : []),
         `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
         ``,
         `--${mixedBoundary}`,

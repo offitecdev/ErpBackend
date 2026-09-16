@@ -11,7 +11,7 @@
  * zusätzlich `tasks.delete`. Die Administratorrolle hat alles.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BOARD_POSITION_STEP = exports.TASK_LIMITS = exports.CHAT_SYSTEM_EVENTS = exports.CHAT_MESSAGE_TYPES = exports.ATTACHMENT_KINDS = exports.BLOCK_ALIGNMENTS = exports.MANAGER_ONLY_BLOCK_TYPES = exports.TEXT_BLOCK_TYPES = exports.BLOCK_TYPES = exports.REMINDER_KINDS = exports.roomLinkUrl = exports.taskLinkUrl = exports.NOTIFY_I18N = exports.NOTIFY = exports.ACTIVITY = exports.DEFAULT_REMINDER_LEAD_MINUTES = exports.REMINDER_LEAD_MINUTES = exports.labelColorFor = exports.LABEL_COLORS = exports.isOpenTaskStatus = exports.isTaskStatus = exports.REVIEW_STATES = exports.APPROVAL_STATES = exports.TASK_ORIGINS = exports.TASK_PRIORITIES = exports.MANUAL_TASK_STATUSES = exports.CLOSED_TASK_STATUSES = exports.TASK_STATUSES = exports.TASKS_PERMISSION_NAMES = exports.TASKS_PERMISSIONS = exports.TASKS_MODULE_KEY = void 0;
+exports.BOARD_POSITION_STEP = exports.TASK_LIMITS = exports.CHAT_SYSTEM_EVENTS = exports.CHAT_MESSAGE_TYPES = exports.ATTACHMENT_KINDS = exports.BLOCK_ALIGNMENTS = exports.MANAGER_ONLY_BLOCK_TYPES = exports.TEXT_BLOCK_TYPES = exports.BLOCK_TYPES = exports.REMINDER_KINDS = exports.issueLinkUrl = exports.roomLinkUrl = exports.taskLinkUrl = exports.NOTIFY_I18N = exports.NOTIFY = exports.ACTIVITY = exports.DEFAULT_REMINDER_LEAD_MINUTES = exports.REMINDER_LEAD_MINUTES = exports.isIssueKind = exports.ISSUE_PERSON_ROLES = exports.ISSUE_STATUSES = exports.ISSUE_KINDS = exports.labelColorFor = exports.LABEL_COLORS = exports.isOpenTaskStatus = exports.isTaskStatus = exports.REVIEW_STATES = exports.APPROVAL_STATES = exports.TASK_ORIGINS = exports.TASK_PRIORITIES = exports.MANUAL_TASK_STATUSES = exports.CLOSED_TASK_STATUSES = exports.TASK_STATUSES = exports.TASKS_PERMISSION_NAMES = exports.TASKS_PERMISSIONS = exports.TASKS_MODULE_KEY = void 0;
 exports.TASKS_MODULE_KEY = 'tasks';
 exports.TASKS_PERMISSIONS = {
     view: 'tasks.view',
@@ -56,6 +56,14 @@ const labelColorFor = (seed) => {
     return exports.LABEL_COLORS[hash % exports.LABEL_COLORS.length] ?? 'gray';
 };
 exports.labelColorFor = labelColorFor;
+/* ── Sorular & Sorunlar (16.09.2026) ────────────────────────────────────── */
+/** Die zwei Reiter der Kapsel: «Sorular» und «Sorunlar». */
+exports.ISSUE_KINDS = ['QUESTION', 'ISSUE'];
+exports.ISSUE_STATUSES = ['OPEN', 'RESOLVED'];
+/** TO = die erste markierte Person (An-Feld der Mail), CC = alle weiteren. */
+exports.ISSUE_PERSON_ROLES = ['TO', 'CC'];
+const isIssueKind = (value) => typeof value === 'string' && exports.ISSUE_KINDS.includes(value);
+exports.isIssueKind = isIssueKind;
 /* ── Persönliche Einstellungen ──────────────────────────────────────────── */
 exports.REMINDER_LEAD_MINUTES = [10, 30, 60, 120];
 exports.DEFAULT_REMINDER_LEAD_MINUTES = 30;
@@ -84,6 +92,10 @@ exports.ACTIVITY = {
     DELETE_REQUESTED: 'DELETE_REQUESTED',
     DELETE_REQUEST_CANCELLED: 'DELETE_REQUEST_CANCELLED',
     DELETE_REJECTED: 'DELETE_REJECTED',
+    ISSUE_OPENED: 'ISSUE_OPENED',
+    ISSUE_REPLIED: 'ISSUE_REPLIED',
+    ISSUE_RESOLVED: 'ISSUE_RESOLVED',
+    ISSUE_REOPENED: 'ISSUE_REOPENED',
     PARTNER_REQUESTED: 'PARTNER_REQUESTED',
     PARTNER_REQUEST_CANCELLED: 'PARTNER_REQUEST_CANCELLED',
     PARTNER_REJECTED: 'PARTNER_REJECTED',
@@ -109,6 +121,9 @@ exports.NOTIFY = {
     DELETE_REQUEST: 'TASKS_DELETE_REQUEST',
     DELETE_APPROVED: 'TASKS_DELETE_APPROVED',
     DELETE_REJECTED: 'TASKS_DELETE_REJECTED',
+    ISSUE_TAGGED: 'TASKS_ISSUE_TAGGED',
+    ISSUE_REPLY: 'TASKS_ISSUE_REPLY',
+    ISSUE_RESOLVED: 'TASKS_ISSUE_RESOLVED',
     PARTNER_REQUEST: 'TASKS_PARTNER_REQUEST',
     PARTNER_APPROVED: 'TASKS_PARTNER_APPROVED',
     PARTNER_REJECTED: 'TASKS_PARTNER_REJECTED',
@@ -132,6 +147,9 @@ exports.NOTIFY_I18N = {
     TASKS_DELETE_REQUEST: 'notify.tasksModule.deleteRequest',
     TASKS_DELETE_APPROVED: 'notify.tasksModule.deleteApproved',
     TASKS_DELETE_REJECTED: 'notify.tasksModule.deleteRejected',
+    TASKS_ISSUE_TAGGED: 'notify.tasksModule.issueTagged',
+    TASKS_ISSUE_REPLY: 'notify.tasksModule.issueReply',
+    TASKS_ISSUE_RESOLVED: 'notify.tasksModule.issueResolved',
     TASKS_PARTNER_REQUEST: 'notify.tasksModule.partnerRequest',
     TASKS_PARTNER_APPROVED: 'notify.tasksModule.partnerApproved',
     TASKS_PARTNER_REJECTED: 'notify.tasksModule.partnerRejected',
@@ -141,6 +159,9 @@ const taskLinkUrl = (taskId) => `/tasks/${taskId}`;
 exports.taskLinkUrl = taskLinkUrl;
 const roomLinkUrl = (roomId) => `/tasks/chat/${roomId}`;
 exports.roomLinkUrl = roomLinkUrl;
+/** Der Faden öffnet sich im Reiter «Sorular & Sorunlar» der Aufgabe. */
+const issueLinkUrl = (taskId, issueId) => `/tasks/${taskId}?issue=${issueId}`;
+exports.issueLinkUrl = issueLinkUrl;
 /* ── Erinnerungsschleife ────────────────────────────────────────────────── */
 exports.REMINDER_KINDS = ['REMINDER', 'DUE_SOON', 'OVERDUE', 'CHECK_REMINDER'];
 /* ── Inhalt (Blockeditor) ───────────────────────────────────────────────── */
@@ -151,7 +172,7 @@ exports.TEXT_BLOCK_TYPES = new Set(['p', 'h2', 'h3', 'bullet', 'number', 'quote'
 exports.MANAGER_ONLY_BLOCK_TYPES = new Set(['table', 'divider']);
 exports.BLOCK_ALIGNMENTS = ['left', 'center', 'right'];
 /* ── Dateien und Chat ───────────────────────────────────────────────────── */
-exports.ATTACHMENT_KINDS = ['TASK', 'COMMENT', 'CHAT'];
+exports.ATTACHMENT_KINDS = ['TASK', 'COMMENT', 'CHAT', 'ISSUE', 'DAILY'];
 exports.CHAT_MESSAGE_TYPES = ['TEXT', 'SYSTEM'];
 exports.CHAT_SYSTEM_EVENTS = ['ROOM_CREATED', 'MEMBER_ADDED', 'MEMBER_REMOVED', 'TASK_LINKED'];
 /* ── Grenzen ────────────────────────────────────────────────────────────── */
@@ -163,6 +184,12 @@ exports.TASK_LIMITS = {
     checklistTitleMax: 200,
     checklistItemTextMax: 500,
     commentMax: 5_000,
+    issueTitleMax: 160,
+    issueTextMax: 5_000,
+    issueFilesMax: 10,
+    /** Markierte Personen je Faden — die Erste steht im An-Feld der Mail. */
+    issuePeopleMax: 20,
+    issueTasksMax: 10,
     chatMessageMax: 5_000,
     roomNameMax: 80,
     blocksMax: 500,

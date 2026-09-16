@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingController = void 0;
+const invoiceErrors_1 = require("../../application/use-cases/billing/invoiceErrors");
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const PdfImageThumbnailService_1 = require("../../infrastructure/services/PdfImageThumbnailService");
@@ -17,7 +18,8 @@ class BillingController {
     deleteInvoiceUseCase;
     createDirectInvoiceUseCase;
     updateDirectInvoiceUseCase;
-    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase, deleteInvoiceUseCase, createDirectInvoiceUseCase, updateDirectInvoiceUseCase) {
+    updateDatesUseCase;
+    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase, deleteInvoiceUseCase, createDirectInvoiceUseCase, updateDirectInvoiceUseCase, updateDatesUseCase) {
         this.createInvoiceUseCase = createInvoiceUseCase;
         this.getSummaryUseCase = getSummaryUseCase;
         this.listInvoicesUseCase = listInvoicesUseCase;
@@ -25,6 +27,7 @@ class BillingController {
         this.deleteInvoiceUseCase = deleteInvoiceUseCase;
         this.createDirectInvoiceUseCase = createDirectInvoiceUseCase;
         this.updateDirectInvoiceUseCase = updateDirectInvoiceUseCase;
+        this.updateDatesUseCase = updateDatesUseCase;
     }
     async getSummary(req, res) {
         try {
@@ -34,7 +37,7 @@ class BillingController {
             res.status(200).json(summary);
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     async list(req, res) {
@@ -76,7 +79,7 @@ class BillingController {
             res.status(200).json(invoices);
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     async create(req, res) {
@@ -100,7 +103,7 @@ class BillingController {
             res.status(201).json({ message: 'Fatura oluşturuldu.', invoice });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     /**
@@ -116,7 +119,7 @@ class BillingController {
             res.status(200).json({ invoiceNumber, preview: true });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     /**
@@ -151,7 +154,7 @@ class BillingController {
             res.status(201).json({ message: 'Rechnung erstellt.', invoice });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     /**
@@ -185,7 +188,24 @@ class BillingController {
             res.status(200).json({ message: 'Rechnung gespeichert.', invoice });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /**
+     * Rechnungsdatum + Fälligkeit korrigieren — auch nach dem Stellen, für
+     * jede Rechnungsart (Vorgabe Samet 16.09.2026). Siehe
+     * `UpdateInvoiceDatesUseCase`.
+     */
+    async updateDates(req, res) {
+        try {
+            const invoice = await this.updateDatesUseCase.execute(String(req.params.id), req.user.tenantId, {
+                invoiceDate: req.body?.invoiceDate,
+                dueDate: req.body?.dueDate,
+            });
+            res.status(200).json({ message: 'Rechnung gespeichert.', invoice });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     async updateStatus(req, res) {
@@ -197,7 +217,7 @@ class BillingController {
             res.status(200).json({ message: 'Fatura durumu güncellendi.', invoice });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     /**
@@ -229,7 +249,7 @@ class BillingController {
             res.status(200).json(await (0, PdfImageThumbnailService_1.getArticleThumbnails)(tenantId, articles));
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
     async delete(req, res) {
@@ -238,7 +258,7 @@ class BillingController {
             res.status(200).json({ message: 'Fatura kalıcı olarak silindi.' });
         }
         catch (error) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
 }

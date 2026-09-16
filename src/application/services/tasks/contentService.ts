@@ -15,6 +15,7 @@ import {
 } from './taskConstants';
 import type { TasksDb } from './taskDb';
 import { TaskError, taskConflict, taskForbidden } from './taskErrors';
+import { collectAttachmentRefs, removeStoredFiles } from './taskFiles';
 import { EMPTY_CONTENT, type ContentBlock, type ContentDto } from './taskParts';
 import { rawDate, rawJson, rawNumber, rawString, requireVisibleTask, type VisibleTask } from './taskRows';
 
@@ -133,6 +134,31 @@ const tableMeta = (meta: RawRecord): RawRecord => {
     return out;
 };
 
+const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const round4 = (value: number): number => Math.round(value * 10_000) / 10_000;
+const IMAGE_CROP_MIN = 0.02;
+
+/**
+ * Bild (15.09.2026, Samet: «tutup küçültüp büyütme, kırpma»): `width` = Anzeigebreite
+ * in px, `crop` = sichtbarer Ausschnitt in Anteilen des Originals (0–1), `ratio` =
+ * Breite/Höhe des Originals (für den Rahmen des Ausschnitts). Die Datei bleibt unberührt.
+ */
+const imageMeta = (attId: string, meta: RawRecord): RawRecord => {
+    const out: RawRecord = { attId };
+    if (isFiniteNumber(meta.width)) out.width = Math.round(Math.min(4000, Math.max(40, meta.width)));
+    const crop = isRecord(meta.crop) ? meta.crop : null;
+    if (crop && [crop.x, crop.y, crop.w, crop.h].every(isFiniteNumber)) {
+        const x = Math.min(1, Math.max(0, crop.x as number));
+        const y = Math.min(1, Math.max(0, crop.y as number));
+        const w = Math.min(1 - x, crop.w as number);
+        const h = Math.min(1 - y, crop.h as number);
+        const partial = x > 0 || y > 0 || w < 1 || h < 1;
+        if (w >= IMAGE_CROP_MIN && h >= IMAGE_CROP_MIN && partial) out.crop = { x: round4(x), y: round4(y), w: round4(w), h: round4(h) };
+    }
+    if (isFiniteNumber(meta.ratio) && meta.ratio > 0.01 && meta.ratio < 100) out.ratio = round4(meta.ratio);
+    return out;
+};
+
 /** Text und `meta` eines Blocks nach seiner Art; null = der Block fällt weg. */
 const blockBody = (type: BlockType, raw: RawRecord, rules: ContentRules): BlockBody | null => {
     const meta: RawRecord = isRecord(raw.meta) ? raw.meta : {};
@@ -152,7 +178,10 @@ const blockBody = (type: BlockType, raw: RawRecord, rules: ContentRules): BlockB
             const groupId = meta.groupId;
             return typeof groupId === 'string' && rules.checklistIds.has(groupId) ? { text: '', meta: { groupId } } : null;
         }
-        case 'image':
+        case 'image': {
+            const attId = meta.attId;
+            return typeof attId === 'string' && rules.attachmentIds.has(attId) ? { text: '', meta: imageMeta(attId, meta) } : null;
+        }
         case 'file': {
             const attId = meta.attId;
             return typeof attId === 'string' && rules.attachmentIds.has(attId) ? { text: '', meta: { attId } } : null;
@@ -372,5 +401,36 @@ export const saveTaskContent = async (
         storedBlockTypes: new Map(current.blocks.map((block) => [block.id, block.type])),
         isManager: actor.isManager,
     });
-    return { content: await writeTaskContent(prisma, actor, taskId, current, blocks) };
+    const content = await writeTaskContent(prisma, actor, taskId, current, blocks);
+    // Erst nach dem Schreiben (Versionsschloss bestanden): `current` ist dann genau der ersetzte Stand.
+    await removeDroppedBlockAttachments(actor.tenantId, taskId, current.blocks, blocks);
+    return { content };
+};
+
+const blockAttachmentIds = (blocks: readonly ContentBlock[]): Set<string> =>
+    new Set(blocks
+        .filter((block) => block.type === 'image' || block.type === 'file')
+        .map((block) => block.meta.attId)
+        .filter((attId): attId is string => typeof attId === 'string'));
+
+/**
+ * Bild- und Dateiblöcke, die aus dem Inhalt gelöscht wurden, nehmen ihre Datei
+ * mit (Samet 15.09.2026: eingefügt und im Editor gelöscht = auch aus «Dosyalar»
+ * weg). Nur Dateien, auf die der ALTE Stand zeigte und der neue nicht mehr —
+ * im Reiter «Dosyalar» hochgeladene Dateien stehen in keinem Block und bleiben.
+ */
+const removeDroppedBlockAttachments = async (
+    tenantId: string,
+    taskId: string,
+    before: readonly ContentBlock[],
+    after: readonly ContentBlock[],
+): Promise<void> => {
+    const kept = blockAttachmentIds(after);
+    const dropped = [...blockAttachmentIds(before)].filter((id) => !kept.has(id));
+    if (!dropped.length) return;
+    const where = { tenantId, taskId, kind: 'TASK', id: { in: dropped } } satisfies Prisma.TaskAttachmentWhereInput;
+    const refs = await collectAttachmentRefs(prisma, where);
+    if (!refs.length) return;
+    await prisma.taskAttachment.deleteMany({ where });
+    await removeStoredFiles(refs);
 };

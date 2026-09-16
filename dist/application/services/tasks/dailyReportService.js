@@ -3,32 +3,43 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.saveMyDailyReport = exports.saveDailyReportSetting = exports.getDailyReportSetting = exports.DEFAULT_DAILY_REPORT_END_TIME = exports.DEFAULT_DAILY_REPORT_TIME = exports.getMyDailyReport = exports.listDailyReports = exports.isDateKey = exports.DAILY_REPORT_LIMITS = void 0;
+exports.saveMyDailyReport = exports.uploadDailyReportFiles = exports.saveDailyReportSetting = exports.getDailyReportSetting = exports.DEFAULT_DAILY_REPORT_END_TIME = exports.DEFAULT_DAILY_REPORT_TIME = exports.getMyDailyReport = exports.listDailyReports = exports.listDailyFiles = exports.isDateKey = exports.DAILY_REPORT_LIMITS = void 0;
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 const taskErrors_1 = require("./taskErrors");
+const taskFiles_1 = require("./taskFiles");
 const taskRows_1 = require("./taskRows");
 const HOUR_MS = 3_600_000;
 /**
- * ── GÜN SONU RAPORU (14.09.2026, Vorgabe Samet) ─────────────────────────────
+ * ── GÜN SONU RAPORU ─────────────────────────────────────────────────────────
  *
- * «Hafta içi her gün 16:00'da bir pop-up çıkacak … madde madde birer cümle ile
- * neler yaptığınızı yazın. En altta hangi görevde kaç saat kaç dk yer aldığı
- * yazacak; bu rapor olarak kaydedilecek, günlük rapor oluşacak, haftalık
- * raporda bunların toplamı olacak.»
+ * 16.09.2026 (Samet): «Gün sonu raporları artık madde madde olmayacak — direkt
+ * beyaz bir sayfa, orada istediğini yazacak, markdown olacak, görsel
+ * ekleyebilecek; görseller ve pdf'ler de eklenti olarak tıklanabilir url olarak
+ * yer alacak.» Der Rapport ist also EIN freies Blatt:
  *
- *   GET /tasks/daily-reports/me   heutiger Stand: gespeicherter Rapport (oder
- *                                 null), Aufgabenzeiten des Tages aus den
- *                                 Messungen, und die Woche (welche Tage fertig)
- *   PUT /tasks/daily-reports/me   speichern/überschreiben — die Aufgabenzeiten
- *                                 werden dabei aus den Messungen KOPIERT
+ *   body        Markdown-Text des Tages (alte Rapporte: ihre Punkte werden beim
+ *               Lesen zu «- …»-Zeilen — die Spalte `items` bleibt unberührt)
+ *   files       Bilder/PDF/Dateien des Tages: TaskAttachment mit kind 'DAILY',
+ *               ohne Aufgabe, nur `dailyDate` + `uploadedById`. Der Rapport und
+ *               das PDF zeigen sie als anklickbare Adresse (`url`/`contentPath`)
+ *
+ *   GET  /tasks/daily-reports/me    heutiger Stand + die Woche (welche Tage fertig)
+ *   PUT  /tasks/daily-reports/me    speichern/überschreiben
+ *   POST /tasks/daily-reports/me/files   Datei hochladen (multipart `files`)
  *
  * Tagesgrenzen kennt nur der Browser: er schickt `date` (YYYY-MM-DD) und
  * `from`/`to` (ISO). Jede Person schreibt nur ihren eigenen Rapport; die
  * Leitung liest ihn im Arbeitsrapport (workReportService).
  */
 exports.DAILY_REPORT_LIMITS = {
+    /** Das Blatt: so viele Zeichen Markdown. */
+    bodyChars: 20_000,
+    filesPerUpload: 10,
+    /** So viele Dateien darf ein Tag tragen. */
+    filesMax: 40,
+    /** Alte Rapporte (vor dem 16.09.2026) hatten Punkte. */
     itemsMax: 30,
     itemChars: 500,
 };
@@ -95,22 +106,64 @@ const toTaskTimes = (value) => (Array.isArray(value) ? value : []).flatMap((entr
     const { taskId, title, ms } = entry;
     return typeof taskId === 'string' ? [{ taskId, title: String(title ?? ''), ms: (0, taskRows_1.rawNumber)(ms) }] : [];
 });
+/** Das Blatt eines Rapports: der Markdown-Text, bei alten Rapporten ihre Punkte. */
+const bodyOf = (body, items) => {
+    const text = (0, taskRows_1.rawString)(body) ?? '';
+    if (text.trim())
+        return text;
+    return toItems((0, taskRows_1.rawJson)(items)).map((item) => item.trim()).filter(Boolean).map((item) => `- ${item}`).join('\n');
+};
+/* ── Dateien des Tages (kind 'DAILY') ───────────────────────────────────── */
+/** Die Dateien einer Person zwischen zwei Kalendertagen, nach Tag geordnet. */
+const listDailyFiles = async (tenantId, employeeId, fromDate, toDate) => {
+    const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT id, kind, dailyDate, fileName, contentType, sizeBytes, fileRef, uploadedById, createdAt
+        FROM TaskAttachment
+        WHERE tenantId = ${tenantId} AND kind = 'DAILY' AND uploadedById = ${employeeId}
+          AND dailyDate >= ${fromDate} AND dailyDate <= ${toDate}
+        ORDER BY createdAt ASC, id ASC
+    `);
+    const byDate = new Map();
+    for (const row of rows) {
+        const date = String(row.dailyDate ?? '');
+        const dto = (0, taskFiles_1.toAttachmentDto)({
+            id: String(row.id),
+            kind: 'DAILY',
+            fileName: String(row.fileName ?? ''),
+            contentType: String(row.contentType ?? ''),
+            sizeBytes: (0, taskRows_1.rawNumber)(row.sizeBytes),
+            uploadedById: (0, taskRows_1.rawString)(row.uploadedById),
+            createdAt: (0, taskRows_1.rawDate)(row.createdAt) ?? new Date(0),
+            fileRef: (0, taskRows_1.rawString)(row.fileRef),
+        });
+        byDate.set(date, [...(byDate.get(date) ?? []), dto]);
+    }
+    return byDate;
+};
+exports.listDailyFiles = listDailyFiles;
 /** Gespeicherte Rapporte einer Person zwischen zwei Kalendertagen (beide inklusive). */
 const listDailyReports = async (tenantId, employeeId, fromDate, toDate) => {
-    const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
-        SELECT reportDate, items, taskTimes, totalMs, submittedAt
-        FROM TaskDailyReport
-        WHERE tenantId = ${tenantId} AND employeeId = ${employeeId}
-          AND reportDate >= ${fromDate} AND reportDate <= ${toDate}
-        ORDER BY reportDate ASC
-    `);
-    return rows.map((row) => ({
-        date: String(row.reportDate),
-        items: toItems((0, taskRows_1.rawJson)(row.items)),
-        taskTimes: toTaskTimes((0, taskRows_1.rawJson)(row.taskTimes)),
-        totalMs: (0, taskRows_1.rawNumber)(row.totalMs),
-        submittedAt: (0, taskRows_1.rawDate)(row.submittedAt) ?? new Date(0),
-    }));
+    const [rows, filesByDate] = await Promise.all([
+        prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+            SELECT reportDate, body, items, taskTimes, totalMs, submittedAt
+            FROM TaskDailyReport
+            WHERE tenantId = ${tenantId} AND employeeId = ${employeeId}
+              AND reportDate >= ${fromDate} AND reportDate <= ${toDate}
+            ORDER BY reportDate ASC
+        `),
+        (0, exports.listDailyFiles)(tenantId, employeeId, fromDate, toDate),
+    ]);
+    return rows.map((row) => {
+        const date = String(row.reportDate);
+        return {
+            date,
+            body: bodyOf(row.body, (0, taskRows_1.rawJson)(row.items)),
+            files: filesByDate.get(date) ?? [],
+            taskTimes: toTaskTimes((0, taskRows_1.rawJson)(row.taskTimes)),
+            totalMs: (0, taskRows_1.rawNumber)(row.totalMs),
+            submittedAt: (0, taskRows_1.rawDate)(row.submittedAt) ?? new Date(0),
+        };
+    });
 };
 exports.listDailyReports = listDailyReports;
 const getMyDailyReport = async (actor, query) => {
@@ -119,20 +172,22 @@ const getMyDailyReport = async (actor, query) => {
     const weekEnd = addDays(weekStart, 6);
     const rangeFrom = day.date < weekStart ? day.date : weekStart;
     const rangeTo = day.date > weekEnd ? day.date : weekEnd;
-    const [reports, taskTimes] = await Promise.all([
+    const [reports, taskTimes, filesByDate] = await Promise.all([
         (0, exports.listDailyReports)(actor.tenantId, actor.employeeId, rangeFrom, rangeTo),
         loadTaskTimes(actor.tenantId, actor.employeeId, day.from, day.to),
+        (0, exports.listDailyFiles)(actor.tenantId, actor.employeeId, day.date, day.date),
     ]);
     const byDate = new Map(reports.map((report) => [report.date, report]));
     return {
         date: day.date,
         report: byDate.get(day.date) ?? null,
+        files: filesByDate.get(day.date) ?? [],
         taskTimes,
         totalMs: taskTimes.reduce((sum, entry) => sum + entry.ms, 0),
         week: Array.from({ length: 7 }, (_, index) => {
             const date = addDays(weekStart, index);
             const report = byDate.get(date);
-            return { date, submitted: Boolean(report), totalMs: report?.totalMs ?? 0, itemCount: report?.items.length ?? 0 };
+            return { date, submitted: Boolean(report), totalMs: report?.totalMs ?? 0 };
         }),
         serverNow: new Date(),
     };
@@ -200,24 +255,73 @@ const assertInReportWindow = async (tenantId, day) => {
         });
     }
 };
+/**
+ * Bilder/PDF/Dateien für das Blatt eines Tages. Sie hängen an KEINER Aufgabe:
+ * kind 'DAILY' + `dailyDate` + `uploadedById`. Gelesen werden sie über
+ * `/tasks/attachments/:id/content` (R2-Bilder und -PDF direkt bei Cloudflare).
+ */
+const uploadDailyReportFiles = async (actor, input, files) => {
+    const day = parseDay(input);
+    await assertInReportWindow(actor.tenantId, day);
+    const prepared = (0, taskFiles_1.prepareTaskFiles)(files, exports.DAILY_REPORT_LIMITS.filesPerUpload);
+    if (!prepared.length)
+        throw (0, taskErrors_1.taskBadRequest)('NO_FILES', 'Es wurde keine Datei übergeben.');
+    const counted = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT COUNT(*) AS total FROM TaskAttachment
+        WHERE tenantId = ${actor.tenantId} AND kind = 'DAILY'
+          AND uploadedById = ${actor.employeeId} AND dailyDate = ${day.date}
+    `);
+    if ((0, taskRows_1.rawNumber)(counted[0]?.total) + prepared.length > exports.DAILY_REPORT_LIMITS.filesMax) {
+        throw (0, taskErrors_1.taskBadRequest)('DAILY_REPORT_FILES_LIMIT', `Höchstens ${exports.DAILY_REPORT_LIMITS.filesMax} Dateien je Tag.`);
+    }
+    const refs = await (0, taskFiles_1.storeTaskFiles)(actor.tenantId, prepared);
+    const createdMs = Date.now();
+    const rows = prepared.map((file, index) => ({
+        id: (0, nanoid_1.nanoid)(12),
+        kind: 'DAILY',
+        fileName: file.fileName,
+        contentType: file.contentType,
+        sizeBytes: file.sizeBytes,
+        fileRef: refs[index],
+        uploadedById: actor.employeeId,
+        // Die Liste sortiert nach createdAt: +1 ms je Datei hält die Reihenfolge der Auswahl.
+        createdAt: new Date(createdMs + index),
+    }));
+    try {
+        for (const row of rows) {
+            await prisma_client_1.default.$executeRaw(client_1.Prisma.sql `
+                INSERT INTO TaskAttachment (id, tenantId, kind, dailyDate, fileName, contentType, sizeBytes, fileRef, uploadedById, createdAt)
+                VALUES (${row.id}, ${actor.tenantId}, 'DAILY', ${day.date}, ${row.fileName}, ${row.contentType},
+                        ${row.sizeBytes}, ${row.fileRef}, ${row.uploadedById}, ${row.createdAt})
+            `);
+        }
+    }
+    catch (error) {
+        await (0, taskFiles_1.removeStoredFiles)(refs);
+        throw error;
+    }
+    return { data: rows.map(taskFiles_1.toAttachmentDto) };
+};
+exports.uploadDailyReportFiles = uploadDailyReportFiles;
 const saveMyDailyReport = async (actor, input) => {
     const day = parseDay(input);
-    const items = input.items.map((item) => item.trim()).filter(Boolean);
-    if (!items.length)
-        throw (0, taskErrors_1.taskBadRequest)('DAILY_REPORT_EMPTY', 'Mindestens ein Punkt.');
+    const body = input.body.slice(0, exports.DAILY_REPORT_LIMITS.bodyChars).trim();
     await assertInReportWindow(actor.tenantId, day);
+    const files = (await (0, exports.listDailyFiles)(actor.tenantId, actor.employeeId, day.date, day.date)).get(day.date) ?? [];
+    // Ein leeres Blatt ohne Datei ist kein Rapport.
+    if (!body && !files.length)
+        throw (0, taskErrors_1.taskBadRequest)('DAILY_REPORT_EMPTY', 'Das Blatt ist leer.');
     const taskTimes = await loadTaskTimes(actor.tenantId, actor.employeeId, day.from, day.to);
     const totalMs = taskTimes.reduce((sum, entry) => sum + entry.ms, 0);
     const now = new Date();
-    const itemsJson = JSON.stringify(items);
     const timesJson = JSON.stringify(taskTimes);
     // EINE Anweisung: zwei gleichzeitige Speicherungen treffen sich am eindeutigen Schlüssel.
     await prisma_client_1.default.$executeRaw(client_1.Prisma.sql `
-        INSERT INTO TaskDailyReport (id, tenantId, employeeId, reportDate, items, taskTimes, totalMs, submittedAt, createdAt, updatedAt)
-        VALUES (${(0, nanoid_1.nanoid)(16)}, ${actor.tenantId}, ${actor.employeeId}, ${day.date}, ${itemsJson}, ${timesJson}, ${totalMs}, ${now}, ${now}, ${now})
-        ON DUPLICATE KEY UPDATE items = ${itemsJson}, taskTimes = ${timesJson}, totalMs = ${totalMs}, submittedAt = ${now}, updatedAt = ${now}
+        INSERT INTO TaskDailyReport (id, tenantId, employeeId, reportDate, body, items, taskTimes, totalMs, submittedAt, createdAt, updatedAt)
+        VALUES (${(0, nanoid_1.nanoid)(16)}, ${actor.tenantId}, ${actor.employeeId}, ${day.date}, ${body}, '[]', ${timesJson}, ${totalMs}, ${now}, ${now}, ${now})
+        ON DUPLICATE KEY UPDATE body = ${body}, items = '[]', taskTimes = ${timesJson}, totalMs = ${totalMs}, submittedAt = ${now}, updatedAt = ${now}
     `);
-    return { date: day.date, items, taskTimes, totalMs, submittedAt: now };
+    return { date: day.date, body, files, taskTimes, totalMs, submittedAt: now };
 };
 exports.saveMyDailyReport = saveMyDailyReport;
 //# sourceMappingURL=dailyReportService.js.map

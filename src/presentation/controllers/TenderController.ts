@@ -2479,6 +2479,12 @@ export class TenderController {
                 select: { id: true, reference: true, tenantId: true },
             }).catch(() => [] as Array<{ id: string; reference: string; tenantId: string }>);
             await this.tenderRepository.delete(tenderId, tender.tenantId);
+            // Vergangene oder abgesagte geparkte Termine verlieren ihre
+            // Offerte — die Markierung zeigte sonst ins Leere.
+            await (prisma as any).appointment.updateMany({
+                where: { tenantId: tender.tenantId, detachedFromTenderId: tenderId },
+                data: { detachedFromTenderId: null },
+            }).catch(() => undefined);
             res.status(200).json({ message: "Teklif silindi." });
             // §4b (Vertragsfassung (2)): die Anfrage bei der OSP ZURÜCKZIEHEN,
             // damit drüben kein Stand mehr steht, den nichts mehr trägt — und
@@ -4237,6 +4243,153 @@ export class TenderController {
                     console.error('[TenderController.addDocument] file cleanup failed:', cleanupError);
                 });
             }
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    /**
+     * TEXTKORREKTUR (16.09.2026, B3) — nur Bezeichnung, Beschreibung und
+     * Einheit der Positionen sowie Adressen, Kommission und Referenz. Menge,
+     * Preis und Rabatt kommen hier gar nicht an: wer sie ändern will, braucht
+     * eine neue Version (Offerte) oder einen Nachtrag (Auftrag). Jede Änderung
+     * steht mit altem und neuem Wert und dem Grund im Verlauf der Offerte.
+     */
+    async correctTexts(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const user = (req as any).user!;
+            const tender: any = await this.getAccessibleTender(tenderId, user, { omitPdfContent: true });
+            if (!tender) return res.status(404).json({ error: "Teklif bulunamadı." });
+            if (tender.status === 'Cancelled' || tender.cancelledAt) {
+                return res.status(409).json({ error: 'Eine stornierte Offerte wird nicht mehr berichtigt.', code: 'TENDER_CANCELLED' });
+            }
+            if (tender.status === 'Draft' && !tender.salesOrder) {
+                return res.status(400).json({ error: 'Ein Entwurf wird direkt bearbeitet.', code: 'TENDER_IS_DRAFT' });
+            }
+            const reason = String(req.body?.reason ?? '').trim().slice(0, 500);
+            if (reason.length < 5) {
+                return res.status(400).json({ error: 'Bitte einen Grund für die Korrektur angeben.', code: 'REASON_REQUIRED' });
+            }
+
+            const clip = (value: unknown, max: number) => (value == null ? null : String(value).slice(0, max));
+            const TEXT_FIELDS = { shortDescription: 500, longDescription: 20000, unit: 40 } as const;
+            const META_FIELDS = { billingAddress: 2000, installationAddress: 2000, deliveryAddress: 2000, commissionNumber: 191, customerReference: 191 } as const;
+            const logValue = (value: unknown) => (value == null ? null : String(value).slice(0, 2000));
+
+            const positionPatches: Array<{ id: string; data: Record<string, string | null> }> = [];
+            for (const row of Array.isArray(req.body?.positions) ? req.body.positions : []) {
+                if (!row || typeof row.id !== 'string') continue;
+                const data: Record<string, string | null> = {};
+                for (const [field, max] of Object.entries(TEXT_FIELDS)) {
+                    if (row[field] !== undefined) data[field] = clip(row[field], max);
+                }
+                if (data.shortDescription !== undefined && !String(data.shortDescription || '').trim()) {
+                    return res.status(400).json({ error: 'Eine Position braucht eine Bezeichnung.', code: 'TITLE_REQUIRED' });
+                }
+                if (Object.keys(data).length) positionPatches.push({ id: row.id, data });
+            }
+            const metaPatch: Record<string, string | null> = {};
+            for (const [field, max] of Object.entries(META_FIELDS)) {
+                if (req.body?.meta?.[field] !== undefined) {
+                    const value = clip(req.body.meta[field], max);
+                    metaPatch[field] = value && value.trim() ? value : null;
+                }
+            }
+            if (!positionPatches.length && !Object.keys(metaPatch).length) {
+                return res.status(400).json({ error: 'Es wurde nichts geändert.', code: 'NOTHING_CHANGED' });
+            }
+
+            const current: any[] = positionPatches.length
+                ? await (prisma as any).position.findMany({
+                    where: { tenderId, tenantId: tender.tenantId, id: { in: positionPatches.map((row) => row.id) } },
+                    select: { id: true, positionNumber: true, shortDescription: true, longDescription: true, unit: true },
+                })
+                : [];
+            const currentById = new Map<string, any>(current.map((row) => [row.id, row]));
+            if (currentById.size !== positionPatches.length) {
+                return res.status(404).json({ error: 'Eine Position gehört nicht zu dieser Offerte.', code: 'POSITION_NOT_FOUND' });
+            }
+            const metaBefore: any = Object.keys(metaPatch).length
+                ? await (prisma as any).tender.findUnique({
+                    where: { id: tenderId },
+                    select: Object.fromEntries(Object.keys(metaPatch).map((field) => [field, true])),
+                })
+                : {};
+
+            const logs: any[] = [];
+            let changed = 0;
+            await (prisma as any).$transaction(async (tx: any) => {
+                for (const patch of positionPatches) {
+                    const before = currentById.get(patch.id);
+                    const data: Record<string, string | null> = {};
+                    for (const [field, value] of Object.entries(patch.data)) {
+                        if ((before[field] ?? null) === value) continue;
+                        data[field] = value;
+                        logs.push({
+                            id: nanoid(12), tenantId: tender.tenantId, tenderId, positionId: patch.id,
+                            employeeId: user.id, actionType: 'TEXT_CORRECTION', fieldName: field,
+                            oldValue: logValue(before[field]), newValue: logValue(value),
+                            description: `Textkorrektur Pos. ${before.positionNumber}: ${reason}`,
+                        });
+                    }
+                    if (Object.keys(data).length) {
+                        await tx.position.update({ where: { id: patch.id }, data });
+                        changed += Object.keys(data).length;
+                    }
+                }
+                const metaData: Record<string, string | null> = {};
+                for (const [field, value] of Object.entries(metaPatch)) {
+                    if ((metaBefore?.[field] ?? null) === value) continue;
+                    metaData[field] = value;
+                    logs.push({
+                        id: nanoid(12), tenantId: tender.tenantId, tenderId,
+                        employeeId: user.id, actionType: 'TEXT_CORRECTION', fieldName: field,
+                        oldValue: logValue(metaBefore?.[field]), newValue: logValue(value),
+                        description: `Textkorrektur: ${reason}`,
+                    });
+                }
+                if (Object.keys(metaData).length) {
+                    await tx.tender.update({ where: { id: tenderId }, data: metaData });
+                    changed += Object.keys(metaData).length;
+                }
+                if (logs.length) await tx.tenderActivityLog.createMany({ data: logs });
+            });
+
+            res.status(200).json({ changed });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+
+    /** STAND BEIM AUFTRAG (B4): die Schnappschüsse, neueste zuerst. */
+    async listSnapshots(req: Request, res: Response) {
+        try {
+            const tenderId = req.params.id as string;
+            const tender: any = await this.getAccessibleTender(tenderId, (req as any).user!, { omitPdfContent: true });
+            if (!tender) return res.status(404).json({ error: "Teklif bulunamadı." });
+            const rows: any[] = await (prisma as any).tenderSnapshot.findMany({
+                where: { tenderId, tenantId: tender.tenantId },
+                orderBy: { createdAt: 'desc' },
+            });
+            const employeeIds = [...new Set(rows.map((row) => row.createdById).filter(Boolean))] as string[];
+            const employees: any[] = employeeIds.length
+                ? await (prisma as any).employee.findMany({
+                    where: { id: { in: employeeIds } },
+                    select: { id: true, firstName: true, lastName: true },
+                })
+                : [];
+            const nameOf = new Map<string, string>(employees.map((row) => [row.id, `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim()]));
+            res.status(200).json(rows.map((row) => ({
+                id: row.id,
+                version: row.version,
+                orderNumber: row.orderNumber,
+                reason: row.reason,
+                positions: row.positions,
+                totals: row.totals,
+                createdAt: row.createdAt,
+                createdBy: row.createdById ? nameOf.get(row.createdById) || null : null,
+            })));
+        } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
     }

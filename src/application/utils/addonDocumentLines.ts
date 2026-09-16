@@ -18,6 +18,15 @@ const number = (value: unknown, label: string) => {
     return parsed;
 };
 
+/**
+ * Rabatte mit Vorzeichen (16.09.2026): `remainingAfterDiscounts` kennt nur
+ * Beträge ≥ 0 und machte aus einer Minderung still 0. Eine Minuszeile bzw.
+ * eine Minussumme wird über ihren Betrag rabattiert und behält ihr Vorzeichen —
+ * eine Minderung einer rabattierten Leistung ist genauso rabattiert.
+ */
+export const signedAfterDiscounts = (base: number, discounts: Parameters<typeof remainingAfterDiscounts>[1]): number =>
+    base < 0 ? -remainingAfterDiscounts(-base, discounts) : remainingAfterDiscounts(base, discounts);
+
 /** The project ledger stores the discounted amount; metadata preserves the editable document. */
 export function normalizeAddonLines(raw: unknown): { products: Product[]; texts: TextLine[] } {
     if (!Array.isArray(raw)) throw new Error('Positionen fehlen.');
@@ -32,8 +41,10 @@ export function normalizeAddonLines(raw: unknown): { products: Product[]; texts:
         if (id) ids.add(id);
         const kind = String(line.kind || (line.articleId || line.materialId ? 'PRODUCT' : 'TEXT')).toUpperCase();
         if (kind !== 'PRODUCT' && kind !== 'TEXT') throw new Error('Positionsart ungültig.');
-        const quantity = number(line.quantity ?? 1, 'Menge');
-        if (quantity <= 0) throw new Error('Menge muss grösser als 0 sein.');
+        // MINDERUNG (16.09.2026): eine NEGATIVE Menge ist eine Minuszeile —
+        // das fällt weg. Null bleibt ungültig, der Preis bleibt ≥ 0.
+        const quantity = Number(line.quantity ?? 1);
+        if (!Number.isFinite(quantity) || quantity === 0) throw new Error('Menge darf nicht 0 sein.');
         const title = String(line.description || '').trim();
         const unitPrice = line.unitPrice === undefined || line.unitPrice === null || line.unitPrice === '' ? null : number(line.unitPrice, 'Preis');
         const metadata: AddonLineMetadata = { description: title, quantity, unitPrice: unitPrice ?? 0, unit: String(line.unit || '').trim(),
@@ -44,11 +55,13 @@ export function normalizeAddonLines(raw: unknown): { products: Product[]; texts:
             products.push({ id, articleId, quantity, unitPrice, description: String(line.longDescription || '').trim() || null, metadata });
         } else {
             if (!title) throw new Error('Bezeichnung fehlt.');
-            metadata.unitPrice = unitPrice ?? number(line.amount ?? 0, 'Betrag') / quantity;
+            // Ohne Einzelpreis zählt der Betrag; sein Vorzeichen kommt aus der Menge.
+            metadata.unitPrice = unitPrice ?? Math.abs(Number(line.amount ?? 0)) / Math.abs(quantity);
+            if (!Number.isFinite(metadata.unitPrice)) throw new Error('Betrag ungültig.');
             const base = round2(quantity * metadata.unitPrice);
             if (!Number.isFinite(base)) throw new Error('Betrag ungültig.');
             texts.push({ id, description: title, longDescription: String(line.longDescription || '').trim() || null,
-                amount: round2(remainingAfterDiscounts(base, metadata.discounts)), documentLine: JSON.stringify(metadata) });
+                amount: round2(signedAfterDiscounts(base, metadata.discounts)), documentLine: JSON.stringify(metadata) });
         }
     });
     return { products, texts };
@@ -58,7 +71,7 @@ export function priceAddonProduct(line: Product, fallback: { salePrice?: number;
     const price = line.unitPrice ?? number(fallback.salePrice ?? 0, 'Preis');
     const base = round2(line.quantity * price);
     if (!Number.isFinite(base)) throw new Error('Betrag ungültig.');
-    const lineTotal = round2(remainingAfterDiscounts(base, line.metadata.discounts));
+    const lineTotal = round2(signedAfterDiscounts(base, line.metadata.discounts));
     return { ...line, lineTotal, unitPrice: lineTotal / line.quantity,
         documentLine: JSON.stringify({ ...line.metadata, unitPrice: price, description: line.metadata.description || fallback.name || '' }) };
 }

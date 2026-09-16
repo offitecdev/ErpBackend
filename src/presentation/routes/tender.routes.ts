@@ -330,6 +330,24 @@ router.post(
     (req, res) => tenderController.createMailDraft(req, res)
 );
 
+/* TEXTKORREKTUR (16.09.2026, B3): an einer gesperrten Offerte (freigegeben
+   oder im Auftrag) darf nur Text berichtigt werden — nie Menge oder Preis —,
+   nur von der Leitung, nur mit Grund; jede Änderung steht im Verlauf. */
+router.post(
+    '/:id/text-corrections',
+    requireAuth,
+    requirePermission('tenders.approve'),
+    (req, res) => tenderController.correctTexts(req, res)
+);
+
+/* STAND BEIM AUFTRAG (B4): die Schnappschüsse einer Offerte, neueste zuerst. */
+router.get(
+    '/:id/snapshots',
+    requireAuth,
+    requirePermission('tenders.view'),
+    (req, res) => tenderController.listSnapshots(req, res)
+);
+
 router.patch(
     '/mail-drafts/:draftId',
     requireAuth,

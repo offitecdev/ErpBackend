@@ -11,6 +11,7 @@ import {
     parseDiscountList,
     remainingAfterDiscounts,
 } from "../../../presentation/controllers/tender.discounts";
+import { invoiceError } from './invoiceErrors';
 
 /**
  * ── DIREKTRECHNUNG: DIE LEERE VORLAGE ────────────────────────────────────────
@@ -126,7 +127,7 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
     lineItems: InvoiceLineItemInput[];
 }> => {
     const recipientName = (input.recipientName || "").trim();
-    if (!recipientName) throw new Error("Rechnungsempfänger fehlt.");
+    if (!recipientName) throw invoiceError('NEED_RECIPIENT', 'Rechnungsempfänger fehlt.');
 
     // Leere Zeilen (angelegt, aber nie ausgefüllt) fallen still weg — der
     // Editor lässt sie stehen, auf dem Beleg haben sie nichts zu suchen.
@@ -135,9 +136,9 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
         const hasFigures = Number(line.quantity || 0) !== 0 || Number(line.unitAmount || 0) !== 0;
         return hasText || hasFigures;
     });
-    if (lines.length === 0) throw new Error("Rechnung ohne Positionen kann nicht erstellt werden.");
+    if (lines.length === 0) throw invoiceError('NEED_LINES', 'Rechnung ohne Positionen kann nicht erstellt werden.');
     const untitled = lines.find((line) => !(line.description || "").trim());
-    if (untitled) throw new Error("Jede Position braucht eine Bezeichnung.");
+    if (untitled) throw invoiceError('LINE_NEEDS_TITLE', 'Jede Position braucht eine Bezeichnung.');
 
     // Ein Bestandskunde muss dem Mandanten gehören — sonst hinge die
     // Rechnung an einem fremden Datensatz.
@@ -147,7 +148,7 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
             where: { id: customerId, tenantId: input.tenantId },
             select: { id: true },
         });
-        if (!customer) throw new Error("Kunde nicht gefunden.");
+        if (!customer) throw invoiceError('CUSTOMER_NOT_FOUND', 'Kunde nicht gefunden.', { status: 404 });
     }
 
     const vatRate = Number.isFinite(Number(input.vatRate)) ? Math.max(0, Number(input.vatRate)) : 0;
@@ -155,7 +156,7 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
     const lineItems: InvoiceLineItemInput[] = lines.map((line, index) => {
         const quantity = Number(line.quantity ?? 1);
         const unitAmount = Number(line.unitAmount ?? 0);
-        if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitAmount) || unitAmount < 0 || !Number.isFinite(quantity * unitAmount)) throw new Error('Menge oder Preis ung?ltig.');
+        if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitAmount) || unitAmount < 0 || !Number.isFinite(quantity * unitAmount)) throw invoiceError('LINE_INVALID', 'Menge oder Preis ungültig.');
         // Zeilenrabatt wie auf der Offerte: der Stapel greift auf Menge ×
         // Einzelpreis, und `lineTotal` ist das, was danach uebrig bleibt
         // (NETTO — die MWST kommt erst im Summenblock dazu). `discount`
@@ -197,12 +198,12 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
     const linesTotal = round2(lineItems.reduce((sum, item) => sum + item.lineTotal, 0));
     const netTotal = round2(remainingAfterDiscounts(linesTotal, discountList));
     const grossTotal = round2(netTotal * (1 + vatRate / 100));
-    if (grossTotal <= 0) throw new Error("Rechnungsbetrag muss grösser als 0 sein.");
+    if (grossTotal <= 0) throw invoiceError('AMOUNT_ZERO', 'Rechnungsbetrag muss grösser als 0 sein.');
 
     const stages = normalizePaymentStages(input.paymentStages);
-    if (input.paymentStages != null && !stages && !(Array.isArray(input.paymentStages) && input.paymentStages.length === 0)) throw new Error('Zahlungsplan ung?ltig.');
+    if (input.paymentStages != null && !stages && !(Array.isArray(input.paymentStages) && input.paymentStages.length === 0)) throw invoiceError('PLAN_INVALID', 'Zahlungsplan ungültig.');
     const planError = stages?.length ? validatePaymentStages(stages) : null;
-    if (planError) throw new Error(planError);
+    if (planError) throw invoiceError('PLAN_INVALID', planError);
     const invoiceDate = parseIsoDate(input.invoiceDate) ?? new Date();
 
     return {

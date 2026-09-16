@@ -101,3 +101,18 @@ export const articleStockTotal = async (
     });
     return Number(sum?._sum?.currentQuantity || 0);
 };
+
+/**
+ * VERBRAUCH MIT VORZEICHEN (16.09.2026): eine Projektmaterialzeile traegt eine
+ * Menge, die seit der Minderung auch negativ sein kann. Positiv = aus dem
+ * Lager heraus (OUT), negativ = zurueck ins Lager (IN). `adjustArticleStock`
+ * selbst nimmt nur Betraege > 0 und uebergaenge eine Minuszahl still.
+ */
+export const bookConsumption = async (
+    tx: ArticleStockTx,
+    opts: Omit<Parameters<typeof adjustArticleStock>[1], 'direction'>,
+): Promise<void> => {
+    const quantity = Number(opts.quantity) || 0;
+    if (quantity === 0) return;
+    await adjustArticleStock(tx, { ...opts, quantity: Math.abs(quantity), direction: quantity > 0 ? 'OUT' : 'IN' });
+};

@@ -76,6 +76,22 @@ export const labelColorFor = (seed: string): LabelColor => {
     return LABEL_COLORS[hash % LABEL_COLORS.length] ?? 'gray';
 };
 
+/* ── Sorular & Sorunlar (16.09.2026) ────────────────────────────────────── */
+
+/** Die zwei Reiter der Kapsel: «Sorular» und «Sorunlar». */
+export const ISSUE_KINDS = ['QUESTION', 'ISSUE'] as const;
+export type IssueKind = typeof ISSUE_KINDS[number];
+
+export const ISSUE_STATUSES = ['OPEN', 'RESOLVED'] as const;
+export type IssueStatus = typeof ISSUE_STATUSES[number];
+
+/** TO = die erste markierte Person (An-Feld der Mail), CC = alle weiteren. */
+export const ISSUE_PERSON_ROLES = ['TO', 'CC'] as const;
+export type IssuePersonRole = typeof ISSUE_PERSON_ROLES[number];
+
+export const isIssueKind = (value: unknown): value is IssueKind =>
+    typeof value === 'string' && (ISSUE_KINDS as readonly string[]).includes(value);
+
 /* ── Persönliche Einstellungen ──────────────────────────────────────────── */
 
 export const REMINDER_LEAD_MINUTES = [10, 30, 60, 120] as const;
@@ -107,6 +123,10 @@ export const ACTIVITY = {
     DELETE_REQUESTED: 'DELETE_REQUESTED',
     DELETE_REQUEST_CANCELLED: 'DELETE_REQUEST_CANCELLED',
     DELETE_REJECTED: 'DELETE_REJECTED',
+    ISSUE_OPENED: 'ISSUE_OPENED',
+    ISSUE_REPLIED: 'ISSUE_REPLIED',
+    ISSUE_RESOLVED: 'ISSUE_RESOLVED',
+    ISSUE_REOPENED: 'ISSUE_REOPENED',
     PARTNER_REQUESTED: 'PARTNER_REQUESTED',
     PARTNER_REQUEST_CANCELLED: 'PARTNER_REQUEST_CANCELLED',
     PARTNER_REJECTED: 'PARTNER_REJECTED',
@@ -135,6 +155,9 @@ export const NOTIFY = {
     DELETE_REQUEST: 'TASKS_DELETE_REQUEST',
     DELETE_APPROVED: 'TASKS_DELETE_APPROVED',
     DELETE_REJECTED: 'TASKS_DELETE_REJECTED',
+    ISSUE_TAGGED: 'TASKS_ISSUE_TAGGED',
+    ISSUE_REPLY: 'TASKS_ISSUE_REPLY',
+    ISSUE_RESOLVED: 'TASKS_ISSUE_RESOLVED',
     PARTNER_REQUEST: 'TASKS_PARTNER_REQUEST',
     PARTNER_APPROVED: 'TASKS_PARTNER_APPROVED',
     PARTNER_REJECTED: 'TASKS_PARTNER_REJECTED',
@@ -160,6 +183,9 @@ export const NOTIFY_I18N: Record<NotifyType, string> = {
     TASKS_DELETE_REQUEST: 'notify.tasksModule.deleteRequest',
     TASKS_DELETE_APPROVED: 'notify.tasksModule.deleteApproved',
     TASKS_DELETE_REJECTED: 'notify.tasksModule.deleteRejected',
+    TASKS_ISSUE_TAGGED: 'notify.tasksModule.issueTagged',
+    TASKS_ISSUE_REPLY: 'notify.tasksModule.issueReply',
+    TASKS_ISSUE_RESOLVED: 'notify.tasksModule.issueResolved',
     TASKS_PARTNER_REQUEST: 'notify.tasksModule.partnerRequest',
     TASKS_PARTNER_APPROVED: 'notify.tasksModule.partnerApproved',
     TASKS_PARTNER_REJECTED: 'notify.tasksModule.partnerRejected',
@@ -168,6 +194,8 @@ export const NOTIFY_I18N: Record<NotifyType, string> = {
 /** Adressen der Oberfläche, auf die eine Benachrichtigung springt. */
 export const taskLinkUrl = (taskId: string): string => `/tasks/${taskId}`;
 export const roomLinkUrl = (roomId: string): string => `/tasks/chat/${roomId}`;
+/** Der Faden öffnet sich im Reiter «Sorular & Sorunlar» der Aufgabe. */
+export const issueLinkUrl = (taskId: string, issueId: string): string => `/tasks/${taskId}?issue=${issueId}`;
 
 /* ── Erinnerungsschleife ────────────────────────────────────────────────── */
 
@@ -189,7 +217,7 @@ export const BLOCK_ALIGNMENTS = ['left', 'center', 'right'] as const;
 
 /* ── Dateien und Chat ───────────────────────────────────────────────────── */
 
-export const ATTACHMENT_KINDS = ['TASK', 'COMMENT', 'CHAT'] as const;
+export const ATTACHMENT_KINDS = ['TASK', 'COMMENT', 'CHAT', 'ISSUE', 'DAILY'] as const;
 export type AttachmentKind = typeof ATTACHMENT_KINDS[number];
 
 export const CHAT_MESSAGE_TYPES = ['TEXT', 'SYSTEM'] as const;
@@ -206,6 +234,12 @@ export const TASK_LIMITS = {
     checklistTitleMax: 200,
     checklistItemTextMax: 500,
     commentMax: 5_000,
+    issueTitleMax: 160,
+    issueTextMax: 5_000,
+    issueFilesMax: 10,
+    /** Markierte Personen je Faden — die Erste steht im An-Feld der Mail. */
+    issuePeopleMax: 20,
+    issueTasksMax: 10,
     chatMessageMax: 5_000,
     roomNameMax: 80,
     blocksMax: 500,

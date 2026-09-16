@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteAttachment = exports.attachmentPublicUrl = exports.readAttachmentContent = exports.uploadTaskAttachments = exports.listTaskAttachments = exports.storeNewAttachments = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const contentService_1 = require("./contentService");
 const taskActivity_1 = require("./taskActivity");
 const taskConstants_1 = require("./taskConstants");
 const taskDb_1 = require("./taskDb");
@@ -19,14 +20,15 @@ const taskRows_1 = require("./taskRows");
  * Görevly `attachments.js`, serverseitig und mit Rechten:
  *   hochladen   Leitung ODER wer an der Aufgabe messen darf (canUpload);
  *               alle Dateien des Reiters zusammen höchstens `taskFilesBytesMax`
- *   öffnen      NUR über GET /attachments/:id/content — Aufgaben- und
- *               Kommentardateien: wer die Aufgabe sieht; Chatdateien: nur
+ *   öffnen      NUR über GET /attachments/:id/content — Aufgaben-, Kommentar-
+ *               und Fragendateien: wer die Aufgabe sieht; Chatdateien: nur
  *               Mitglieder des Raums (die Leitung hat im Chat keinen Vorrang)
  *   entfernen   wer sie öffnen darf, und dazu — Aufgabendatei: canUpload ·
  *               Kommentar- und Chatdatei: wer sie hochgeladen hat oder die Leitung
  *
- * Ein Bild- oder Dateiblock im Inhalt, dessen Datei entfernt wurde, bleibt
- * stehen: das nächste Speichern des Inhalts wirft den toten Verweis hinaus.
+ * Datei und Block hängen zusammen (15.09.2026): wird eine Aufgabendatei hier
+ * entfernt, verschwinden ihre Blöcke im Inhalt mit; wird ein Bild-/Dateiblock
+ * im Editor gelöscht, entfernt `saveTaskContent` die Datei.
  */
 const megabytes = (bytes) => Math.round(bytes / (1024 * 1024));
 /**
@@ -122,10 +124,18 @@ const loadAttachment = async (actor, attachmentId) => {
 };
 /**
  * Darf die Person die Datei überhaupt erreichen? Chatdateien: nur als Mitglied
- * des Raums (kein Vorrang der Leitung, Görevly). Aufgaben- und Kommentardateien:
- * die Aufgabe muss für sie sichtbar sein — sie kommt samt Rechten zurück.
+ * des Raums (kein Vorrang der Leitung, Görevly). Dateien des Gün sonu raporu:
+ * wer sie hochgeladen hat — und wer alle Rapporte liest (wie im Arbeitsrapport).
+ * Aufgaben- und Kommentardateien: die Aufgabe muss für sie sichtbar sein — sie
+ * kommt samt Rechten zurück.
  */
 const requireAttachmentAccess = async (actor, row) => {
+    if (row.kind === 'DAILY') {
+        if (row.uploadedById !== actor.employeeId && !actor.seesAll) {
+            throw (0, taskErrors_1.taskForbidden)('REPORT_FORBIDDEN', 'Diese Datei gehört zum Rapport einer anderen Person.');
+        }
+        return null;
+    }
     if (row.kind === 'CHAT') {
         const member = row.roomId
             ? await prisma_client_1.default.taskChatMember.findFirst({
@@ -168,13 +178,28 @@ const deleteAttachment = async (actor, attachmentId) => {
     const row = await loadAttachment(actor, attachmentId);
     const task = await requireAttachmentAccess(actor, row);
     // Aufgabendateien gehören der Aufgabe: wer hochladen darf, darf entfernen.
-    // Kommentar- und Chatdateien gehören der Person, die sie hochgeladen hat — und der Leitung.
+    // Kommentar-, Frage- und Chatdateien gehören der Person, die sie hochgeladen hat — und der Leitung.
     const allowed = row.kind === 'TASK'
         ? task?.permissions.canUpload === true
         : row.uploadedById === actor.employeeId || actor.isManager;
     if (!allowed)
         throw (0, taskErrors_1.taskForbidden)('ATTACHMENT_DELETE_FORBIDDEN', 'Diese Datei dürfen Sie nicht entfernen.');
-    await prisma_client_1.default.taskAttachment.deleteMany({ where: { id: row.id, tenantId: actor.tenantId } });
+    if (row.kind === 'TASK' && row.taskId) {
+        const taskId = row.taskId;
+        // Aufgabendatei: ihre Bild-/Dateiblöcke im Inhalt gehen in derselben Transaktion mit (wie bei Checklisten).
+        await (0, taskDb_1.runTasksTransaction)(async (tx) => {
+            if (!(await (0, taskRows_1.lockTaskRow)(tx, actor.tenantId, taskId)))
+                throw (0, taskErrors_1.taskNotFound)();
+            await tx.taskAttachment.deleteMany({ where: { id: row.id, tenantId: actor.tenantId } });
+            const base = await (0, contentService_1.lockTaskContent)(tx, actor.tenantId, taskId);
+            const blocks = base.blocks.filter((block) => !((block.type === 'image' || block.type === 'file') && block.meta.attId === row.id));
+            if (blocks.length !== base.blocks.length)
+                await (0, contentService_1.writeTaskContent)(tx, actor, taskId, base, blocks);
+        });
+    }
+    else {
+        await prisma_client_1.default.taskAttachment.deleteMany({ where: { id: row.id, tenantId: actor.tenantId } });
+    }
     await (0, taskFiles_1.removeStoredFiles)([row.fileRef]);
 };
 exports.deleteAttachment = deleteAttachment;

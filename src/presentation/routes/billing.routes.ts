@@ -9,6 +9,7 @@ import { ListInvoicesUseCase } from '../../application/use-cases/billing/ListInv
 import { UpdateInvoiceStatusUseCase } from '../../application/use-cases/billing/UpdateInvoiceStatusUseCase';
 import { DeleteInvoiceUseCase } from '../../application/use-cases/billing/DeleteInvoiceUseCase';
 import { UpdateDirectInvoiceUseCase } from '../../application/use-cases/billing/UpdateDirectInvoiceUseCase';
+import { UpdateInvoiceDatesUseCase } from '../../application/use-cases/billing/UpdateInvoiceDatesUseCase';
 import { InvoiceRepository } from '../../infrastructure/repositories/InvoiceRepository';
 
 const router = Router();
@@ -21,7 +22,8 @@ const controller = new BillingController(
     new UpdateInvoiceStatusUseCase(invoiceRepo),
     new DeleteInvoiceUseCase(invoiceRepo),
     new CreateDirectInvoiceUseCase(invoiceRepo),
-    new UpdateDirectInvoiceUseCase(invoiceRepo)
+    new UpdateDirectInvoiceUseCase(invoiceRepo),
+    new UpdateInvoiceDatesUseCase(invoiceRepo)
 );
 
 router.use(requireAuth);
@@ -40,6 +42,8 @@ router.get('/invoices/next-number', requirePermission('billing.create'), (req, r
 // Produktbilder der Direktrechnung: dieselbe Tabelle wie das Angebot braucht
 // dieselben Bilder, aber ohne Offerte, an der sie hängen könnten.
 router.post('/product-images', requirePermission('billing.view'), (req, res) => controller.getProductImages(req, res));
+// Rechnungsdatum + Fälligkeit — auch für gestellte Rechnungen (16.09.2026).
+router.patch('/invoices/:id/dates', requirePermission('billing.manage'), (req, res) => controller.updateDates(req, res));
 router.patch('/invoices/:id/status', requirePermission('billing.manage'), (req, res) => controller.updateStatus(req, res));
 // Kalıcı silme — yalnızca CANCELLED faturalar (use case doğrular).
 router.delete('/invoices/:id', requirePermission('billing.manage'), (req, res) => controller.delete(req, res));

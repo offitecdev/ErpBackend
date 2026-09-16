@@ -73,13 +73,6 @@ export const assertSystemAdmin = (actor: TasksActor): void => {
     if (!actor.isSystemAdmin) throw taskForbidden('ADMIN_ONLY', 'Das dürfen nur Admins.');
 };
 
-/** Abschluss bestätigen/ablehnen oder direkt abschliessen: nur die Administratorrolle. */
-export const assertCompletionAdmin = (actor: TasksActor): void => {
-    if (!actor.isSystemAdmin) {
-        throw taskForbidden('COMPLETION_ADMIN_ONLY', 'Den Abschluss bestätigt nur die Administratorrolle.');
-    }
-};
-
 export const assertCanDelete = (actor: TasksActor): void => {
     if (!actor.canDelete) throw taskForbidden('DELETE_FORBIDDEN', 'Zum Löschen fehlt die Berechtigung.');
 };

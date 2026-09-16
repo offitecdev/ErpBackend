@@ -171,6 +171,10 @@ model SalesOrder {
   projectId              String?
   parentSalesOrderId     String?
   revisionNumber         Int?
+  // Die Version der Offerte, aus der dieser Auftrag entstand (16.09.2026).
+  // Geht der Auftrag zurück in den Entwurf, zählt die Offerte eine Version
+  // hoch — die AB weiss dann, auf welchem Stand sie beruhte.
+  tenderVersion          Int?
   // Sipariş kodu — ana sipariş AB-2026-10001 (AUFTRAGSBESTÄTIGUNG; 29.08.2026'ya
   // kadar AU-), ek sipariş (Nachtrag/Zusatzauftrag) NT-2026-10001. Sunucuda
   // DocumentCounter'dan üretilir, her dilde aynıdır.

@@ -1,10 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isTaskOverdue = exports.effectiveTaskStatus = exports.taskPermissions = exports.canTrackTask = exports.canEditTask = exports.canSeeTask = exports.isTaskAssignee = void 0;
+exports.isTaskOverdue = exports.effectiveTaskStatus = exports.taskPermissions = exports.canTrackTask = exports.canEditTask = exports.canSeeTask = exports.isIssuePerson = exports.isTaskAssignee = void 0;
 const taskConstants_1 = require("./taskConstants");
 const isTaskAssignee = (actor, task) => task.assigneeIds.includes(actor.employeeId);
 exports.isTaskAssignee = isTaskAssignee;
-const canSeeTask = (actor, task) => actor.seesAll || (0, exports.isTaskAssignee)(actor, task) || task.createdById === actor.employeeId;
+/** In einem Faden markiert («Sorular & Sorunlar»). */
+const isIssuePerson = (actor, task) => (task.issuePersonIds ?? []).includes(actor.employeeId);
+exports.isIssuePerson = isIssuePerson;
+const canSeeTask = (actor, task) => actor.seesAll || (0, exports.isTaskAssignee)(actor, task) || task.createdById === actor.employeeId
+    || (0, exports.isIssuePerson)(actor, task);
 exports.canSeeTask = canSeeTask;
 const canEditTask = (actor, task) => actor.isManager || (task.createdById === actor.employeeId && task.reviewState === 'PENDING');
 exports.canEditTask = canEditTask;
@@ -16,9 +20,7 @@ const taskPermissions = (actor, task) => {
     const canSee = (0, exports.canSeeTask)(actor, task);
     const canEdit = (0, exports.canEditTask)(actor, task);
     const canTrack = (0, exports.canTrackTask)(actor, task);
-    const approvalPending = task.approvalState === 'PENDING';
     const deletePending = Boolean(task.deleteRequestedById);
-    const partnerPending = Boolean(task.partnerRequestedById);
     return {
         isAssignee,
         isCreator,
@@ -29,22 +31,17 @@ const taskPermissions = (actor, task) => {
         canUpload: actor.isManager || canTrack,
         canComment: canSee,
         canFlag: canEdit || canTrack,
-        // Alle ausser der Administratorrolle BEANTRAGEN den Abschluss: Verantwortliche,
-        // und die Leitung für sichtbare offene Aufgaben.
-        canRequestCompletion: !actor.isSystemAdmin && !approvalPending
-            && (canTrack || (actor.isManager && canSee && (0, taskConstants_1.isOpenTaskStatus)(task.status) && task.reviewState !== 'REJECTED')),
-        canApproveCompletion: actor.isSystemAdmin && canSee,
-        canCancelCompletionRequest: approvalPending
-            && (task.approvalRequestedById === actor.employeeId || actor.isManager),
+        // Fertig ist fertig: wer an der Aufgabe misst — und die Leitung — setzt
+        // sie selbst auf erledigt. Keine Anfrage, keine Freigabe (16.09.2026).
+        canComplete: (0, taskConstants_1.isOpenTaskStatus)(task.status) && task.reviewState !== 'REJECTED'
+            && (canTrack || (actor.isManager && canSee)),
         canManage: actor.isManager,
         canDelete: actor.canDelete,
         canRequestDelete: !actor.canDelete && (isAssignee || isCreator) && !deletePending,
         canCancelDeleteRequest: deletePending && (task.deleteRequestedById === actor.employeeId || actor.canDelete),
         canAssign: actor.isSystemAdmin,
-        canRequestPartner: !actor.isSystemAdmin && isAssignee && !partnerPending
+        canAddPartner: !actor.isSystemAdmin && isAssignee
             && (0, taskConstants_1.isOpenTaskStatus)(task.status) && task.reviewState !== 'REJECTED',
-        canCancelPartnerRequest: partnerPending && (task.partnerRequestedById === actor.employeeId || actor.isSystemAdmin),
-        canDecidePartnerRequest: partnerPending && actor.isSystemAdmin,
     };
 };
 exports.taskPermissions = taskPermissions;

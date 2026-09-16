@@ -4717,19 +4717,20 @@ router.post('/purchase-orders/:id/mail-manual', AuthMiddleware_1.requireAuth, (0
         if (!existing)
             return res.status(404).json({ error: 'Sipariş bulunamadı.' });
         const sent = req.body?.sent === true;
-        const isManual = String(existing.emailRecipient || '').startsWith(PO_MANUAL_MAIL_PREFIX);
+        // 15.09.2026 (Samet): «istediğim zaman değiştirebiliyor olmam gerek» —
+        // das Häkchen lässt sich jederzeit setzen und entfernen, auch auf
+        // einem Auftragsentwurf und auch nach einer Systemsendung.
         if (sent) {
             const next = existing.status === 'DRAFT'
                 ? 'PRICE_REQUEST'
-                : existing.status === 'PENDING'
+                : existing.status === 'PENDING' || existing.status === 'ORDER_DRAFT'
                     ? 'ORDERED'
                     : null;
             if (!next) {
-                // Schon gesendet → nichts zu tun. Auftragsentwurf → erst bestätigen.
                 if (existing.status === 'PRICE_REQUEST' || existing.status === 'ORDERED') {
                     return res.status(200).json(parsePurchaseOrderRow(existing));
                 }
-                return res.status(400).json({ error: 'Der Auftrag muss zuerst bestätigt werden.', code: 'NOT_SENDABLE' });
+                return res.status(400).json({ error: 'Im Wareneingang gibt es keine Mail mehr.', code: 'NOT_SENDABLE' });
             }
             const recipient = poStripHeader(String(req.body?.recipient ?? existing.supplierEmail ?? '')).slice(0, 180);
             const updated = await prisma_client_1.default.purchaseOrder.update({
@@ -4741,9 +4742,6 @@ router.post('/purchase-orders/:id/mail-manual', AuthMiddleware_1.requireAuth, (0
                 },
             });
             return res.status(200).json(parsePurchaseOrderRow(updated));
-        }
-        if (!isManual) {
-            return res.status(400).json({ error: 'Diese Mail wurde über das System gesendet — das lässt sich nicht zurücknehmen.', code: 'NOT_MANUAL' });
         }
         const back = existing.status === 'PRICE_REQUEST'
             ? 'DRAFT'

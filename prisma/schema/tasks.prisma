@@ -81,6 +81,8 @@ model Task {
   checklists     TaskChecklist[]
   checklistItems TaskChecklistItem[]
   comments       TaskComment[]
+  issues         TaskIssue[]
+  issueMentions  TaskIssueTaskLink[]
   attachments    TaskAttachment[]
   sessions       TaskTimeSession[]
   activities     TaskActivity[]
@@ -221,11 +223,109 @@ model TaskComment {
   @@index([taskId, createdAt])
 }
 
+/// ── SORULAR & SORUNLAR (16.09.2026, Vorgabe Samet) ───────────────────────────
+///
+/// «görev detayına soru ve sorunlar diye bir bölüm aç»: ein Faden je Frage oder
+/// Problem an EINER Aufgabe. Zwei Arten in zwei Reitern derselben Kapsel
+/// (`kind`): QUESTION («Sorular») und ISSUE («Sorunlar»).
+///
+/// Ein Faden ist eine grosse hellgraue Sprechblase mit farbiger Überschrift
+/// (`title`) — darunter stehen die Antworten. Gefragt wird NICHT ins Leere:
+/// `people` sind die markierten Personen; die ERSTE bekommt die Mail ins
+/// An-Feld, die übrigen in Kopie. `important` schickt sie als wichtige Post
+/// (Ausrufezeichen im Posteingang).
+///
+/// `links` markiert andere AUFGABEN im Faden («görev etiketleme»).
+model TaskIssue {
+  id            String    @id
+  tenantId      String
+  taskId        String
+  /// QUESTION | ISSUE
+  kind          String    @db.VarChar(12)
+  /// Die farbige Überschrift über der Sprechblase.
+  title         String    @db.VarChar(160)
+  /// OPEN | RESOLVED
+  status        String    @default("OPEN") @db.VarChar(12)
+  /// Wichtig: Ausrufezeichen auf der Karte UND wichtige Mail.
+  important     Boolean   @default(false)
+  authorId      String
+  /// Sortierung der Fäden: der zuletzt beantwortete steht unten.
+  lastMessageAt DateTime
+  resolvedById  String?
+  resolvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  task     Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  messages TaskIssueMessage[]
+  people   TaskIssuePerson[]
+  links    TaskIssueTaskLink[]
+
+  @@index([tenantId, taskId, kind, lastMessageAt])
+  @@index([tenantId, authorId])
+}
+
+/// Eine Sprechblase: die Frage selbst (die erste) oder eine Antwort. Text und
+/// Dateien stehen ZUSAMMEN in einer Blase — Bild und PDF gehören zur Nachricht,
+/// nicht in einen eigenen Anhangstreifen.
+model TaskIssueMessage {
+  id        String   @id
+  tenantId  String
+  issueId   String
+  authorId  String
+  text      String   @db.Text
+  createdAt DateTime @default(now())
+
+  issue       TaskIssue        @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  attachments TaskAttachment[]
+
+  @@index([issueId, createdAt])
+}
+
+/// Eine markierte Person am Faden. `role`: TO = die Erste (An-Feld der Mail),
+/// CC = alle weiteren. Wer antwortet, nimmt die fragende Person automatisch
+/// mit auf — sie soll die Antwort sehen, ohne sich selbst markiert zu haben.
+model TaskIssuePerson {
+  id         String   @id
+  tenantId   String
+  issueId    String
+  employeeId String
+  /// TO | CC
+  role       String   @default("CC") @db.VarChar(4)
+  addedById  String?
+  createdAt  DateTime @default(now())
+
+  issue TaskIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, employeeId])
+  @@index([tenantId, employeeId])
+}
+
+/// Eine im Faden markierte ANDERE Aufgabe («görev etiketleme»).
+model TaskIssueTaskLink {
+  id        String   @id
+  tenantId  String
+  issueId   String
+  taskId    String
+  addedById String?
+  createdAt DateTime @default(now())
+
+  issue TaskIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  task  Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, taskId])
+  @@index([taskId])
+}
+
 /// Datei des Moduls. Die Bytes liegen in der Ablage (`local:`/`r2:`-Verweis),
 /// nie in der Datenbank. `kind`:
 ///   TASK    — Dateien-Reiter der Aufgabe (auch Bild-/Dateiblöcke verweisen darauf)
 ///   COMMENT — an einem Kommentar (taskId ist mitgesetzt)
 ///   CHAT    — an einer Chatnachricht (roomId ist mitgesetzt)
+///   ISSUE   — an einer Nachricht in «Sorular & Sorunlar» (taskId UND issueMessageId
+///             sind mitgesetzt; PDF und Bild stehen IN derselben Sprechblase)
+///   DAILY   — am Gün sonu raporu einer Person (16.09.2026): KEINE Aufgabe, nur
+///             `dailyDate` (Kalendertag) + `uploadedById`; der Rapport verweist als Adresse darauf
 model TaskAttachment {
   id           String   @id
   tenantId     String
@@ -234,6 +334,8 @@ model TaskAttachment {
   commentId    String?
   roomId       String?
   messageId    String?
+  issueMessageId String?
+  dailyDate    String?  @db.VarChar(10)
   fileName     String   @db.VarChar(255)
   contentType  String   @db.VarChar(160)
   sizeBytes    Int
@@ -245,11 +347,14 @@ model TaskAttachment {
   comment TaskComment?     @relation(fields: [commentId], references: [id], onDelete: Cascade)
   room    TaskChatRoom?    @relation(fields: [roomId], references: [id], onDelete: Cascade)
   message TaskChatMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  issueMessage TaskIssueMessage? @relation(fields: [issueMessageId], references: [id], onDelete: Cascade)
 
   @@index([taskId, kind, createdAt])
   @@index([commentId])
   @@index([roomId])
   @@index([messageId])
+  @@index([issueMessageId])
+  @@index([tenantId, uploadedById, dailyDate])
   @@index([tenantId])
 }
 
@@ -394,15 +499,18 @@ model TaskUserSetting {
   updatedAt           DateTime @updatedAt
 }
 
-/// Gün sonu raporu (14.09.2026, Samet): hafta içi 16:00'da madde madde
-/// «bugün ne yaptım». `reportDate` = Kalendertag des Browsers (YYYY-MM-DD).
-/// `items` = JSON string[]; `taskTimes` = JSON [{ taskId, title, ms }] — beim
-/// Speichern aus den Messungen des Tages kopiert. Wochenrapport = Summe.
+/// Gün sonu raporu (14.09.2026, Samet): hafta içi 16:00'da «bugün ne yaptım».
+/// `reportDate` = Kalendertag des Browsers (YYYY-MM-DD).
+/// `body` = das freie Blatt in Markdown (16.09.2026 — davor `items`, JSON string[],
+/// das bei alten Rapporten noch steht und beim Lesen zu Aufzählungspunkten wird).
+/// `taskTimes` = JSON [{ taskId, title, ms }] — beim Speichern aus den Messungen
+/// des Tages kopiert (nicht mehr angezeigt, bleibt als Datenspur).
 model TaskDailyReport {
   id          String   @id
   tenantId    String
   employeeId  String
   reportDate  String   @db.VarChar(10)
+  body        String?  @db.MediumText
   items       String   @db.Text
   taskTimes   String   @db.Text
   totalMs     BigInt   @default(0)

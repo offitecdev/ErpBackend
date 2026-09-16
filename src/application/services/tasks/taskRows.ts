@@ -96,6 +96,10 @@ export interface TaskCore {
     checkDone: number;
     commentCount: number;
     attachmentCount: number;
+    /** In «Sorular & Sorunlar» markierte Personen — sie dürfen die Aufgabe sehen. */
+    issuePersonIds: string[];
+    /** Offene Fäden in «Sorular & Sorunlar» (Marke am Reiter). */
+    openIssueCount: number;
     /** Summe der ABGESCHLOSSENEN Messungen. */
     closedMs: number;
     /** Anzahl aller Messungen (auch laufender). */
@@ -121,6 +125,10 @@ export const TASK_CORE_COLUMNS = Prisma.sql`
     (SELECT COUNT(*) FROM TaskChecklistItem ci WHERE ci.taskId = t.id AND ci.done = 1) AS checkDone,
     (SELECT COUNT(*) FROM TaskComment tc WHERE tc.taskId = t.id) AS commentCount,
     (SELECT COUNT(*) FROM TaskAttachment tf WHERE tf.taskId = t.id AND tf.kind = 'TASK') AS attachmentCount,
+    (SELECT GROUP_CONCAT(DISTINCT ip.employeeId SEPARATOR ',')
+       FROM TaskIssuePerson ip JOIN TaskIssue ti ON ti.id = ip.issueId
+      WHERE ti.taskId = t.id) AS issuePersonCsv,
+    (SELECT COUNT(*) FROM TaskIssue ti WHERE ti.taskId = t.id AND ti.status = 'OPEN') AS openIssueCount,
     (SELECT COALESCE(SUM(ts.durationMs), 0) FROM TaskTimeSession ts
       WHERE ts.taskId = t.id AND ts.endedAt IS NOT NULL) AS closedMs,
     (SELECT COUNT(*) FROM TaskTimeSession ts WHERE ts.taskId = t.id) AS sessionCount
@@ -172,6 +180,8 @@ export const mapTaskCore = (row: Record<string, unknown>): TaskCore => ({
     checkDone: rawNumber(row.checkDone),
     commentCount: rawNumber(row.commentCount),
     attachmentCount: rawNumber(row.attachmentCount),
+    issuePersonIds: rawCsv(row.issuePersonCsv),
+    openIssueCount: rawNumber(row.openIssueCount),
     closedMs: rawNumber(row.closedMs),
     sessionCount: rawNumber(row.sessionCount),
 });
@@ -219,11 +229,15 @@ export const lockTaskRow = async (tx: TasksDb, tenantId: string, taskId: string)
 /**
  * Sichtbarkeitsbedingung einer Nicht-Admin-Person über `t`: zugewiesen ODER
  * selbst angelegt (15.09.2026, Samet: «yönetici olmadığım sürece sadece bana
- * atanan ve benim oluşturduğum görevleri görebilmeliyim»).
+ * atanan ve benim oluşturduğum görevleri görebilmeliyim») — ODER in einer Frage
+ * bzw. einem Problem dieser Aufgabe markiert (16.09.2026): wer gefragt wird,
+ * muss die Aufgabe öffnen und antworten können.
  */
 export const memberVisibilitySql = (employeeId: string): Prisma.Sql => Prisma.sql`(
     t.createdById = ${employeeId}
     OR EXISTS (SELECT 1 FROM TaskAssignee va WHERE va.taskId = t.id AND va.employeeId = ${employeeId})
+    OR EXISTS (SELECT 1 FROM TaskIssuePerson vp JOIN TaskIssue vi ON vi.id = vp.issueId
+                WHERE vi.taskId = t.id AND vp.employeeId = ${employeeId})
 )`;
 
 /** Firmen- und Sichtbarkeitsbedingung für die handelnde Person. */
@@ -306,6 +320,8 @@ export interface TaskRowDto {
     checklist: { done: number; total: number };
     commentCount: number;
     attachmentCount: number;
+    /** Offene Fragen und Probleme — die Marke am Reiter «Sorular & Sorunlar». */
+    openIssueCount: number;
     boardPosition: number;
     overdue: boolean;
     /** Nur die EIGENE laufende Messung. */
@@ -352,6 +368,7 @@ export const toTaskRowDto = (
         checklist: { done: core.checkDone, total: core.checkTotal },
         commentCount: core.commentCount,
         attachmentCount: core.attachmentCount,
+        openIssueCount: core.openIssueCount,
         boardPosition: core.boardPosition,
         overdue: isTaskOverdue(core, now),
         timer: { runningForMe: Boolean(mine), myStartedAt: mine?.startedAt ?? null },
@@ -402,12 +419,6 @@ export interface TaskDetailDto extends TaskRowDto {
         requestedAt: Date | null;
         note: string | null;
     };
-    /** Offene Ortak-ekle-Anfrage: wer beantragt, welche EINE Person (requestedById null = keine). */
-    partnerRequest: {
-        requestedById: string | null;
-        employeeId: string | null;
-        requestedAt: Date | null;
-    };
     /** Gecikme açıklaması der verspätet fertig gemeldeten Aufgabe (reason null = keine). */
     delay: {
         reason: string | null;
@@ -447,11 +458,6 @@ export const toTaskDetailDto = (
         requestedAt: core.deleteRequestedAt,
         note: core.deleteRequestNote,
     },
-    partnerRequest: {
-        requestedById: core.partnerRequestedById,
-        employeeId: core.partnerRequestEmployeeId,
-        requestedAt: core.partnerRequestedAt,
-    },
     delay: {
         reason: core.delayReason,
         byId: core.delayReasonById,
@@ -468,8 +474,6 @@ export const taskPeopleIds = (core: TaskCore, running: readonly RunningSessionRe
     ...(core.reviewRequestedById ? [core.reviewRequestedById] : []),
     ...(core.reviewDecidedById ? [core.reviewDecidedById] : []),
     ...(core.deleteRequestedById ? [core.deleteRequestedById] : []),
-    ...(core.partnerRequestedById ? [core.partnerRequestedById] : []),
-    ...(core.partnerRequestEmployeeId ? [core.partnerRequestEmployeeId] : []),
     ...(core.delayReasonById ? [core.delayReasonById] : []),
     ...running.map((session) => session.employeeId),
 ];

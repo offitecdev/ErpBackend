@@ -1,6 +1,7 @@
 import { IInvoiceRepository } from '../../../domain/repositories/IInvoiceRepository';
 import { Invoice } from '../../../domain/entities/Invoice';
 import { buildDirectInvoiceDraft, type CreateDirectInvoiceInput } from './CreateDirectInvoiceUseCase';
+import { invoiceError } from './invoiceErrors';
 
 /**
  * ── EINE DIREKTRECHNUNG ÄNDERN ───────────────────────────────────────────────
@@ -30,12 +31,12 @@ export class UpdateDirectInvoiceUseCase {
 
     async execute(id: string, input: CreateDirectInvoiceInput): Promise<Invoice> {
         const existing = await this.invoiceRepository.findById(id, input.tenantId);
-        if (!existing) throw new Error('Rechnung nicht gefunden.');
+        if (!existing) throw invoiceError('NOT_FOUND', 'Rechnung nicht gefunden.', { status: 404 });
         if (existing.salesOrderId || existing.projectId) {
-            throw new Error('Nur eine Direktrechnung kann hier geändert werden.');
+            throw invoiceError('DIRECT_ONLY', 'Nur eine Direktrechnung kann hier geändert werden.', { status: 409 });
         }
-        if (existing.status === 'PAID') throw new Error('Eine bezahlte Rechnung kann nicht geändert werden.');
-        if (existing.status === 'CANCELLED') throw new Error('Eine stornierte Rechnung kann nicht geändert werden.');
+        if (existing.status === 'PAID') throw invoiceError('PAID_LOCKED', 'Eine bezahlte Rechnung kann nicht geändert werden.', { status: 409 });
+        if (existing.status === 'CANCELLED') throw invoiceError('CANCELLED_LOCKED', 'Eine stornierte Rechnung kann nicht geändert werden.', { status: 409 });
 
         const draft = await buildDirectInvoiceDraft(input);
         return this.invoiceRepository.updateWithItems(

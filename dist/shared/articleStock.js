@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.articleStockTotal = exports.adjustArticleStock = void 0;
+exports.bookConsumption = exports.articleStockTotal = exports.adjustArticleStock = void 0;
 const nanoid_1 = require("nanoid");
 const adjustArticleStock = async (tx, opts) => {
     const quantity = Number(opts.quantity) || 0;
@@ -67,4 +67,17 @@ const articleStockTotal = async (tx, articleId) => {
     return Number(sum?._sum?.currentQuantity || 0);
 };
 exports.articleStockTotal = articleStockTotal;
+/**
+ * VERBRAUCH MIT VORZEICHEN (16.09.2026): eine Projektmaterialzeile traegt eine
+ * Menge, die seit der Minderung auch negativ sein kann. Positiv = aus dem
+ * Lager heraus (OUT), negativ = zurueck ins Lager (IN). `adjustArticleStock`
+ * selbst nimmt nur Betraege > 0 und uebergaenge eine Minuszahl still.
+ */
+const bookConsumption = async (tx, opts) => {
+    const quantity = Number(opts.quantity) || 0;
+    if (quantity === 0)
+        return;
+    await (0, exports.adjustArticleStock)(tx, { ...opts, quantity: Math.abs(quantity), direction: quantity > 0 ? 'OUT' : 'IN' });
+};
+exports.bookConsumption = bookConsumption;
 //# sourceMappingURL=articleStock.js.map

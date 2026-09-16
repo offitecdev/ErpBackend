@@ -2,6 +2,8 @@ import { IInvoiceRepository } from "../../../domain/repositories/IInvoiceReposit
 import prisma from "../../../infrastructure/database/prisma.client";
 import { openAmount, round2 } from "../../utils/billingRounding";
 import { NextStageInfo, nextStageInfo, parsePaymentStages, PaymentStage } from "../../utils/paymentSchedule";
+import { invoiceError } from './invoiceErrors';
+import { loadBillingBase } from "../../../shared/minderung";
 
 export interface BillingSummary {
     baseAmount: number;
@@ -40,7 +42,7 @@ export class GetBillingSummaryUseCase {
         const projectId = params.projectId?.trim() || null;
 
         if ((!salesOrderId && !projectId) || (salesOrderId && projectId)) {
-            throw new Error("Özet için tek bir hedef (sipariş veya proje) belirtin.");
+            throw invoiceError('ONE_TARGET', 'Özet için tek bir hedef (sipariş veya proje) belirtin.');
         }
 
         let baseAmount = 0;
@@ -48,17 +50,18 @@ export class GetBillingSummaryUseCase {
         if (salesOrderId) {
             const order: any = await (prisma as any).salesOrder.findFirst({
                 where: { id: salesOrderId, tenantId },
-                select: { totalAmount: true, paymentStages: true },
+                select: { id: true, totalAmount: true, paymentStages: true, parentSalesOrderId: true },
             });
-            if (!order) throw new Error("Sipariş bulunamadı.");
-            baseAmount = Number(order.totalAmount || 0);
+            if (!order) throw invoiceError('ORDER_NOT_FOUND', 'Sipariş bulunamadı.', { status: 404 });
+            // Hauptauftrag: Summe + aktive Minderungen; Minderung selbst: 0.
+            baseAmount = await loadBillingBase(prisma, tenantId, order);
             paymentStagesRaw = order.paymentStages ?? null;
         } else {
             const project: any = await (prisma as any).project.findFirst({
                 where: { id: projectId, tenantId },
                 select: { plannedBudget: true, salesOrders: { select: { totalAmount: true } } },
             });
-            if (!project) throw new Error("Proje bulunamadı.");
+            if (!project) throw invoiceError('PROJECT_NOT_FOUND', 'Proje bulunamadı.', { status: 404 });
             const ordersTotal = (project.salesOrders || []).reduce((sum: number, o: any) => sum + Number(o.totalAmount || 0), 0);
             baseAmount = ordersTotal > 0 ? ordersTotal : Number(project.plannedBudget || 0);
         }

@@ -17,6 +17,8 @@ const controller = new AddonOrderController_1.AddonOrderController();
 router.use(AuthMiddleware_1.requireAuth);
 router.get('/', (0, RbacMiddleware_1.requireAnyPermission)(AddonOrderController_1.ADDON_READ_PERMISSIONS), (req, res) => controller.list(req, res));
 router.get('/:id/document', (0, RbacMiddleware_1.requireAnyPermission)(AddonOrderController_1.ADDON_READ_PERMISSIONS), (req, res) => controller.document(req, res));
+// Was im Hauptauftrag steht und gemindert werden kann (16.09.2026).
+router.get('/minderung-sources', (0, RbacMiddleware_1.requirePermission)('projects.createAddonOrder'), (req, res) => controller.minderungSources(req, res));
 router.post('/', (0, RbacMiddleware_1.requirePermission)('projects.createAddonOrder'), (req, res) => controller.create(req, res));
 router.put('/:id/lines', (0, RbacMiddleware_1.requirePermission)('projects.createAddonOrder'), (req, res) => controller.replaceLines(req, res));
 exports.default = router;

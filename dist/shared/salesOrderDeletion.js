@@ -110,12 +110,13 @@ const restockExtraMaterials = async (tx, where, context) => {
         select: { id: true, articleId: true, quantity: true },
     });
     for (const row of rows) {
-        await (0, articleStock_1.adjustArticleStock)(tx, {
+        // Rueckgaengig = Gegenbuchung: verbrauchtes Material kommt zurueck, eine
+        // Minderung (Minusmenge) geht wieder hinaus (16.09.2026).
+        await (0, articleStock_1.bookConsumption)(tx, {
             tenantId: context.tenantId,
             articleId: row.articleId,
             employeeId: context.employeeId,
-            quantity: Number(row.quantity || 0),
-            direction: 'IN',
+            quantity: -Number(row.quantity || 0),
             referenceId: context.referenceId,
             description: 'Zusatzmaterial iadesi',
         });
@@ -144,6 +145,9 @@ const purgeProjectWithin = async (tx, opts) => {
     // Sicherheitsnetz: `Tender.projectId` ist kein Fremdschlüssel, eine
     // vergessene Verknüpfung zählte sonst weiter als «Auftrag».
     await tx.tender.updateMany({ where: { projectId, tenantId }, data: { projectId: null } });
+    // Ebenso das WARTENDE Projekt einer zurückgesetzten Offerte (16.09.2026):
+    // die frühere AB-Nummer bleibt als Spur, das Projekt gibt es nicht mehr.
+    await tx.tender.updateMany({ where: { revertedProjectId: projectId, tenantId }, data: { revertedProjectId: null } });
 };
 exports.purgeProjectWithin = purgeProjectWithin;
 /**

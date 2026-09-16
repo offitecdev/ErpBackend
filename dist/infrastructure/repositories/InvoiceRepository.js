@@ -280,6 +280,15 @@ class InvoiceRepository {
      * nennen), beim Zurueckdrehen wieder geleert — sonst behielte eine wieder
      * geoeffnete Rechnung ein Zahlungsdatum, das es nicht mehr gibt.
      */
+    async updateDates(id, tenantId, invoiceDate, dueDate) {
+        const result = await prisma_client_1.default.invoice.updateMany({
+            where: { id, tenantId },
+            data: { invoiceDate, dueDate },
+        });
+        if (!result.count)
+            throw new Error("Fatura bulunamadı.");
+        return (await prisma_client_1.default.invoice.findUnique({ where: { id }, include: invoiceInclude }));
+    }
     async updateStatus(id, tenantId, status, paidAt) {
         const existing = await prisma_client_1.default.invoice.findFirst({ where: { id, tenantId } });
         if (!existing)
@@ -290,15 +299,6 @@ class InvoiceRepository {
             data: { status, paidAt: paid ? (paidAt ?? existing.paidAt ?? new Date()) : null },
         });
         return (await prisma_client_1.default.invoice.findUnique({ where: { id }, include: invoiceInclude }));
-    }
-    async delete(id, tenantId) {
-        const existing = await prisma_client_1.default.invoice.findFirst({ where: { id, tenantId } });
-        if (!existing)
-            throw new Error("Fatura bulunamadı.");
-        await prisma_client_1.default.$transaction(async (tx) => {
-            await tx.invoiceLineItem.deleteMany({ where: { invoiceId: id } });
-            await tx.invoice.delete({ where: { id } });
-        });
     }
 }
 exports.InvoiceRepository = InvoiceRepository;

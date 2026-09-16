@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UpdateDirectInvoiceUseCase = void 0;
 const CreateDirectInvoiceUseCase_1 = require("./CreateDirectInvoiceUseCase");
+const invoiceErrors_1 = require("./invoiceErrors");
 /**
  * ── EINE DIREKTRECHNUNG ÄNDERN ───────────────────────────────────────────────
  *
@@ -33,14 +34,14 @@ class UpdateDirectInvoiceUseCase {
     async execute(id, input) {
         const existing = await this.invoiceRepository.findById(id, input.tenantId);
         if (!existing)
-            throw new Error('Rechnung nicht gefunden.');
+            throw (0, invoiceErrors_1.invoiceError)('NOT_FOUND', 'Rechnung nicht gefunden.', { status: 404 });
         if (existing.salesOrderId || existing.projectId) {
-            throw new Error('Nur eine Direktrechnung kann hier geändert werden.');
+            throw (0, invoiceErrors_1.invoiceError)('DIRECT_ONLY', 'Nur eine Direktrechnung kann hier geändert werden.', { status: 409 });
         }
         if (existing.status === 'PAID')
-            throw new Error('Eine bezahlte Rechnung kann nicht geändert werden.');
+            throw (0, invoiceErrors_1.invoiceError)('PAID_LOCKED', 'Eine bezahlte Rechnung kann nicht geändert werden.', { status: 409 });
         if (existing.status === 'CANCELLED')
-            throw new Error('Eine stornierte Rechnung kann nicht geändert werden.');
+            throw (0, invoiceErrors_1.invoiceError)('CANCELLED_LOCKED', 'Eine stornierte Rechnung kann nicht geändert werden.', { status: 409 });
         const draft = await (0, CreateDirectInvoiceUseCase_1.buildDirectInvoiceDraft)(input);
         return this.invoiceRepository.updateWithItems(id, {
             ...draft.invoice,

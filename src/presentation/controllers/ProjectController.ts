@@ -24,17 +24,15 @@ import {
 // Löschen / Storno / zurück in den Entwurf — WAS erlaubt ist, entscheidet
 // `documentLifecycle`; die Projektseite handelt damit an genau denselben
 // Regeln wie die Auftragsansicht.
-// Die Absagen der Termine einer Auftragsfamilie sammelt die Auftragsansicht —
-// beide Wege benutzen denselben Helfer, sonst blieben Einladungen stehen.
-import { collectFamilyAppointmentCancellations } from './SalesOrderController';
+// «Zurück in den Entwurf» läuft über denselben Helfer wie in der
+// Auftragsansicht — Termine, Spur an der Offerte und Kundenchronik gleich.
+import { revertOrderToDraft } from './SalesOrderController';
+import { loadWaitingTenders } from '../../shared/waitingTenders';
 import {
     assertProjectCancellable,
     assertProjectDeletable,
-    assertSalesOrderRevertible,
     cancelProjectWithin,
     readProjectLifecycle,
-    readSalesOrderLifecycle,
-    revertSalesOrderToDraftWithin,
     uncancelProjectWithin,
 } from '../../shared/documentLifecycle';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
@@ -1731,11 +1729,23 @@ export class ProjectController {
                 return [];
             });
 
-            const [project, addonRequests] = await Promise.all([projectPromise, addonRequestsPromise]);
+            // Offerten, deren Auftrag «zurück in den Entwurf» ging und die auf
+            // DIESES Projekt warten (16.09.2026) — die Seite zeigt sie über
+            // jedem Bereich als Karte, damit niemand vergisst, welche es war.
+            const waitingTendersPromise = loadWaitingTenders(projectId, tenantId).catch((waitingError: any) => {
+                console.error("[getById] could not load waiting tenders:", waitingError?.message || waitingError);
+                return [];
+            });
+
+            const [project, addonRequests, waitingTenders] = await Promise.all([
+                projectPromise,
+                addonRequestsPromise,
+                waitingTendersPromise,
+            ]);
             if (!project) {
                 return res.status(404).json({ error: "Proje bulunamadı veya seçili şirkette değil." });
             }
-            res.status(200).json({ ...(project as any), addonRequests });
+            res.status(200).json({ ...(project as any), addonRequests, waitingTenders });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -3161,9 +3171,28 @@ export class ProjectController {
             assertProjectCancellable(lifecycle);
 
             const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
+            // Anstehende Termine ohne Auftrag (geparkt) werden mit abgesagt;
+            // die Absagen VOR dem Eingriff einsammeln, danach verschicken.
+            const orphanAppointments: Array<{ id: string }> = await (prisma as any).appointment.findMany({
+                where: {
+                    tenantId,
+                    projectId,
+                    salesOrderId: null,
+                    startTime: { gte: new Date() },
+                    NOT: { status: 'CANCELLED' },
+                },
+                select: { id: true },
+            });
+            const cancellations = await Promise.all(
+                orphanAppointments.map((row) => buildAppointmentCancellation(row.id).catch(() => null)),
+            );
             await (prisma as any).$transaction(async (tx: any) => cancelProjectWithin(tx, {
                 projectId, tenantId, employeeId: req.user!.id, reason,
+                appointmentIds: orphanAppointments.map((row) => row.id),
             }));
+            for (const cancellation of cancellations) {
+                if (cancellation) queueAppointmentCancellation(cancellation, req.user!.id);
+            }
 
             res.json({ projectId, cancelled: true });
         } catch (error: any) {
@@ -3262,18 +3291,9 @@ export class ProjectController {
             if (!order) return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
 
             if (!order.parentSalesOrderId) {
-                const lifecycle = await readSalesOrderLifecycle(prisma as any, order, tenantId);
-                assertSalesOrderRevertible(lifecycle);
-                // Mit dem Auftrag fallen seine Termine — die Absagen VOR dem
-                // Schnitt einsammeln, verschicken erst danach (derselbe Weg wie
-                // in der Auftragsansicht).
-                const cancellations = await collectFamilyAppointmentCancellations(lifecycle.familyIds, tenantId);
-                const result = await (prisma as any).$transaction(async (tx: any) => revertSalesOrderToDraftWithin(tx, {
-                    order, tenantId, employeeId: req.user!.id, lifecycle,
-                }));
-                for (const cancellation of cancellations) {
-                    queueAppointmentCancellation(cancellation, req.user!.id);
-                }
+                // Derselbe Ablauf wie in der Auftragsansicht (geparkte Termine,
+                // Spur an der Offerte, Kundenchronik).
+                const result = await revertOrderToDraft(order, tenantId, req.user!.id);
                 return res.json({ ...result, orderNumber: order.orderNumber, isAddon: false });
             }
 

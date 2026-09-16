@@ -6,6 +6,8 @@ import { GetBillingSummaryUseCase } from '../../application/use-cases/billing/Ge
 import { ListInvoicesUseCase } from '../../application/use-cases/billing/ListInvoicesUseCase';
 import { UpdateInvoiceStatusUseCase } from '../../application/use-cases/billing/UpdateInvoiceStatusUseCase';
 import { DeleteInvoiceUseCase } from '../../application/use-cases/billing/DeleteInvoiceUseCase';
+import { UpdateInvoiceDatesUseCase } from '../../application/use-cases/billing/UpdateInvoiceDatesUseCase';
+import { invoiceErrorBody } from '../../application/use-cases/billing/invoiceErrors';
 import { InvoiceCategory, InvoiceStatus } from '../../domain/entities/Invoice';
 import { Prisma } from '@prisma/client';
 import prisma from '../../infrastructure/database/prisma.client';
@@ -22,7 +24,8 @@ export class BillingController {
         private updateStatusUseCase: UpdateInvoiceStatusUseCase,
         private deleteInvoiceUseCase: DeleteInvoiceUseCase,
         private createDirectInvoiceUseCase: CreateDirectInvoiceUseCase,
-        private updateDirectInvoiceUseCase: UpdateDirectInvoiceUseCase
+        private updateDirectInvoiceUseCase: UpdateDirectInvoiceUseCase,
+        private updateDatesUseCase: UpdateInvoiceDatesUseCase
     ) {}
 
     async getSummary(req: Request, res: Response) {
@@ -32,7 +35,7 @@ export class BillingController {
             const summary = await this.getSummaryUseCase.execute({ tenantId: req.user!.tenantId, salesOrderId, projectId });
             res.status(200).json(summary);
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -79,7 +82,7 @@ export class BillingController {
             });
             res.status(200).json(invoices);
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -103,7 +106,7 @@ export class BillingController {
             });
             res.status(201).json({ message: 'Fatura oluşturuldu.', invoice });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -119,7 +122,7 @@ export class BillingController {
             const invoiceNumber = await peekDocumentNumber(req.user!.tenantId, 'INVOICE');
             res.status(200).json({ invoiceNumber, preview: true });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -154,7 +157,7 @@ export class BillingController {
             });
             res.status(201).json({ message: 'Rechnung erstellt.', invoice });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -188,7 +191,24 @@ export class BillingController {
             });
             res.status(200).json({ message: 'Rechnung gespeichert.', invoice });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
+        }
+    }
+
+    /**
+     * Rechnungsdatum + Fälligkeit korrigieren — auch nach dem Stellen, für
+     * jede Rechnungsart (Vorgabe Samet 16.09.2026). Siehe
+     * `UpdateInvoiceDatesUseCase`.
+     */
+    async updateDates(req: Request, res: Response) {
+        try {
+            const invoice = await this.updateDatesUseCase.execute(String(req.params.id), req.user!.tenantId, {
+                invoiceDate: req.body?.invoiceDate,
+                dueDate: req.body?.dueDate,
+            });
+            res.status(200).json({ message: 'Rechnung gespeichert.', invoice });
+        } catch (error: any) {
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -204,7 +224,7 @@ export class BillingController {
             );
             res.status(200).json({ message: 'Fatura durumu güncellendi.', invoice });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -238,7 +258,7 @@ export class BillingController {
             });
             res.status(200).json(await getArticleThumbnails(tenantId, articles));
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 
@@ -247,7 +267,7 @@ export class BillingController {
             await this.deleteInvoiceUseCase.execute(req.params.id as string, req.user!.tenantId);
             res.status(200).json({ message: 'Fatura kalıcı olarak silindi.' });
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            res.status(error?.status || 400).json(invoiceErrorBody(error));
         }
     }
 }

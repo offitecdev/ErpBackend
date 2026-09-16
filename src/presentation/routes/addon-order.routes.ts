@@ -18,6 +18,8 @@ router.use(requireAuth);
 
 router.get('/', requireAnyPermission(ADDON_READ_PERMISSIONS), (req, res) => controller.list(req, res));
 router.get('/:id/document', requireAnyPermission(ADDON_READ_PERMISSIONS), (req, res) => controller.document(req, res));
+// Was im Hauptauftrag steht und gemindert werden kann (16.09.2026).
+router.get('/minderung-sources', requirePermission('projects.createAddonOrder'), (req, res) => controller.minderungSources(req, res));
 router.post('/', requirePermission('projects.createAddonOrder'), (req, res) => controller.create(req, res));
 router.put('/:id/lines', requirePermission('projects.createAddonOrder'), (req, res) => controller.replaceLines(req, res));
 

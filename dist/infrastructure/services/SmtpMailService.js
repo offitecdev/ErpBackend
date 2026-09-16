@@ -116,6 +116,9 @@ const buildMimeMessage = (mail, ccList) => {
         `Message-ID: ${mail.messageId || (0, exports.newMessageId)(mail.fromEmail)}`,
         `MIME-Version: 1.0`,
         mail.replyTo ? `Reply-To: ${mail.replyTo}` : null,
+        ...(mail.importance === 'high'
+            ? [`X-Priority: 1 (Highest)`, `X-MSMail-Priority: High`, `Importance: high`]
+            : []),
         `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
         ``,
         `--${mixedBoundary}`,

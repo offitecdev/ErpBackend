@@ -10,16 +10,18 @@ import { isOpenTaskStatus, type TaskStatusKey } from './taskConstants';
  *   Inhalt/Liste   bearbeiten ODER messen (Tabelle/Trenner neu: nur Leitung)
  *   Dateien        Leitung ODER messen
  *   kommentieren   wer sie sehen darf; löschen: eigener Kommentar oder Leitung
- *   Abschluss      beantragen: messen und keine offene Anfrage;
- *                  zurückziehen: wer beantragt hat (oder Leitung)
- *   entscheiden    Leitung (Anfragen, Vorschläge, Status, Zuweisung, Etiketten-Katalog)
+ *   Abschluss      DIREKT: Verantwortliche und Leitung setzen eine offene
+ *                  Aufgabe selbst auf erledigt — keine Anfrage, keine
+ *                  Freigabe (16.09.2026); nur die Leitung öffnet sie wieder
+ *   entscheiden    Leitung (Status, Zuweisung, Etiketten-Katalog)
  *   löschen        nur Admins (Administratorrolle oder tasks.delete); wer die
  *                  Aufgabe angelegt hat oder verantwortlich ist, BEANTRAGT das
  *                  Löschen — ein Admin entscheidet (13.09.2026)
  *   sehen          Administratorrolle alles; alle anderen (auch die Leitung)
- *                  NUR was ihnen zugewiesen ist oder was sie angelegt haben (15.09.2026)
- *   zuweisen       nur die Administratorrolle; Verantwortliche BEANTRAGEN
- *                  «Ortak ekle» — eine Anfrage, eine Person (15.09.2026)
+ *                  NUR was ihnen zugewiesen ist, was sie angelegt haben — oder
+ *                  wo sie in «Sorular & Sorunlar» markiert wurden (15./16.09.2026)
+ *   zuweisen       nur die Administratorrolle; Verantwortliche fügen mit
+ *                  «Ortak ekle» direkt EINE Person hinzu, ohne Anfrage (15.09.2026)
  *
  * Diese Datei rechnet NUR — sie liest nichts aus der Datenbank.
  */
@@ -29,11 +31,15 @@ export interface TaskAccessFacts {
     status: string;
     createdById: string;
     reviewState: string;
-    approvalState: string;
-    approvalRequestedById: string | null;
     assigneeIds: readonly string[];
     deleteRequestedById?: string | null;
-    partnerRequestedById?: string | null;
+    /**
+     * In «Sorular & Sorunlar» markierte Personen (16.09.2026). Wer an dieser
+     * Aufgabe etwas gefragt wird, muss sie auch öffnen und antworten können —
+     * sonst führt die Mail ins Leere. Markiert sein heisst NICHT verantwortlich
+     * sein: messen, bearbeiten und abschliessen bleiben verschlossen.
+     */
+    issuePersonIds?: readonly string[];
 }
 
 export interface TaskPermissions {
@@ -46,10 +52,12 @@ export interface TaskPermissions {
     canUpload: boolean;
     canComment: boolean;
     canFlag: boolean;
-    canRequestCompletion: boolean;
-    /** Abschluss bestätigen/ablehnen oder direkt abschliessen — nur die Administratorrolle. */
-    canApproveCompletion: boolean;
-    canCancelCompletionRequest: boolean;
+    /**
+     * Abschliessen (16.09.2026, Samet: «tamamlama talebi olmayacak, direkt
+     * tamamlanabilecek»): Verantwortliche und die Leitung einer offenen
+     * Aufgabe — es gibt nichts mehr zu beantragen und nichts zu bestätigen.
+     */
+    canComplete: boolean;
     canManage: boolean;
     canDelete: boolean;
     /** Nicht-Admin, verantwortlich oder Anlegende, noch keine offene Löschanfrage. */
@@ -58,19 +66,20 @@ export interface TaskPermissions {
     canCancelDeleteRequest: boolean;
     /** Verantwortliche zuweisen/entfernen — nur die Administratorrolle. */
     canAssign: boolean;
-    /** Nicht-Admin, verantwortlich, offene Aufgabe, noch keine offene Ortak-Anfrage. */
-    canRequestPartner: boolean;
-    /** Offene Ortak-Anfrage zurückziehen: wer sie gestellt hat (oder die Administratorrolle). */
-    canCancelPartnerRequest: boolean;
-    /** Ortak-Anfrage annehmen/ablehnen — nur die Administratorrolle. */
-    canDecidePartnerRequest: boolean;
+    /** «Ortak ekle»: Nicht-Admin, verantwortlich, offene Aufgabe — fügt EINE Person direkt hinzu. */
+    canAddPartner: boolean;
 }
 
 export const isTaskAssignee = (actor: TasksActor, task: Pick<TaskAccessFacts, 'assigneeIds'>): boolean =>
     task.assigneeIds.includes(actor.employeeId);
 
+/** In einem Faden markiert («Sorular & Sorunlar»). */
+export const isIssuePerson = (actor: TasksActor, task: Pick<TaskAccessFacts, 'issuePersonIds'>): boolean =>
+    (task.issuePersonIds ?? []).includes(actor.employeeId);
+
 export const canSeeTask = (actor: TasksActor, task: TaskAccessFacts): boolean =>
-    actor.seesAll || isTaskAssignee(actor, task) || task.createdById === actor.employeeId;
+    actor.seesAll || isTaskAssignee(actor, task) || task.createdById === actor.employeeId
+    || isIssuePerson(actor, task);
 
 export const canEditTask = (actor: TasksActor, task: TaskAccessFacts): boolean =>
     actor.isManager || (task.createdById === actor.employeeId && task.reviewState === 'PENDING');
@@ -84,9 +93,7 @@ export const taskPermissions = (actor: TasksActor, task: TaskAccessFacts): TaskP
     const canSee = canSeeTask(actor, task);
     const canEdit = canEditTask(actor, task);
     const canTrack = canTrackTask(actor, task);
-    const approvalPending = task.approvalState === 'PENDING';
     const deletePending = Boolean(task.deleteRequestedById);
-    const partnerPending = Boolean(task.partnerRequestedById);
     return {
         isAssignee,
         isCreator,
@@ -97,22 +104,17 @@ export const taskPermissions = (actor: TasksActor, task: TaskAccessFacts): TaskP
         canUpload: actor.isManager || canTrack,
         canComment: canSee,
         canFlag: canEdit || canTrack,
-        // Alle ausser der Administratorrolle BEANTRAGEN den Abschluss: Verantwortliche,
-        // und die Leitung für sichtbare offene Aufgaben.
-        canRequestCompletion: !actor.isSystemAdmin && !approvalPending
-            && (canTrack || (actor.isManager && canSee && isOpenTaskStatus(task.status) && task.reviewState !== 'REJECTED')),
-        canApproveCompletion: actor.isSystemAdmin && canSee,
-        canCancelCompletionRequest: approvalPending
-            && (task.approvalRequestedById === actor.employeeId || actor.isManager),
+        // Fertig ist fertig: wer an der Aufgabe misst — und die Leitung — setzt
+        // sie selbst auf erledigt. Keine Anfrage, keine Freigabe (16.09.2026).
+        canComplete: isOpenTaskStatus(task.status) && task.reviewState !== 'REJECTED'
+            && (canTrack || (actor.isManager && canSee)),
         canManage: actor.isManager,
         canDelete: actor.canDelete,
         canRequestDelete: !actor.canDelete && (isAssignee || isCreator) && !deletePending,
         canCancelDeleteRequest: deletePending && (task.deleteRequestedById === actor.employeeId || actor.canDelete),
         canAssign: actor.isSystemAdmin,
-        canRequestPartner: !actor.isSystemAdmin && isAssignee && !partnerPending
+        canAddPartner: !actor.isSystemAdmin && isAssignee
             && isOpenTaskStatus(task.status) && task.reviewState !== 'REJECTED',
-        canCancelPartnerRequest: partnerPending && (task.partnerRequestedById === actor.employeeId || actor.isSystemAdmin),
-        canDecidePartnerRequest: partnerPending && actor.isSystemAdmin,
     };
 };
 

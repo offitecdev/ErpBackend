@@ -325,8 +325,10 @@ const buildInviteHtml = (input) => {
     const tone = toneOf(input.method, input.sequence, input.audience, kind, language);
     const cancelled = input.method === "CANCEL";
     const days = scheduleDays(input);
-    const weekday = fmt(input.start, { weekday: "long" }, language);
-    const dateLong = fmt(input.start, { day: "numeric", month: "long", year: "numeric" }, language);
+    /* EIN Datum, in der Reihenfolge der Sprache: Deutsch «Dienstag, 18. August
+       2026», Tuerkisch «19 Eylul 2026 Cumartesi» — zusammengesetzt stuende der
+       Wochentag dort falsch vorn (16.09.2026, tuerkische Aufgabenkarte). */
+    const dateFull = (0, exports.formatInviteDate)(input.start, language);
     const time = (0, exports.formatInviteTime)(input.start, input.end, language);
     const message = input.message?.trim();
     const notes = input.notes?.trim();
@@ -434,9 +436,9 @@ const buildInviteHtml = (input) => {
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;background:#f4f6fb;border:1px solid #e6eaf4;border-radius:14px;">
         <tr><td align="center" style="${FONT}padding:12px 26px;">
             ${kind === "TASK"
-        ? `<div style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8b93a7;">Fällig am</div>`
+        ? `<div style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8b93a7;">${escapeHtml(words.due)}</div>`
         : ""}
-            <div style="font-size:15px;font-weight:700;color:#0f172a;${kind === "TASK" ? "margin-top:3px;" : ""}">${escapeHtml(weekday)}, ${escapeHtml(dateLong)}</div>
+            <div style="font-size:15px;font-weight:700;color:#0f172a;${kind === "TASK" ? "margin-top:3px;" : ""}">${escapeHtml(dateFull)}</div>
             ${kind === "TASK"
         ? ""
         : `<div style="font-size:16px;font-weight:700;color:${tone.accent};margin-top:3px;letter-spacing:.01em;">${escapeHtml(time)}</div>`}

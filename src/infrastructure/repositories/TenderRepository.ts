@@ -95,6 +95,11 @@ const TENDER_FULL_SELECT = {
     offerAcceptedAt: true,
     offerMailRecipient: true,
     offerAcceptanceToken: true,
+    // Spur eines zurückgesetzten Auftrags (16.09.2026).
+    revertedOrderNumber: true,
+    revertedAt: true,
+    revertedById: true,
+    revertedProjectId: true,
     customer: { select: { companyName: true } },
     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
 } as const;
@@ -154,8 +159,10 @@ export class TenderRepository implements ITenderRepository {
         // (davranış birebir korunuyor), değer yine parametre olarak bağlanıyor.
         // Eski kodu (A-2026-4474) elinde olan kullanıcı da kaydı bulabilsin diye
         // arama `legacyNumber`ı da tarar.
-        if (filter.search) conditions.push(Prisma.sql`(t.tenderNumber LIKE ${`%${filter.search}%`} OR t.legacyNumber LIKE ${`%${filter.search}%`})`);
-        if (filter.tenderNumber) conditions.push(Prisma.sql`(t.tenderNumber LIKE ${`%${filter.tenderNumber}%`} OR t.legacyNumber LIKE ${`%${filter.tenderNumber}%`})`);
+        // Auch die AB-Nummer eines zurückgesetzten Auftrags findet ihre Offerte
+        // (16.09.2026) — genau die Nummer, die man sich gemerkt hat.
+        if (filter.search) conditions.push(Prisma.sql`(t.tenderNumber LIKE ${`%${filter.search}%`} OR t.legacyNumber LIKE ${`%${filter.search}%`} OR t.revertedOrderNumber LIKE ${`%${filter.search}%`})`);
+        if (filter.tenderNumber) conditions.push(Prisma.sql`(t.tenderNumber LIKE ${`%${filter.tenderNumber}%`} OR t.legacyNumber LIKE ${`%${filter.tenderNumber}%`} OR t.revertedOrderNumber LIKE ${`%${filter.tenderNumber}%`})`);
         if (filter.customerName) conditions.push(Prisma.sql`c.companyName LIKE ${`%${filter.customerName}%`}`);
         if (filter.creatorName) {
             const pattern = `%${filter.creatorName}%`;
@@ -205,6 +212,7 @@ export class TenderRepository implements ITenderRepository {
                     t.customerId,
                     t.createdByEmployeeId, t.currency, t.createdAt, t.offerMailSentAt,
                     t.validUntil, t.offerAcceptedAt, t.commissionNumber, t.cancelledAt,
+                    t.revertedOrderNumber,
                     COALESCE(NULLIF(TRIM(t.manualCustomerName), ''), c.companyName) AS customerName,
                     e.firstName AS creatorFirstName,
                     e.lastName AS creatorLastName,
@@ -268,6 +276,7 @@ export class TenderRepository implements ITenderRepository {
             offerAcceptedAt: row.offerAcceptedAt ?? null,
             commissionNumber: row.commissionNumber ?? null,
             cancelledAt: row.cancelledAt ?? null,
+            revertedOrderNumber: row.revertedOrderNumber ?? null,
             positionCount: Number(row.positionCount ?? 0),
             grandTotal: Number(row.grandTotal ?? 0),
             ospReference: row.ospReference ?? null,
@@ -423,7 +432,48 @@ export class TenderRepository implements ITenderRepository {
             ? `${createdBy.firstName} ${createdBy.lastName}`
             : null;
         entity.createdByEmail = createdBy?.email ?? null;
+        await this.attachRevertTrace(entity, data as any, tenantId);
         return entity;
+    }
+
+    /**
+     * ZURÜCK IN DEN ENTWURF — die Spur für die Offertmaske (16.09.2026): die
+     * frühere AB-Nummer, wer/wann, das wartende Projekt und wie viele Termine
+     * dort auf den nächsten Auftrag warten. Nur zurückgesetzte Offerten
+     * kosten die zusätzlichen Abfragen.
+     */
+    private async attachRevertTrace(entity: any, data: any, tenantId: string): Promise<void> {
+        entity.revertedOrderNumber = data.revertedOrderNumber ?? null;
+        entity.revertedAt = data.revertedAt ?? null;
+        entity.revertedBy = null;
+        entity.revertedProject = null;
+        entity.parkedAppointmentCount = 0;
+        if (!data.revertedAt) return;
+        const [employee, project, parked] = await Promise.all([
+            data.revertedById
+                ? prisma.employee.findUnique({
+                    where: { id: data.revertedById },
+                    select: { firstName: true, lastName: true },
+                })
+                : Promise.resolve(null),
+            data.revertedProjectId
+                ? prisma.project.findFirst({
+                    where: { id: data.revertedProjectId, tenantId },
+                    select: { id: true, projectNumber: true, projectName: true, status: true },
+                })
+                : Promise.resolve(null),
+            prisma.appointment.count({
+                where: {
+                    tenantId,
+                    detachedFromTenderId: data.id,
+                    startTime: { gte: new Date() },
+                    NOT: { status: 'CANCELLED' },
+                },
+            }),
+        ]);
+        entity.revertedBy = employee ? `${employee.firstName} ${employee.lastName}`.trim() : null;
+        entity.revertedProject = project && project.status !== 'CANCELLED' ? project : null;
+        entity.parkedAppointmentCount = parked;
     }
 
     async findAll(
@@ -436,6 +486,7 @@ export class TenderRepository implements ITenderRepository {
             where.OR = [
                 { tenderNumber: { contains: filter.search } },
                 { legacyNumber: { contains: filter.search } },
+                { revertedOrderNumber: { contains: filter.search } },
             ];
         }
         // Kolon bazlı filtreler — üstteki genel arama ile AND'lenir (MySQL collation

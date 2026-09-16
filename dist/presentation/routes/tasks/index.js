@@ -12,6 +12,7 @@ const attachments_routes_1 = __importDefault(require("./attachments.routes"));
 const chat_routes_1 = __importDefault(require("./chat.routes"));
 const comments_routes_1 = __importDefault(require("./comments.routes"));
 const content_routes_1 = __importDefault(require("./content.routes"));
+const issues_routes_1 = __importDefault(require("./issues.routes"));
 const dailyReports_routes_1 = __importDefault(require("./dailyReports.routes"));
 const labels_routes_1 = __importDefault(require("./labels.routes"));
 const live_routes_1 = __importDefault(require("./live.routes"));
@@ -43,6 +44,7 @@ const tasks_routes_1 = __importDefault(require("./tasks.routes"));
  *   /chat                         Räume, Mitglieder, Nachrichten, Lesestand
  *   /attachments/:id[/content]    Dateien ausliefern / löschen; /:taskId/attachments
  *   /comments/:id; /:taskId/comments
+ *   /issues/:id…; /:taskId/issues        «Sorular & Sorunlar» der Aufgabe
  *   /checklists…, /checklist-items…; /:taskId/content, /:taskId/checklists
  *   /bootstrap, /summary, /approvals, /timer/…, / und /:taskId…  (Aufgaben)
  */
@@ -78,6 +80,7 @@ router.use('/daily-reports', dailyReports_routes_1.default);
 router.use('/chat', chat_routes_1.default);
 router.use('/', attachments_routes_1.default);
 router.use('/', comments_routes_1.default);
+router.use('/', issues_routes_1.default);
 router.use('/', content_routes_1.default);
 router.use('/', tasks_routes_1.default);
 exports.default = router;

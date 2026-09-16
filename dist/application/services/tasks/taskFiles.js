@@ -144,6 +144,7 @@ exports.ATTACHMENT_SELECT = {
     commentId: true,
     roomId: true,
     messageId: true,
+    issueMessageId: true,
     fileName: true,
     contentType: true,
     sizeBytes: true,

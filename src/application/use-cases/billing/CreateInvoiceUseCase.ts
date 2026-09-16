@@ -2,6 +2,7 @@ import { IInvoiceRepository, InvoiceLineItemInput } from "../../../domain/reposi
 import { InvoiceBillingType, InvoiceKind } from "../../../domain/entities/Invoice";
 import prisma from "../../../infrastructure/database/prisma.client";
 import { nextDocumentNumber } from "../../../shared/documentNumber";
+import { invoiceError } from './invoiceErrors';
 
 export interface CreateInvoiceInput {
     tenantId: string;
@@ -40,7 +41,7 @@ export class CreateInvoiceUseCase {
         const projectId = input.projectId?.trim() || null;
 
         if ((!salesOrderId && !projectId) || (salesOrderId && projectId)) {
-            throw new Error("Faturalandırma için tek bir hedef (sipariş veya proje) belirtin.");
+            throw invoiceError('ONE_TARGET', 'Faturalandırma için tek bir hedef (sipariş veya proje) belirtin.');
         }
 
         // Resolve base amount + line item sources
@@ -67,11 +68,20 @@ export class CreateInvoiceUseCase {
                     },
                 },
             });
-            if (!order) throw new Error("Sipariş bulunamadı.");
+            if (!order) throw invoiceError('ORDER_NOT_FOUND', 'Sipariş bulunamadı.', { status: 404 });
             // Ein stornierter Auftrag wird nicht mehr fakturiert (Vorgabe Samet
             // 06.09.2026): er steht als Beleg da, aber er verlangt kein Geld.
             if (order.cancelledAt || order.status === "CANCELLED") {
-                throw new Error("Ein stornierter Auftrag kann nicht fakturiert werden.");
+                throw invoiceError('ORDER_CANCELLED', 'Ein stornierter Auftrag kann nicht fakturiert werden.', { status: 409 });
+            }
+            // MINDERUNG (16.09.2026): ein Nachtrag mit Minussumme wird nicht
+            // selbst verrechnet — er mindert die Grundlage seines Hauptauftrags.
+            if (order.parentSalesOrderId && Number(order.totalAmount || 0) < 0) {
+                throw invoiceError(
+                    'ADDON_MINDERUNG_NOT_BILLABLE',
+                    'Eine Minderung wird nicht selbst verrechnet — sie wird von der Rechnung des Hauptauftrags abgezogen.',
+                    { status: 409 },
+                );
             }
             baseAmount = Number(order.totalAmount || 0);
             customerId = order.customerId || null;
@@ -88,14 +98,41 @@ export class CreateInvoiceUseCase {
                 unitAmount: baseAmount,
                 lineTotal: baseAmount,
             });
+            // Die aktiven Minderungen des Hauptauftrags stehen als eigene
+            // Minuszeilen auf der Rechnung und senken ihre Grundlage.
+            if (!order.parentSalesOrderId) {
+                const minderungen: any[] = await (prisma as any).salesOrder.findMany({
+                    where: {
+                        tenantId,
+                        parentSalesOrderId: order.id,
+                        cancelledAt: null,
+                        NOT: { status: "CANCELLED" },
+                        totalAmount: { lt: 0 },
+                    },
+                    orderBy: [{ revisionNumber: "asc" }, { createdAt: "asc" }],
+                    select: { id: true, orderNumber: true, totalAmount: true },
+                });
+                for (const addon of minderungen) {
+                    const amount = Number(addon.totalAmount || 0);
+                    baseAmount = round2(baseAmount + amount);
+                    sources.push({
+                        description: `Minderung ${addon.orderNumber}`,
+                        sourceType: "ORDER",
+                        sourceId: addon.id,
+                        quantity: 1,
+                        unitAmount: amount,
+                        lineTotal: amount,
+                    });
+                }
+            }
         } else if (projectId) {
             const project: any = await (prisma as any).project.findFirst({
                 where: { id: projectId, tenantId },
                 include: { salesOrders: { select: { id: true, orderNumber: true, totalAmount: true, cancelledAt: true } } },
             });
-            if (!project) throw new Error("Proje bulunamadı.");
+            if (!project) throw invoiceError('PROJECT_NOT_FOUND', 'Proje bulunamadı.', { status: 404 });
             if (project.cancelledAt || project.status === "CANCELLED") {
-                throw new Error("Ein storniertes Projekt kann nicht fakturiert werden.");
+                throw invoiceError('PROJECT_CANCELLED', 'Ein storniertes Projekt kann nicht fakturiert werden.', { status: 409 });
             }
             customerId = project.customerId || null;
             // Stornierte Auftraege zaehlen nicht mehr zur Rechnungsgrundlage.
@@ -129,7 +166,7 @@ export class CreateInvoiceUseCase {
         }
 
         if (baseAmount <= 0) {
-            throw new Error("Faturalandırılacak tutar bulunamadı (0).");
+            throw invoiceError('NOTHING_TO_BILL', 'Faturalandırılacak tutar bulunamadı (0).');
         }
 
         // Invoices accumulate: each billing action creates a NEW invoice and the
@@ -142,7 +179,7 @@ export class CreateInvoiceUseCase {
         const billedSoFar = billed.percent;
         const remaining = Math.max(0, round2(100 - billedSoFar));
         if (remaining <= 0.005) {
-            throw new Error("Bu hedef zaten tamamen faturalandırılmış.");
+            throw invoiceError('FULLY_BILLED', 'Bu hedef zaten tamamen faturalandırılmış.', { status: 409 });
         }
 
         // Fatura türü: istemci gönderirse doğrula, göndermezse billingType +
@@ -151,7 +188,7 @@ export class CreateInvoiceUseCase {
         let kind: InvoiceKind;
         if (input.kind) {
             if (!INVOICE_KINDS.includes(input.kind)) {
-                throw new Error("Geçersiz fatura türü.");
+                throw invoiceError('INVALID_KIND', 'Geçersiz fatura türü.');
             }
             kind = input.kind;
         } else if (input.billingType === "FULL") {
@@ -161,7 +198,7 @@ export class CreateInvoiceUseCase {
         }
 
         if (kind === "RECHNUNG" && billedSoFar > 0.005) {
-            throw new Error("Tam fatura yalnızca hiç fatura kesilmemişken oluşturulabilir. Kalan tutar için Schlussrechnung kullanın.");
+            throw invoiceError('FULL_ONLY_FIRST', 'Tam fatura yalnızca hiç fatura kesilmemişken oluşturulabilir. Kalan tutar için Schlussrechnung kullanın.', { status: 409 });
         }
 
         // Determine percent. RECHNUNG/SCHLUSS = the open remainder;
@@ -172,10 +209,10 @@ export class CreateInvoiceUseCase {
         } else {
             const requested = input.percent == null ? DEFAULT_PARTIAL_PERCENT : Number(input.percent);
             if (!Number.isFinite(requested) || requested <= 0 || requested > 100) {
-                throw new Error("Geçersiz faturalandırma oranı. 0 ile 100 arasında olmalıdır.");
+                throw invoiceError('INVALID_PERCENT', 'Geçersiz faturalandırma oranı. 0 ile 100 arasında olmalıdır.');
             }
             if (requested > remaining + 0.005) {
-                throw new Error(`En fazla %${remaining} faturalandırılabilir.`);
+                throw invoiceError('MAX_PERCENT', `En fazla %${remaining} faturalandırılabilir.`, { params: { percent: remaining } });
             }
             percent = round2(requested);
         }
@@ -192,23 +229,47 @@ export class CreateInvoiceUseCase {
             ? Math.max(0, round2(baseAmount - billed.amount))
             : round2((baseAmount * percent) / 100);
 
+        // MINDERUNG (16.09.2026): trägt ein Auftrag Minderungen, schliesst die
+        // Schlussrechnung JEDE Quelle für sich ab — Auftrag und jede Minderung
+        // mit dem, was von ihr noch nicht auf früheren Rechnungen stand. Eine
+        // Minderung nach einer Akontorechnung erscheint so mit ihrem vollen
+        // Betrag, statt auf den Prozentsatz der Schlussrechnung geschrumpft.
+        const hasMinderung = Boolean(salesOrderId) && sources.length > 1;
+        const previousBySource = new Map<string, number>();
+        if (hasMinderung && closesTarget) {
+            const previous: Array<{ sourceId: string | null; lineTotal: number }> = await (prisma as any).invoiceLineItem.findMany({
+                where: { invoice: { salesOrderId, tenantId, status: { not: "CANCELLED" } } },
+                select: { sourceId: true, lineTotal: true },
+            });
+            for (const row of previous) {
+                if (!row.sourceId) continue;
+                previousBySource.set(row.sourceId, round2((previousBySource.get(row.sourceId) ?? 0) + Number(row.lineTotal || 0)));
+            }
+        }
+
         // Scale line items by percent
-        const lineItems: InvoiceLineItemInput[] = sources.map((source) => {
-            const lineTotal = round2((source.lineTotal * percent) / 100);
+        const lineItems: InvoiceLineItemInput[] = sources.map((source, index) => {
+            const isOrderLine = index === 0;
+            const lineTotal = hasMinderung && closesTarget
+                ? round2(source.lineTotal - (previousBySource.get(source.sourceId ?? '') ?? 0))
+                : round2((source.lineTotal * percent) / 100);
+            const scaledLabel = percent < 100 && (!hasMinderung || !closesTarget || isOrderLine);
             return {
-                description: percent < 100 ? `${source.description} (%${percent})` : source.description,
+                description: scaledLabel ? `${source.description} (%${percent})` : source.description,
                 sourceType: source.sourceType,
                 sourceId: source.sourceId ?? null,
                 quantity: source.quantity,
                 unitAmount: lineTotal,
                 lineTotal,
+                sortOrder: index,
             };
         });
 
         // Kalemler faturanın tutarını AYNEN toplamalı: kapanışta oluşan yuvarlama
         // farkı son kaleme yazılır (tek kalemli sipariş faturasında bu, kalemi
-        // doğrudan kalan bakiyeye eşitler).
-        const lastItem = lineItems[lineItems.length - 1];
+        // doğrudan kalan bakiyeye eşitler). Mit Minderungen trägt ihn die
+        // Auftragszeile — die Minderungszeilen bleiben ihre eigenen Beträge.
+        const lastItem = hasMinderung ? lineItems[0] : lineItems[lineItems.length - 1];
         if (lastItem) {
             const drift = round2(amount - lineItems.reduce((sum, item) => sum + item.lineTotal, 0));
             if (drift !== 0) {

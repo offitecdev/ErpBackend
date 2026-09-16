@@ -11,10 +11,11 @@ const ListInvoicesUseCase_1 = require("../../application/use-cases/billing/ListI
 const UpdateInvoiceStatusUseCase_1 = require("../../application/use-cases/billing/UpdateInvoiceStatusUseCase");
 const DeleteInvoiceUseCase_1 = require("../../application/use-cases/billing/DeleteInvoiceUseCase");
 const UpdateDirectInvoiceUseCase_1 = require("../../application/use-cases/billing/UpdateDirectInvoiceUseCase");
+const UpdateInvoiceDatesUseCase_1 = require("../../application/use-cases/billing/UpdateInvoiceDatesUseCase");
 const InvoiceRepository_1 = require("../../infrastructure/repositories/InvoiceRepository");
 const router = (0, express_1.Router)();
 const invoiceRepo = new InvoiceRepository_1.InvoiceRepository();
-const controller = new BillingController_1.BillingController(new CreateInvoiceUseCase_1.CreateInvoiceUseCase(invoiceRepo), new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(invoiceRepo), new ListInvoicesUseCase_1.ListInvoicesUseCase(invoiceRepo), new UpdateInvoiceStatusUseCase_1.UpdateInvoiceStatusUseCase(invoiceRepo), new DeleteInvoiceUseCase_1.DeleteInvoiceUseCase(invoiceRepo), new CreateDirectInvoiceUseCase_1.CreateDirectInvoiceUseCase(invoiceRepo), new UpdateDirectInvoiceUseCase_1.UpdateDirectInvoiceUseCase(invoiceRepo));
+const controller = new BillingController_1.BillingController(new CreateInvoiceUseCase_1.CreateInvoiceUseCase(invoiceRepo), new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(invoiceRepo), new ListInvoicesUseCase_1.ListInvoicesUseCase(invoiceRepo), new UpdateInvoiceStatusUseCase_1.UpdateInvoiceStatusUseCase(invoiceRepo), new DeleteInvoiceUseCase_1.DeleteInvoiceUseCase(invoiceRepo), new CreateDirectInvoiceUseCase_1.CreateDirectInvoiceUseCase(invoiceRepo), new UpdateDirectInvoiceUseCase_1.UpdateDirectInvoiceUseCase(invoiceRepo), new UpdateInvoiceDatesUseCase_1.UpdateInvoiceDatesUseCase(invoiceRepo));
 router.use(AuthMiddleware_1.requireAuth);
 router.get('/summary', (0, RbacMiddleware_1.requirePermission)('billing.view'), (req, res) => controller.getSummary(req, res));
 router.get('/invoices', (0, RbacMiddleware_1.requirePermission)('billing.view'), (req, res) => controller.list(req, res));
@@ -30,6 +31,8 @@ router.get('/invoices/next-number', (0, RbacMiddleware_1.requirePermission)('bil
 // Produktbilder der Direktrechnung: dieselbe Tabelle wie das Angebot braucht
 // dieselben Bilder, aber ohne Offerte, an der sie hängen könnten.
 router.post('/product-images', (0, RbacMiddleware_1.requirePermission)('billing.view'), (req, res) => controller.getProductImages(req, res));
+// Rechnungsdatum + Fälligkeit — auch für gestellte Rechnungen (16.09.2026).
+router.patch('/invoices/:id/dates', (0, RbacMiddleware_1.requirePermission)('billing.manage'), (req, res) => controller.updateDates(req, res));
 router.patch('/invoices/:id/status', (0, RbacMiddleware_1.requirePermission)('billing.manage'), (req, res) => controller.updateStatus(req, res));
 // Kalıcı silme — yalnızca CANCELLED faturalar (use case doğrular).
 router.delete('/invoices/:id', (0, RbacMiddleware_1.requirePermission)('billing.manage'), (req, res) => controller.delete(req, res));

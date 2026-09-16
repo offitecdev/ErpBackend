@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.assertCanDelete = exports.assertCompletionAdmin = exports.assertSystemAdmin = exports.assertSeesAll = exports.assertManager = exports.resolveTasksActor = void 0;
+exports.assertCanDelete = exports.assertSystemAdmin = exports.assertSeesAll = exports.assertManager = exports.resolveTasksActor = void 0;
 const RoleRepository_1 = require("../../../infrastructure/repositories/RoleRepository");
 const taskConstants_1 = require("./taskConstants");
 const taskErrors_1 = require("./taskErrors");
@@ -50,13 +50,6 @@ const assertSystemAdmin = (actor) => {
         throw (0, taskErrors_1.taskForbidden)('ADMIN_ONLY', 'Das dürfen nur Admins.');
 };
 exports.assertSystemAdmin = assertSystemAdmin;
-/** Abschluss bestätigen/ablehnen oder direkt abschliessen: nur die Administratorrolle. */
-const assertCompletionAdmin = (actor) => {
-    if (!actor.isSystemAdmin) {
-        throw (0, taskErrors_1.taskForbidden)('COMPLETION_ADMIN_ONLY', 'Den Abschluss bestätigt nur die Administratorrolle.');
-    }
-};
-exports.assertCompletionAdmin = assertCompletionAdmin;
 const assertCanDelete = (actor) => {
     if (!actor.canDelete)
         throw (0, taskErrors_1.taskForbidden)('DELETE_FORBIDDEN', 'Zum Löschen fehlt die Berechtigung.');

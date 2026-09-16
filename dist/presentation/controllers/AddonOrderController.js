@@ -5,6 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AddonOrderController = exports.ADDON_READ_PERMISSIONS = void 0;
 const addonDocumentLines_1 = require("../../application/utils/addonDocumentLines");
+const minderung_1 = require("../../shared/minderung");
+const salesOrder_pricing_1 = require("./salesOrder.pricing");
 const tender_discounts_1 = require("./tender.discounts");
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
@@ -87,6 +89,58 @@ const parsePaymentStagesInput = (raw) => {
         return { error: stageError };
     return { value: (0, paymentSchedule_1.serializePaymentStages)(stages) };
 };
+/**
+ * MINDERUNG PRUEFEN (16.09.2026) — zwei Schranken, beide mit Kennung fuer die
+ * Oberflaeche:
+ *   • je Artikel faellt hoechstens weg, was im Auftrag steht
+ *     (Offertpositionen + Zusatzmaterial − andere Minderungen);
+ *   • die Summe darf den Hauptauftrag nicht unter das bereits Verrechnete
+ *     druecken — dafuer braucht es eine Gutschrift.
+ */
+const validateMinderung = async (opts) => {
+    const { tenantId, parent, addonId, products, nextTotal, articleName } = opts;
+    const minusByArticle = new Map();
+    for (const line of products) {
+        if (line.quantity < 0)
+            minusByArticle.set(line.articleId, (minusByArticle.get(line.articleId) ?? 0) - line.quantity);
+    }
+    if (minusByArticle.size) {
+        const capacity = await (0, minderung_1.loadMinderungCapacity)(prisma_client_1.default, { tenantId, parent, excludeAddonId: addonId });
+        for (const [articleId, removed] of minusByArticle) {
+            const available = Math.max(0, capacity.get(articleId) ?? 0);
+            if (available <= 0) {
+                return {
+                    error: `${articleName(articleId)} steht nicht im Auftrag und kann nicht gemindert werden.`,
+                    code: 'MINDERUNG_ARTICLE_NOT_IN_ORDER',
+                    params: { article: articleName(articleId) },
+                };
+            }
+            if (removed > available + 0.0001) {
+                return {
+                    error: `${articleName(articleId)}: hoechstens ${available} koennen wegfallen.`,
+                    code: 'MINDERUNG_QUANTITY_TOO_HIGH',
+                    params: { article: articleName(articleId), available },
+                };
+            }
+        }
+    }
+    if (nextTotal < 0) {
+        const violation = await (0, minderung_1.checkMinderungAgainstBilled)(prisma_client_1.default, {
+            tenantId,
+            parentSalesOrderId: parent.id,
+            addonId,
+            nextAddonTotal: nextTotal,
+        });
+        if (violation) {
+            return {
+                error: `Die Minderung wuerde den Auftrag unter den bereits verrechneten Betrag druecken (verrechnet ${violation.billed.toFixed(2)}, neu ${violation.base.toFixed(2)}). Dafuer ist eine Gutschrift noetig.`,
+                code: 'MINDERUNG_BELOW_BILLED',
+                params: { billed: violation.billed.toFixed(2), base: violation.base.toFixed(2) },
+            };
+        }
+    }
+    return null;
+};
 class AddonOrderController {
     /**
      * Liste der Nachträge. Ohne Filter: alle des Mandanten (Seite
@@ -163,7 +217,9 @@ class AddonOrderController {
                 ORDER BY i.createdAt DESC
             `);
             const [rows, invoiceRows] = await Promise.all([rowsPromise, invoicesPromise]);
-            const summaries = (0, SalesOrderController_1.summariesFromInvoices)(rows.map((row) => ({ salesOrderId: row.id, baseAmount: Number(row.totalAmount || 0), paymentStages: row.paymentStages ?? null })), invoiceRows.map((row) => ({ ...row, billedPercent: Number(row.billedPercent || 0), amount: Number(row.amount || 0) })));
+            const summaries = (0, SalesOrderController_1.summariesFromInvoices)(
+            // Eine Minderung (Minussumme) wird nicht selbst verrechnet: Grundlage 0.
+            rows.map((row) => ({ salesOrderId: row.id, baseAmount: Math.max(0, Number(row.totalAmount || 0)), paymentStages: row.paymentStages ?? null })), invoiceRows.map((row) => ({ ...row, billedPercent: Number(row.billedPercent || 0), amount: Number(row.amount || 0) })));
             res.status(200).json(rows.map((row) => ({
                 id: row.id,
                 orderNumber: row.orderNumber,
@@ -375,6 +431,102 @@ class AddonOrderController {
      * Produktzeilen buchen ihre Menge aus dem Lager (dieselbe Buchhaltung wie
      * das Zusatzmaterial des Rapports; Löschen bucht zurück).
      */
+    /**
+     * MINDERUNG — WAS KANN WEGFALLEN? (16.09.2026)
+     *
+     * Die Artikel des Hauptauftrags mit dem Preis, zu dem sie verkauft wurden,
+     * und zwar so, wie der Auftrag rechnet: Zeilenrabatt, MWST und die
+     * Belegrabatte der Offerte eingerechnet (`orderTotal` für EINE Einheit) —
+     * Nachtragszeilen sind brutto wie die Auftragssumme. Ohne Offertposition
+     * gilt der Preis des Zusatzmaterials. Dazu die
+     * Menge, die noch wegfallen kann. Die Maske legt daraus eine Minuszeile an —
+     * so trägt die Minderung denselben Preis wie der Auftrag, nicht den
+     * heutigen Katalogpreis.
+     */
+    async minderungSources(req, res) {
+        try {
+            const tenantId = req.user.tenantId;
+            const rawParentId = String(req.query.parentSalesOrderId || '').trim();
+            const excludeAddonId = String(req.query.excludeAddonId || '').trim() || null;
+            if (!rawParentId)
+                return res.status(400).json({ error: 'Hauptauftrag fehlt.' });
+            const selected = await prisma_client_1.default.salesOrder.findFirst({
+                where: { id: rawParentId, tenantId },
+                select: { id: true, tenderId: true, parentSalesOrderId: true },
+            });
+            if (!selected)
+                return res.status(404).json({ error: 'Hauptauftrag nicht gefunden.' });
+            const parent = selected.parentSalesOrderId
+                ? await prisma_client_1.default.salesOrder.findFirst({
+                    where: { id: selected.parentSalesOrderId, tenantId },
+                    select: { id: true, tenderId: true },
+                })
+                : selected;
+            if (!parent)
+                return res.status(404).json({ error: 'Hauptauftrag nicht gefunden.' });
+            const [capacity, positions, tender] = await Promise.all([
+                (0, minderung_1.loadMinderungCapacity)(prisma_client_1.default, { tenantId, parent, excludeAddonId }),
+                parent.tenderId
+                    ? prisma_client_1.default.position.findMany({
+                        where: { tenderId: parent.tenderId, tenantId, sourceArticleId: { not: null } },
+                        orderBy: { displayOrder: 'asc' },
+                        select: { sourceArticleId: true, shortDescription: true, unit: true, unitPrice: true, discount: true, taxRate: true },
+                    })
+                    : Promise.resolve([]),
+                parent.tenderId
+                    ? prisma_client_1.default.tender.findFirst({
+                        where: { id: parent.tenderId, tenantId },
+                        select: { directDiscount: true, extraDiscount: true },
+                    })
+                    : Promise.resolve(null),
+            ]);
+            const articleIds = [...capacity.keys()];
+            const articles = articleIds.length
+                ? await prisma_client_1.default.article.findMany({
+                    where: { id: { in: articleIds }, tenantId },
+                    select: { id: true, name: true, unit: true, salePrice: true },
+                })
+                : [];
+            const extras = articleIds.length
+                ? await prisma_client_1.default.projectExtraMaterial.findMany({
+                    where: { articleId: { in: articleIds }, salesOrderId: parent.id, quantity: { gt: 0 } },
+                    select: { articleId: true, unitPrice: true },
+                })
+                : [];
+            const articleById = new Map(articles.map((row) => [row.id, row]));
+            const positionByArticle = new Map();
+            for (const row of positions) {
+                if (!positionByArticle.has(row.sourceArticleId))
+                    positionByArticle.set(row.sourceArticleId, row);
+            }
+            const extraPriceByArticle = new Map();
+            for (const row of extras) {
+                if (!extraPriceByArticle.has(row.articleId))
+                    extraPriceByArticle.set(row.articleId, Number(row.unitPrice || 0));
+            }
+            const items = articleIds
+                .map((articleId) => {
+                const available = round2(Math.max(0, capacity.get(articleId) ?? 0));
+                const position = positionByArticle.get(articleId);
+                const article = articleById.get(articleId);
+                const unitPrice = position && position.unitPrice != null
+                    ? round2((0, salesOrder_pricing_1.orderTotal)([{ ...position, quantity: 1 }], tender?.directDiscount, tender?.extraDiscount))
+                    : extraPriceByArticle.get(articleId) ?? Number(article?.salePrice || 0);
+                return {
+                    articleId,
+                    description: position?.shortDescription || article?.name || '',
+                    unit: position?.unit || article?.unit || '',
+                    unitPrice,
+                    available,
+                };
+            })
+                .filter((item) => item.available > 0);
+            res.status(200).json({ parentSalesOrderId: parent.id, items });
+        }
+        catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
     async create(req, res) {
         try {
             const tenantId = req.user.tenantId;
@@ -433,7 +585,19 @@ class AddonOrderController {
             const addonDiscounts = (0, tender_discounts_1.normalizeDiscountList)(req.body?.discounts, tender_discounts_1.MAX_TOTAL_DISCOUNTS);
             const subtotal = round2(priced.reduce((sum, line) => sum + line.lineTotal, 0)
                 + texts.reduce((sum, line) => sum + line.amount, 0));
-            const totalAmount = round2((0, tender_discounts_1.remainingAfterDiscounts)(subtotal, (0, tender_discounts_1.parseDiscountList)(addonDiscounts, tender_discounts_1.MAX_TOTAL_DISCOUNTS)));
+            const totalAmount = round2((0, addonDocumentLines_1.signedAfterDiscounts)(subtotal, (0, tender_discounts_1.parseDiscountList)(addonDiscounts, tender_discounts_1.MAX_TOTAL_DISCOUNTS)));
+            // MINDERUNG (16.09.2026): was wegfaellt, muss im Auftrag stehen, und
+            // die Summe darf den Auftrag nicht unter das Verrechnete druecken.
+            const minderungError = await validateMinderung({
+                tenantId,
+                parent,
+                addonId: null,
+                products: priced,
+                nextTotal: totalAmount,
+                articleName: (articleId) => articleById.get(articleId)?.name || articleId,
+            });
+            if (minderungError)
+                return res.status(409).json(minderungError);
             const created = await prisma_client_1.default.$transaction(async (tx) => {
                 const orderNumber = await (0, documentNumber_1.nextDocumentNumber)(tenantId, 'ADDON', tx);
                 const addon = await tx.salesOrder.create({
@@ -475,12 +639,11 @@ class AddonOrderController {
                             addedAt: addon.orderDate ?? new Date(),
                         },
                     });
-                    await (0, articleStock_1.adjustArticleStock)(tx, {
+                    await (0, articleStock_1.bookConsumption)(tx, {
                         tenantId,
                         articleId: line.articleId,
                         employeeId,
                         quantity: line.quantity,
-                        direction: 'OUT',
                         referenceId: addon.id,
                         description: `Nachtrag ${orderNumber}`,
                     });
@@ -559,6 +722,35 @@ class AddonOrderController {
             }
             const addonDiscounts = req.body?.discounts === undefined ? addon.addonDiscounts ?? null : (0, tender_discounts_1.normalizeDiscountList)(req.body.discounts, tender_discounts_1.MAX_TOTAL_DISCOUNTS);
             const previousLines = await this.loadAddonLines(addon);
+            // MINDERUNG: dieselben Schranken wie beim Anlegen, gerechnet mit dem
+            // kuenftigen Stand. Ohne neue Zeilen bleiben die eigenen Saetze stehen.
+            if (hasLines || req.body?.discounts !== undefined) {
+                const parent = await prisma_client_1.default.salesOrder.findFirst({
+                    where: { id: addon.parentSalesOrderId, tenantId },
+                    select: { id: true, tenderId: true },
+                });
+                const priced = products.map((line) => (0, addonDocumentLines_1.priceAddonProduct)(line, articleById.get(line.articleId)));
+                const own = (line) => line.own;
+                const inherited = (line) => !line.own;
+                const projectedSubtotal = round2(previousLines.materials.filter(inherited).reduce((sum, line) => sum + line.quantity * line.unitPrice, 0)
+                    + previousLines.expenses.filter(inherited).reduce((sum, line) => sum + line.amount, 0)
+                    + previousLines.overtime.reduce((sum, line) => sum + line.overtimeCost, 0)
+                    + (hasLines
+                        ? priced.reduce((sum, line) => sum + line.lineTotal, 0) + texts.reduce((sum, line) => sum + line.amount, 0)
+                        : previousLines.materials.filter(own).reduce((sum, line) => sum + line.quantity * line.unitPrice, 0)
+                            + previousLines.expenses.filter(own).reduce((sum, line) => sum + line.amount, 0)));
+                const nextTotal = round2((0, addonDocumentLines_1.signedAfterDiscounts)(projectedSubtotal, (0, tender_discounts_1.parseDiscountList)(addonDiscounts, tender_discounts_1.MAX_TOTAL_DISCOUNTS)));
+                const minderungError = parent ? await validateMinderung({
+                    tenantId,
+                    parent,
+                    addonId: addon.id,
+                    products: priced,
+                    nextTotal,
+                    articleName: (articleId) => articleById.get(articleId)?.name || articleId,
+                }) : null;
+                if (minderungError)
+                    return res.status(409).json(minderungError);
+            }
             const inheritedTotal = previousLines.materials.filter((line) => !line.own).reduce((sum, line) => sum + line.quantity * line.unitPrice, 0)
                 + previousLines.expenses.filter((line) => !line.own).reduce((sum, line) => sum + line.amount, 0)
                 + previousLines.overtime.filter((line) => !line.own).reduce((sum, line) => sum + line.overtimeCost, 0);
@@ -574,9 +766,10 @@ class AddonOrderController {
                     for (const row of existingMaterials) {
                         if (keptMaterialIds.has(row.id))
                             continue;
-                        await (0, articleStock_1.adjustArticleStock)(tx, {
+                        // Gegenbuchung der Zeile (auch einer Minuszeile).
+                        await (0, articleStock_1.bookConsumption)(tx, {
                             tenantId, articleId: row.articleId, employeeId,
-                            quantity: Number(row.quantity || 0), direction: 'IN',
+                            quantity: -Number(row.quantity || 0),
                             referenceId: addon.id, description: `Nachtrag ${addon.orderNumber} — Zeile entfernt`,
                         });
                         await tx.projectExtraMaterial.delete({ where: { id: row.id } });
@@ -590,13 +783,13 @@ class AddonOrderController {
                             // Mengenänderung = Differenz im Lager; Artikelwechsel =
                             // alte Menge zurück, neue Menge heraus.
                             if (current.articleId !== line.articleId) {
-                                await (0, articleStock_1.adjustArticleStock)(tx, { tenantId, articleId: current.articleId, employeeId, quantity: Number(current.quantity || 0), direction: 'IN', referenceId: addon.id, description: `Nachtrag ${addon.orderNumber} — Artikel gewechselt` });
-                                await (0, articleStock_1.adjustArticleStock)(tx, { tenantId, articleId: line.articleId, employeeId, quantity: line.quantity, direction: 'OUT', referenceId: addon.id, description: `Nachtrag ${addon.orderNumber}` });
+                                await (0, articleStock_1.bookConsumption)(tx, { tenantId, articleId: current.articleId, employeeId, quantity: -Number(current.quantity || 0), referenceId: addon.id, description: `Nachtrag ${addon.orderNumber} — Artikel gewechselt` });
+                                await (0, articleStock_1.bookConsumption)(tx, { tenantId, articleId: line.articleId, employeeId, quantity: line.quantity, referenceId: addon.id, description: `Nachtrag ${addon.orderNumber}` });
                             }
                             else {
                                 const diff = line.quantity - Number(current.quantity || 0);
                                 if (diff !== 0) {
-                                    await (0, articleStock_1.adjustArticleStock)(tx, { tenantId, articleId: line.articleId, employeeId, quantity: Math.abs(diff), direction: diff > 0 ? 'OUT' : 'IN', referenceId: addon.id, description: `Nachtrag ${addon.orderNumber} — Menge angepasst` });
+                                    await (0, articleStock_1.bookConsumption)(tx, { tenantId, articleId: line.articleId, employeeId, quantity: diff, referenceId: addon.id, description: `Nachtrag ${addon.orderNumber} — Menge angepasst` });
                                 }
                             }
                             await tx.projectExtraMaterial.update({
@@ -619,7 +812,7 @@ class AddonOrderController {
                                     addedAt: addon.orderDate ?? addon.createdAt,
                                 },
                             });
-                            await (0, articleStock_1.adjustArticleStock)(tx, { tenantId, articleId: line.articleId, employeeId, quantity: line.quantity, direction: 'OUT', referenceId: addon.id, description: `Nachtrag ${addon.orderNumber}` });
+                            await (0, articleStock_1.bookConsumption)(tx, { tenantId, articleId: line.articleId, employeeId, quantity: line.quantity, referenceId: addon.id, description: `Nachtrag ${addon.orderNumber}` });
                         }
                     }
                     const existingExpenses = await tx.projectExpense.findMany({
@@ -666,7 +859,7 @@ class AddonOrderController {
                 const subtotal = round2(inheritedTotal + materialSum.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.unitPrice || 0), 0)
                     + Number(expenseSum._sum?.amount || 0)
                     + Number(overtimeSum._sum?.overtimeCost || 0));
-                const totalAmount = round2((0, tender_discounts_1.remainingAfterDiscounts)(subtotal, (0, tender_discounts_1.parseDiscountList)(addonDiscounts, tender_discounts_1.MAX_TOTAL_DISCOUNTS)));
+                const totalAmount = round2((0, addonDocumentLines_1.signedAfterDiscounts)(subtotal, (0, tender_discounts_1.parseDiscountList)(addonDiscounts, tender_discounts_1.MAX_TOTAL_DISCOUNTS)));
                 return tx.salesOrder.update({
                     where: { id: addon.id },
                     data: {

@@ -3,11 +3,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.moveTask = exports.setTaskLabels = exports.setTaskAssignees = exports.rejectTaskCompletion = exports.approveTaskCompletion = exports.cancelTaskCompletionRequest = exports.requestTaskCompletion = exports.blockTask = exports.setTaskStatus = exports.duplicateTask = exports.rejectTaskPartner = exports.approveTaskPartner = exports.cancelTaskPartnerRequest = exports.requestTaskPartner = exports.rejectTaskDeletion = exports.cancelTaskDeletionRequest = exports.requestTaskDeletion = exports.deleteTask = exports.updateTask = exports.createTask = void 0;
+exports.moveTask = exports.setTaskLabels = exports.setTaskAssignees = exports.completeTask = exports.blockTask = exports.setTaskStatus = exports.duplicateTask = exports.addTaskPartner = exports.rejectTaskDeletion = exports.cancelTaskDeletionRequest = exports.requestTaskDeletion = exports.deleteTask = exports.updateTask = exports.createTask = void 0;
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 const AuditLogService_1 = require("../../../infrastructure/services/AuditLogService");
+const taskAssignMailService_1 = require("../../../infrastructure/services/tasks/taskAssignMailService");
 const taskActor_1 = require("./taskActor");
 const taskActivity_1 = require("./taskActivity");
 const taskConstants_1 = require("./taskConstants");
@@ -50,26 +51,36 @@ const assignedNotice = (context, title, recipientIds) => ({
     message: `${context.actor} hat Ihnen «${title}» zugewiesen.`,
     params: { actor: context.actor, title },
 });
-const completionRequestNotice = (context, title, note) => ({
-    type: taskConstants_1.NOTIFY.COMPLETION_REQUEST,
-    recipientIds: context.adminIds,
-    title: 'Abschluss beantragt',
-    message: `${context.actor} möchte «${title}» abschliessen.`,
-    params: { actor: context.actor, title, note },
-});
-const completionApprovedNotice = (context, task) => ({
+/**
+ * EINE ZUTEILUNG, ZWEI WEGE (16.09.2026, Samet: «görev atanınca … size görev
+ * atandı olarak mail gidecek»). Die Meldung im OCC erreicht nur, wer gerade
+ * angemeldet ist; die Karte per Mail reist mit und liegt am Morgen im
+ * Posteingang. Beide gehen an dieselben Personen — nie an die handelnde.
+ * Jeder Weg, auf dem jemand NEU verantwortlich wird, ruft das hier auf.
+ */
+const announceAssignment = (actor, taskId, title, recipientIds) => {
+    if (!recipientIds.length)
+        return;
+    notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, title, recipientIds)]);
+    (0, taskAssignMailService_1.queueTaskAssignmentMail)({
+        tenantId: actor.tenantId,
+        taskId,
+        actorId: actor.employeeId,
+        employeeIds: recipientIds,
+    });
+};
+/**
+ * Erledigt (16.09.2026). Niemand muss den Abschluss mehr freigeben — damit ihn
+ * trotzdem jemand MITBEKOMMT, geht die Meldung an die Administratorrolle und an
+ * die Person, welche die Aufgabe angelegt hat. Die handelnde Person filtert
+ * `notifyTaskPeople` selbst heraus.
+ */
+const completedNotice = (context, task) => ({
     type: taskConstants_1.NOTIFY.COMPLETION_APPROVED,
-    recipientIds: [task.approvalRequestedById],
+    recipientIds: [...context.adminIds, task.createdById],
     title: 'Aufgabe abgeschlossen',
-    message: `«${task.title}» wurde als erledigt bestätigt.`,
+    message: `${context.actor} hat «${task.title}» abgeschlossen.`,
     params: { actor: context.actor, title: task.title },
-});
-const completionRejectedNotice = (context, task, note) => ({
-    type: taskConstants_1.NOTIFY.COMPLETION_REJECTED,
-    recipientIds: [task.approvalRequestedById],
-    title: 'Abschluss abgelehnt',
-    message: `«${task.title}»: ${note}`,
-    params: { actor: context.actor, title: task.title, note },
 });
 /** Löschanfragen gehen an die Admins — nicht an die ganze Leitung. */
 const notifyAdminsAfterWrite = (actor, taskId, build) => {
@@ -93,17 +104,10 @@ const assertDueAfterStart = (startAt, dueAt) => {
         throw (0, taskErrors_1.taskBadRequest)('DUE_BEFORE_START', 'Das Ende liegt vor dem Anfang.');
     }
 };
-/** Ablehnen braucht eine Begründung (Görevly: Pflichtfeld «Gerekçe»). */
-const requireNote = (note) => {
-    if (!note)
-        throw (0, taskErrors_1.taskBadRequest)('NOTE_REQUIRED', 'Bitte eine Begründung angeben.');
-    return note;
-};
 const requireReason = (reason) => {
     if (!reason)
         throw (0, taskErrors_1.taskBadRequest)('REASON_REQUIRED', 'Bitte angeben, warum die Aufgabe nicht machbar ist.');
 };
-const noPendingRequest = () => (0, taskErrors_1.taskConflict)('NO_PENDING_REQUEST', 'Es gibt keine offene Abschlussanfrage.');
 const editForbidden = () => (0, taskErrors_1.taskForbidden)('TASK_EDIT_FORBIDDEN', 'Diese Aufgabe dürfen Sie nicht bearbeiten.');
 /** Etiketten müssen der ausgewählten Firma gehören. */
 const requireTenantLabels = async (db, tenantId, labelIds) => {
@@ -167,24 +171,8 @@ const applyPlan = async (tx, actor, taskId, plan, extra = {}) => {
 /** Görevly: wer schon gemessen hat, arbeitet daran — sonst ist sie nicht begonnen. */
 const resumedStatus = (task) => task.sessionCount > 0 ? 'IN_PROGRESS' : 'NOT_STARTED';
 const statusActivity = (from, to) => ({ type: taskConstants_1.ACTIVITY.STATUS, meta: { from, to } });
-const planApproveCompletion = (actorId, note, now) => ({
-    // Mit dem Abschluss enden alle laufenden Messungen — die Zeit bleibt gebucht.
-    closeSessions: { note: 'TASK_COMPLETED' },
-    data: {
-        approvalState: 'APPROVED',
-        approvalDecidedById: actorId,
-        approvalDecidedAt: now,
-        approvalDecisionNote: note,
-        status: 'COMPLETED',
-        completedAt: now,
-    },
-    activity: { type: taskConstants_1.ACTIVITY.COMPLETION_APPROVED, meta: { note } },
-});
 /** Status von Hand (Menü «Durum», Spalte der Pano); null = nichts zu tun. */
-const planManualStatus = (task, target, reason, actorId, now) => {
-    // «Erledigt» auf eine offene Anfrage IST ihre Bestätigung (Görevly quickComplete).
-    if (target === 'COMPLETED' && task.approvalState === 'PENDING')
-        return planApproveCompletion(actorId, null, now);
+const planManualStatus = (task, target, reason, now) => {
     if (target === 'BLOCKED') {
         if (task.status === 'BLOCKED' && task.blockReason === reason)
             return null;
@@ -212,11 +200,11 @@ const planUnblock = (task) => {
     const to = resumedStatus(task);
     return { data: { status: to, blockReason: null }, activity: statusActivity(task.status, to) };
 };
-/** Eine von Hand bestätigte Abschlussanfrage meldet sich bei der Person, die sie gestellt hat. */
-const notifyIfCompletionApproved = (actor, task, plan) => {
-    if (plan?.activity.type !== taskConstants_1.ACTIVITY.COMPLETION_APPROVED)
+/** Jeder Weg, der eine Aufgabe schliesst, meldet sich bei Leitung und Anlegenden. */
+const notifyIfCompleted = (actor, task, plan) => {
+    if (plan?.data.status !== 'COMPLETED')
         return;
-    notifyAfterWrite(actor, task.id, (context) => [completionApprovedNotice(context, task)]);
+    notifyAfterWrite(actor, task.id, (context) => [completedNotice(context, task)]);
 };
 /**
  * Jede Aufgabe ist sofort freigegeben — kein Görev-Talep, keine Ablehnung
@@ -274,10 +262,8 @@ const createTask = async (actor, input) => {
             meta: { title: input.title },
         });
     });
-    if (chosenIds.length) {
-        // Die Zuweisung an sich selbst meldet niemand.
-        notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, input.title, chosenIds)]);
-    }
+    // Die Zuweisung an sich selbst meldet niemand.
+    announceAssignment(actor, taskId, input.title, chosenIds);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.createTask = createTask;
@@ -459,113 +445,31 @@ const rejectTaskDeletion = async (actor, taskId, input) => {
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.rejectTaskDeletion = rejectTaskDeletion;
-/* ── Ortak-ekle-Anfrage (15.09.2026, Samet: «administratör olmayan kişi ortak
-   ekleme talebi yöneticiye gönderilsin, yönetici kabul etsin; tek seferde bir
-   istek ve bir kişi») ───────────────────────────────────────────────────── */
-const noPendingPartnerRequest = () => (0, taskErrors_1.taskConflict)('NO_PENDING_PARTNER_REQUEST', 'Es gibt keine offene Ortak-Anfrage.');
-const clearPartnerRequest = { partnerRequestedById: null, partnerRequestEmployeeId: null, partnerRequestedAt: null };
-/** Eine verantwortliche Nicht-Admin-Person schlägt GENAU EINE weitere Person vor; die Administratorrolle entscheidet. */
-const requestTaskPartner = async (actor, taskId, input) => {
+/* ── Ortak ekle (15.09.2026, Samet: «ortak ekleme talebi olmayacak, direkt
+   ortak ekleyebileceğiz ama tek tek; eklenen kişi görevi görsün») ─────────── */
+/**
+ * Eine verantwortliche Person nimmt GENAU EINE weitere Person sofort als
+ * Verantwortliche auf — keine Anfrage, keine Freigabe. Die neue Person sieht die
+ * Aufgabe damit (sehen = verantwortlich) und bekommt die Zuweisungsmeldung.
+ */
+const addTaskPartner = async (actor, taskId, input) => {
     const employeeId = input.employeeId;
     await (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, [employeeId]);
     const core = await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
-        if (core.partnerRequestedById) {
-            throw (0, taskErrors_1.taskConflict)('PARTNER_ALREADY_REQUESTED', 'Für diese Aufgabe ist schon eine Ortak-Anfrage offen.');
-        }
-        if (!permissions.canRequestPartner) {
-            throw (0, taskErrors_1.taskForbidden)('PARTNER_REQUEST_FORBIDDEN', 'Eine Ortak-Anfrage stellen nur Verantwortliche einer offenen Aufgabe.');
+        if (!permissions.canAddPartner) {
+            throw (0, taskErrors_1.taskForbidden)('PARTNER_ADD_FORBIDDEN', 'Ortak hinzufügen dürfen nur Verantwortliche einer offenen Aufgabe.');
         }
         if (core.assigneeIds.includes(employeeId)) {
             throw (0, taskErrors_1.taskBadRequest)('PARTNER_ALREADY_ASSIGNED', 'Diese Person ist schon verantwortlich.', { employeeId });
         }
-        await applyPlan(tx, actor, taskId, {
-            data: { partnerRequestedById: actor.employeeId, partnerRequestEmployeeId: employeeId, partnerRequestedAt: new Date() },
-            activity: { type: taskConstants_1.ACTIVITY.PARTNER_REQUESTED, meta: { employeeId } },
-        });
+        await addAssignees(tx, actor.tenantId, taskId, [employeeId]);
+        await (0, taskActivity_1.logTaskActivity)(tx, actor.tenantId, actor.employeeId, { taskId, type: taskConstants_1.ACTIVITY.ASSIGNED, meta: { employeeId } });
         return core;
     });
-    void (0, taskPeople_1.loadPersonName)(employeeId)
-        .then((personName) => notifyAdminsAfterWrite(actor, taskId, (actorName, adminIds) => ({
-        type: taskConstants_1.NOTIFY.PARTNER_REQUEST,
-        recipientIds: adminIds,
-        title: 'Ortak-Anfrage',
-        message: `${actorName} möchte ${personName} zu «${core.title}» hinzufügen.`,
-        params: { actor: actorName, person: personName, title: core.title },
-    })))
-        .catch((error) => console.warn('[tasks.notify] Ortak-Anfrage nicht vorbereitet', error));
+    announceAssignment(actor, taskId, core.title, [employeeId]);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
-exports.requestTaskPartner = requestTaskPartner;
-/** Anfrage zurückziehen: wer sie gestellt hat (oder die Administratorrolle). */
-const cancelTaskPartnerRequest = async (actor, taskId) => {
-    await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
-        if (!core.partnerRequestedById)
-            throw noPendingPartnerRequest();
-        if (!permissions.canCancelPartnerRequest) {
-            throw (0, taskErrors_1.taskForbidden)('PARTNER_REQUEST_CANCEL_FORBIDDEN', 'Zurückziehen darf nur, wer die Anfrage gestellt hat.');
-        }
-        await applyPlan(tx, actor, taskId, {
-            data: clearPartnerRequest,
-            activity: { type: taskConstants_1.ACTIVITY.PARTNER_REQUEST_CANCELLED, meta: { employeeId: core.partnerRequestEmployeeId } },
-        });
-    });
-    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
-};
-exports.cancelTaskPartnerRequest = cancelTaskPartnerRequest;
-/** Administratorrolle nimmt die vorgeschlagene Person als Verantwortliche auf. */
-const approveTaskPartner = async (actor, taskId) => {
-    (0, taskActor_1.assertSystemAdmin)(actor);
-    const result = await withLockedTask(actor, taskId, async (tx, { core }) => {
-        if (!core.partnerRequestedById || !core.partnerRequestEmployeeId)
-            throw noPendingPartnerRequest();
-        const employeeId = core.partnerRequestEmployeeId;
-        // Die Person muss das Modul noch benutzen dürfen.
-        await (0, taskPeople_1.assertAssignablePeople)(actor.tenantId, [employeeId]);
-        const added = !core.assigneeIds.includes(employeeId);
-        if (added)
-            await addAssignees(tx, actor.tenantId, taskId, [employeeId]);
-        await tx.task.update({ where: { id: taskId }, data: clearPartnerRequest, select: { id: true } });
-        if (added) {
-            await (0, taskActivity_1.logTaskActivity)(tx, actor.tenantId, actor.employeeId, { taskId, type: taskConstants_1.ACTIVITY.ASSIGNED, meta: { employeeId } });
-        }
-        return { core, employeeId, requesterId: core.partnerRequestedById, added };
-    });
-    notifyAfterWrite(actor, taskId, (context) => [
-        ...(result.added ? [assignedNotice(context, result.core.title, [result.employeeId])] : []),
-        {
-            type: taskConstants_1.NOTIFY.PARTNER_APPROVED,
-            recipientIds: [result.requesterId],
-            title: 'Ortak-Anfrage angenommen',
-            message: `«${result.core.title}»: die Person wurde hinzugefügt.`,
-            params: { actor: context.actor, title: result.core.title },
-        },
-    ]);
-    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
-};
-exports.approveTaskPartner = approveTaskPartner;
-/** Administratorrolle lehnt ab: niemand kommt dazu; wer angefragt hat, erfährt es. */
-const rejectTaskPartner = async (actor, taskId, input) => {
-    (0, taskActor_1.assertSystemAdmin)(actor);
-    const note = input.note || null;
-    const result = await withLockedTask(actor, taskId, async (tx, { core }) => {
-        if (!core.partnerRequestedById)
-            throw noPendingPartnerRequest();
-        await applyPlan(tx, actor, taskId, {
-            data: clearPartnerRequest,
-            activity: { type: taskConstants_1.ACTIVITY.PARTNER_REJECTED, meta: { employeeId: core.partnerRequestEmployeeId, note } },
-        });
-        return { title: core.title, requesterId: core.partnerRequestedById };
-    });
-    notifyAfterWrite(actor, taskId, (context) => [{
-            type: taskConstants_1.NOTIFY.PARTNER_REJECTED,
-            recipientIds: [result.requesterId],
-            title: 'Ortak-Anfrage abgelehnt',
-            message: note ? `«${result.title}»: ${note}` : `«${result.title}»: niemand wurde hinzugefügt.`,
-            params: { actor: context.actor, title: result.title, note },
-        }]);
-    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
-};
-exports.rejectTaskPartner = rejectTaskPartner;
+exports.addTaskPartner = addTaskPartner;
 /**
  * Eigene Kopien der Dateien — eine nach der anderen, damit nie alle Bytes
  * zugleich im Speicher liegen. Scheitert eine, verschwinden die schon
@@ -748,28 +652,23 @@ const duplicateTask = async (actor, taskId, input) => {
         await (0, taskFiles_1.removeStoredFiles)(copies.map((copy) => copy.fileRef));
         throw error;
     }
-    if (assigneeIds.length) {
-        notifyAfterWrite(actor, newTaskId, (context) => [assignedNotice(context, title, assigneeIds)]);
-    }
+    announceAssignment(actor, newTaskId, title, assigneeIds);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, newTaskId);
 };
 exports.duplicateTask = duplicateTask;
 /* ── Status von Hand und Blockade (Leitung) ─────────────────────────────── */
 const setTaskStatus = async (actor, taskId, input) => {
     (0, taskActor_1.assertManager)(actor);
-    // Abschliessen (auch das Bestätigen einer offenen Anfrage darüber) nur die Administratorrolle.
-    if (input.status === 'COMPLETED')
-        (0, taskActor_1.assertCompletionAdmin)(actor);
     const reason = input.reason ?? '';
     if (input.status === 'BLOCKED')
         requireReason(reason);
     const { core, plan } = await withLockedTask(actor, taskId, async (tx, { core }) => {
-        const plan = planManualStatus(core, input.status, reason, actor.employeeId, new Date());
+        const plan = planManualStatus(core, input.status, reason, new Date());
         if (plan)
             await applyPlan(tx, actor, taskId, plan);
         return { core, plan };
     });
-    notifyIfCompletionApproved(actor, core, plan);
+    notifyIfCompleted(actor, core, plan);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.setTaskStatus = setTaskStatus;
@@ -778,116 +677,57 @@ const blockTask = async (actor, taskId, input) => {
     (0, taskActor_1.assertManager)(actor);
     const reason = input.reason ?? '';
     await withLockedTask(actor, taskId, async (tx, { core }) => {
-        const plan = reason ? planManualStatus(core, 'BLOCKED', reason, actor.employeeId, new Date()) : planUnblock(core);
+        const plan = reason ? planManualStatus(core, 'BLOCKED', reason, new Date()) : planUnblock(core);
         if (plan)
             await applyPlan(tx, actor, taskId, plan);
     });
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.blockTask = blockTask;
-/* ── Abschlussanfrage ───────────────────────────────────────────────────── */
+/* ── Abschluss ──────────────────────────────────────────────────────────── */
 /**
- * Eine verantwortliche Person meldet «fertig»: ihre Messung endet, die Leitung entscheidet.
- * Ist der Termin überschritten, geht das NUR mit Gecikme açıklaması (15.09.2026, Samet) —
- * sie bleibt an der Aufgabe stehen, auch nach der Entscheidung.
+ * «Tamamlandı» — DIREKT (16.09.2026, Samet: «tamamlama talebi olmayacak, direkt
+ * tamamlanabilecek, tamamlandı olarak geçecek listeye»). Wer an der Aufgabe
+ * misst, und die Leitung, schliessen sie selbst ab: alle laufenden Messungen
+ * enden, die Aufgabe steht ab sofort unter «Tamamlandı». Es gibt nichts mehr zu
+ * beantragen, zu bestätigen oder abzulehnen.
+ *
+ * GEBLIEBEN ist die Gecikme açıklaması (15.09.2026): eine ÜBERFÄLLIGE Aufgabe
+ * lässt sich nur mit einer kurzen Erklärung des Verzugs schliessen. Sie bleibt
+ * an der Aufgabe stehen und ist das Einzige, was die Leitung im Nachhinein noch
+ * über den Termin erfährt.
  */
-const requestTaskCompletion = async (actor, taskId, input) => {
-    const note = input.note || null;
+const completeTask = async (actor, taskId, input = {}) => {
     const delayReason = input.delayReason?.trim() || null;
-    const core = await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
-        if (core.approvalState === 'PENDING') {
-            throw (0, taskErrors_1.taskConflict)('COMPLETION_ALREADY_REQUESTED', 'Der Abschluss ist bereits beantragt.');
-        }
-        if (!permissions.canRequestCompletion) {
-            throw (0, taskErrors_1.taskForbidden)('COMPLETION_REQUEST_FORBIDDEN', 'Den Abschluss beantragen Verantwortliche oder die Leitung einer offenen Aufgabe.');
+    const { core, plan } = await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
+        if (core.status === 'COMPLETED')
+            throw (0, taskErrors_1.taskConflict)('TASK_ALREADY_COMPLETED', 'Diese Aufgabe ist bereits abgeschlossen.');
+        if (!permissions.canComplete) {
+            throw (0, taskErrors_1.taskForbidden)('COMPLETE_FORBIDDEN', 'Abschliessen dürfen Verantwortliche oder die Leitung einer offenen Aufgabe.');
         }
         const now = new Date();
         const overdue = (0, taskAccess_1.isTaskOverdue)(core, now);
         if (overdue && !delayReason) {
             throw (0, taskErrors_1.taskBadRequest)('DELAY_REASON_REQUIRED', 'Die Aufgabe ist überfällig — bitte den Verzug kurz erklären.');
         }
-        await applyPlan(tx, actor, taskId, {
-            closeSessions: { note: 'COMPLETION_REQUESTED', employeeIds: [actor.employeeId] },
+        const plan = {
+            // Mit dem Abschluss enden ALLE laufenden Messungen — die Zeit bleibt gebucht.
+            closeSessions: { note: 'TASK_COMPLETED' },
             data: {
                 ...(overdue && delayReason ? { delayReason, delayReasonById: actor.employeeId, delayReasonAt: now } : {}),
-                approvalState: 'PENDING',
-                approvalRequestedById: actor.employeeId,
-                approvalRequestedAt: new Date(),
-                approvalNote: note,
-                approvalDecidedById: null,
-                approvalDecidedAt: null,
-                approvalDecisionNote: null,
-                status: 'REVIEW',
+                status: 'COMPLETED',
+                completedAt: now,
+                blockReason: null,
             },
-            activity: { type: taskConstants_1.ACTIVITY.COMPLETION_REQUESTED, meta: overdue ? { note, delayReason } : { note } },
-        });
-        return core;
+            activity: { type: taskConstants_1.ACTIVITY.STATUS, meta: { from: core.status, to: 'COMPLETED', ...(delayReason ? { delayReason } : {}) } },
+        };
+        await applyPlan(tx, actor, taskId, plan);
+        return { core, plan };
     });
-    notifyAfterWrite(actor, taskId, (context) => [completionRequestNotice(context, core.title, note)]);
+    notifyIfCompleted(actor, core, plan);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
-exports.requestTaskCompletion = requestTaskCompletion;
-/** «Geri al»: nur wer beantragt hat — oder die Leitung (Görevly liess es jedem). */
-const cancelTaskCompletionRequest = async (actor, taskId) => {
-    await withLockedTask(actor, taskId, async (tx, { core, permissions }) => {
-        if (core.approvalState !== 'PENDING')
-            throw noPendingRequest();
-        if (!permissions.canCancelCompletionRequest) {
-            throw (0, taskErrors_1.taskForbidden)('COMPLETION_CANCEL_FORBIDDEN', 'Zurückziehen darf nur, wer den Abschluss beantragt hat, oder die Leitung.');
-        }
-        await applyPlan(tx, actor, taskId, {
-            data: {
-                approvalState: 'NONE',
-                approvalRequestedById: null,
-                approvalRequestedAt: null,
-                approvalNote: null,
-                approvalDecidedById: null,
-                approvalDecidedAt: null,
-                approvalDecisionNote: null,
-                status: resumedStatus(core),
-            },
-            activity: { type: taskConstants_1.ACTIVITY.COMPLETION_CANCELLED },
-        });
-    });
-    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
-};
-exports.cancelTaskCompletionRequest = cancelTaskCompletionRequest;
-const approveTaskCompletion = async (actor, taskId, input) => {
-    (0, taskActor_1.assertCompletionAdmin)(actor);
-    const note = input.note || null;
-    const core = await withLockedTask(actor, taskId, async (tx, { core }) => {
-        if (core.approvalState !== 'PENDING')
-            throw noPendingRequest();
-        await applyPlan(tx, actor, taskId, planApproveCompletion(actor.employeeId, note, new Date()));
-        return core;
-    });
-    notifyAfterWrite(actor, taskId, (context) => [completionApprovedNotice(context, core)]);
-    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
-};
-exports.approveTaskCompletion = approveTaskCompletion;
-/** Zurück an die Arbeit, mit Begründung für die Person, die beantragt hat. */
-const rejectTaskCompletion = async (actor, taskId, input) => {
-    (0, taskActor_1.assertCompletionAdmin)(actor);
-    const note = requireNote(input.note);
-    const core = await withLockedTask(actor, taskId, async (tx, { core }) => {
-        if (core.approvalState !== 'PENDING')
-            throw noPendingRequest();
-        await applyPlan(tx, actor, taskId, {
-            data: {
-                approvalState: 'REJECTED',
-                approvalDecidedById: actor.employeeId,
-                approvalDecidedAt: new Date(),
-                approvalDecisionNote: note,
-                status: 'IN_PROGRESS',
-            },
-            activity: { type: taskConstants_1.ACTIVITY.COMPLETION_REJECTED, meta: { note } },
-        });
-        return core;
-    });
-    notifyAfterWrite(actor, taskId, (context) => [completionRejectedNotice(context, core, note)]);
-    return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
-};
-exports.rejectTaskCompletion = rejectTaskCompletion;
+exports.completeTask = completeTask;
 /* ── Verantwortliche und Etiketten ──────────────────────────────────────── */
 /**
  * Verantwortliche ersetzen (Leitung). Neue Personen werden geprüft; wer
@@ -914,8 +754,7 @@ const setTaskAssignees = async (actor, taskId, input) => {
         ]);
         return { core, added };
     });
-    if (added.length)
-        notifyAfterWrite(actor, taskId, (context) => [assignedNotice(context, core.title, added)]);
+    announceAssignment(actor, taskId, core.title, added);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.setTaskAssignees = setTaskAssignees;
@@ -1001,7 +840,7 @@ const moveTask = async (actor, taskId, input) => {
         if (changesStatus && column === 'BLOCKED')
             requireReason(reason);
         const plan = input.status && (changesStatus || reason)
-            ? planManualStatus(core, input.status, reason, actor.employeeId, new Date())
+            ? planManualStatus(core, input.status, reason, new Date())
             : null;
         const boardPosition = await resolveBoardPosition(tx, actor.tenantId, taskId, column, input.beforeTaskId ?? null, input.afterTaskId ?? null);
         if (plan)
@@ -1010,7 +849,7 @@ const moveTask = async (actor, taskId, input) => {
             await tx.task.updateMany({ where: { id: taskId, tenantId: actor.tenantId }, data: { boardPosition } });
         return { core, plan };
     });
-    notifyIfCompletionApproved(actor, core, plan);
+    notifyIfCompleted(actor, core, plan);
     return (0, taskQueries_1.loadTaskEnvelope)(actor, taskId);
 };
 exports.moveTask = moveTask;

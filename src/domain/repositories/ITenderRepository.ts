@@ -61,6 +61,9 @@ export interface TenderListRow {
     // STORNO (06.09.2026): eine stornierte Offerte bleibt in der Liste stehen —
     // sie traegt nur ihren eigenen Status statt "Entwurf"/"Auftrag".
     cancelledAt: Date | null;
+    // AB-Nummer eines in den Entwurf zurückgesetzten Auftrags (16.09.2026) —
+    // die Liste zeigt sie als «früher AB-…» neben der Offertnummer.
+    revertedOrderNumber: string | null;
     positionCount: number;
     grandTotal: number;
     /* ── Herkunft aus der OSP (19.09.2026) ──────────────────────────────────

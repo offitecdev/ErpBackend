@@ -201,6 +201,11 @@ model Appointment {
   tenantId                   String
   projectId                  String?
   salesOrderId               String?
+  // GEPARKT (16.09.2026): ein angesetzter Termin, dessen Auftrag in den
+  // Entwurf zurückging. Er bleibt im Projekt und im Kalender stehen (die
+  // Montage ist ja nicht abgesagt) und hängt sich an den Auftrag, der aus
+  // DIESER Offerte wieder entsteht. Leer = normaler Termin.
+  detachedFromTenderId       String?                        @db.VarChar(191)
   assignedTechId             String?
   customerId                 String?
   startTime                  DateTime
@@ -264,6 +269,7 @@ model Appointment {
   @@index([tenantId, icalUid])
   // Saha raporunun günlük planlanan süresini hesaplayan sorgu.
   @@index([projectId, salesOrderId, status, startTime, endTime])
+  @@index([tenantId, detachedFromTenderId])
   // Die Tage eines Einsatzes in ihrer Reihenfolge — jede Ansicht, die von
   // "Tag 2 von 4" spricht, liest genau darüber.
   @@index([seriesId, startTime])

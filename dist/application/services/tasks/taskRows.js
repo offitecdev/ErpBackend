@@ -70,6 +70,10 @@ exports.TASK_CORE_COLUMNS = client_1.Prisma.sql `
     (SELECT COUNT(*) FROM TaskChecklistItem ci WHERE ci.taskId = t.id AND ci.done = 1) AS checkDone,
     (SELECT COUNT(*) FROM TaskComment tc WHERE tc.taskId = t.id) AS commentCount,
     (SELECT COUNT(*) FROM TaskAttachment tf WHERE tf.taskId = t.id AND tf.kind = 'TASK') AS attachmentCount,
+    (SELECT GROUP_CONCAT(DISTINCT ip.employeeId SEPARATOR ',')
+       FROM TaskIssuePerson ip JOIN TaskIssue ti ON ti.id = ip.issueId
+      WHERE ti.taskId = t.id) AS issuePersonCsv,
+    (SELECT COUNT(*) FROM TaskIssue ti WHERE ti.taskId = t.id AND ti.status = 'OPEN') AS openIssueCount,
     (SELECT COALESCE(SUM(ts.durationMs), 0) FROM TaskTimeSession ts
       WHERE ts.taskId = t.id AND ts.endedAt IS NOT NULL) AS closedMs,
     (SELECT COUNT(*) FROM TaskTimeSession ts WHERE ts.taskId = t.id) AS sessionCount
@@ -120,6 +124,8 @@ const mapTaskCore = (row) => ({
     checkDone: (0, exports.rawNumber)(row.checkDone),
     commentCount: (0, exports.rawNumber)(row.commentCount),
     attachmentCount: (0, exports.rawNumber)(row.attachmentCount),
+    issuePersonIds: (0, exports.rawCsv)(row.issuePersonCsv),
+    openIssueCount: (0, exports.rawNumber)(row.openIssueCount),
     closedMs: (0, exports.rawNumber)(row.closedMs),
     sessionCount: (0, exports.rawNumber)(row.sessionCount),
 });
@@ -161,11 +167,15 @@ exports.lockTaskRow = lockTaskRow;
 /**
  * Sichtbarkeitsbedingung einer Nicht-Admin-Person über `t`: zugewiesen ODER
  * selbst angelegt (15.09.2026, Samet: «yönetici olmadığım sürece sadece bana
- * atanan ve benim oluşturduğum görevleri görebilmeliyim»).
+ * atanan ve benim oluşturduğum görevleri görebilmeliyim») — ODER in einer Frage
+ * bzw. einem Problem dieser Aufgabe markiert (16.09.2026): wer gefragt wird,
+ * muss die Aufgabe öffnen und antworten können.
  */
 const memberVisibilitySql = (employeeId) => client_1.Prisma.sql `(
     t.createdById = ${employeeId}
     OR EXISTS (SELECT 1 FROM TaskAssignee va WHERE va.taskId = t.id AND va.employeeId = ${employeeId})
+    OR EXISTS (SELECT 1 FROM TaskIssuePerson vp JOIN TaskIssue vi ON vi.id = vp.issueId
+                WHERE vi.taskId = t.id AND vp.employeeId = ${employeeId})
 )`;
 exports.memberVisibilitySql = memberVisibilitySql;
 /** Firmen- und Sichtbarkeitsbedingung für die handelnde Person. */
@@ -234,6 +244,7 @@ const toTaskRowDto = (core, actor, running, now = new Date(), ownClosedMs) => {
         checklist: { done: core.checkDone, total: core.checkTotal },
         commentCount: core.commentCount,
         attachmentCount: core.attachmentCount,
+        openIssueCount: core.openIssueCount,
         boardPosition: core.boardPosition,
         overdue: (0, taskAccess_1.isTaskOverdue)(core, now),
         timer: { runningForMe: Boolean(mine), myStartedAt: mine?.startedAt ?? null },
@@ -285,11 +296,6 @@ const toTaskDetailDto = (core, actor, running, now = new Date(), ownClosedMs) =>
         requestedAt: core.deleteRequestedAt,
         note: core.deleteRequestNote,
     },
-    partnerRequest: {
-        requestedById: core.partnerRequestedById,
-        employeeId: core.partnerRequestEmployeeId,
-        requestedAt: core.partnerRequestedAt,
-    },
     delay: {
         reason: core.delayReason,
         byId: core.delayReasonById,
@@ -306,8 +312,6 @@ const taskPeopleIds = (core, running = []) => [
     ...(core.reviewRequestedById ? [core.reviewRequestedById] : []),
     ...(core.reviewDecidedById ? [core.reviewDecidedById] : []),
     ...(core.deleteRequestedById ? [core.deleteRequestedById] : []),
-    ...(core.partnerRequestedById ? [core.partnerRequestedById] : []),
-    ...(core.partnerRequestEmployeeId ? [core.partnerRequestEmployeeId] : []),
     ...(core.delayReasonById ? [core.delayReasonById] : []),
     ...running.map((session) => session.employeeId),
 ];

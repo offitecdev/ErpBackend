@@ -31,9 +31,12 @@ const countSalesOrderLinks = async (db, opts) => {
         // Spesen sind erfasste Arbeit: sie fielen beim Zuruecksetzen mit, also
         // sperren sie es (das Storno laesst sie stehen).
         db.projectExpense.count({ where: { salesOrderId: inFamily } }),
+        // Ein ABGESAGTER Termin hat nie stattgefunden — auch wenn sein Datum
+        // schon vorbei ist, sperrt er das Zuruecksetzen nicht (16.09.2026).
         db.appointment.count({
             where: {
                 salesOrderId: inFamily,
+                NOT: { status: 'CANCELLED' },
                 OR: [{ status: 'COMPLETED' }, { startTime: { lt: now } }],
             },
         }),
@@ -130,6 +133,33 @@ exports.assertSalesOrderCancellable = assertSalesOrderCancellable;
 const revertSalesOrderToDraftWithin = async (tx, opts) => {
     const { order, tenantId, employeeId, lifecycle } = opts;
     const projectId = order.projectId || null;
+    const tenderId = order.tenderId || null;
+    const now = new Date();
+    // STAND BEIM AUFTRAG (16.09.2026, B4): bevor die Offerte wieder Entwurf
+    // wird, hält ein Schnappschuss fest, worauf die verschickte AB beruhte.
+    if (tenderId) {
+        await snapshotTenderForOrder(tx, { tenantId, tenderId, employeeId, order });
+    }
+    // TERMINE PARKEN (16.09.2026): die angesetzten Termine sind nicht abgesagt
+    // — nur der Auftrag wird neu geschrieben. Sie lösen sich vom Auftrag,
+    // bleiben im Projekt und im Kalender stehen und merken sich die Offerte,
+    // aus der der nächste Auftrag entsteht. Begonnene Termine gibt es hier
+    // nicht (sie sperren das Zurücksetzen). Ohne Offerte gäbe es nichts, woran
+    // sie sich später hängen könnten — dann fallen sie wie bisher.
+    let parkedAppointmentIds = [];
+    if (tenderId) {
+        const parked = await tx.appointment.findMany({
+            where: { tenantId, salesOrderId: { in: lifecycle.familyIds } },
+            select: { id: true },
+        });
+        parkedAppointmentIds = parked.map((row) => row.id);
+        if (parkedAppointmentIds.length) {
+            await tx.appointment.updateMany({
+                where: { id: { in: parkedAppointmentIds } },
+                data: { salesOrderId: null, detachedFromTenderId: tenderId },
+            });
+        }
+    }
     // Das Entfernen selbst bleibt an EINER Stelle (Lagerrückgabe, Sätze,
     // Nachträge). Das Projekt fasst es NICHT an — was mit ihm geschieht,
     // entscheidet der Block darunter.
@@ -162,11 +192,90 @@ const revertSalesOrderToDraftWithin = async (tx, opts) => {
             // Auftrags) ist damit auftragslos.
             await (0, salesOrderDeletion_1.revertTendersToDraft)(tx, tenantId, employeeId, [project.tenderId], `${order.orderNumber || 'Auftrag'} zurueck in Entwurf; Projekt zurueck in die Planung.`);
             projectReverted = true;
+            // Hatte das Projekt eine EIGENE, andere Offerte, wartet auch sie.
+            if (project.tenderId && project.tenderId !== tenderId) {
+                await tx.tender.updateMany({
+                    where: { id: project.tenderId, tenantId },
+                    data: { revertedAt: now, revertedById: employeeId, revertedProjectId: projectId },
+                });
+            }
         }
     }
-    return { tenderId: order.tenderId || null, projectId, projectReverted, addonIds };
+    // DIE SPUR AN DER OFFERTE: welche AB-Nummer sie trug, wann und von wem
+    // zurückgesetzt, und welches Projekt auf sie wartet. `projectId` bleibt
+    // leer (es heisst «in Auftrag»); das wartende Projekt steht daneben.
+    // Und die Offerte zählt eine VERSION hoch (B4): was jetzt geändert wird,
+    // ist nicht mehr der Stand der verschickten AB. Die neue Nummer liegt über
+    // jeder Version derselben AN-Nummer, damit keine zwei Zeilen «v2» heissen.
+    if (tenderId) {
+        const current = await tx.tender.findFirst({
+            where: { id: tenderId, tenantId },
+            select: { tenderNumber: true, version: true },
+        });
+        const highest = current
+            ? await tx.tender.aggregate({
+                where: { tenantId, tenderNumber: current.tenderNumber },
+                _max: { version: true },
+            })
+            : null;
+        const nextVersion = Math.max(Number(current?.version || 1), Number(highest?._max?.version || 1)) + 1;
+        await tx.tender.updateMany({
+            where: { id: tenderId, tenantId },
+            data: {
+                revertedOrderNumber: order.orderNumber || null,
+                revertedAt: now,
+                revertedById: employeeId,
+                revertedProjectId: projectId,
+                ...(current ? { version: nextVersion } : {}),
+            },
+        });
+    }
+    return { tenderId, projectId, projectReverted, addonIds, parkedAppointmentIds };
 };
 exports.revertSalesOrderToDraftWithin = revertSalesOrderToDraftWithin;
+/**
+ * Der Schnappschuss (B4): Positionen und Summen der Offerte, wie sie beim
+ * Zurücksetzen des Auftrags waren. Die Auftragssumme kommt vom AUFTRAG — sie
+ * ist die Zahl, die auf der AB stand.
+ */
+const snapshotTenderForOrder = async (tx, opts) => {
+    const { tenantId, tenderId, employeeId, order } = opts;
+    const [tender, positions] = await Promise.all([
+        tx.tender.findFirst({
+            where: { id: tenderId, tenantId },
+            select: { version: true, currency: true, totalDiscounts: true, directDiscount: true, extraDiscount: true },
+        }),
+        tx.position.findMany({
+            where: { tenderId, tenantId },
+            orderBy: [{ displayOrder: 'asc' }],
+            select: {
+                id: true, parentPositionId: true, positionNumber: true, shortDescription: true, longDescription: true,
+                rowType: true, hierarchyLevel: true, quantity: true, unit: true, unitPrice: true, discount: true,
+            },
+        }),
+    ]);
+    if (!tender)
+        return;
+    await tx.tenderSnapshot.create({
+        data: {
+            id: (0, nanoid_1.nanoid)(12),
+            tenantId,
+            tenderId,
+            version: Number(tender.version || 1),
+            orderNumber: order.orderNumber || null,
+            reason: 'ORDER_REVERTED',
+            positions,
+            totals: {
+                orderTotal: Number(order.totalAmount ?? 0),
+                currency: tender.currency ?? null,
+                totalDiscounts: tender.totalDiscounts ?? null,
+                directDiscount: tender.directDiscount ?? null,
+                extraDiscount: tender.extraDiscount ?? null,
+            },
+            createdById: employeeId,
+        },
+    });
+};
 /**
  * STORNO EINES AUFTRAGS. Nichts wird entfernt: der Auftrag und seine Nachträge
  * werden als storniert gestempelt, künftige Termine abgesagt, und die Offerte
@@ -315,7 +424,7 @@ exports.uncancelSalesOrderWithin = uncancelSalesOrderWithin;
  * Offerte).
  */
 const readTenderLifecycle = async (db, tender) => {
-    const [salesOrder, project] = await Promise.all([
+    const [salesOrder, project, parkedAppointments] = await Promise.all([
         db.salesOrder.findFirst({
             where: { tenderId: tender.id, tenantId: tender.tenantId },
             select: { id: true, orderNumber: true, cancelledAt: true, projectId: true },
@@ -323,6 +432,16 @@ const readTenderLifecycle = async (db, tender) => {
         db.project.findFirst({
             where: { tenderId: tender.id, tenantId: tender.tenantId },
             select: { id: true },
+        }),
+        // Geparkte, noch anstehende Termine (16.09.2026): wer diese Offerte
+        // löscht, liesse sie ohne Auftrag im Kalender stehen.
+        db.appointment.count({
+            where: {
+                tenantId: tender.tenantId,
+                detachedFromTenderId: tender.id,
+                startTime: { gte: new Date() },
+                NOT: { status: 'CANCELLED' },
+            },
         }),
     ]);
     const status = String(tender.status || '');
@@ -335,6 +454,8 @@ const readTenderLifecycle = async (db, tender) => {
         deleteBlockers.push('SALES_ORDER');
     if (projectId)
         deleteBlockers.push('PROJECT');
+    if (parkedAppointments > 0)
+        deleteBlockers.push('PARKED_APPOINTMENT');
     // Angenommen/exportiert = die Offerte ist aus dem Haus; kein Entwurf mehr.
     if (status !== 'Draft' && !deleteBlockers.length)
         deleteBlockers.push('SALES_ORDER');
@@ -361,7 +482,9 @@ const assertTenderDeletable = (lifecycle) => {
         return;
     throw refuse(lifecycle.cancelled
         ? 'Eine stornierte Offerte wird nicht geloescht — sie bleibt als Beleg stehen.'
-        : 'Diese Offerte haengt an einem Auftrag oder Projekt und kann nicht geloescht werden. Stornieren Sie sie stattdessen.', lifecycle.deleteBlockers, 403);
+        : lifecycle.deleteBlockers.length === 1 && lifecycle.deleteBlockers[0] === 'PARKED_APPOINTMENT'
+            ? 'Im Projekt warten noch angesetzte Termine auf diese Offerte. Sagen Sie die Termine zuerst ab oder loeschen Sie das wartende Projekt.'
+            : 'Diese Offerte haengt an einem Auftrag oder Projekt und kann nicht geloescht werden. Stornieren Sie sie stattdessen.', lifecycle.deleteBlockers, 403);
 };
 exports.assertTenderDeletable = assertTenderDeletable;
 const assertTenderCancellable = (lifecycle) => {
@@ -484,6 +607,15 @@ const assertProjectCancellable = (lifecycle) => {
 };
 exports.assertProjectCancellable = assertProjectCancellable;
 const cancelProjectWithin = async (tx, opts) => {
+    // Anstehende Termine OHNE Auftrag (geparkt nach «zurück in den Entwurf»)
+    // gehen mit — ein storniertes Projekt schickt niemanden mehr hin. Die
+    // Absagen hat der Aufrufer vorher eingesammelt.
+    if (opts.appointmentIds?.length) {
+        await tx.appointment.updateMany({
+            where: { id: { in: opts.appointmentIds }, tenantId: opts.tenantId },
+            data: { status: 'CANCELLED' },
+        });
+    }
     await tx.project.updateMany({
         where: { id: opts.projectId, tenantId: opts.tenantId },
         data: {

@@ -191,6 +191,12 @@ router.get('/options/technicians', AuthMiddleware_1.requireAuth, (0, RbacMiddlew
 // BEFORE the '/:id' routes so 'mail-drafts' is never captured as a tender id.
 router.get('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender'], ttlSec: 120 }), (req, res) => tenderController.listMailDrafts(req, res));
 router.post('/mail-drafts', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.createMailDraft(req, res));
+/* TEXTKORREKTUR (16.09.2026, B3): an einer gesperrten Offerte (freigegeben
+   oder im Auftrag) darf nur Text berichtigt werden — nie Menge oder Preis —,
+   nur von der Leitung, nur mit Grund; jede Änderung steht im Verlauf. */
+router.post('/:id/text-corrections', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.approve'), (req, res) => tenderController.correctTexts(req, res));
+/* STAND BEIM AUFTRAG (B4): die Schnappschüsse einer Offerte, neueste zuerst. */
+router.get('/:id/snapshots', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.listSnapshots(req, res));
 router.patch('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.updateMailDraft(req, res));
 router.delete('/mail-drafts/:draftId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (req, res) => tenderController.deleteMailDraft(req, res));
 // Tenant-wide intro-text templates (Textbausteine) for the Einleitungstext.

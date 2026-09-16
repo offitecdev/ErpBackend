@@ -285,6 +285,15 @@ export class InvoiceRepository implements IInvoiceRepository {
      * nennen), beim Zurueckdrehen wieder geleert — sonst behielte eine wieder
      * geoeffnete Rechnung ein Zahlungsdatum, das es nicht mehr gibt.
      */
+    async updateDates(id: string, tenantId: string, invoiceDate: Date, dueDate: Date): Promise<Invoice> {
+        const result = await (prisma as any).invoice.updateMany({
+            where: { id, tenantId },
+            data: { invoiceDate, dueDate },
+        });
+        if (!result.count) throw new Error("Fatura bulunamadı.");
+        return (await (prisma as any).invoice.findUnique({ where: { id }, include: invoiceInclude })) as unknown as Invoice;
+    }
+
     async updateStatus(id: string, tenantId: string, status: InvoiceStatus, paidAt?: Date | null): Promise<Invoice> {
         const existing = await (prisma as any).invoice.findFirst({ where: { id, tenantId } });
         if (!existing) throw new Error("Fatura bulunamadı.");
@@ -294,14 +303,5 @@ export class InvoiceRepository implements IInvoiceRepository {
             data: { status, paidAt: paid ? (paidAt ?? existing.paidAt ?? new Date()) : null },
         });
         return (await (prisma as any).invoice.findUnique({ where: { id }, include: invoiceInclude })) as unknown as Invoice;
-    }
-
-    async delete(id: string, tenantId: string): Promise<void> {
-        const existing = await (prisma as any).invoice.findFirst({ where: { id, tenantId } });
-        if (!existing) throw new Error("Fatura bulunamadı.");
-        await prisma.$transaction(async (tx) => {
-            await (tx as any).invoiceLineItem.deleteMany({ where: { invoiceId: id } });
-            await (tx as any).invoice.delete({ where: { id } });
-        });
     }
 }

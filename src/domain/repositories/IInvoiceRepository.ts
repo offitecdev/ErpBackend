@@ -76,6 +76,7 @@ export interface IInvoiceRepository {
      * jeder andere Status loescht ihn wieder.
      */
     updateStatus(id: string, tenantId: string, status: InvoiceStatus, paidAt?: Date | null): Promise<Invoice>;
-    /** Kalıcı silme — yalnızca kullanım senaryosu iptal edilmiş faturalar için çağırır. */
-    delete(id: string, tenantId: string): Promise<void>;
+    /** Rechnungsdatum + Fälligkeit korrigieren — Betrag, Nummer, Status bleiben. */
+    updateDates(id: string, tenantId: string, invoiceDate: Date, dueDate: Date): Promise<Invoice>;
+    // Kein `delete`: eine gestellte Rechnung wird nie entfernt (16.09.2026).
 }
