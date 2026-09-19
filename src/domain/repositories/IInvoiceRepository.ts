@@ -2,6 +2,8 @@ import { Invoice, InvoiceCategory, InvoiceLineItem, InvoiceStatus } from "../ent
 
 export interface IInvoiceFilter {
     tenantId: string;
+    /** Genau diese Rechnung (Detailseite der Buchhaltung). */
+    id?: string | undefined;
     projectId?: string | undefined;
     salesOrderId?: string | undefined;
     customerId?: string | undefined;
@@ -38,6 +40,10 @@ export interface InvoiceListItem extends Invoice {
         paymentStages?: string | null;
     } | null;
     issuedBy?: { id: string; firstName: string; lastName: string } | null;
+    /** Zahlungsstand (Schritt 7). */
+    paidAmount?: number;
+    creditedAmount?: number;
+    openAmount?: number;
 }
 
 /**
@@ -76,6 +82,8 @@ export interface IInvoiceRepository {
      * jeder andere Status loescht ihn wieder.
      */
     updateStatus(id: string, tenantId: string, status: InvoiceStatus, paidAt?: Date | null): Promise<Invoice>;
+    /** Einen ENTWURF entfernen — ausgestellte Rechnungen bleiben (liefert false). */
+    deleteDraft(id: string, tenantId: string): Promise<boolean>;
     /** Rechnungsdatum + Fälligkeit korrigieren — Betrag, Nummer, Status bleiben. */
     updateDates(id: string, tenantId: string, invoiceDate: Date, dueDate: Date): Promise<Invoice>;
     // Kein `delete`: eine gestellte Rechnung wird nie entfernt (16.09.2026).

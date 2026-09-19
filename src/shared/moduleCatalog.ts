@@ -33,6 +33,8 @@ export const MODULE_CATALOG: ModuleDefinition[] = [
                 'tenders.create', 'tenders.update', 'tenders.manage', 'tenders.calculate',
                 'tenders.import', 'tenders.export', 'tenders.approve',
             ],
+            // Rücknahmen als eigene Rechte (16.09.2026).
+            delete: ['tenders.cancel', 'salesOrders.cancel', 'salesOrders.revert'],
         },
     },
     {
@@ -44,6 +46,7 @@ export const MODULE_CATALOG: ModuleDefinition[] = [
                 'projects.createAddonOrder', 'projects.approveVariation', 'projects.bookings.manage',
                 'projects.mail', 'mail.manage', 'mail.send',
             ],
+            delete: ['projects.cancel'],
         },
     },
     {
@@ -85,6 +88,7 @@ export const MODULE_CATALOG: ModuleDefinition[] = [
         actions: {
             read: ['billing.view'],
             write: ['billing.create', 'billing.manage'],
+            delete: ['invoices.cancel'],
         },
     },
     // Görevler (13.09.2026): eigenständiges Aufgabenmodul (Görevly), ohne

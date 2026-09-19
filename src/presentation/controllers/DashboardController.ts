@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../infrastructure/database/prisma.client';
 import { getServiceTenantScope } from './serviceTenantScope';
 import { DEFAULT_VAT } from './salesOrder.pricing';
+import { billedInvoiceWhere } from '../../shared/invoiceDrafts';
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
@@ -93,11 +94,13 @@ export class DashboardController {
                 prisma.$queryRaw<Array<{ total: number | null }>>(tenderGrossSql(tenantIds)),
                 // Cancelled invoices never count as billed.
                 prisma.invoice.aggregate({
-                    where: { ...scoped, status: { not: 'CANCELLED' } },
+                    where: { ...scoped, ...billedInvoiceWhere },
                     _sum: { amount: true },
                 }),
-                prisma.invoice.aggregate({
-                    where: { ...scoped, status: 'PAID' },
+                // Bezahlt = echte Zahlungseingänge (auch Teilzahlungen, Rückzahlungen
+                // von Gutschriften negativ) — Schritt 7 / G19.
+                (prisma as any).invoicePayment.aggregate({
+                    where: { ...scoped, kind: 'PAYMENT' },
                     _sum: { amount: true },
                 }),
             ]);
@@ -196,7 +199,7 @@ export class DashboardController {
                         COALESCE(SUM(i.amount), 0) AS total
                     FROM Invoice i
                     WHERE i.tenantId IN (${tenantIn})
-                        AND i.status <> 'CANCELLED'
+                        AND i.status NOT IN ('CANCELLED', 'DRAFT') AND i.kind <> 'STORNO'
                         AND COALESCE(i.invoiceDate, i.createdAt) >= ${from}
                     GROUP BY month
                 `),
@@ -204,7 +207,7 @@ export class DashboardController {
                 prisma.project.groupBy({ by: ['status'], where: scoped, _count: { _all: true } }),
                 prisma.invoice.groupBy({
                     by: ['kind'],
-                    where: { ...scoped, status: { not: 'CANCELLED' } },
+                    where: { ...scoped, ...billedInvoiceWhere },
                     _count: { _all: true },
                     _sum: { amount: true },
                 }),

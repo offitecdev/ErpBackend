@@ -2,6 +2,7 @@ import { IInvoiceRepository } from '../../../domain/repositories/IInvoiceReposit
 import { Invoice } from '../../../domain/entities/Invoice';
 import { buildDirectInvoiceDraft, type CreateDirectInvoiceInput } from './CreateDirectInvoiceUseCase';
 import { invoiceError } from './invoiceErrors';
+import prisma from '../../../infrastructure/database/prisma.client';
 
 /**
  * ── EINE DIREKTRECHNUNG ÄNDERN ───────────────────────────────────────────────
@@ -37,6 +38,18 @@ export class UpdateDirectInvoiceUseCase {
         }
         if (existing.status === 'PAID') throw invoiceError('PAID_LOCKED', 'Eine bezahlte Rechnung kann nicht geändert werden.', { status: 409 });
         if (existing.status === 'CANCELLED') throw invoiceError('CANCELLED_LOCKED', 'Eine stornierte Rechnung kann nicht geändert werden.', { status: 409 });
+        // Mit Zahlungseingang oder Gutschrift steht der Betrag fest (Schritt 7).
+        const [payments, credits] = await Promise.all([
+            (prisma as any).invoicePayment.count({ where: { invoiceId: id } }),
+            (prisma as any).invoice.count({ where: { reversesInvoiceId: id, NOT: { status: 'DRAFT' } } }),
+        ]);
+        if (payments > 0 || credits > 0) {
+            throw invoiceError('PAID_LOCKED', 'Auf dieser Rechnung sind Zahlungen oder Gutschriften erfasst — sie kann nicht mehr geändert werden.', { status: 409 });
+        }
+        // Gegenbelege sind endgültig (Schritt 6).
+        if (existing.kind === 'STORNO' || existing.kind === 'GUTSCHRIFT') {
+            throw invoiceError('CREDIT_DOCUMENT_FINAL', 'Ein Gegenbeleg wird nicht geändert.', { status: 409 });
+        }
 
         const draft = await buildDirectInvoiceDraft(input);
         return this.invoiceRepository.updateWithItems(

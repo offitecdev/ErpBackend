@@ -3,13 +3,19 @@ import { InvoiceBillingType, InvoiceKind } from "../../../domain/entities/Invoic
 import prisma from "../../../infrastructure/database/prisma.client";
 import { nextDocumentNumber } from "../../../shared/documentNumber";
 import { invoiceError } from './invoiceErrors';
+import { billedInvoiceWhere } from "../../../shared/invoiceDrafts";
 
 export interface CreateInvoiceInput {
     tenantId: string;
     issuedByEmployeeId: string;
     salesOrderId?: string | null;
     projectId?: string | null;
-    billingType: InvoiceBillingType;
+    /**
+     * Fehlt er (Buchhaltung, Schritt 5), entscheidet der Prozentsatz: deckt er
+     * den offenen Rest, schliesst die Rechnung ab (Rechnung/Schluss), sonst
+     * ist sie eine Teilrechnung (Akonto/Zwischen). Ohne Prozentsatz: der Rest.
+     */
+    billingType?: InvoiceBillingType | null;
     // RECHNUNG %100 tam fatura; AKONTO/ZWISCHEN yüzdelik; SCHLUSS kalan yüzde.
     // Verilmezse billingType + o ana kadarki faturalardan türetilir.
     kind?: InvoiceKind | null;
@@ -19,6 +25,8 @@ export interface CreateInvoiceInput {
     salespersonName?: string | null;
     commissionNumber?: string | null;
     notes?: string | null;
+    /** Als ENTWURF anlegen: keine Nummer, zählt nicht als verrechnet (Schritt 5). */
+    draft?: boolean;
 }
 
 const INVOICE_KINDS: InvoiceKind[] = ["RECHNUNG", "AKONTO", "ZWISCHEN", "SCHLUSS"];
@@ -36,6 +44,26 @@ export class CreateInvoiceUseCase {
     constructor(private invoiceRepository: IInvoiceRepository) {}
 
     async execute(input: CreateInvoiceInput) {
+        const { data, lineItems } = await this.build(input);
+        if (input.draft) {
+            // Der Entwurf trägt noch keine Nummer — sie wird erst beim
+            // Ausstellen gezogen, damit die RE-Reihe keine Lücken bekommt.
+            return this.invoiceRepository.createWithItems({ ...data, invoiceNumber: '', status: 'DRAFT' }, lineItems);
+        }
+        // Fatura kodu RE- serisinden gelir ve her dilde aynıdır. Eskiden
+        // `countForTenant() + 1` kullanılıyordu; silinen/iptal edilen bir fatura
+        // sayımı düşürdüğü için aynı numara ikinci kez dağıtılabiliyordu —
+        // DocumentCounter yalnızca ileri gider.
+        const invoiceNumber = await nextDocumentNumber(input.tenantId, 'INVOICE');
+        return this.invoiceRepository.createWithItems({ ...data, invoiceNumber }, lineItems);
+    }
+
+    /**
+     * Prüfen und rechnen, OHNE zu speichern. Erstellen, einen Entwurf neu
+     * rechnen und einen Entwurf ausstellen benutzen dieselbe Strecke — ein
+     * ausgestellter Entwurf rechnet also mit dem Stand beim Ausstellen.
+     */
+    async build(input: CreateInvoiceInput) {
         const { tenantId, issuedByEmployeeId } = input;
         const salesOrderId = input.salesOrderId?.trim() || null;
         const projectId = input.projectId?.trim() || null;
@@ -191,10 +219,17 @@ export class CreateInvoiceUseCase {
                 throw invoiceError('INVALID_KIND', 'Geçersiz fatura türü.');
             }
             kind = input.kind;
-        } else if (input.billingType === "FULL") {
-            kind = billedSoFar > 0.005 ? "SCHLUSS" : "RECHNUNG";
         } else {
-            kind = billedSoFar > 0.005 ? "ZWISCHEN" : "AKONTO";
+            // Die Art wird NIE gefragt (G17): sie folgt aus dem Prozentsatz.
+            // Ein Prozentsatz, der genau den offenen Rest trifft, schliesst ab.
+            const requested = input.percent == null ? null : Number(input.percent);
+            const coversRest = requested != null && Number.isFinite(requested)
+                && Math.abs(requested - remaining) <= 0.005;
+            const closes = input.billingType === "FULL"
+                || (input.billingType == null && requested == null)
+                || coversRest;
+            if (closes) kind = billedSoFar > 0.005 ? "SCHLUSS" : "RECHNUNG";
+            else kind = billedSoFar > 0.005 ? "ZWISCHEN" : "AKONTO";
         }
 
         if (kind === "RECHNUNG" && billedSoFar > 0.005) {
@@ -238,7 +273,7 @@ export class CreateInvoiceUseCase {
         const previousBySource = new Map<string, number>();
         if (hasMinderung && closesTarget) {
             const previous: Array<{ sourceId: string | null; lineTotal: number }> = await (prisma as any).invoiceLineItem.findMany({
-                where: { invoice: { salesOrderId, tenantId, status: { not: "CANCELLED" } } },
+                where: { invoice: { salesOrderId, tenantId, ...billedInvoiceWhere } },
                 select: { sourceId: true, lineTotal: true },
             });
             for (const row of previous) {
@@ -300,12 +335,6 @@ export class CreateInvoiceUseCase {
             issuedByEmployeeId,
         };
 
-        // Fatura kodu RE- serisinden gelir ve her dilde aynıdır. Eskiden
-        // `countForTenant() + 1` kullanılıyordu; silinen/iptal edilen bir fatura
-        // sayımı düşürdüğü için aynı numara ikinci kez dağıtılabiliyordu —
-        // DocumentCounter yalnızca ileri gider.
-        const invoiceNumber = await nextDocumentNumber(tenantId, 'INVOICE');
-
-        return this.invoiceRepository.createWithItems({ ...invoiceData, invoiceNumber }, lineItems);
+        return { data: invoiceData, lineItems };
     }
 }

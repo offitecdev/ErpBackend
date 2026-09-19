@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const SystemAdminMiddleware_1 = require("../middlewares/SystemAdminMiddleware");
 const SalesOrderController_1 = require("../controllers/SalesOrderController");
 const router = (0, express_1.Router)();
 const controller = new SalesOrderController_1.SalesOrderController();
@@ -23,9 +24,11 @@ router.patch('/:id/order-confirmation', (0, RbacMiddleware_1.requirePermission)(
  * erlaubt wäre, genügt mit Leserecht: die Auftragsansicht holt sie beim Öffnen.
  */
 router.get('/:id/lifecycle', (0, RbacMiddleware_1.requirePermission)('crm.customers.view'), (req, res) => controller.lifecycle(req, res));
-router.post('/:id/revert-to-draft', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.revertToDraft(req, res));
-router.post('/:id/cancel', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.cancel(req, res));
-router.post('/:id/uncancel', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.uncancel(req, res));
+// Eigene Rechte je Rücknahme (Stufe 3 der Auftragsliste); das Storno
+// aufheben gehört der Systemverwaltung allein (16.09.2026, D2/D3).
+router.post('/:id/revert-to-draft', (0, RbacMiddleware_1.requirePermission)('salesOrders.revert'), (req, res) => controller.revertToDraft(req, res));
+router.post('/:id/cancel', (0, RbacMiddleware_1.requirePermission)('salesOrders.cancel'), (req, res) => controller.cancel(req, res));
+router.post('/:id/uncancel', SystemAdminMiddleware_1.requireSystemAdmin, (req, res) => controller.uncancel(req, res));
 // Der alte Weg, mit den neuen Regeln: ein Hauptauftrag geht damit zurück in den
 // Entwurf, ein Nachtrag ohne Rechnung verschwindet ganz.
 router.delete('/:id', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.remove(req, res));

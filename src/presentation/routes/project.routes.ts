@@ -3,7 +3,9 @@ import multer from 'multer';
 // (Yukarıda oluşturduğumuz ProjectController ve UseCase/Repo sınıflarını import edin)
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
+import { requireSystemAdmin } from '../middlewares/SystemAdminMiddleware';
 import { ProjectController } from '../controllers/ProjectController';
+import { previewFullCancel, runFullCancel } from '../controllers/FullCancelController';
 import { CreateProjectFromTenderUseCase } from '../../application/use-cases/project/CreateProjectFromTenderUseCase';
 import { AddProjectReportUseCase } from '../../application/use-cases/project/AddProjectReportUseCase';
 import { RequestExtraMaterialUseCase } from '../../application/use-cases/project/RequestExtraMaterialUseCase';
@@ -154,8 +156,11 @@ router.patch('/addon-order-requests/:requestId', requirePermission('projects.cre
                            Projekt von selbst mit seinem letzten Auftrag).
    `POST /:id/uncancel`  — Storno aufheben. */
 router.get('/:id/lifecycle', requirePermission('projects.view'), (req, res) => controller.projectLifecycle(req, res));
-router.post('/:id/cancel', requirePermission('projects.manage'), (req, res) => controller.cancelProject(req, res));
-router.post('/:id/uncancel', requirePermission('projects.manage'), (req, res) => controller.uncancelProject(req, res));
+router.post('/:id/cancel', requirePermission('projects.cancel'), (req, res) => controller.cancelProject(req, res));
+// «Gesamten Vorgang stornieren» (17.09.2026): alle aktiven Aufträge, Rechnungen, Projekt.
+router.get('/:id/full-cancel', requirePermission('projects.cancel'), previewFullCancel('PROJECT'));
+router.post('/:id/full-cancel', requirePermission('projects.cancel'), runFullCancel('PROJECT'));
+router.post('/:id/uncancel', requireSystemAdmin, (req, res) => controller.uncancelProject(req, res));
 
 // Projeyi siler — YALNIZCA hiçbir bağlı kayıt kalmadıysa (sipariş, fatura,
 // rapor, stok hareketi). Daha özgül DELETE yolları üstte kayıtlı olduğundan

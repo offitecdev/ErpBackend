@@ -21,6 +21,8 @@
  * für sich verrechnet.
  */
 
+import { billedInvoiceWhere } from './invoiceDrafts';
+
 type Db = any;
 
 const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -113,7 +115,7 @@ export const checkMinderungAgainstBilled = async (
         db.salesOrder.findFirst({ where: { id: parentSalesOrderId, tenantId }, select: { totalAmount: true } }),
         loadMinderungSum(db, tenantId, parentSalesOrderId, addonId),
         db.invoice.aggregate({
-            where: { tenantId, salesOrderId: parentSalesOrderId, NOT: { status: 'CANCELLED' } },
+            where: { tenantId, salesOrderId: parentSalesOrderId, ...billedInvoiceWhere },
             _sum: { amount: true },
         }),
     ]);

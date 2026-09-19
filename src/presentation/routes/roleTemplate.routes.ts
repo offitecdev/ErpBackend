@@ -323,6 +323,7 @@ router.get('/catalog', requireAuth, requirePermission('roles.manage'), (_req, re
                 path: page.path,
                 labelKey: page.labelKey,
                 maxLevel: page.maxLevel,
+                ...(page.levelHints ? { levelHints: page.levelHints } : {}),
             })),
         })),
     });

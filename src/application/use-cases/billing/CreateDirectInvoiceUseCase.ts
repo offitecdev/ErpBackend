@@ -106,6 +106,8 @@ export interface CreateDirectInvoiceInput {
     /** Gedruckte Absenderzeile. Leer = die Zeile aus den Firmeneinstellungen. */
     senderAddress?: string | null;
     paymentStages?: unknown;
+    /** Als ENTWURF anlegen — ohne Nummer, bis er ausgestellt wird (Schritt 5). */
+    draft?: boolean;
 }
 
 const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -252,6 +254,12 @@ export class CreateDirectInvoiceUseCase {
 
     async execute(input: CreateDirectInvoiceInput): Promise<Invoice> {
         const draft = await buildDirectInvoiceDraft(input);
+        if (input.draft) {
+            return this.invoiceRepository.createWithItems(
+                { ...draft.invoice, invoiceNumber: '', status: 'DRAFT', issuedByEmployeeId: input.issuedByEmployeeId },
+                draft.lineItems,
+            );
+        }
         // Die Nummer wird ERST hier gezogen — ein abgewiesener Entwurf soll
         // keine Lücke in der RE-Reihe hinterlassen.
         const invoiceNumber = await nextDocumentNumber(input.tenantId, 'INVOICE');

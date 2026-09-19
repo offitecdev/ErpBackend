@@ -1,0 +1,46 @@
+/// ── BELEGVERLAUF (16.09.2026, Schritt 4 / D1) ─────────────────────────────
+///
+/// Vorgabe Samet: jede Rücknahme eines Belegs — Löschen, Storno, Storno
+/// aufheben, zurück in den Entwurf, Textkorrektur, Eingriff der
+/// Systemverwaltung — hinterlässt eine Spur, die niemand löschen kann, auch die
+/// Systemverwaltung nicht. Sie steht unter jedem Beleg als «Verlauf».
+///
+/// Getrennt von `AuditLog`: jenes ist das Sicherheitsprotokoll (Anmeldungen,
+/// Rollen), wird nebenher geschrieben und nie gezeigt. Dieser Verlauf gehört
+/// zum Beleg, wird IN DERSELBEN Transaktion wie die Handlung geschrieben (keine
+/// Handlung ohne Eintrag) und ist für die Nutzer lesbar.
+///
+/// Keine Fremdschlüssel mit Absicht: der Eintrag überlebt den Beleg. Darum
+/// stehen Belegnummer und Name der handelnden Person als Text darin.
+model DocumentEvent {
+  id                 String   @id
+  tenantId           String
+  /// TENDER | SALES_ORDER | ADDON_ORDER | PROJECT | INVOICE
+  entityType         String   @db.VarChar(24)
+  entityId           String
+  /// AN-/AB-/NT-/PR-/RE-Nummer zum Zeitpunkt der Handlung.
+  documentNumber     String?
+  /// DELETED | CANCELLED | UNCANCELLED | REVERTED_TO_DRAFT | TEXT_CORRECTED | STATUS_CHANGED …
+  action             String   @db.VarChar(40)
+  reason             String?  @db.Text
+  /// Die Systemverwaltung hat eine Sperre bewusst überschritten (D4).
+  override           Boolean  @default(false)
+  /// Welche Sperren überschritten wurden, z. B. ["MONTAGE_STARTED"].
+  overriddenBlockers Json?
+  /// Knapper Stand des Belegs zum Zeitpunkt der Handlung (Nummer, Betrag, Status …).
+  snapshot           Json?
+  /// Querverweise: der Eintrag erscheint auch im Verlauf dieser Belege.
+  projectId          String?
+  tenderId           String?
+  salesOrderId       String?
+  actorId            String?
+  actorName          String?
+  ipAddress          String?  @db.VarChar(64)
+  createdAt          DateTime @default(now())
+
+  @@index([tenantId, entityType, entityId, createdAt])
+  @@index([tenantId, projectId])
+  @@index([tenantId, tenderId])
+  @@index([tenantId, salesOrderId])
+  @@index([tenantId, createdAt])
+}

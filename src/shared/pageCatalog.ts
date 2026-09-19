@@ -48,6 +48,12 @@ export interface PageDefinition {
     maxLevel: PageLevel;
     /** Rechte, die die Ränge dieser Seite gewähren. */
     grants: { read?: string[]; write?: string[]; delete?: string[] };
+    /**
+     * Was ein Rang auf DIESER Seite bedeutet, wenn der allgemeine Name nicht
+     * reicht (i18n-Schlüssel). Auf den Verkaufsseiten heisst Stufe 3 nicht
+     * «löschen», sondern «stornieren / zurücksetzen» (16.09.2026).
+     */
+    levelHints?: Partial<Record<PageLevel, string>>;
 }
 
 export interface PageModuleDefinition {
@@ -237,24 +243,32 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 key: 'sales.quotes',
                 path: '/sales/quotes',
                 labelKey: 'nav.tenderManagement',
-                maxLevel: 2,
+                // Stufe 3 (16.09.2026): Offerten STORNIEREN — ein eigenes Recht,
+                // nicht mehr ein Nebeneffekt von «bearbeiten».
+                maxLevel: 3,
                 grants: {
                     read: ['tenders.view'],
                     write: [
                         'tenders.create', 'tenders.update', 'tenders.manage', 'tenders.calculate',
                         'tenders.import', 'tenders.export', 'tenders.approve',
                     ],
+                    delete: ['tenders.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelQuotes' },
             },
             {
                 key: 'sales.orders',
                 path: '/sales/orders',
                 labelKey: 'nav.myOrders',
-                maxLevel: 2,
+                // Stufe 3 (16.09.2026): Aufträge stornieren, in den Entwurf
+                // zurücksetzen und ihre Rechnungen stornieren.
+                maxLevel: 3,
                 grants: {
                     read: ['tenders.view', 'crm.customers.view', 'billing.view'],
                     write: ['tenders.manage', 'billing.create', 'billing.manage'],
+                    delete: ['salesOrders.cancel', 'salesOrders.revert', 'invoices.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelOrders' },
             },
             {
                 // Zusatzaufträge / Nachträge (05.09.2026): ALLE NT-Belege des
@@ -282,21 +296,39 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                     write: ['tenders.manage'],
                 },
             },
+        ],
+    },
+    {
+        // ── BUCHHALTUNG (16.09.2026, Schritt 5) ────────────────────────────
+        // Vorgabe Samet: Rechnungen leben an EINER Stelle. Die frühere
+        // Rechnungsliste unter «Verkauf» (sales.invoices) ist hierher
+        // umgezogen und vererbt ihre Stufe (RETIRED_PAGE_KEYS).
+        // Stufe 2 = Entwürfe anlegen und ausstellen, Zahlungen erfassen;
+        // Stufe 3 = zusätzlich stornieren.
+        key: 'accounting',
+        labelKey: 'nav.accounting',
+        catalogKeys: ['billing'],
+        pages: [
             {
-                // Rechnungsliste (30.08.2026): ALLE Rechnungen des Mandanten an
-                // einer Stelle — Projektauftrag, Lieferauftrag und die selbst
-                // ausgefüllte Direktrechnung. Löschen ist hier eine eigene Stufe:
-                // eine stornierte Rechnung endgültig zu entfernen ist mehr, als
-                // eine neue auszustellen.
-                key: 'sales.invoices',
-                path: '/sales/invoices',
-                labelKey: 'nav.salesInvoices',
+                key: 'accounting.invoices',
+                path: '/accounting/invoices',
+                labelKey: 'nav.outgoingInvoices',
                 maxLevel: 3,
                 grants: {
                     read: ['billing.view', 'crm.customers.view'],
                     write: ['billing.create'],
-                    delete: ['billing.manage'],
+                    delete: ['billing.manage', 'invoices.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelInvoices' },
+            },
+            {
+                // «Zu verrechnen» (17.09.2026, Schritt 7): was jetzt in Rechnung
+                // gestellt werden sollte. Nur lesen — erstellt wird in der Liste.
+                key: 'accounting.toBill',
+                path: '/accounting/to-bill',
+                labelKey: 'nav.toBill',
+                maxLevel: 1,
+                grants: { read: ['billing.view'] },
             },
         ],
     },
@@ -309,7 +341,8 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 key: 'projects.list',
                 path: '/projects',
                 labelKey: 'nav.projectManagement',
-                maxLevel: 2,
+                // Stufe 3 (16.09.2026): Projekte stornieren.
+                maxLevel: 3,
                 grants: {
                     read: ['projects.view'],
                     write: [
@@ -317,7 +350,9 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                         'projects.createAddonOrder', 'projects.approveVariation', 'projects.bookings.manage',
                         'projects.mail', 'mail.manage', 'mail.send',
                     ],
+                    delete: ['projects.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelProjects' },
             },
         ],
     },
@@ -511,6 +546,8 @@ export const RETIRED_PAGE_KEYS: Readonly<Record<string, string>> = {
     'personnel.leaves': 'personnel.requests',
     'personnel.approvals': 'personnel.requestsIncoming',
     'personnel.incoming': 'personnel.requestsIncoming',
+    // Rechnungsliste: vom Verkauf in die Buchhaltung (16.09.2026).
+    'sales.invoices': 'accounting.invoices',
 };
 
 /**
@@ -541,6 +578,8 @@ export const PAGE_LEVEL_FALLBACKS: Readonly<Record<string, string>> = {
     'sales.addonOrders': 'sales.orders',
     // Die PDF-Einstellungen gestalten die Offerte — wer Offerten führt, behält sie.
     'settings.pdf': 'sales.quotes',
+    // Wer die Rechnungen sieht, sieht auch, was zu verrechnen ist.
+    'accounting.toBill': 'accounting.invoices',
 };
 
 /**

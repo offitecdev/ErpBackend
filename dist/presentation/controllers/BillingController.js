@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingController = void 0;
 const invoiceErrors_1 = require("../../application/use-cases/billing/invoiceErrors");
 const client_1 = require("@prisma/client");
+const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const documentGovernance_1 = require("../../shared/documentGovernance");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const PdfImageThumbnailService_1 = require("../../infrastructure/services/PdfImageThumbnailService");
 const documentNumber_1 = require("../../shared/documentNumber");
@@ -210,10 +212,19 @@ class BillingController {
     }
     async updateStatus(req, res) {
         try {
-            const invoice = await this.updateStatusUseCase.execute(req.params.id, req.user.tenantId, String(req.body.status || ''), 
+            const nextStatus = String(req.body.status || '');
+            const invoice = await this.updateStatusUseCase.execute(req.params.id, req.user.tenantId, nextStatus, 
             // Zahlungseingang — die Liste schickt ihn beim Markieren als
             // bezahlt mit; fehlt er, nimmt der Server "jetzt".
-            req.body.paidAt ? String(req.body.paidAt) : null);
+            req.body.paidAt ? String(req.body.paidAt) : null, 
+            // Stornieren ist ein eigenes Recht; jeder Wechsel kommt in den
+            // Belegverlauf (16.09.2026, Schritt 4).
+            {
+                employeeId: req.user.id,
+                canCancel: nextStatus !== 'CANCELLED' || await (0, RbacMiddleware_1.userHasPermission)(req.user.id, 'invoices.cancel'),
+                ip: (0, documentGovernance_1.requestIp)(req),
+                reason: req.body.reason ? String(req.body.reason).slice(0, 500) : null,
+            });
             res.status(200).json({ message: 'Fatura durumu güncellendi.', invoice });
         }
         catch (error) {

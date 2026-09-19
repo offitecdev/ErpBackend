@@ -124,7 +124,10 @@ export class GetBillingSummaryUseCase {
         invoices: Array<{ id: string; invoiceNumber: string; billingType: string; kind?: string; billedPercent: number; amount: number; status: string; createdAt: Date }>,
         paymentStagesRaw?: string | null,
     ): BillingSummary {
-        const active = invoices.filter((inv) => inv.status !== "CANCELLED");
+        // Entwürfe (noch ohne Nummer) und Stornos zählen nicht als verrechnet.
+        // Stornobelege ebenso: ihre Rechnung ist schon als CANCELLED draussen.
+        // Gutschriften zählen mit negativem Betrag und Anteil.
+        const active = invoices.filter((inv) => inv.status !== "CANCELLED" && inv.status !== "DRAFT" && inv.kind !== "STORNO");
         const billedPercent = round2(active.reduce((sum, inv) => sum + Number(inv.billedPercent || 0), 0));
         const billedAmount = round2(active.reduce((sum, inv) => sum + Number(inv.amount || 0), 0));
         const paid = active.filter((inv) => inv.status === "PAID");

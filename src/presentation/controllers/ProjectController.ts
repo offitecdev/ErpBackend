@@ -26,7 +26,9 @@ import {
 // Regeln wie die Auftragsansicht.
 // «Zurück in den Entwurf» läuft über denselben Helfer wie in der
 // Auftragsansicht — Termine, Spur an der Offerte und Kundenchronik gleich.
-import { revertOrderToDraft } from './SalesOrderController';
+import { deleteAddonOrder, revertOrderToDraft } from './SalesOrderController';
+import { recordDocumentEvent, requestIp } from '../../shared/documentGovernance';
+import { permissionDeniedBody, userHasPermission } from '../middlewares/RbacMiddleware';
 import { loadWaitingTenders } from '../../shared/waitingTenders';
 import {
     assertProjectCancellable,
@@ -34,6 +36,8 @@ import {
     cancelProjectWithin,
     readProjectLifecycle,
     uncancelProjectWithin,
+    assertUncancelAllowed,
+    countCreditDocuments,
 } from '../../shared/documentLifecycle';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { dispatchMail } from '../../infrastructure/services/outlook/MailDispatchService';
@@ -3163,7 +3167,7 @@ export class ProjectController {
             const tenantId = req.user!.tenantId;
             const project: any = await (prisma as any).project.findFirst({
                 where: { id: projectId, tenantId },
-                select: { id: true, tenantId: true, status: true, cancelledAt: true },
+                select: { id: true, tenantId: true, status: true, cancelledAt: true, projectNumber: true, tenderId: true },
             });
             if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
 
@@ -3186,10 +3190,24 @@ export class ProjectController {
             const cancellations = await Promise.all(
                 orphanAppointments.map((row) => buildAppointmentCancellation(row.id).catch(() => null)),
             );
-            await (prisma as any).$transaction(async (tx: any) => cancelProjectWithin(tx, {
-                projectId, tenantId, employeeId: req.user!.id, reason,
-                appointmentIds: orphanAppointments.map((row) => row.id),
-            }));
+            await (prisma as any).$transaction(async (tx: any) => {
+                await cancelProjectWithin(tx, {
+                    projectId, tenantId, employeeId: req.user!.id, reason,
+                    appointmentIds: orphanAppointments.map((row) => row.id),
+                });
+                await recordDocumentEvent(tx, {
+                    tenantId,
+                    entityType: 'PROJECT',
+                    entityId: projectId,
+                    documentNumber: project.projectNumber,
+                    action: 'CANCELLED',
+                    actorId: req.user!.id,
+                    reason,
+                    snapshot: { previousStatus: project.status ?? null, cancelledAppointments: orphanAppointments.length },
+                    links: { tenderId: project.tenderId ?? null },
+                    ipAddress: requestIp(req),
+                });
+            });
             for (const cancellation of cancellations) {
                 if (cancellation) queueAppointmentCancellation(cancellation, req.user!.id);
             }
@@ -3207,7 +3225,7 @@ export class ProjectController {
             const tenantId = req.user!.tenantId;
             const project: any = await (prisma as any).project.findFirst({
                 where: { id: projectId, tenantId },
-                select: { id: true, tenantId: true, status: true, cancelledAt: true },
+                select: { id: true, tenantId: true, status: true, cancelledAt: true, projectNumber: true, tenderId: true },
             });
             if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
             if (project.status !== 'CANCELLED' && !project.cancelledAt) {
@@ -3215,13 +3233,32 @@ export class ProjectController {
             }
 
             const orders = await (prisma as any).salesOrder.count({ where: { projectId, tenantId } });
-            await (prisma as any).$transaction(async (tx: any) => uncancelProjectWithin(tx, {
-                projectId, tenantId, hasOrders: orders > 0,
+            // Schritt 6 / F2: mit einem Gegenbeleg lebt der Vorgang nicht wieder auf.
+            const projectOrderIds: Array<{ id: string }> = await (prisma as any).salesOrder.findMany({
+                where: { projectId, tenantId }, select: { id: true },
+            });
+            assertUncancelAllowed(await countCreditDocuments(prisma as any, {
+                tenantId, projectId, salesOrderIds: projectOrderIds.map((row) => row.id),
             }));
+            await (prisma as any).$transaction(async (tx: any) => {
+                await uncancelProjectWithin(tx, { projectId, tenantId, hasOrders: orders > 0 });
+                await recordDocumentEvent(tx, {
+                    tenantId,
+                    entityType: 'PROJECT',
+                    entityId: projectId,
+                    documentNumber: project.projectNumber,
+                    action: 'UNCANCELLED',
+                    actorId: req.user!.id,
+                    reason: String(req.body?.reason || '').trim() || null,
+                    snapshot: { restoredTo: orders > 0 ? 'ACTIVE' : 'AWAITING_APPROVAL' },
+                    links: { tenderId: project.tenderId ?? null },
+                    ipAddress: requestIp(req),
+                });
+            });
 
             res.json({ projectId, cancelled: false });
         } catch (error: any) {
-            res.status(error?.status || 400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message, code: error?.code, blockers: error?.blockers });
         }
     }
 
@@ -3243,7 +3280,7 @@ export class ProjectController {
             const project: any = await (prisma as any).project.findFirst({
                 where: { id: projectId, tenantId },
                 // tenderId: die Offerte des Projekts geht mit zurück in den Entwurf.
-                select: { id: true, tenantId: true, tenderId: true, status: true, cancelledAt: true },
+                select: { id: true, tenantId: true, tenderId: true, status: true, cancelledAt: true, projectNumber: true, projectName: true },
             });
             if (!project) return res.status(404).json({ error: "Proje bulunamadı." });
 
@@ -3262,6 +3299,18 @@ export class ProjectController {
                     [project.tenderId],
                     'Proje silindi; teklif taslaga dondu.',
                 );
+                // Der Verlaufseintrag überlebt das Projekt (Nummer als Text).
+                await recordDocumentEvent(tx, {
+                    tenantId,
+                    entityType: 'PROJECT',
+                    entityId: projectId,
+                    documentNumber: project.projectNumber,
+                    action: 'DELETED',
+                    actorId: req.user!.id,
+                    snapshot: { projectName: project.projectName ?? null, status: project.status ?? null },
+                    links: { tenderId: project.tenderId ?? null },
+                    ipAddress: requestIp(req),
+                });
             });
 
             res.status(204).send();
@@ -3291,30 +3340,22 @@ export class ProjectController {
             if (!order) return res.status(404).json({ error: "Sipariş bu projeye ait değil." });
 
             if (!order.parentSalesOrderId) {
-                // Derselbe Ablauf wie in der Auftragsansicht (geparkte Termine,
-                // Spur an der Offerte, Kundenchronik).
-                const result = await revertOrderToDraft(order, tenantId, req.user!.id);
+                // Zurücksetzen ist ein eigenes Recht (16.09.2026); derselbe
+                // Ablauf wie in der Auftragsansicht, samt Ausnahmetür.
+                if (!(await userHasPermission(req.user!.id, 'salesOrders.revert'))) {
+                    return res.status(403).json(permissionDeniedBody('salesOrders.revert'));
+                }
+                const result = await revertOrderToDraft(order, tenantId, req.user!.id, {
+                    override: req.body?.override ?? null,
+                    ip: requestIp(req),
+                });
                 return res.json({ ...result, orderNumber: order.orderNumber, isAddon: false });
             }
 
-            if (order.cancelledAt || order.status === 'CANCELLED') {
-                return res.status(400).json({
-                    error: 'Ein stornierter Nachtrag bleibt als Beleg stehen und wird nicht geloescht.',
-                    blockers: ['CANCELLED'],
-                });
-            }
-
-            const { familyIds } = await assertSalesOrderDeletable(prisma as any, order, tenantId);
-            const result = await (prisma as any).$transaction(async (tx: any) => deleteSalesOrderWithin(tx, {
-                order,
-                tenantId,
-                employeeId: req.user!.id,
-                familyIds,
-            }));
-
+            const result = await deleteAddonOrder(order, tenantId, req.user!.id, requestIp(req));
             res.json({ ...result, projectId, orderNumber: order.orderNumber, isAddon: true });
         } catch (error: any) {
-            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
+            res.status(error?.status || 400).json(error?.body ?? { error: error.message, blockers: error?.blockers });
         }
     }
 

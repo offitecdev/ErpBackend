@@ -91,6 +91,7 @@ const regie_routes_1 = __importDefault(require("./presentation/routes/regie.rout
 const maintenance_routes_1 = __importDefault(require("./presentation/routes/maintenance.routes"));
 const sales_order_routes_1 = __importDefault(require("./presentation/routes/sales-order.routes"));
 const addon_order_routes_1 = __importDefault(require("./presentation/routes/addon-order.routes"));
+const documentEvents_routes_1 = __importDefault(require("./presentation/routes/documentEvents.routes"));
 const billing_routes_1 = __importDefault(require("./presentation/routes/billing.routes"));
 const notification_routes_1 = __importDefault(require("./presentation/routes/notification.routes"));
 const meeting_routes_1 = __importDefault(require("./presentation/routes/meeting.routes"));
@@ -282,6 +283,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/sales-orders`, sales_order_routes_1.default);
     // Nachträge (NT-…): Liste, Beleg, freier Nachtrag mit eigenen Positionen.
     app.use(`${prefix}/addon-orders`, addon_order_routes_1.default);
+    // Belegverlauf (16.09.2026): Storno, Löschen, Zurücksetzen, Eingriffe — nur lesen.
+    app.use(`${prefix}/document-events`, documentEvents_routes_1.default);
     app.use(`${prefix}/billing`, billing_routes_1.default);
     app.use(`${prefix}/roles`, role_routes_1.default);
     // Eigener Pfad statt eines Unterwegs von /roles: dort steht bereits ein

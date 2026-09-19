@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requireAnyPermission = exports.requirePermission = void 0;
+exports.requireAnyPermission = exports.requirePermission = exports.permissionDeniedBody = exports.userHasPermission = void 0;
 const GetUserPermissionsUseCase_1 = require("../../application/use-cases/auth/GetUserPermissionsUseCase");
 const RoleRepository_1 = require("../../infrastructure/repositories/RoleRepository");
 const roleRepo = new RoleRepository_1.RoleRepository();
@@ -24,6 +24,16 @@ const DENIED_MESSAGE = 'Zugriff verweigert: Ihrer Rolle fehlt die Berechtigung f
     unfertige Rolle — dann steht auch dran, wo sie fertig gebaut wird. */
 const NO_ROLE_MESSAGE = 'Ihrer Rolle sind noch keine Rechte zugewiesen. '
     + 'Die Administration vergibt sie unter Einstellungen → Berechtigungen.';
+/**
+ * Trägt die Person dieses Recht? Für Handler, deren Weg je nach Beleg etwas
+ * anderes bedeutet (DELETE auf einen Hauptauftrag = zurücksetzen, auf einen
+ * Nachtrag = löschen) und darum erst NACH dem Laden entscheiden können.
+ */
+const userHasPermission = async (employeeId, permission) => (await getPermissionsUseCase.execute(employeeId)).includes(permission);
+exports.userHasPermission = userHasPermission;
+/** Die Antwort, wenn `userHasPermission` nein sagt — derselbe Satz wie die Middleware. */
+const permissionDeniedBody = (permission) => ({ error: DENIED_MESSAGE, requiredPermissions: [permission] });
+exports.permissionDeniedBody = permissionDeniedBody;
 const requirePermission = (requiredPermission) => {
     return async (req, res, next) => {
         try {

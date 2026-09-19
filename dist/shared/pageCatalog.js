@@ -180,24 +180,32 @@ exports.PAGE_MODULES = [
                 key: 'sales.quotes',
                 path: '/sales/quotes',
                 labelKey: 'nav.tenderManagement',
-                maxLevel: 2,
+                // Stufe 3 (16.09.2026): Offerten STORNIEREN — ein eigenes Recht,
+                // nicht mehr ein Nebeneffekt von «bearbeiten».
+                maxLevel: 3,
                 grants: {
                     read: ['tenders.view'],
                     write: [
                         'tenders.create', 'tenders.update', 'tenders.manage', 'tenders.calculate',
                         'tenders.import', 'tenders.export', 'tenders.approve',
                     ],
+                    delete: ['tenders.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelQuotes' },
             },
             {
                 key: 'sales.orders',
                 path: '/sales/orders',
                 labelKey: 'nav.myOrders',
-                maxLevel: 2,
+                // Stufe 3 (16.09.2026): Aufträge stornieren, in den Entwurf
+                // zurücksetzen und ihre Rechnungen stornieren.
+                maxLevel: 3,
                 grants: {
                     read: ['tenders.view', 'crm.customers.view', 'billing.view'],
                     write: ['tenders.manage', 'billing.create', 'billing.manage'],
+                    delete: ['salesOrders.cancel', 'salesOrders.revert', 'invoices.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelOrders' },
             },
             {
                 // Zusatzaufträge / Nachträge (05.09.2026): ALLE NT-Belege des
@@ -238,8 +246,9 @@ exports.PAGE_MODULES = [
                 grants: {
                     read: ['billing.view', 'crm.customers.view'],
                     write: ['billing.create'],
-                    delete: ['billing.manage'],
+                    delete: ['billing.manage', 'invoices.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelInvoices' },
             },
         ],
     },
@@ -252,7 +261,8 @@ exports.PAGE_MODULES = [
                 key: 'projects.list',
                 path: '/projects',
                 labelKey: 'nav.projectManagement',
-                maxLevel: 2,
+                // Stufe 3 (16.09.2026): Projekte stornieren.
+                maxLevel: 3,
                 grants: {
                     read: ['projects.view'],
                     write: [
@@ -260,7 +270,9 @@ exports.PAGE_MODULES = [
                         'projects.createAddonOrder', 'projects.approveVariation', 'projects.bookings.manage',
                         'projects.mail', 'mail.manage', 'mail.send',
                     ],
+                    delete: ['projects.cancel'],
                 },
+                levelHints: { 3: 'settings.roles.hintCancelProjects' },
             },
         ],
     },

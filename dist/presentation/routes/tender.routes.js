@@ -17,6 +17,7 @@ const TenderArticleController_1 = require("../controllers/TenderArticleControlle
 const ArticleRepository_1 = require("../../infrastructure/repositories/ArticleRepository");
 const MapArticleToPositionUseCase_1 = require("../../application/use-cases/tender/MapArticleToPositionUseCase");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const SystemAdminMiddleware_1 = require("../middlewares/SystemAdminMiddleware");
 const TenderReportController_1 = require("../controllers/TenderReportController");
 const ExportTenderDataUseCase_1 = require("../../application/use-cases/tender/ExportTenderDataUseCase");
 const GetTenderSummaryReportUseCase_1 = require("../../application/use-cases/tender/GetTenderSummaryReportUseCase");
@@ -94,8 +95,10 @@ router.delete('/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.require
  * Löschen.
  */
 router.get('/:id/lifecycle', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['tender', 'calendar'], ttlSec: 30 }), (req, res) => tenderController.lifecycle(req, res));
-router.post('/:id/cancel', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.cancel(req, res));
-router.post('/:id/uncancel', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.manage'), (req, res) => tenderController.uncancel(req, res));
+// Stornieren ist ein eigenes Recht (Stufe 3 der Offertliste), das Storno
+// aufheben gehört der Systemverwaltung allein (16.09.2026, D2/D3).
+router.post('/:id/cancel', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('tenders.cancel'), (req, res) => tenderController.cancel(req, res));
+router.post('/:id/uncancel', AuthMiddleware_1.requireAuth, SystemAdminMiddleware_1.requireSystemAdmin, (req, res) => tenderController.uncancel(req, res));
 /**
  * @swagger
  * /tenders/{id}/positions:

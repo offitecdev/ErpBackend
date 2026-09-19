@@ -460,7 +460,8 @@ router.get("/categories/options", requireAuth, READ, async (req, res) => {
             options = rows.map((row) => ({ id: row.id, label: row.projectNumber, sublabel: row.projectName }));
         } else if (kind === "INVOICE") {
             const rows = await prisma.invoice.findMany({
-                where: { tenantId, ...(search ? { OR: [{ invoiceNumber: { contains: search } }, { legacyNumber: { contains: search } }] } : {}) },
+                // Entwürfe haben noch keine Nummer — nichts, worauf eine Mail zeigen könnte.
+                where: { tenantId, NOT: { status: "DRAFT" }, ...(search ? { OR: [{ invoiceNumber: { contains: search } }, { legacyNumber: { contains: search } }] } : {}) },
                 select: { id: true, invoiceNumber: true, customer: { select: { companyName: true } } },
                 orderBy: { invoiceNumber: "desc" },
                 take,

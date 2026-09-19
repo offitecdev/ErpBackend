@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 
 import { bookConsumption } from './articleStock';
+import { discardDraftInvoices, issuedInvoiceWhere } from './invoiceDrafts';
 
 /**
  * ── EINEN AUFTRAG ZURÜCKNEHMEN ───────────────────────────────────────────────
@@ -129,7 +130,8 @@ export const assertSalesOrderDeletable = async (
 ): Promise<{ familyIds: string[]; lastOfProject: boolean }> => {
     const familyIds = await salesOrderFamilyIds(db, order, tenantId);
 
-    const invoiceCount = await db.invoice.count({ where: { salesOrderId: { in: familyIds } } });
+    // Entwürfe sperren nicht — sie fallen beim Schnitt mit (Schritt 5).
+    const invoiceCount = await db.invoice.count({ where: { salesOrderId: { in: familyIds }, ...issuedInvoiceWhere } });
     if (invoiceCount > 0) {
         throw Object.assign(new Error('Faturalandırılmış bir sipariş silinemez.'), { status: 400 });
     }
@@ -144,7 +146,7 @@ export const assertSalesOrderDeletable = async (
         });
         lastOfProject = remaining === 0;
         if (lastOfProject) {
-            const projectInvoices = await db.invoice.count({ where: { projectId: order.projectId } });
+            const projectInvoices = await db.invoice.count({ where: { projectId: order.projectId, ...issuedInvoiceWhere } });
             if (projectInvoices > 0) {
                 throw Object.assign(new Error('Faturalandırılmış bir proje silinemez.'), { status: 400 });
             }
@@ -202,6 +204,7 @@ export const purgeProjectWithin = async (
     await tx.appointment.deleteMany({ where: { projectId } });
     await tx.deliveryReport.deleteMany({ where: { projectId, tenantId } });
     await tx.signatureRequest.deleteMany({ where: { projectId, tenantId } });
+    await discardDraftInvoices(tx, { projectId, tenantId });
 
     await tx.project.delete({ where: { id: projectId } });
 
@@ -295,6 +298,9 @@ export const deleteSalesOrderWithin = async (
 
     // Nachträge tragen keine eigenen Sätze (sie rechnen die Zeitscheibe des
     // Hauptauftrags ab, oben gelöscht) — sie fallen ganz, nicht auf null.
+    // Unverschickte Rechnungsentwürfe des Stammes fallen mit (Schritt 5).
+    await discardDraftInvoices(tx, { salesOrderIds: familyIds, tenantId });
+
     if (!isAddon && addonIds.length) {
         await tx.salesOrder.deleteMany({ where: { id: { in: addonIds } } });
     }

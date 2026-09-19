@@ -2,6 +2,7 @@ import prisma from "../database/prisma.client";
 import { ICustomerRepository, ICustomerFilter, PaginatedResult, CustomerListRow, CustomerOverviewStats } from "../../domain/repositories/ICustomerRepository";
 import { Customer } from "../../domain/entities/Customer";
 import { nanoid } from "nanoid";
+import { billedInvoiceWhere } from "../../shared/invoiceDrafts";
 
 // Lifecycle statuses that count as "inactive" for the legacy isActive flag.
 // Active, Potential and Problematic customers remain active relationships.
@@ -378,7 +379,7 @@ export class CustomerRepository implements ICustomerRepository {
             }),
             // Stornierte Rechnungen zählen nicht als verrechnet.
             prisma.invoice.aggregate({
-                where: { customerId: id, tenantId, status: { not: 'CANCELLED' } },
+                where: { customerId: id, tenantId, ...billedInvoiceWhere },
                 _sum: { amount: true },
             }),
         ]);

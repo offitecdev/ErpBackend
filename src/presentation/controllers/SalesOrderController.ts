@@ -18,9 +18,13 @@ import {
     readSalesOrderLifecycle,
     revertSalesOrderToDraftWithin,
     uncancelSalesOrderWithin,
+    assertUncancelAllowed,
+    countCreditDocuments,
 } from '../../shared/documentLifecycle';
 import { buildAppointmentCancellation, queueAppointmentCancellation } from '../../infrastructure/services/calendarMailService';
 import { billingTargetsForGroup } from '../../shared/minderung';
+import { decideOverride, overrideErrorBody, recordDocumentEvent, requestIp, type OverrideRequest } from '../../shared/documentGovernance';
+import { permissionDeniedBody, userHasPermission } from '../middlewares/RbacMiddleware';
 
 const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository());
 
@@ -100,20 +104,63 @@ export const collectFamilyAppointmentCancellations = async (familyIds: string[],
  * erfährt es die Kundenchronik — dort sucht man später, wohin die AB-Nummer
  * verschwunden ist.
  */
-export const revertOrderToDraft = async (order: any, tenantId: string, employeeId: string) => {
+export const revertOrderToDraft = async (
+    order: any,
+    tenantId: string,
+    employeeId: string,
+    opts: { override?: OverrideRequest | null; ip?: string | null } = {},
+) => {
     const lifecycle = await readSalesOrderLifecycle(prisma as any, order, tenantId);
-    assertSalesOrderRevertible(lifecycle);
+    // AUSNAHMETÜR (D4): nur für die Sperren der Politik, nur mit Grund,
+    // Belegnummer und Kennwort der Systemverwaltung.
+    let override: { reason: string; blockers: string[] } | null = null;
+    if (!lifecycle.canRevertToDraft && opts.override) {
+        const decision = await decideOverride({
+            action: 'ORDER_REVERT',
+            employeeId,
+            blockers: lifecycle.revertBlockers,
+            documentNumber: order.orderNumber,
+            request: opts.override,
+        });
+        if (!decision.ok) {
+            throw Object.assign(new Error(decision.error), { status: decision.status, body: overrideErrorBody(decision) });
+        }
+        override = { reason: decision.reason, blockers: decision.blockers };
+    } else {
+        assertSalesOrderRevertible(lifecycle);
+    }
 
     const cancellations = order.tenderId
         ? []
         : await collectFamilyAppointmentCancellations(lifecycle.familyIds, tenantId);
 
-    const result = await (prisma as any).$transaction(async (tx: any) => revertSalesOrderToDraftWithin(tx, {
-        order,
-        tenantId,
-        employeeId,
-        lifecycle,
-    }));
+    const result = await (prisma as any).$transaction(async (tx: any) => {
+        const reverted = await revertSalesOrderToDraftWithin(tx, {
+            order,
+            tenantId,
+            employeeId,
+            lifecycle,
+        });
+        await recordDocumentEvent(tx, {
+            tenantId,
+            entityType: 'SALES_ORDER',
+            entityId: order.id,
+            documentNumber: order.orderNumber,
+            action: 'REVERTED_TO_DRAFT',
+            actorId: employeeId,
+            reason: override?.reason ?? null,
+            override: override ? { blockers: override.blockers } : null,
+            snapshot: {
+                totalAmount: Number(order.totalAmount || 0),
+                tenderVersion: order.tenderVersion ?? null,
+                parkedAppointments: reverted.parkedAppointmentIds.length,
+                projectReverted: reverted.projectReverted,
+            },
+            links: { projectId: order.projectId ?? null, tenderId: order.tenderId ?? null },
+            ipAddress: opts.ip ?? null,
+        });
+        return reverted;
+    });
 
     for (const cancellation of cancellations) {
         queueAppointmentCancellation(cancellation, employeeId);
@@ -139,6 +186,35 @@ export const revertOrderToDraft = async (order: any, tenantId: string, employeeI
     }
 
     return result;
+};
+
+/**
+ * NACHTRAG LÖSCHEN (ohne Rechnung) — derselbe Ablauf für die Auftragsansicht
+ * und die Projektseite, samt Verlaufseintrag (16.09.2026).
+ */
+export const deleteAddonOrder = async (order: any, tenantId: string, employeeId: string, ip: string | null) => {
+    if (order.cancelledAt || order.status === 'CANCELLED') {
+        throw Object.assign(new Error('Ein stornierter Nachtrag bleibt als Beleg stehen und wird nicht geloescht.'), {
+            status: 400,
+            blockers: ['CANCELLED'],
+        });
+    }
+    const { familyIds } = await assertSalesOrderDeletable(prisma as any, order, tenantId);
+    return (prisma as any).$transaction(async (tx: any) => {
+        const deleted = await deleteSalesOrderWithin(tx, { order, tenantId, employeeId, familyIds });
+        await recordDocumentEvent(tx, {
+            tenantId,
+            entityType: 'ADDON_ORDER',
+            entityId: order.id,
+            documentNumber: order.orderNumber,
+            action: 'DELETED',
+            actorId: employeeId,
+            snapshot: { totalAmount: Number(order.totalAmount || 0) },
+            links: { projectId: order.projectId ?? null, salesOrderId: order.parentSalesOrderId ?? null },
+            ipAddress: ip,
+        });
+        return deleted;
+    });
 };
 
 type OrderMode = 'PROJECT_NEW' | 'PROJECT_EXISTING' | 'INVOICE';
@@ -370,6 +446,8 @@ export class SalesOrderController {
                         salesOrderId: true,
                         invoiceNumber: true,
                         billingType: true,
+                        // Stornobelege fallen aus der Summe — dafür braucht es die Art.
+                        kind: true,
                         billedPercent: true,
                         amount: true,
                         status: true,
@@ -562,14 +640,17 @@ export class SalesOrderController {
             const order: any = await (prisma as any).salesOrder.findFirst({ where: { id, tenantId } });
             if (!order) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
 
-            const result = await revertOrderToDraft(order, tenantId, req.user!.id);
+            const result = await revertOrderToDraft(order, tenantId, req.user!.id, {
+                override: req.body?.override ?? null,
+                ip: requestIp(req),
+            });
 
             // `tenderId` ist der Weg zurück: dort steht der Entwurf, den jemand
             // gerade wieder bearbeiten will. `projectReverted` sagt, dass das
             // Projekt noch da, aber leer ist.
             res.json({ ...result, orderNumber: order.orderNumber, isAddon: Boolean(order.parentSalesOrderId) });
         } catch (error: any) {
-            res.status(error?.status || 400).json({ error: error.message, blockers: error?.blockers });
+            res.status(error?.status || 400).json(error?.body ?? { error: error.message, blockers: error?.blockers });
         }
     }
 
@@ -590,6 +671,16 @@ export class SalesOrderController {
 
             const lifecycle = await readSalesOrderLifecycle(prisma as any, order, tenantId);
             assertSalesOrderCancellable(lifecycle);
+            // Schritt 6: ausgestellte Rechnungen blieben sonst offen unter einem
+            // stornierten Auftrag stehen — sie werden über «Gesamten Vorgang
+            // stornieren» geregelt (Storno-Rechnung / Gutschrift).
+            if (lifecycle.invoicesToSettle > 0) {
+                return res.status(409).json({
+                    error: 'An diesem Auftrag hängen ausgestellte Rechnungen. Stornieren Sie den ganzen Vorgang — die Rechnungen werden dabei storniert bzw. gutgeschrieben.',
+                    code: 'INVOICES_NEED_DECISION',
+                    blockers: ['OPEN_INVOICE'],
+                });
+            }
 
             const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
 
@@ -598,13 +689,37 @@ export class SalesOrderController {
             // Storno durchgelaufen ist.
             const cancellations = await collectFamilyAppointmentCancellations(lifecycle.familyIds, tenantId);
 
-            const result = await (prisma as any).$transaction(async (tx: any) => cancelSalesOrderWithin(tx, {
-                order,
-                tenantId,
-                employeeId: req.user!.id,
-                reason,
-                lifecycle,
-            }));
+            const result = await (prisma as any).$transaction(async (tx: any) => {
+                const cancelled = await cancelSalesOrderWithin(tx, {
+                    order,
+                    tenantId,
+                    employeeId: req.user!.id,
+                    reason,
+                    lifecycle,
+                });
+                await recordDocumentEvent(tx, {
+                    tenantId,
+                    entityType: order.parentSalesOrderId ? 'ADDON_ORDER' : 'SALES_ORDER',
+                    entityId: order.id,
+                    documentNumber: order.orderNumber,
+                    action: 'CANCELLED',
+                    actorId: req.user!.id,
+                    reason,
+                    snapshot: {
+                        totalAmount: Number(order.totalAmount || 0),
+                        addons: Math.max(0, cancelled.salesOrderIds.length - 1),
+                        projectCancelled: cancelled.projectCancelled,
+                        cancelledAppointments: cancelled.cancelledAppointmentIds.length,
+                    },
+                    links: {
+                        projectId: order.projectId ?? null,
+                        tenderId: order.tenderId ?? null,
+                        salesOrderId: order.parentSalesOrderId ?? null,
+                    },
+                    ipAddress: requestIp(req),
+                });
+                return cancelled;
+            });
 
             for (const cancellation of cancellations) {
                 queueAppointmentCancellation(cancellation, req.user!.id);
@@ -642,16 +757,40 @@ export class SalesOrderController {
             }
 
             const familyIds = await salesOrderFamilyIds(prisma as any, order, tenantId);
-            const result = await (prisma as any).$transaction(async (tx: any) => uncancelSalesOrderWithin(tx, {
-                order,
+            assertUncancelAllowed(await countCreditDocuments(prisma as any, {
                 tenantId,
-                employeeId: req.user!.id,
-                familyIds,
+                salesOrderIds: familyIds,
+                projectId: order.projectId ?? null,
             }));
+            const result = await (prisma as any).$transaction(async (tx: any) => {
+                const restored = await uncancelSalesOrderWithin(tx, {
+                    order,
+                    tenantId,
+                    employeeId: req.user!.id,
+                    familyIds,
+                });
+                await recordDocumentEvent(tx, {
+                    tenantId,
+                    entityType: order.parentSalesOrderId ? 'ADDON_ORDER' : 'SALES_ORDER',
+                    entityId: order.id,
+                    documentNumber: order.orderNumber,
+                    action: 'UNCANCELLED',
+                    actorId: req.user!.id,
+                    reason: String(req.body?.reason || '').trim() || null,
+                    snapshot: { projectRestored: restored.projectRestored },
+                    links: {
+                        projectId: order.projectId ?? null,
+                        tenderId: order.tenderId ?? null,
+                        salesOrderId: order.parentSalesOrderId ?? null,
+                    },
+                    ipAddress: requestIp(req),
+                });
+                return restored;
+            });
 
             res.json({ ...result, orderNumber: order.orderNumber });
         } catch (error: any) {
-            res.status(error?.status || 400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message, code: error?.code, blockers: error?.blockers });
         }
     }
 
@@ -673,23 +812,14 @@ export class SalesOrderController {
             const order: any = await (prisma as any).salesOrder.findFirst({ where: { id, tenantId } });
             if (!order) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
 
-            if (!order.parentSalesOrderId) return this.revertToDraft(req, res);
-
-            if (order.cancelledAt || order.status === 'CANCELLED') {
-                return res.status(400).json({
-                    error: 'Ein stornierter Nachtrag bleibt als Beleg stehen und wird nicht geloescht.',
-                    blockers: ['CANCELLED'],
-                });
+            if (!order.parentSalesOrderId) {
+                if (!(await userHasPermission(req.user!.id, 'salesOrders.revert'))) {
+                    return res.status(403).json(permissionDeniedBody('salesOrders.revert'));
+                }
+                return this.revertToDraft(req, res);
             }
 
-            const { familyIds } = await assertSalesOrderDeletable(prisma as any, order, tenantId);
-
-            const result = await (prisma as any).$transaction(async (tx: any) => deleteSalesOrderWithin(tx, {
-                order,
-                tenantId,
-                employeeId: req.user!.id,
-                familyIds,
-            }));
+            const result = await deleteAddonOrder(order, tenantId, req.user!.id, requestIp(req));
 
             res.json({ ...result, projectId: order.projectId ?? null, orderNumber: order.orderNumber, isAddon: true });
         } catch (error: any) {

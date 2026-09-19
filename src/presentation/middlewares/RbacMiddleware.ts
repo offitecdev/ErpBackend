@@ -25,6 +25,17 @@ const DENIED_MESSAGE = 'Zugriff verweigert: Ihrer Rolle fehlt die Berechtigung f
 const NO_ROLE_MESSAGE = 'Ihrer Rolle sind noch keine Rechte zugewiesen. '
     + 'Die Administration vergibt sie unter Einstellungen → Berechtigungen.';
 
+/**
+ * Trägt die Person dieses Recht? Für Handler, deren Weg je nach Beleg etwas
+ * anderes bedeutet (DELETE auf einen Hauptauftrag = zurücksetzen, auf einen
+ * Nachtrag = löschen) und darum erst NACH dem Laden entscheiden können.
+ */
+export const userHasPermission = async (employeeId: string, permission: string): Promise<boolean> =>
+    (await getPermissionsUseCase.execute(employeeId)).includes(permission);
+
+/** Die Antwort, wenn `userHasPermission` nein sagt — derselbe Satz wie die Middleware. */
+export const permissionDeniedBody = (permission: string) => ({ error: DENIED_MESSAGE, requiredPermissions: [permission] });
+
 export const requirePermission = (requiredPermission: string) => {
     return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {

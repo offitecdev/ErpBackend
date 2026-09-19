@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { requireAuth } from '../middlewares/AuthMiddleware';
 import { requirePermission } from '../middlewares/RbacMiddleware';
+import { requireSystemAdmin } from '../middlewares/SystemAdminMiddleware';
 import { SalesOrderController } from '../controllers/SalesOrderController';
+import { previewFullCancel, runFullCancel } from '../controllers/FullCancelController';
 
 const router = Router();
 const controller = new SalesOrderController();
@@ -25,9 +27,14 @@ router.patch('/:id/order-confirmation', requirePermission('projects.manage'), (r
  * erlaubt wäre, genügt mit Leserecht: die Auftragsansicht holt sie beim Öffnen.
  */
 router.get('/:id/lifecycle', requirePermission('crm.customers.view'), (req, res) => controller.lifecycle(req, res));
-router.post('/:id/revert-to-draft', requirePermission('projects.manage'), (req, res) => controller.revertToDraft(req, res));
-router.post('/:id/cancel', requirePermission('projects.manage'), (req, res) => controller.cancel(req, res));
-router.post('/:id/uncancel', requirePermission('projects.manage'), (req, res) => controller.uncancel(req, res));
+// Eigene Rechte je Rücknahme (Stufe 3 der Auftragsliste); das Storno
+// aufheben gehört der Systemverwaltung allein (16.09.2026, D2/D3).
+router.post('/:id/revert-to-draft', requirePermission('salesOrders.revert'), (req, res) => controller.revertToDraft(req, res));
+router.post('/:id/cancel', requirePermission('salesOrders.cancel'), (req, res) => controller.cancel(req, res));
+// «Gesamten Vorgang stornieren» (17.09.2026): Vorschau + Ausführung samt Rechnungen.
+router.get('/:id/full-cancel', requirePermission('salesOrders.cancel'), previewFullCancel('ORDER'));
+router.post('/:id/full-cancel', requirePermission('salesOrders.cancel'), runFullCancel('ORDER'));
+router.post('/:id/uncancel', requireSystemAdmin, (req, res) => controller.uncancel(req, res));
 
 // Der alte Weg, mit den neuen Regeln: ein Hauptauftrag geht damit zurück in den
 // Entwurf, ein Nachtrag ohne Rechnung verschwindet ganz.

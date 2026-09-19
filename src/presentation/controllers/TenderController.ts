@@ -2,6 +2,8 @@
 
 import { Request, Response } from 'express';
 import { nanoid } from 'nanoid';
+import { decideOverride, overrideErrorBody, recordDocumentEvent, requestIp } from '../../shared/documentGovernance';
+import { buildAppointmentCancellation, queueAppointmentCancellation } from '../../infrastructure/services/calendarMailService';
 import { Prisma } from '@prisma/client';
 import { ImportTenderUseCase } from '../../application/use-cases/tender/ImportTenderUseCase';
 import { ImportSalesOrderCsvUseCase } from '../../application/use-cases/tender/ImportSalesOrderCsvUseCase';
@@ -29,6 +31,9 @@ import {
     cancelTenderWithin,
     readTenderLifecycle,
     uncancelTenderWithin,
+    assertUncancelAllowed,
+    countCreditDocuments,
+    salesOrderFamilyIds,
 } from '../../shared/documentLifecycle';
 import { tenderDocumentStorageService } from '../../infrastructure/services/TenderDocumentStorageService';
 import { getMailTenantId } from "./serviceTenantScope";
@@ -2414,13 +2419,26 @@ export class TenderController {
             assertTenderCancellable(lifecycle);
 
             const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
-            await (prisma as any).$transaction(async (tx: any) => cancelTenderWithin(tx, {
-                tenderId,
-                tenantId: (tender as any).tenantId,
-                employeeId: (req as any).user!.id,
-                reason,
-                previousStatus: String((tender as any).status || ''),
-            }));
+            await (prisma as any).$transaction(async (tx: any) => {
+                await cancelTenderWithin(tx, {
+                    tenderId,
+                    tenantId: (tender as any).tenantId,
+                    employeeId: (req as any).user!.id,
+                    reason,
+                    previousStatus: String((tender as any).status || ''),
+                });
+                await recordDocumentEvent(tx, {
+                    tenantId: (tender as any).tenantId,
+                    entityType: 'TENDER',
+                    entityId: tenderId,
+                    documentNumber: (tender as any).tenderNumber,
+                    action: 'CANCELLED',
+                    actorId: (req as any).user!.id,
+                    reason,
+                    snapshot: { previousStatus: (tender as any).status ?? null, version: (tender as any).version ?? null },
+                    ipAddress: requestIp(req),
+                });
+            });
 
             res.json({ message: 'Offerte storniert.', cancelled: true });
         } catch (error: any) {
@@ -2448,12 +2466,32 @@ export class TenderController {
                 });
             }
 
-            await (prisma as any).$transaction(async (tx: any) => uncancelTenderWithin(tx, {
-                tenderId,
-                tenantId: (tender as any).tenantId,
-                employeeId: (req as any).user!.id,
-                restoreTo: lifecycle.salesOrderId ? 'Approved' : 'Draft',
-            }));
+            // Schritt 6 / F2: ein Gegenbeleg am Auftrag dieser Offerte sperrt.
+            if (lifecycle.salesOrderId) {
+                const familyIds = await salesOrderFamilyIds(prisma as any, { id: lifecycle.salesOrderId, createdAt: new Date() } as any, (tender as any).tenantId);
+                assertUncancelAllowed(await countCreditDocuments(prisma as any, {
+                    tenantId: (tender as any).tenantId, salesOrderIds: familyIds,
+                }));
+            }
+            await (prisma as any).$transaction(async (tx: any) => {
+                await uncancelTenderWithin(tx, {
+                    tenderId,
+                    tenantId: (tender as any).tenantId,
+                    employeeId: (req as any).user!.id,
+                    restoreTo: lifecycle.salesOrderId ? 'Approved' : 'Draft',
+                });
+                await recordDocumentEvent(tx, {
+                    tenantId: (tender as any).tenantId,
+                    entityType: 'TENDER',
+                    entityId: tenderId,
+                    documentNumber: (tender as any).tenderNumber,
+                    action: 'UNCANCELLED',
+                    actorId: (req as any).user!.id,
+                    reason: String(req.body?.reason || '').trim() || null,
+                    snapshot: { restoredTo: lifecycle.salesOrderId ? 'Approved' : 'Draft' },
+                    ipAddress: requestIp(req),
+                });
+            });
 
             res.json({ message: 'Storno aufgehoben.', cancelled: false });
         } catch (error: any) {
@@ -2471,7 +2509,40 @@ export class TenderController {
             // machen die Offerte zu einem Beleg — der wird storniert, nicht
             // entfernt. Die Meldung sagt, welcher Weg offensteht.
             const lifecycle = await readTenderLifecycle(prisma as any, tender as any);
-            assertTenderDeletable(lifecycle);
+            // AUSNAHMETÜR (16.09.2026, D4): wartende Termine sperren das
+            // Löschen — die Systemverwaltung darf sie absagen und trotzdem löschen.
+            let override: { reason: string; blockers: string[] } | null = null;
+            if (!lifecycle.canDelete && req.body?.override) {
+                const decision = await decideOverride({
+                    action: 'TENDER_DELETE',
+                    employeeId: (req as any).user!.id,
+                    blockers: lifecycle.deleteBlockers,
+                    documentNumber: (tender as any).tenderNumber,
+                    request: req.body.override,
+                });
+                if (!decision.ok) return res.status(decision.status).json(overrideErrorBody(decision));
+                override = { reason: decision.reason, blockers: decision.blockers };
+            } else {
+                assertTenderDeletable(lifecycle);
+            }
+            let cancelledAppointments = 0;
+            if (override) {
+                const parked: Array<{ id: string }> = await (prisma as any).appointment.findMany({
+                    where: { tenantId: tender.tenantId, detachedFromTenderId: tenderId, startTime: { gte: new Date() }, NOT: { status: 'CANCELLED' } },
+                    select: { id: true },
+                });
+                const cancellations = await Promise.all(parked.map((row) => buildAppointmentCancellation(row.id).catch(() => null)));
+                if (parked.length) {
+                    await (prisma as any).appointment.updateMany({
+                        where: { id: { in: parked.map((row) => row.id) } },
+                        data: { status: 'CANCELLED' },
+                    });
+                }
+                for (const cancellation of cancellations) {
+                    if (cancellation) queueAppointmentCancellation(cancellation, (req as any).user!.id);
+                }
+                cancelledAppointments = parked.length;
+            }
             // Aus OSP entstandene Offerte? Die Zeilen VOR dem Löschen merken —
             // danach ist die Verknüpfung (absichtlich) weg.
             const ospRows = await (prisma as any).ospDocument.findMany({
@@ -2479,6 +2550,22 @@ export class TenderController {
                 select: { id: true, reference: true, tenantId: true },
             }).catch(() => [] as Array<{ id: string; reference: string; tenantId: string }>);
             await this.tenderRepository.delete(tenderId, tender.tenantId);
+            // Verlauf: die Offerte ist weg, ihr Eintrag bleibt (Nummer als Text).
+            // Das Löschen läuft im Repository ausserhalb dieser Transaktion —
+            // der Eintrag folgt unmittelbar, ein Fehler wird gemeldet.
+            await recordDocumentEvent(prisma as any, {
+                tenantId: tender.tenantId,
+                entityType: 'TENDER',
+                entityId: tenderId,
+                documentNumber: (tender as any).tenderNumber,
+                action: 'DELETED',
+                actorId: (req as any).user!.id,
+                reason: override?.reason ?? null,
+                override: override ? { blockers: override.blockers } : null,
+                snapshot: { version: (tender as any).version ?? null, status: (tender as any).status ?? null, cancelledAppointments },
+                links: { projectId: (tender as any).revertedProject?.id ?? null },
+                ipAddress: requestIp(req),
+            }).catch((error: any) => console.error('[TenderController.delete] Verlauf nicht geschrieben:', error?.message || error));
             // Vergangene oder abgesagte geparkte Termine verlieren ihre
             // Offerte — die Markierung zeigte sonst ins Leere.
             await (prisma as any).appointment.updateMany({
@@ -4352,7 +4439,21 @@ export class TenderController {
                     await tx.tender.update({ where: { id: tenderId }, data: metaData });
                     changed += Object.keys(metaData).length;
                 }
-                if (logs.length) await tx.tenderActivityLog.createMany({ data: logs });
+                if (logs.length) {
+                    await tx.tenderActivityLog.createMany({ data: logs });
+                    await recordDocumentEvent(tx, {
+                        tenantId: tender.tenantId,
+                        entityType: 'TENDER',
+                        entityId: tenderId,
+                        documentNumber: tender.tenderNumber,
+                        action: 'TEXT_CORRECTED',
+                        actorId: user.id,
+                        reason,
+                        snapshot: { fields: logs.map((row) => row.fieldName), changes: logs.length },
+                        links: { salesOrderId: tender.salesOrder?.id ?? null },
+                        ipAddress: requestIp(req),
+                    });
+                }
             });
 
             res.status(200).json({ changed });

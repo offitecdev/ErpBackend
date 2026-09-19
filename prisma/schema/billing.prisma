@@ -74,6 +74,12 @@ model Invoice {
   // Umschalten auf PAID (das Markieren traegt ein Datum), geleert beim
   // Zurueckdrehen auf ISSUED.
   paidAt             DateTime?
+  // ── GEGENBELEG (17.09.2026, Schritt 6) ─────────────────────────────────
+  // kind STORNO (hebt eine offene Rechnung auf) oder GUTSCHRIFT (gibt Geld
+  // einer bezahlten zurück): eigener RE-Nummer, NEGATIVER Betrag, zeigt auf
+  // die Rechnung, die er betrifft. `creditReason` steht wörtlich darauf.
+  reversesInvoiceId  String?
+  creditReason       String?   @db.Text
   issuedByEmployeeId String
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -84,6 +90,9 @@ model Invoice {
   salesOrder SalesOrder?       @relation(fields: [salesOrderId], references: [id])
   issuedBy   Employee          @relation("EmployeeIssuedInvoices", fields: [issuedByEmployeeId], references: [id])
   lineItems  InvoiceLineItem[]
+  reversesInvoice Invoice?  @relation("InvoiceReversal", fields: [reversesInvoiceId], references: [id], onDelete: SetNull)
+  reversals       Invoice[] @relation("InvoiceReversal")
+  payments        InvoicePayment[]
 
   @@index([tenantId])
   @@index([customerId])
@@ -94,6 +103,7 @@ model Invoice {
   @@index([tenantId, invoiceDate])
   @@index([tenantId, invoiceNumber])
   @@index([tenantId, legacyNumber])
+  @@index([reversesInvoiceId])
 }
 
 model InvoiceLineItem {
@@ -129,5 +139,27 @@ model InvoiceLineItem {
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
+  @@index([invoiceId])
+}
+
+// ── ZAHLUNGSEINGÄNGE (17.09.2026, Schritt 7 / G19) ─────────────────────────
+// Eine Rechnung kann in Teilen bezahlt werden. Sie ist «bezahlt», sobald die
+// Eingänge ihren Betrag decken; `Invoice.paidAt` ist dann der Tag des letzten.
+// Bei einer Gutschrift ist ein Eingang die RÜCKZAHLUNG (Betrag negativ wie sie).
+model InvoicePayment {
+  id          String   @id
+  tenantId    String
+  invoiceId   String
+  amount      Float
+  // PAYMENT = Geld geflossen · OFFSET = mit offener Rechnung verrechnet
+  kind        String   @default("PAYMENT") @db.VarChar(16)
+  paidAt      DateTime
+  note        String?  @db.VarChar(500)
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, paidAt])
   @@index([invoiceId])
 }

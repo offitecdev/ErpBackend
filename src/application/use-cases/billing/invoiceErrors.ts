@@ -37,7 +37,27 @@ export type InvoiceErrorCode =
     | 'DATE_INVALID'
     | 'DUE_BEFORE_DATE'
     // Minderung (Nachtrag mit Minussumme, 16.09.2026)
-    | 'ADDON_MINDERUNG_NOT_BILLABLE';
+    | 'ADDON_MINDERUNG_NOT_BILLABLE'
+    // Eigenes Recht zum Stornieren (16.09.2026)
+    | 'CANCEL_NOT_PERMITTED'
+    // Entwürfe (Schritt 5)
+    | 'NOT_DRAFT'
+    | 'DRAFT_NOT_ISSUED'
+    // Gegenbelege (Schritt 6)
+    | 'CREDIT_REASON_REQUIRED'
+    | 'CREDIT_DOCUMENT_FINAL'
+    | 'CREDIT_NEEDS_PAID'
+    | 'FULLY_CREDITED'
+    | 'CREDIT_AMOUNT_INVALID'
+    | 'CREDIT_AMOUNT_TOO_HIGH'
+    | 'STORNO_REQUIRED'
+    | 'PAYMENT_LOCKED_BY_CREDIT'
+    | 'CREDIT_NOT_PERMITTED'
+    // Zahlungseingänge (Schritt 7)
+    | 'ALREADY_SETTLED'
+    | 'PAYMENT_AMOUNT_INVALID'
+    | 'PAYMENT_TOO_HIGH'
+    | 'OFFSET_FINAL';
 
 export type InvoiceError = Error & {
     code: InvoiceErrorCode;

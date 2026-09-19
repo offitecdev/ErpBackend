@@ -7,6 +7,8 @@ import {
     salesOrderFamilyIds,
     type DeletableSalesOrder,
 } from './salesOrderDeletion';
+import { readInvoiceBalance } from './invoicePayments';
+import { CREDIT_KINDS, discardDraftInvoices, issuedInvoiceWhere, settleableInvoiceWhere } from './invoiceDrafts';
 
 /**
  * ── LÖSCHEN, STORNO, ZURÜCK IN ENTWURF ───────────────────────────────────────
@@ -50,7 +52,9 @@ export type LifecycleBlocker =
     | 'ADDON'              // Nachträge hängen daran
     | 'SALES_ORDER'        // ein Auftrag/AB ist daraus entstanden
     | 'PROJECT'            // ein Projekt hängt daran
-    | 'PARKED_APPOINTMENT'; // angesetzte Termine warten auf den nächsten Auftrag
+    | 'PARKED_APPOINTMENT' // angesetzte Termine warten auf den nächsten Auftrag
+    | 'CREDIT_DOCUMENT'    // Storno-Rechnung/Gutschrift ist ausgestellt (17.09.2026)
+    | 'OPEN_INVOICE';      // offene/bezahlte Rechnungen verlangen «Gesamten Vorgang stornieren»
 
 export interface SalesOrderLinkCounts {
     invoices: number;
@@ -80,6 +84,14 @@ export interface SalesOrderLifecycle {
     cancelBlockers: LifecycleBlocker[];
     canRevertToDraft: boolean;
     canCancel: boolean;
+    /**
+     * Offene oder bezahlte Rechnungen, die ein Storno mitregeln muss
+     * (Storno-Rechnung bzw. Gutschrift). > 0 → der Weg führt über
+     * «Gesamten Vorgang stornieren» mit Vorschau (17.09.2026, Schritt 6).
+     */
+    invoicesToSettle: number;
+    /** Was das Aufheben eines Stornos verhindert (Gegenbeleg ausgestellt). */
+    uncancelBlockers: LifecycleBlocker[];
 }
 
 export interface LifecycleSalesOrder extends DeletableSalesOrder {
@@ -103,7 +115,7 @@ export const countSalesOrderLinks = async (
 
     const now = new Date();
     const [invoices, reports, deliveryReports, stockMovements, extraMaterials, expenses, startedAppointments, upcomingAppointments, addons] = await Promise.all([
-        db.invoice.count({ where: { salesOrderId: inFamily } }),
+        db.invoice.count({ where: { salesOrderId: inFamily, ...issuedInvoiceWhere } }),
         db.projectReport.count({ where: { salesOrderId: inFamily } }),
         db.deliveryReport.count({ where: { salesOrderId: inFamily, tenantId } }),
         // Lagerbewegungen tragen als Referenz die Projekt-, Nachtrags- oder
@@ -177,6 +189,11 @@ export const readSalesOrderLifecycle = async (
     if (counts.addons > 0) revertBlockers.push('ADDON');
 
     const cancelBlockers: LifecycleBlocker[] = cancelled ? ['CANCELLED'] : [];
+    const [invoicesToSettle, creditDocuments] = await Promise.all([
+        db.invoice.count({ where: { tenantId, salesOrderId: { in: familyIds }, ...settleableInvoiceWhere } }),
+        countCreditDocuments(db, { tenantId, salesOrderIds: familyIds }),
+    ]);
+    const uncancelBlockers: LifecycleBlocker[] = creditDocuments > 0 ? ['CREDIT_DOCUMENT'] : [];
 
     return {
         familyIds,
@@ -187,7 +204,35 @@ export const readSalesOrderLifecycle = async (
         cancelBlockers,
         canRevertToDraft: revertBlockers.length === 0,
         canCancel: cancelBlockers.length === 0,
+        invoicesToSettle,
+        uncancelBlockers,
     };
+};
+
+/**
+ * F2 (17.09.2026): Wurde für einen Vorgang schon eine Storno-Rechnung oder
+ * Gutschrift ausgestellt, lässt er sich nicht wiederbeleben — der Gegenbeleg
+ * ist beim Kunden. Der Weg ist eine neue Offerte und ein neuer Auftrag.
+ */
+export const countCreditDocuments = async (
+    db: Tx,
+    scope: { tenantId: string; salesOrderIds?: string[]; projectId?: string | null },
+): Promise<number> => {
+    const or: any[] = [];
+    if (scope.salesOrderIds?.length) or.push({ salesOrderId: { in: scope.salesOrderIds } });
+    if (scope.projectId) or.push({ projectId: scope.projectId });
+    if (!or.length) return 0;
+    return db.invoice.count({
+        where: { tenantId: scope.tenantId, kind: { in: [...CREDIT_KINDS] }, NOT: { status: 'DRAFT' }, OR: or },
+    });
+};
+
+export const assertUncancelAllowed = (creditDocuments: number): void => {
+    if (creditDocuments <= 0) return;
+    throw Object.assign(
+        new Error('Für diesen Vorgang ist bereits eine Storno-Rechnung oder Gutschrift ausgestellt. Er kann nicht wiederbelebt werden — legen Sie eine neue Offerte an.'),
+        { status: 409, code: 'CREDIT_DOCUMENT_ISSUED', blockers: ['CREDIT_DOCUMENT'] as LifecycleBlocker[] },
+    );
 };
 
 /** Wirft mit `status`, damit der Aufrufer die Meldung unverändert weiterreicht. */
@@ -435,6 +480,8 @@ export const cancelSalesOrderWithin = async (
         where: { id: { in: familyIds }, tenantId },
         data: { status: 'CANCELLED', cancelledAt: now, cancelledById: employeeId, cancelReason: reason },
     });
+    // Ein stornierter Auftrag wird nicht mehr verrechnet — seine Entwürfe fallen.
+    await discardDraftInvoices(tx, { salesOrderIds: familyIds, tenantId });
 
     // Künftige Termine dieser Auftragsfamilie sind gegenstandslos. Vergangene
     // bleiben, wie sie sind — sie sind Geschichte, keine Planung.
@@ -751,7 +798,7 @@ export const readProjectLifecycle = async (
     const [orders, activeOrders, invoices, reports, deliveryReports, stockMovements] = await Promise.all([
         db.salesOrder.count({ where: { projectId: project.id, tenantId: project.tenantId } }),
         db.salesOrder.count({ where: { projectId: project.id, tenantId: project.tenantId, cancelledAt: null } }),
-        db.invoice.count({ where: { projectId: project.id } }),
+        db.invoice.count({ where: { projectId: project.id, ...issuedInvoiceWhere } }),
         db.projectReport.count({ where: { projectId: project.id } }),
         db.deliveryReport.count({ where: { projectId: project.id, tenantId: project.tenantId } }),
         db.stockMovement.count({ where: { tenantId: project.tenantId, referenceId: project.id } }),
@@ -818,6 +865,7 @@ export const cancelProjectWithin = async (
             data: { status: 'CANCELLED' },
         });
     }
+    await discardDraftInvoices(tx, { projectId: opts.projectId, tenantId: opts.tenantId });
     await tx.project.updateMany({
         where: { id: opts.projectId, tenantId: opts.tenantId },
         data: {
@@ -847,3 +895,101 @@ export const uncancelProjectWithin = async (
 };
 
 export { purgeProjectWithin, revertTendersToDraft, salesOrderFamilyIds };
+
+/* ── DIE RECHNUNG (17.09.2026, Schritte 6 und 7 / E4, G19) ──────────────────
+ *
+ * Dieselbe Regel wie für die übrigen Belege, an derselben Stelle. Grundlage
+ * ist der OFFENE BETRAG = Betrag − Zahlungen − Gutschriften (invoicePayments.ts).
+ *
+ *   Entwurf        ändern, ausstellen, verwerfen (löschen) — nichts sonst
+ *   ausgestellt    Zahlung (auch in Teilen) erfassen, solange etwas offen ist
+ *   STORNIEREN     nur ohne jede Zahlung und Gutschrift → Storno-Rechnung
+ *   GUTSCHRIFT     sobald die Rechnung ausgestellt ist, bis zum noch nicht
+ *                  gutgeschriebenen Betrag; zurückgezahlt wird nur, was der
+ *                  Kunde dadurch zu viel bezahlt hat
+ *   storniert      nur lesen
+ *   Gegenbeleg     Storno-Rechnung: nur lesen. Gutschrift: Rückzahlung
+ *                  erfassen. Beide werden nie storniert.
+ *
+ * Eine ausgestellte Rechnung wird NIE gelöscht.
+ */
+export type InvoiceLifecycleBlocker =
+    | 'INVOICE_DRAFT'
+    | 'INVOICE_PAID'
+    | 'INVOICE_CANCELLED'
+    | 'CREDIT_DOCUMENT'
+    | 'FULLY_CREDITED';
+
+export interface InvoiceLifecycle {
+    isDraft: boolean;
+    isCreditDocument: boolean;
+    cancelled: boolean;
+    paid: boolean;
+    /** Eingegangenes Geld (positiv). */
+    paidAmount: number;
+    /** Summe der ausgestellten Gutschriften (positiv). */
+    creditedAmount: number;
+    /** Noch offen (positiv) — bei der Gutschrift: noch zurückzuzahlen. */
+    openAmount: number;
+    /** Was noch gutgeschrieben werden darf (positiv). */
+    creditableAmount: number;
+    canDiscard: boolean;
+    canIssue: boolean;
+    canRecordPayment: boolean;
+    canUndoPayment: boolean;
+    canCancel: boolean;
+    canCredit: boolean;
+    cancelBlockers: InvoiceLifecycleBlocker[];
+    creditBlockers: InvoiceLifecycleBlocker[];
+}
+
+type LifecycleInvoice = { id: string; tenantId: string; status: string; kind?: string | null; amount: number | string };
+
+const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+export const readInvoiceLifecycle = async (db: Tx, invoice: LifecycleInvoice): Promise<InvoiceLifecycle> => {
+    const status = String(invoice.status);
+    const kind = String(invoice.kind || 'RECHNUNG');
+    const isDraft = status === 'DRAFT';
+    const isCreditDocument = (CREDIT_KINDS as readonly string[]).includes(kind);
+    const cancelled = status === 'CANCELLED';
+    const paid = status === 'PAID';
+    const balance = isDraft ? null : await readInvoiceBalance(db, invoice);
+    const paidAmount = balance ? money(Math.abs(balance.paidMoney)) : 0;
+    const creditedAmount = balance?.credited ?? 0;
+    const openAmount = balance?.open ?? 0;
+    const creditableAmount = !isDraft && !cancelled && !isCreditDocument
+        ? Math.max(0, money(Math.abs(Number(invoice.amount || 0)) - creditedAmount))
+        : 0;
+
+    const cancelBlockers: InvoiceLifecycleBlocker[] = [];
+    if (isDraft) cancelBlockers.push('INVOICE_DRAFT');
+    if (cancelled) cancelBlockers.push('INVOICE_CANCELLED');
+    if (isCreditDocument) cancelBlockers.push('CREDIT_DOCUMENT');
+    if (!isCreditDocument && (paid || paidAmount > 0.005 || creditedAmount > 0.005)) cancelBlockers.push('INVOICE_PAID');
+
+    const creditBlockers: InvoiceLifecycleBlocker[] = [];
+    if (isCreditDocument) creditBlockers.push('CREDIT_DOCUMENT');
+    else if (isDraft) creditBlockers.push('INVOICE_DRAFT');
+    else if (cancelled) creditBlockers.push('INVOICE_CANCELLED');
+    else if (creditableAmount <= 0.005) creditBlockers.push('FULLY_CREDITED');
+
+    return {
+        isDraft,
+        isCreditDocument,
+        cancelled,
+        paid,
+        paidAmount,
+        creditedAmount,
+        openAmount,
+        creditableAmount,
+        canDiscard: isDraft,
+        canIssue: isDraft,
+        canRecordPayment: (status === 'ISSUED' || status === 'PAID') && kind !== 'STORNO' && openAmount > 0.005,
+        canUndoPayment: paidAmount > 0.005 && creditedAmount <= 0.005,
+        canCancel: cancelBlockers.length === 0,
+        canCredit: creditBlockers.length === 0,
+        cancelBlockers,
+        creditBlockers,
+    };
+};

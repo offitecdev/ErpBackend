@@ -1,8 +1,11 @@
 export type InvoiceBillingType = 'FULL' | 'PARTIAL';
 // RECHNUNG = tam fatura (tüm pozisyonlar, %100) | AKONTO = avans faturası |
 // ZWISCHEN = ara fatura | SCHLUSS = kalan yüzdeyi kapatan son fatura.
-export type InvoiceKind = 'RECHNUNG' | 'AKONTO' | 'ZWISCHEN' | 'SCHLUSS';
-export type InvoiceStatus = 'ISSUED' | 'PAID' | 'CANCELLED';
+// STORNO / GUTSCHRIFT (17.09.2026) = Gegenbelege mit negativem Betrag.
+export type InvoiceKind = 'RECHNUNG' | 'AKONTO' | 'ZWISCHEN' | 'SCHLUSS' | 'STORNO' | 'GUTSCHRIFT';
+// DRAFT (16.09.2026, Schritt 5): angelegt, aber noch nicht ausgestellt — ohne
+// RE-Nummer (`invoiceNumber` ist leer) und nirgends als verrechnet gezählt.
+export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PAID' | 'CANCELLED';
 /**
  * Rechnungstyp der LISTE (30.08.2026) — nicht gespeichert, sondern aus dem
  * Beleg abgeleitet, an dem die Rechnung haengt:
@@ -81,6 +84,9 @@ export interface Invoice {
     paymentStages?: string | null;
     /** Zahlungseingang — gesetzt beim Markieren als bezahlt. */
     paidAt?: Date | null;
+    /** Gegenbeleg: die Rechnung, die er zurücknimmt, und der Grund. */
+    reversesInvoiceId?: string | null;
+    creditReason?: string | null;
     issuedByEmployeeId: string;
     createdAt: Date;
     updatedAt: Date;

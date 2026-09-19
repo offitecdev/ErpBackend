@@ -8,6 +8,7 @@ const multer_1 = __importDefault(require("multer"));
 // (Yukarıda oluşturduğumuz ProjectController ve UseCase/Repo sınıflarını import edin)
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const SystemAdminMiddleware_1 = require("../middlewares/SystemAdminMiddleware");
 const ProjectController_1 = require("../controllers/ProjectController");
 const CreateProjectFromTenderUseCase_1 = require("../../application/use-cases/project/CreateProjectFromTenderUseCase");
 const AddProjectReportUseCase_1 = require("../../application/use-cases/project/AddProjectReportUseCase");
@@ -136,8 +137,8 @@ router.patch('/addon-order-requests/:requestId', (0, RbacMiddleware_1.requirePer
                            Projekt von selbst mit seinem letzten Auftrag).
    `POST /:id/uncancel`  — Storno aufheben. */
 router.get('/:id/lifecycle', (0, RbacMiddleware_1.requirePermission)('projects.view'), (req, res) => controller.projectLifecycle(req, res));
-router.post('/:id/cancel', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.cancelProject(req, res));
-router.post('/:id/uncancel', (0, RbacMiddleware_1.requirePermission)('projects.manage'), (req, res) => controller.uncancelProject(req, res));
+router.post('/:id/cancel', (0, RbacMiddleware_1.requirePermission)('projects.cancel'), (req, res) => controller.cancelProject(req, res));
+router.post('/:id/uncancel', SystemAdminMiddleware_1.requireSystemAdmin, (req, res) => controller.uncancelProject(req, res));
 // Projeyi siler — YALNIZCA hiçbir bağlı kayıt kalmadıysa (sipariş, fatura,
 // rapor, stok hareketi). Daha özgül DELETE yolları üstte kayıtlı olduğundan
 // '/:id' onları GÖLGELEMEZ.

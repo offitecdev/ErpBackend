@@ -300,6 +300,7 @@ router.get('/catalog', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requir
                 path: page.path,
                 labelKey: page.labelKey,
                 maxLevel: page.maxLevel,
+                ...(page.levelHints ? { levelHints: page.levelHints } : {}),
             })),
         })),
     });

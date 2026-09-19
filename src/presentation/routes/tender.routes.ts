@@ -13,6 +13,7 @@ import { TenderArticleController } from '../controllers/TenderArticleController'
 import { ArticleRepository } from '../../infrastructure/repositories/ArticleRepository';
 import { MapArticleToPositionUseCase } from '../../application/use-cases/tender/MapArticleToPositionUseCase';
 import { requirePermission } from '../middlewares/RbacMiddleware';
+import { requireSystemAdmin } from '../middlewares/SystemAdminMiddleware';
 import { TenderReportController } from '../controllers/TenderReportController';
 import { ExportTenderDataUseCase } from '../../application/use-cases/tender/ExportTenderDataUseCase';
 import { GetTenderSummaryReportUseCase } from '../../application/use-cases/tender/GetTenderSummaryReportUseCase';
@@ -127,17 +128,19 @@ router.get(
     (req, res) => tenderController.lifecycle(req, res)
 );
 
+// Stornieren ist ein eigenes Recht (Stufe 3 der Offertliste), das Storno
+// aufheben gehört der Systemverwaltung allein (16.09.2026, D2/D3).
 router.post(
     '/:id/cancel',
     requireAuth,
-    requirePermission('tenders.manage'),
+    requirePermission('tenders.cancel'),
     (req, res) => tenderController.cancel(req, res)
 );
 
 router.post(
     '/:id/uncancel',
     requireAuth,
-    requirePermission('tenders.manage'),
+    requireSystemAdmin,
     (req, res) => tenderController.uncancel(req, res)
 );
 

@@ -55,6 +55,7 @@ import regieRoutes from './presentation/routes/regie.routes';
 import maintenanceRoutes from './presentation/routes/maintenance.routes';
 import salesOrderRoutes from './presentation/routes/sales-order.routes';
 import addonOrderRoutes from './presentation/routes/addon-order.routes';
+import documentEventRoutes from './presentation/routes/documentEvents.routes';
 import billingRoutes from './presentation/routes/billing.routes';
 import notificationRoutes from './presentation/routes/notification.routes';
 import meetingRoutes from './presentation/routes/meeting.routes';
@@ -263,6 +264,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/sales-orders`, salesOrderRoutes);
     // Nachträge (NT-…): Liste, Beleg, freier Nachtrag mit eigenen Positionen.
     app.use(`${prefix}/addon-orders`, addonOrderRoutes);
+    // Belegverlauf (16.09.2026): Storno, Löschen, Zurücksetzen, Eingriffe — nur lesen.
+    app.use(`${prefix}/document-events`, documentEventRoutes);
     app.use(`${prefix}/billing`, billingRoutes);
     app.use(`${prefix}/roles`, roleRoutes);
     // Eigener Pfad statt eines Unterwegs von /roles: dort steht bereits ein
