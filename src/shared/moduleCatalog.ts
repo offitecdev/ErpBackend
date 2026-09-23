@@ -57,6 +57,17 @@ export const MODULE_CATALOG: ModuleDefinition[] = [
             delete: ['inventory.articles.delete'],
         },
     },
+    // Produktion (19.09.2026): Produktionsaufträge. view = die Seiten des
+    // Moduls, manage = sofort abgleichen. Wo die Firmenkategorie das Modul
+    // führt, verlangen Preisanfrage, Bestellung und Wareneingang ein Projekt
+    // und mindestens ein Gerät (inventory.routes → ProductionPurchaseLinkService).
+    {
+        key: 'production',
+        actions: {
+            read: ['production.view', 'panels.view'],
+            write: ['production.manage', 'panels.manage'],
+        },
+    },
     {
         key: 'logistics',
         actions: {

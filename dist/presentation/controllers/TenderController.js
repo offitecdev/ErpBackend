@@ -2344,6 +2344,13 @@ class TenderController {
                     blockers: ['SALES_ORDER'],
                 });
             }
+            // Schritt 6 / F2: ein Gegenbeleg am Auftrag dieser Offerte sperrt.
+            if (lifecycle.salesOrderId) {
+                const familyIds = await (0, documentLifecycle_1.salesOrderFamilyIds)(prisma_client_1.default, { id: lifecycle.salesOrderId, createdAt: new Date() }, tender.tenantId);
+                (0, documentLifecycle_1.assertUncancelAllowed)(await (0, documentLifecycle_1.countCreditDocuments)(prisma_client_1.default, {
+                    tenantId: tender.tenantId, salesOrderIds: familyIds,
+                }));
+            }
             await prisma_client_1.default.$transaction(async (tx) => {
                 await (0, documentLifecycle_1.uncancelTenderWithin)(tx, {
                     tenderId,

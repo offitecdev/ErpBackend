@@ -128,6 +128,9 @@ const tasks_1 = __importDefault(require("./presentation/routes/tasks"));
 // Zeitmessung nach Zeitstempeln (14.09.2026): wiederverwendbarer Zähler je
 // Person und Gegenstand — der Server rechnet, der Browser zeigt (services/timers).
 const serverTimer_routes_1 = __importDefault(require("./presentation/routes/serverTimer.routes"));
+// Produktion (19.09.2026): Produktionsaufträge — Projekte aus den Firmen der
+// Firmenübertragungen, die bestätigten Lieferantenbestellungen je Gerät.
+const production_routes_1 = __importDefault(require("./presentation/routes/production.routes"));
 const tasksReminderEngine_1 = require("./infrastructure/services/tasks/tasksReminderEngine");
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const ReminderEngine_1 = require("./infrastructure/services/ReminderEngine");
@@ -332,6 +335,7 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/tasks`, tasks_1.default);
     // Zähler nach Zeitstempeln: GET/POST /timers/:subjectType/:subjectId[/start|pause|resume|stop|reset].
     app.use(`${prefix}/timers`, serverTimer_routes_1.default);
+    app.use(`${prefix}/production`, production_routes_1.default);
     app.use(`${prefix}/batch`, batch_routes_1.default);
 }
 app.use(ErrorHandlerMiddleware_1.globalErrorHandler);

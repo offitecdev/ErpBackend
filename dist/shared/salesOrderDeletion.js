@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteSalesOrderWithin = exports.purgeProjectWithin = exports.assertSalesOrderDeletable = exports.salesOrderFamilyIds = exports.revertTendersToDraft = void 0;
 const nanoid_1 = require("nanoid");
 const articleStock_1 = require("./articleStock");
+const invoiceDrafts_1 = require("./invoiceDrafts");
 /**
  * DER AUFTRAG IST WEG → DIE OFFERTE IST WIEDER EIN ENTWURF (Benutzerregel
  * 29.08.2026: «wird das Projekt gelöscht, verschwindet es aus den Aufträgen und
@@ -80,7 +81,8 @@ exports.salesOrderFamilyIds = salesOrderFamilyIds;
  */
 const assertSalesOrderDeletable = async (db, order, tenantId) => {
     const familyIds = await (0, exports.salesOrderFamilyIds)(db, order, tenantId);
-    const invoiceCount = await db.invoice.count({ where: { salesOrderId: { in: familyIds } } });
+    // Entwürfe sperren nicht — sie fallen beim Schnitt mit (Schritt 5).
+    const invoiceCount = await db.invoice.count({ where: { salesOrderId: { in: familyIds }, ...invoiceDrafts_1.issuedInvoiceWhere } });
     if (invoiceCount > 0) {
         throw Object.assign(new Error('Faturalandırılmış bir sipariş silinemez.'), { status: 400 });
     }
@@ -94,7 +96,7 @@ const assertSalesOrderDeletable = async (db, order, tenantId) => {
         });
         lastOfProject = remaining === 0;
         if (lastOfProject) {
-            const projectInvoices = await db.invoice.count({ where: { projectId: order.projectId } });
+            const projectInvoices = await db.invoice.count({ where: { projectId: order.projectId, ...invoiceDrafts_1.issuedInvoiceWhere } });
             if (projectInvoices > 0) {
                 throw Object.assign(new Error('Faturalandırılmış bir proje silinemez.'), { status: 400 });
             }
@@ -141,6 +143,7 @@ const purgeProjectWithin = async (tx, opts) => {
     await tx.appointment.deleteMany({ where: { projectId } });
     await tx.deliveryReport.deleteMany({ where: { projectId, tenantId } });
     await tx.signatureRequest.deleteMany({ where: { projectId, tenantId } });
+    await (0, invoiceDrafts_1.discardDraftInvoices)(tx, { projectId, tenantId });
     await tx.project.delete({ where: { id: projectId } });
     // Sicherheitsnetz: `Tender.projectId` ist kein Fremdschlüssel, eine
     // vergessene Verknüpfung zählte sonst weiter als «Auftrag».
@@ -200,6 +203,8 @@ const deleteSalesOrderWithin = async (tx, opts) => {
     }
     // Nachträge tragen keine eigenen Sätze (sie rechnen die Zeitscheibe des
     // Hauptauftrags ab, oben gelöscht) — sie fallen ganz, nicht auf null.
+    // Unverschickte Rechnungsentwürfe des Stammes fallen mit (Schritt 5).
+    await (0, invoiceDrafts_1.discardDraftInvoices)(tx, { salesOrderIds: familyIds, tenantId });
     if (!isAddon && addonIds.length) {
         await tx.salesOrder.deleteMany({ where: { id: { in: addonIds } } });
     }

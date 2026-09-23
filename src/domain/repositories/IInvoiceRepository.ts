@@ -1,5 +1,30 @@
 import { Invoice, InvoiceCategory, InvoiceLineItem, InvoiceStatus } from "../entities/Invoice";
 
+/**
+ * ── DIE BUCHHALTUNGSLISTE KOMMT SEITENWEISE (22.09.2026) ───────────────────
+ *
+ * Der Stand einer Rechnung ist KEINE Spalte: «überfällig» ergibt sich aus der
+ * Fälligkeit, «Gegenbeleg» aus der Art. Die Reiter der Liste heissen darum
+ * hier genauso wie in der Oberfläche (pages/accounting/accountingShared.ts),
+ * und der Server rechnet sie mit derselben Regel.
+ */
+export type InvoiceStateKey = "DRAFT" | "OPEN" | "OVERDUE" | "PAID" | "CANCELLED" | "CREDIT";
+
+/** Wonach sortiert wird. `activity` (Vorgabe) = zuletzt ausgestellt, bezahlt oder geändert. */
+export type InvoiceSort = "activity" | "invoiceDate" | "dueDate" | "amount" | "number";
+
+export const INVOICE_STATE_KEYS: InvoiceStateKey[] = ["DRAFT", "OPEN", "OVERDUE", "PAID", "CANCELLED", "CREDIT"];
+export const INVOICE_SORTS: InvoiceSort[] = ["activity", "invoiceDate", "dueDate", "amount", "number"];
+
+/** Eine Seite der Liste: die Zeilen, wie viele es insgesamt sind, und die Zähler der Reiter. */
+export interface InvoicePage {
+    items: InvoiceListItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+    counts: Record<"ALL" | InvoiceStateKey, number>;
+}
+
 export interface IInvoiceFilter {
     tenantId: string;
     /** Genau diese Rechnung (Detailseite der Buchhaltung). */
@@ -14,6 +39,17 @@ export interface IInvoiceFilter {
      * in einem HAVING, nicht in der WHERE-Kette.
      */
     category?: InvoiceCategory | undefined;
+    /** Reiter der Buchhaltungsliste. «Offen» schliesst «Überfällig» ein. */
+    state?: InvoiceStateKey | undefined;
+    /** Freitext — Nummer, Empfänger, Auftrag, Projekt, Verkäufer, Betrag. */
+    search?: string | undefined;
+    /** Kalendertag der Person; er entscheidet, was «überfällig» ist. */
+    today?: string | undefined;
+    /** Reihenfolge der Zeilen (Vorgabe: letzter Vorgang zuoberst). */
+    sort?: InvoiceSort | undefined;
+    /** Seite (1-basiert) und Seitengrösse — nur `listPage` liest sie. */
+    page?: number | undefined;
+    pageSize?: number | undefined;
 }
 
 export type InvoiceLineItemInput = Omit<InvoiceLineItem, "id" | "invoiceId">;
@@ -40,6 +76,8 @@ export interface InvoiceListItem extends Invoice {
         paymentStages?: string | null;
     } | null;
     issuedBy?: { id: string; firstName: string; lastName: string } | null;
+    /** Letzter Vorgang am Beleg: Änderung oder Zahlungseingang (Sortierung der Liste). */
+    activityAt?: Date | string | null;
     /** Zahlungsstand (Schritt 7). */
     paidAmount?: number;
     creditedAmount?: number;
@@ -73,6 +111,8 @@ export interface IInvoiceRepository {
     findActiveByOrder(salesOrderId: string, tenantId: string): Promise<Invoice | null>;
     findActiveByProject(projectId: string, tenantId: string): Promise<Invoice | null>;
     list(filter: IInvoiceFilter): Promise<InvoiceListItem[]>;
+    /** EINE Seite der Buchhaltungsliste — mit Gesamtzahl und Reiterzählern. */
+    listPage(filter: IInvoiceFilter): Promise<InvoicePage>;
     listForOrders(tenantId: string, salesOrderIds: string[]): Promise<InvoiceSummaryRow[]>;
     countForTenant(tenantId: string): Promise<number>;
     sumBilledForOrder(salesOrderId: string): Promise<BilledSoFar>;

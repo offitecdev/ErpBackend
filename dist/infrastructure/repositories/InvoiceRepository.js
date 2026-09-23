@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.InvoiceRepository = exports.deriveInvoiceCategory = void 0;
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const invoiceDrafts_1 = require("../../shared/invoiceDrafts");
 /**
  * Rechnungstyp aus dem Beleg ABLEITEN, an dem die Rechnung hängt — sie trägt
  * keine eigene Spalte dafür (siehe `InvoiceCategory`):
@@ -24,6 +25,33 @@ const deriveInvoiceCategory = (row) => {
     return "DIRECT";
 };
 exports.deriveInvoiceCategory = deriveInvoiceCategory;
+const money = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+/**
+ * Offener Betrag einer Listenzeile — dieselbe Regel wie `readInvoiceBalance`
+ * (shared/invoicePayments.ts): Betrag − Zahlungen − Gutschriften; beim
+ * Gegenbeleg nur, was noch zurückzuzahlen ist; Entwurf/Storno: nichts.
+ */
+const invoiceBalanceOf = (row) => {
+    const amount = Math.abs(Number(row.amount ?? 0));
+    const paid = Math.abs(Number(row.paidSum ?? 0));
+    const credited = Math.abs(Number(row.creditSum ?? 0));
+    const kind = String(row.kind ?? '');
+    const status = String(row.status ?? '');
+    let openAmount = 0;
+    if (status === 'ISSUED' || status === 'PAID') {
+        if (kind === 'STORNO')
+            openAmount = 0;
+        else if (kind === 'GUTSCHRIFT')
+            openAmount = Math.max(0, money(amount - paid));
+        else
+            openAmount = Math.max(0, money(amount - paid - credited));
+    }
+    return {
+        paidAmount: money(Math.abs(Number(row.paidMoney ?? 0))),
+        creditedAmount: money(credited),
+        openAmount,
+    };
+};
 const invoiceInclude = {
     // Positionsreihenfolge ist eine Angabe des Belegs, keine Zufälligkeit der
     // Abfrage — die Direktrechnung setzt sie beim Speichern.
@@ -87,6 +115,8 @@ class InvoiceRepository {
      */
     async list(filter) {
         const conditions = [client_1.Prisma.sql `i.tenantId = ${filter.tenantId}`];
+        if (filter.id)
+            conditions.push(client_1.Prisma.sql `i.id = ${filter.id}`);
         if (filter.projectId)
             conditions.push(client_1.Prisma.sql `i.projectId = ${filter.projectId}`);
         if (filter.salesOrderId)
@@ -116,7 +146,7 @@ class InvoiceRepository {
             LEFT JOIN SalesOrder so ON so.id = i.salesOrderId
             WHERE ${whereSql}
         `;
-        const [rows, lineItems] = await Promise.all([
+        const [rows, lineItems, reversals] = await Promise.all([
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
                 SELECT
                     i.id, i.tenantId, i.customerId, i.projectId, i.salesOrderId,
@@ -129,6 +159,15 @@ class InvoiceRepository {
                     -- andere Rechnung als die Erfassungsseite (utils/pdf/invoicePdf.ts).
                     i.sections, i.discounts, i.closingText, i.senderAddress, i.paymentStages, i.paidAt,
                     i.createdAt, i.updatedAt,
+                    -- Gegenbeleg (17.09.2026): worauf er zeigt.
+                    i.reversesInvoiceId, i.creditReason,
+                    rv.invoiceNumber AS reversesNumber, rv.invoiceDate AS reversesDate,
+                    rv.kind AS reversesKind, rv.amount AS reversesAmount,
+                    -- Zahlungsstand (Schritt 7): Eingänge, davon Geld, Gutschriften.
+                    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id) AS paidSum,
+                    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id AND p.kind = 'PAYMENT') AS paidMoney,
+                    (SELECT COALESCE(SUM(g.amount), 0) FROM Invoice g
+                        WHERE g.reversesInvoiceId = i.id AND g.kind = 'GUTSCHRIFT' AND g.status <> 'DRAFT') AS creditSum,
                     c.companyName AS customerCompanyName,
                     pr.projectName AS projectName,
                     pr.projectNumber AS projectNumber,
@@ -146,6 +185,7 @@ class InvoiceRepository {
                 LEFT JOIN Project pr ON pr.id = i.projectId
                 LEFT JOIN SalesOrder so ON so.id = i.salesOrderId
                 LEFT JOIN Employee e ON e.id = i.issuedByEmployeeId
+                LEFT JOIN Invoice rv ON rv.id = i.reversesInvoiceId
                 WHERE ${whereSql}
                 -- Neueste zuoberst. Alte Zeilen haben kein Rechnungsdatum, für
                 -- sie zählt der Anlagezeitpunkt — sonst fielen sie ans Ende.
@@ -161,7 +201,31 @@ class InvoiceRepository {
                 WHERE li.invoiceId IN (SELECT i.id ${scopeSql})
                 ORDER BY li.sortOrder ASC
             `),
+            // Die Gegenbelege jeder gelisteten Rechnung (Storno/Gutschrift).
+            prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+                SELECT r.id, r.reversesInvoiceId, r.invoiceNumber, r.kind, r.amount, r.status, r.invoiceDate
+                FROM Invoice r
+                WHERE r.reversesInvoiceId IN (SELECT i.id ${scopeSql})
+                  AND r.status <> 'DRAFT'
+                ORDER BY r.createdAt ASC
+            `),
         ]);
+        const reversalsByInvoice = new Map();
+        for (const row of reversals) {
+            const entry = {
+                id: row.id,
+                invoiceNumber: row.invoiceNumber,
+                kind: row.kind,
+                amount: Number(row.amount ?? 0),
+                status: row.status,
+                invoiceDate: row.invoiceDate ?? null,
+            };
+            const bucket = reversalsByInvoice.get(row.reversesInvoiceId);
+            if (bucket)
+                bucket.push(entry);
+            else
+                reversalsByInvoice.set(row.reversesInvoiceId, [entry]);
+        }
         const itemsByInvoice = new Map();
         for (const item of lineItems) {
             const bucket = itemsByInvoice.get(item.invoiceId);
@@ -206,6 +270,19 @@ class InvoiceRepository {
             senderAddress: row.senderAddress ?? null,
             paymentStages: row.paymentStages ?? null,
             paidAt: row.paidAt ?? null,
+            reversesInvoiceId: row.reversesInvoiceId ?? null,
+            creditReason: row.creditReason ?? null,
+            reversesInvoice: row.reversesInvoiceId
+                ? {
+                    id: row.reversesInvoiceId,
+                    invoiceNumber: row.reversesNumber,
+                    invoiceDate: row.reversesDate ?? null,
+                    kind: row.reversesKind ?? 'RECHNUNG',
+                    amount: Number(row.reversesAmount ?? 0),
+                }
+                : null,
+            reversals: reversalsByInvoice.get(row.id) ?? [],
+            ...invoiceBalanceOf(row),
             issuedByEmployeeId: row.issuedByEmployeeId,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -259,7 +336,8 @@ class InvoiceRepository {
     // frankı kuruşu kuruşuna alacağı için ikisine de ihtiyaç var, ek tur yok.
     async sumBilled(where) {
         const agg = await prisma_client_1.default.invoice.aggregate({
-            where: { ...where, status: { not: "CANCELLED" } },
+            // Entwürfe reservieren nichts — gezählt wird erst beim Ausstellen.
+            where: { ...where, ...invoiceDrafts_1.billedInvoiceWhere },
             _sum: { billedPercent: true, amount: true },
         });
         return {
@@ -288,6 +366,12 @@ class InvoiceRepository {
         if (!result.count)
             throw new Error("Fatura bulunamadı.");
         return (await prisma_client_1.default.invoice.findUnique({ where: { id }, include: invoiceInclude }));
+    }
+    async deleteDraft(id, tenantId) {
+        // Die Bedingung auf DRAFT steht IN der Löschung: ein zeitgleich
+        // ausgestellter Entwurf wird so nie entfernt.
+        const result = await prisma_client_1.default.invoice.deleteMany({ where: { id, tenantId, status: "DRAFT" } });
+        return result.count > 0;
     }
     async updateStatus(id, tenantId, status, paidAt) {
         const existing = await prisma_client_1.default.invoice.findFirst({ where: { id, tenantId } });

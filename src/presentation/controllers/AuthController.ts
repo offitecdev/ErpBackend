@@ -16,6 +16,7 @@ import { RoleRepository } from "../../infrastructure/repositories/RoleRepository
 import { jwtTokenService } from "../../infrastructure/services/JwtTokenService";
 import { revokeRefreshFamily } from "../../infrastructure/services/RefreshSessionService";
 import { TooManyAttemptsError, toPublicMessage } from "../../application/errors/AuthErrors";
+import { adminModuleKeys } from "../../shared/pageCatalog";
 
 /** Seitenstufen hängen an derselben Rollenzeile wie die Rechte; der Zugriff
     läuft über dieselbe zwischenspeichernde Ablage (siehe RoleRepository). */
@@ -346,6 +347,7 @@ export class AuthController {
                 roleName: string | null;
                 roleId: string | null;
                 assignedRoleName: string | null;
+                isSystemAdmin: number | boolean | null;
                 configTenantId: string | null;
                 moduleKeys: unknown;
             };
@@ -362,6 +364,7 @@ export class AuthController {
                     employee.roleName,
                     role.id AS roleId,
                     role.roleName AS assignedRoleName,
+                    role.isSystemAdmin AS isSystemAdmin,
                     config.tenantId AS configTenantId,
                     config.moduleKeys
                 FROM Employee AS employee
@@ -393,6 +396,17 @@ export class AuthController {
                 for (const [tenantId, tenantRows] of rowsByTenant) {
                     const coveredRoles = new Set(tenantRows.map((row) => row.roleId).filter(Boolean));
                     if (coveredRoles.size < roleIds.length) continue;
+                    // ADMINISTRATOR SIEHT JEDES MODUL DES KATALOGS — auch eines, das
+                    // nach dem letzten Speichern der Rolle dazugekommen ist. Sonst
+                    // haengt ein neues Modul (Produktion, 19.09.2026) unsichtbar in
+                    // einem alten `RoleModuleConfig`-Paket fest, bis jemand die
+                    // Berechtigungsseite oeffnet — `ensureSystemAdminRole` zieht das
+                    // Paket erst dort nach. Die Firmenkategorie schraenkt weiter ein:
+                    // das Menue zeigt Kategorie ∩ Paket.
+                    if (tenantRows.some((row) => Boolean(row.isSystemAdmin))) {
+                        roleModuleKeysByTenant[tenantId] = adminModuleKeys();
+                        continue;
+                    }
                     roleModuleKeysByTenant[tenantId] = [...new Set(
                         tenantRows.flatMap((row) => {
                             if (Array.isArray(row.moduleKeys)) return row.moduleKeys.map(String);

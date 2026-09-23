@@ -7,6 +7,8 @@ exports.UpdateInvoiceStatusUseCase = void 0;
 const invoiceErrors_1 = require("./invoiceErrors");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 const documentGovernance_1 = require("../../../shared/documentGovernance");
+const documentLifecycle_1 = require("../../../shared/documentLifecycle");
+const invoicePayments_1 = require("../../../shared/invoicePayments");
 const ALLOWED = ["ISSUED", "PAID", "CANCELLED"];
 /**
  * ── WELCHE STATUSWECHSEL EINE GESTELLTE RECHNUNG KENNT (16.09.2026) ─────────
@@ -45,6 +47,28 @@ class UpdateInvoiceStatusUseCase {
         const invoice = await this.invoiceRepository.findById(id, tenantId);
         if (!invoice)
             throw (0, invoiceErrors_1.invoiceError)('NOT_FOUND', 'Fatura bulunamadı.', { status: 404 });
+        // Ein Entwurf wird AUSGESTELLT (eigener Weg mit Nummer), nicht umgestellt.
+        if (invoice.status === "DRAFT") {
+            throw (0, invoiceErrors_1.invoiceError)('DRAFT_NOT_ISSUED', 'Ein Entwurf muss zuerst ausgestellt werden.', { status: 409 });
+        }
+        // Stornieren heisst seit Schritt 6: eine Storno-Rechnung ausstellen —
+        // das ist ein eigener Weg (InvoiceCreditUseCase), kein Statuswechsel.
+        if (next === "CANCELLED" && invoice.status !== "CANCELLED") {
+            if (actor && !actor.canCancel) {
+                throw (0, invoiceErrors_1.invoiceError)('CANCEL_NOT_PERMITTED', 'Ihrer Rolle fehlt das Recht, Rechnungen zu stornieren.', { status: 403 });
+            }
+            if (invoice.status === "PAID") {
+                throw (0, invoiceErrors_1.invoiceError)('PAID_NOT_CANCELLABLE', 'Eine bezahlte Rechnung kann nicht storniert werden. Stellen Sie eine Gutschrift aus.', { status: 409 });
+            }
+            throw (0, invoiceErrors_1.invoiceError)('STORNO_REQUIRED', 'Eine Rechnung wird über eine Storno-Rechnung zurückgenommen.', { status: 409 });
+        }
+        const lifecycle = await (0, documentLifecycle_1.readInvoiceLifecycle)(prisma_client_1.default, invoice);
+        if (invoice.kind === 'STORNO') {
+            throw (0, invoiceErrors_1.invoiceError)('CREDIT_DOCUMENT_FINAL', 'Eine Storno-Rechnung wird nicht umgestellt.', { status: 409 });
+        }
+        if (invoice.status === "PAID" && next === "ISSUED" && !lifecycle.canUndoPayment) {
+            throw (0, invoiceErrors_1.invoiceError)('PAYMENT_LOCKED_BY_CREDIT', 'Zu dieser Zahlung ist bereits eine Gutschrift ausgestellt — sie kann nicht zurückgenommen werden.', { status: 409 });
+        }
         if (invoice.status === "CANCELLED") {
             throw (0, invoiceErrors_1.invoiceError)('CANCELLED_STAYS', 'Eine stornierte Rechnung bleibt storniert.', { status: 409 });
         }
@@ -54,11 +78,26 @@ class UpdateInvoiceStatusUseCase {
         if (invoice.status === "PAID" && next === "CANCELLED") {
             throw (0, invoiceErrors_1.invoiceError)('PAID_NOT_CANCELLABLE', 'Eine bezahlte Rechnung kann nicht storniert werden. Wurde die Zahlung irrtümlich erfasst, setzen Sie die Rechnung zuerst wieder auf offen.', { status: 409 });
         }
-        const paidDate = paidAt ? new Date(paidAt) : null;
-        const updated = await this.invoiceRepository.updateStatus(id, tenantId, next, paidDate && !Number.isNaN(paidDate.getTime()) ? paidDate : null);
-        // Verlauf (D1). Das Repository schreibt ausserhalb einer Transaktion,
-        // der Eintrag folgt unmittelbar; ein Fehler wird gemeldet, nicht verschluckt.
-        if (actor && (invoice.status !== next || next === "PAID")) {
+        /* Seit Schritt 7 (G19) ist «bezahlt» die Folge von ZAHLUNGSEINGÄNGEN:
+           offen → bezahlt  = ein Eingang über den offenen Rest
+           bezahlt → bezahlt = Datum des letzten Eingangs korrigieren
+           bezahlt → offen  = die Eingänge zurücknehmen (ohne Gutschrift) */
+        const actorRef = { employeeId: actor?.employeeId ?? invoice.issuedByEmployeeId, ip: actor?.ip ?? null };
+        await prisma_client_1.default.$transaction(async (tx) => {
+            if (next === "PAID" && invoice.status === "PAID") {
+                await (0, invoicePayments_1.changePaidDateWithin)(tx, { invoiceId: id, tenantId, paidAt: paidAt ?? null });
+            }
+            else if (next === "PAID") {
+                await (0, invoicePayments_1.recordPaymentWithin)(tx, { invoiceId: id, tenantId, amount: null, paidAt: paidAt ?? null, actor: actorRef });
+            }
+            else if (next === "ISSUED" && invoice.status === "PAID") {
+                await (0, invoicePayments_1.removeAllPaymentsWithin)(tx, { invoiceId: id, tenantId });
+            }
+        });
+        const updated = (await this.invoiceRepository.findById(id, tenantId));
+        // Verlauf (D1). Der Eingang schreibt seinen eigenen Eintrag; hier stehen
+        // die Rücknahme und die Datumskorrektur.
+        if (actor && !(invoice.status === "ISSUED" && next === "PAID") && (invoice.status !== next || next === "PAID")) {
             await (0, documentGovernance_1.recordDocumentEvent)(prisma_client_1.default, {
                 tenantId,
                 entityType: 'INVOICE',

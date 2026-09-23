@@ -45,6 +45,7 @@ const router = Router();
 
 const ADMIN_ROLE_NAME = 'Administrator';
 const PURSER_ROLE_NAME = 'Purser';
+const ELECTRICAL_ENGINEER_ROLE_NAME = 'Elektrik Mühendisi';
 
 /**
  * Startstufen der festen Purser-Rolle: das Antragspostfach zum Entscheiden,
@@ -55,6 +56,13 @@ const PURSER_DEFAULT_PAGE_LEVELS: Record<string, PageLevel> = {
     'personnel.requests': 1,
     'personnel.requestsIncoming': 2,
     'personnel.requestsAll': 1,
+};
+
+/** Pano Merkezi için hazır rol: başka üretim sayfalarını açmadan model ve
+ * fiziksel pano kayıtlarını okuyup yönetir. Yönetici isterse seviyesini daha
+ * sonra normal rol düzenleyicisinden değiştirebilir. */
+const ELECTRICAL_ENGINEER_PAGE_LEVELS: Record<string, PageLevel> = {
+    'production.panels': 2,
 };
 
 const setsEqual = (a: Set<string>, b: Set<string>): boolean =>
@@ -254,6 +262,29 @@ export const ensurePurserRole = async (rootTenantId: string, treeTenantIds: stri
     return role;
 };
 
+export const ensureElectricalEngineerRole = async (rootTenantId: string, treeTenantIds: string[]) => {
+    let role = await prisma.role.findFirst({
+        where: { tenantId: { in: treeTenantIds }, roleName: ELECTRICAL_ENGINEER_ROLE_NAME },
+        select: { id: true, roleName: true, pageLevels: true },
+    });
+    if (!role) {
+        role = await prisma.role.create({
+            data: {
+                id: nanoid(8),
+                tenantId: rootTenantId,
+                roleName: ELECTRICAL_ENGINEER_ROLE_NAME,
+                pageLevels: ELECTRICAL_ENGINEER_PAGE_LEVELS,
+            } as any,
+            select: { id: true, roleName: true, pageLevels: true },
+        });
+    }
+    const levels = sanitizePageLevels(role.pageLevels || ELECTRICAL_ENGINEER_PAGE_LEVELS);
+    const changed = await syncRolePermissions(role.id, permissionsForPageLevels(levels));
+    await syncRoleModuleConfigs(role.id, treeTenantIds, moduleKeysForPageLevels(levels));
+    if (changed) await clearPermissionCacheForRole(role.id);
+    return role;
+};
+
 /**
  * GET /role-templates — die Rollenliste der Berechtigungsseite: Name, Anzahl
  * zugewiesener Personen und die Stufenkarte je Rolle. Die Administratorrolle
@@ -267,6 +298,7 @@ router.get('/', requireAuth, requirePermission('roles.manage'), async (req, res)
         const rootTenantId = (await findTenantRootIdCached(tenantId)) ?? tenantId;
         await ensureSystemAdminRole(rootTenantId, treeTenantIds);
         await ensurePurserRole(rootTenantId, treeTenantIds);
+        await ensureElectricalEngineerRole(rootTenantId, treeTenantIds);
 
         const roles = await prisma.role.findMany({
             where: { tenantId: { in: treeTenantIds } },

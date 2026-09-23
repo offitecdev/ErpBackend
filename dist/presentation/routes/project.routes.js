@@ -10,6 +10,7 @@ const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const SystemAdminMiddleware_1 = require("../middlewares/SystemAdminMiddleware");
 const ProjectController_1 = require("../controllers/ProjectController");
+const FullCancelController_1 = require("../controllers/FullCancelController");
 const CreateProjectFromTenderUseCase_1 = require("../../application/use-cases/project/CreateProjectFromTenderUseCase");
 const AddProjectReportUseCase_1 = require("../../application/use-cases/project/AddProjectReportUseCase");
 const RequestExtraMaterialUseCase_1 = require("../../application/use-cases/project/RequestExtraMaterialUseCase");
@@ -138,6 +139,9 @@ router.patch('/addon-order-requests/:requestId', (0, RbacMiddleware_1.requirePer
    `POST /:id/uncancel`  — Storno aufheben. */
 router.get('/:id/lifecycle', (0, RbacMiddleware_1.requirePermission)('projects.view'), (req, res) => controller.projectLifecycle(req, res));
 router.post('/:id/cancel', (0, RbacMiddleware_1.requirePermission)('projects.cancel'), (req, res) => controller.cancelProject(req, res));
+// «Gesamten Vorgang stornieren» (17.09.2026): alle aktiven Aufträge, Rechnungen, Projekt.
+router.get('/:id/full-cancel', (0, RbacMiddleware_1.requirePermission)('projects.cancel'), (0, FullCancelController_1.previewFullCancel)('PROJECT'));
+router.post('/:id/full-cancel', (0, RbacMiddleware_1.requirePermission)('projects.cancel'), (0, FullCancelController_1.runFullCancel)('PROJECT'));
 router.post('/:id/uncancel', SystemAdminMiddleware_1.requireSystemAdmin, (req, res) => controller.uncancelProject(req, res));
 // Projeyi siler — YALNIZCA hiçbir bağlı kayıt kalmadıysa (sipariş, fatura,
 // rapor, stok hareketi). Daha özgül DELETE yolları üstte kayıtlı olduğundan

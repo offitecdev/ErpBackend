@@ -470,7 +470,10 @@ export class ProjectController {
                         customer: { select: { id: true, companyName: true } },
                         salesOrders: {
                             orderBy: { createdAt: "asc" },
-                            select: { id: true, orderNumber: true, status: true, orderType: true, parentSalesOrderId: true, totalAmount: true },
+                            // Die KOMMISSION haengt am Angebot des Auftrags (Tender
+                            // .commissionNumber) — der Terminassistent zeigt sie neben
+                            // dem Projekt an, sobald eine erfasst ist.
+                            select: { id: true, orderNumber: true, status: true, orderType: true, parentSalesOrderId: true, totalAmount: true, tender: { select: { commissionNumber: true } } },
                         },
                     },
                 });
@@ -596,6 +599,8 @@ export class ProjectController {
             assignmentLastName: string | null;
             orderId: string | null;
             orderNumber: string | null;
+            orderCommission: string | null;
+            projectCommission: string | null;
             joinedProjectId: string | null;
             customerId: string | null;
             companyName: string | null;
@@ -631,6 +636,8 @@ export class ProjectController {
                 assignmentTech.lastName AS assignmentLastName,
                 salesOrder.id AS orderId,
                 salesOrder.orderNumber,
+                orderTender.commissionNumber AS orderCommission,
+                projectTender.commissionNumber AS projectCommission,
                 project.id AS joinedProjectId,
                 customer.id AS customerId,
                 customer.companyName
@@ -641,6 +648,8 @@ export class ProjectController {
             LEFT JOIN SalesOrder salesOrder ON salesOrder.id = a.salesOrderId
             LEFT JOIN Project project ON project.id = a.projectId
             LEFT JOIN Customer customer ON customer.id = project.customerId
+            LEFT JOIN Tender orderTender ON orderTender.id = salesOrder.tenderId
+            LEFT JOIN Tender projectTender ON projectTender.id = project.tenderId
             WHERE a.tenantId = ${tenantId}
               AND a.projectId IS NOT NULL
               AND a.status IN ('BOOKED', 'COMPLETED')
@@ -668,11 +677,18 @@ export class ProjectController {
                         : null,
                     technicianAssignments: [],
                     salesOrder: row.orderId
-                        ? { id: row.orderId, orderNumber: row.orderNumber }
+                        ? {
+                            id: row.orderId,
+                            orderNumber: row.orderNumber,
+                            // Leer bleibt leer: ohne erfasste Kommission steht hier
+                            // nichts, und die Karte zeigt auch nichts an.
+                            tender: row.orderCommission ? { commissionNumber: row.orderCommission } : null,
+                        }
                         : null,
                     project: row.joinedProjectId
                         ? {
                             id: row.joinedProjectId,
+                            tender: row.projectCommission ? { commissionNumber: row.projectCommission } : null,
                             customer: row.customerId
                                 ? { id: row.customerId, companyName: row.companyName }
                                 : null,
@@ -704,14 +720,14 @@ export class ProjectController {
                 orderBy: { assignedAt: "asc" as const },
                 include: { technician: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, roleName: true } } },
             },
-            salesOrder: { select: { id: true, orderNumber: true, totalAmount: true, tender: { select: { id: true, tenderNumber: true } } } },
+            salesOrder: { select: { id: true, orderNumber: true, totalAmount: true, tender: { select: { id: true, tenderNumber: true, commissionNumber: true } } } },
             project: {
                 select: {
                     id: true,
                     projectName: true,
                     customer: { select: { id: true, companyName: true, mainEmail: true, mainPhone: true, address: true } },
                     manager: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    tender: { select: { id: true, tenderNumber: true } },
+                    tender: { select: { id: true, tenderNumber: true, commissionNumber: true } },
                 },
             },
         };
@@ -741,10 +757,14 @@ export class ProjectController {
                     technician: { select: { id: true, firstName: true, lastName: true } },
                 },
             },
+            // NUR die Kommission vom Angebot — keine Nummern, keine Summen: der
+            // Monteur sieht im Fenster dieselbe Kennung, die auf dem Plan steht.
+            salesOrder: { select: { tender: { select: { commissionNumber: true } } } },
             project: {
                 select: {
                     id: true,
                     projectName: true,
+                    tender: { select: { commissionNumber: true } },
                     customer: {
                         select: { id: true, companyName: true, mainPhone: true, address: true },
                     },

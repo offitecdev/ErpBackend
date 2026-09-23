@@ -233,15 +233,23 @@ exports.PAGE_MODULES = [
                     write: ['tenders.manage'],
                 },
             },
+        ],
+    },
+    {
+        // ── BUCHHALTUNG (16.09.2026, Schritt 5) ────────────────────────────
+        // Vorgabe Samet: Rechnungen leben an EINER Stelle. Die frühere
+        // Rechnungsliste unter «Verkauf» (sales.invoices) ist hierher
+        // umgezogen und vererbt ihre Stufe (RETIRED_PAGE_KEYS).
+        // Stufe 2 = Entwürfe anlegen und ausstellen, Zahlungen erfassen;
+        // Stufe 3 = zusätzlich stornieren.
+        key: 'accounting',
+        labelKey: 'nav.accounting',
+        catalogKeys: ['billing'],
+        pages: [
             {
-                // Rechnungsliste (30.08.2026): ALLE Rechnungen des Mandanten an
-                // einer Stelle — Projektauftrag, Lieferauftrag und die selbst
-                // ausgefüllte Direktrechnung. Löschen ist hier eine eigene Stufe:
-                // eine stornierte Rechnung endgültig zu entfernen ist mehr, als
-                // eine neue auszustellen.
-                key: 'sales.invoices',
-                path: '/sales/invoices',
-                labelKey: 'nav.salesInvoices',
+                key: 'accounting.invoices',
+                path: '/accounting/invoices',
+                labelKey: 'nav.outgoingInvoices',
                 maxLevel: 3,
                 grants: {
                     read: ['billing.view', 'crm.customers.view'],
@@ -249,6 +257,15 @@ exports.PAGE_MODULES = [
                     delete: ['billing.manage', 'invoices.cancel'],
                 },
                 levelHints: { 3: 'settings.roles.hintCancelInvoices' },
+            },
+            {
+                // «Zu verrechnen» (17.09.2026, Schritt 7): was jetzt in Rechnung
+                // gestellt werden sollte. Nur lesen — erstellt wird in der Liste.
+                key: 'accounting.toBill',
+                path: '/accounting/to-bill',
+                labelKey: 'nav.toBill',
+                maxLevel: 1,
+                grants: { read: ['billing.view'] },
             },
         ],
     },
@@ -345,6 +362,42 @@ exports.PAGE_MODULES = [
                 labelKey: 'nav.suppliers',
                 maxLevel: 2,
                 grants: { read: ['inventory.view'], write: ['inventory.manage'] },
+            },
+        ],
+    },
+    {
+        // PRODUKTION (19.09.2026, Vorgabe Samet): die Produktionsaufträge —
+        // Projekte und Aufträge mit ihren Geräten, die bestätigten
+        // Lieferantenbestellungen je Gerät, der Kostenvergleich. Die
+        // Projektseite (/production/orders/:id) gehört zur ersten Zeile.
+        //   1 = ansehen, 2 = zusätzlich sofort mit dem Verkauf abgleichen.
+        key: 'production',
+        labelKey: 'nav.production',
+        catalogKeys: ['production'],
+        pages: [
+            {
+                key: 'production.orders',
+                path: '/production/orders',
+                labelKey: 'nav.productionOrders',
+                maxLevel: 2,
+                grants: { read: ['production.view'], write: ['production.manage'] },
+            },
+            {
+                key: 'production.lines',
+                path: '/production/lines',
+                labelKey: 'nav.productionLines',
+                maxLevel: 1,
+                grants: { read: ['production.view'] },
+            },
+            /* SCHALTSCHRÄNKE (20.09.2026, Vorgabe Baris): die Seriennummern der
+               gebauten Schränke und der Katalog ihrer Typen. 1 = ansehen,
+               2 = Seriennummern ziehen, ins Lager buchen, Typenschild drucken. */
+            {
+                key: 'production.panels',
+                path: '/production/panels',
+                labelKey: 'nav.panels',
+                maxLevel: 2,
+                grants: { read: ['panels.view'], write: ['panels.manage'] },
             },
         ],
     },
@@ -462,6 +515,10 @@ exports.RETIRED_PAGE_KEYS = {
     'personnel.leaves': 'personnel.requests',
     'personnel.approvals': 'personnel.requestsIncoming',
     'personnel.incoming': 'personnel.requestsIncoming',
+    // Rechnungsliste: vom Verkauf in die Buchhaltung (16.09.2026).
+    'sales.invoices': 'accounting.invoices',
+    // Der Modellkatalog ist seit 20.09.2026 der zweite Reiter der Pano-Zentrale.
+    'production.panelModels': 'production.panels',
 };
 /**
  * ── NEUE SEITEN ERBEN VON EINER BESTEHENDEN (10.09.2026) ────────────────────
@@ -491,6 +548,13 @@ exports.PAGE_LEVEL_FALLBACKS = {
     'sales.addonOrders': 'sales.orders',
     // Die PDF-Einstellungen gestalten die Offerte — wer Offerten führt, behält sie.
     'settings.pdf': 'sales.quotes',
+    // Wer die Rechnungen sieht, sieht auch, was zu verrechnen ist.
+    'accounting.toBill': 'accounting.invoices',
+    // Die Produktion liest die Lieferantenbestellungen — wer sie führt,
+    // sieht die Produktionsaufträge (19.09.2026).
+    'production.orders': 'inventory.orders',
+    'production.lines': 'inventory.orders',
+    'production.panels': 'inventory.orders',
 };
 /**
  * Die Stufe, die eine Seite von anderen übernimmt (0 = keine): von ihren

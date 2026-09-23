@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TOTAL_PAGE_COUNT = exports.ensurePurserRole = exports.ensureSystemAdminRole = exports.resolvePageLevels = void 0;
+exports.TOTAL_PAGE_COUNT = exports.ensureElectricalEngineerRole = exports.ensurePurserRole = exports.ensureSystemAdminRole = exports.resolvePageLevels = void 0;
 const express_1 = require("express");
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
@@ -36,6 +36,7 @@ const pageCatalog_1 = require("../../shared/pageCatalog");
 const router = (0, express_1.Router)();
 const ADMIN_ROLE_NAME = 'Administrator';
 const PURSER_ROLE_NAME = 'Purser';
+const ELECTRICAL_ENGINEER_ROLE_NAME = 'Elektrik Mühendisi';
 /**
  * Startstufen der festen Purser-Rolle: das Antragspostfach zum Entscheiden,
  * die eigenen Anträge und die Gesamtübersicht. Nur der ERSTE Wurf — die
@@ -45,6 +46,12 @@ const PURSER_DEFAULT_PAGE_LEVELS = {
     'personnel.requests': 1,
     'personnel.requestsIncoming': 2,
     'personnel.requestsAll': 1,
+};
+/** Pano Merkezi için hazır rol: başka üretim sayfalarını açmadan model ve
+ * fiziksel pano kayıtlarını okuyup yönetir. Yönetici isterse seviyesini daha
+ * sonra normal rol düzenleyicisinden değiştirebilir. */
+const ELECTRICAL_ENGINEER_PAGE_LEVELS = {
+    'production.panels': 2,
 };
 const setsEqual = (a, b) => a.size === b.size && [...a].every((value) => b.has(value));
 /**
@@ -237,6 +244,30 @@ const ensurePurserRole = async (rootTenantId, treeTenantIds) => {
     return role;
 };
 exports.ensurePurserRole = ensurePurserRole;
+const ensureElectricalEngineerRole = async (rootTenantId, treeTenantIds) => {
+    let role = await prisma_client_1.default.role.findFirst({
+        where: { tenantId: { in: treeTenantIds }, roleName: ELECTRICAL_ENGINEER_ROLE_NAME },
+        select: { id: true, roleName: true, pageLevels: true },
+    });
+    if (!role) {
+        role = await prisma_client_1.default.role.create({
+            data: {
+                id: (0, nanoid_1.nanoid)(8),
+                tenantId: rootTenantId,
+                roleName: ELECTRICAL_ENGINEER_ROLE_NAME,
+                pageLevels: ELECTRICAL_ENGINEER_PAGE_LEVELS,
+            },
+            select: { id: true, roleName: true, pageLevels: true },
+        });
+    }
+    const levels = (0, pageCatalog_1.sanitizePageLevels)(role.pageLevels || ELECTRICAL_ENGINEER_PAGE_LEVELS);
+    const changed = await syncRolePermissions(role.id, (0, pageCatalog_1.permissionsForPageLevels)(levels));
+    await syncRoleModuleConfigs(role.id, treeTenantIds, (0, pageCatalog_1.moduleKeysForPageLevels)(levels));
+    if (changed)
+        await (0, RoleRepository_1.clearPermissionCacheForRole)(role.id);
+    return role;
+};
+exports.ensureElectricalEngineerRole = ensureElectricalEngineerRole;
 /**
  * GET /role-templates — die Rollenliste der Berechtigungsseite: Name, Anzahl
  * zugewiesener Personen und die Stufenkarte je Rolle. Die Administratorrolle
@@ -250,6 +281,7 @@ router.get('/', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermis
         const rootTenantId = (await (0, tenantTree_1.findTenantRootIdCached)(tenantId)) ?? tenantId;
         await (0, exports.ensureSystemAdminRole)(rootTenantId, treeTenantIds);
         await (0, exports.ensurePurserRole)(rootTenantId, treeTenantIds);
+        await (0, exports.ensureElectricalEngineerRole)(rootTenantId, treeTenantIds);
         const roles = await prisma_client_1.default.role.findMany({
             where: { tenantId: { in: treeTenantIds } },
             orderBy: { roleName: 'asc' },

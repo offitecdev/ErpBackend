@@ -15,6 +15,7 @@ const articleStock_1 = require("../../shared/articleStock");
 const documentNumber_1 = require("../../shared/documentNumber");
 const paymentSchedule_1 = require("../../application/utils/paymentSchedule");
 const SalesOrderController_1 = require("./SalesOrderController");
+const invoiceDrafts_1 = require("../../shared/invoiceDrafts");
 /**
  * ── NACHTRÄGE (Zusatzaufträge, NT-…) ─────────────────────────────────────────
  *
@@ -374,7 +375,7 @@ class AddonOrderController {
             if (!addon)
                 return res.status(404).json({ error: 'Zusatzauftrag nicht gefunden.' });
             const lines = await this.loadAddonLines(addon);
-            const invoiceCount = await prisma_client_1.default.invoice.count({ where: { salesOrderId: addon.id, tenantId } });
+            const invoiceCount = await prisma_client_1.default.invoice.count({ where: { salesOrderId: addon.id, tenantId, ...invoiceDrafts_1.issuedInvoiceWhere } });
             const tender = addon.parentSalesOrder?.tender ?? null;
             res.status(200).json({
                 id: addon.id,
@@ -698,7 +699,7 @@ class AddonOrderController {
             if (addon.cancelledAt || addon.status === 'CANCELLED') {
                 return res.status(400).json({ error: 'Ein stornierter Zusatzauftrag kann nicht mehr geändert werden.' });
             }
-            const invoiceCount = await prisma_client_1.default.invoice.count({ where: { salesOrderId: addon.id, tenantId } });
+            const invoiceCount = await prisma_client_1.default.invoice.count({ where: { salesOrderId: addon.id, tenantId, ...invoiceDrafts_1.issuedInvoiceWhere } });
             if (invoiceCount > 0)
                 return res.status(400).json({ error: 'Ein fakturierter Zusatzauftrag kann nicht mehr geändert werden.' });
             const hasLines = req.body?.lines !== undefined;

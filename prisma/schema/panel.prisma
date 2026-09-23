@@ -1,0 +1,240 @@
+/// ── SCHALTSCHRÄNKE / PANOLAR (20.09.2026, Vorgabe Baris) ────────────────────
+///
+/// Jeder Schaltschrank bekommt DREI Nummern, die verschiedene Fragen
+/// beantworten — sie dürfen nie vermischt werden:
+///
+///   1. PRODUKTNUMMER   `PNO-CP-00001`   unser ERP-Code (Article.articleCode).
+///                                       Eine Karte je MODELL, nicht je Schrank.
+///   2. MODELLNUMMER    `OT-CP-250`      der TYP. Wird aus den technischen
+///                                       Angaben GEBILDET, nie getippt. Zehn
+///                                       gleiche Schränke tragen dieselbe.
+///   3. SERIENNUMMER    `2026-000157`    EIN physischer Schrank. Entsteht in der
+///                                       PRODUKTION (nie im Wareneingang — dort
+///                                       kommt Lieferantenware an, nicht unsere).
+///
+/// Die Menge im Lager zählt weiterhin die Produktkarte (StockBalance); WELCHE
+/// Schränke es sind, sagen die Seriensätze und die Lagerbewegung, die deren
+/// Seriennummer trägt (`StockMovement.serialNumber`, seit 10.09.2026 vorhanden).
+///
+/// Keine Fremdschlüssel nach aussen (wie das übrige Produktionsmodul): Artikel,
+/// Projekt, Auftrag und Lagerbewegung stehen als blosse Ids darin. So bleibt
+/// die Verkaufs- und Lagerseite unberührt.
+
+/// Die acht offenen Fragen aus der Abstimmung mit Baris sind EINSTELLUNGEN,
+/// keine Programmzeilen: kommt die Antwort, ändert sich hier ein Feld und
+/// nicht der Code. Eine Zeile je Firma; gültig ist die Zeile der WURZEL des
+/// Firmenbaums, wenn die Serie gruppenweit läuft (Frage 3).
+model PanelSettings {
+  id               String  @id
+  tenantId         String  @unique
+  /// Der Hersteller auf dem Typenschild.
+  manufacturerName String  @default("OffiTec") @db.VarChar(120)
+  /// Der feste Kopf der Modellnummer: OT-CP-250.
+  modelPrefix      String  @default("OT") @db.VarChar(8)
+
+  /// FRAGE 3 — GROUP: eine einzige Serie für ganz OffiTec (Empfehlung, der
+  /// Hersteller ist einer); COMPANY: jede Firma zählt für sich.
+  serialScope       String  @default("GROUP") @db.VarChar(16)
+  /// FRAGE 4 — beginnt die Serie am 1. Januar wieder bei 000001?
+  serialYearlyReset Boolean @default(true)
+  /// Stellen der Seriennummer: 2026-000157 = 6.
+  serialDigits      Int     @default(6)
+  /// FRAGE 7 — Altschränke bekommen ihre Nummern aus einem EIGENEN Block
+  /// (z.B. 900001), damit sie sich nie mit laufender Produktion mischen.
+  /// NULL = keine Nachträge erlaubt.
+  retroBlockStart   Int?
+
+  /// FRAGE 5 — wann ein Variantenkürzel PFLICHT ist. JSON:
+  /// {"ip": true, "voltage": true, "outdoor": true, "custom": false}
+  variantRules    Json?
+  /// FRAGE 6 — wird zusätzlich je Typenfamilie entschieden (unten); hier steht
+  /// nur, ob ohne Kurzschlussangabe überhaupt gedruckt werden darf.
+  defaultStandard String  @default("SN EN IEC 61439-2") @db.VarChar(80)
+  defaultIpRating String? @db.VarChar(16)
+  /// Voreinstellung des Typenschilds: 3~ / 400 V / 50 Hz.
+  defaultVoltage  Float?
+  defaultPhases   Int?    @default(3)
+  defaultHz       Float?  @default(50)
+  /// Monate Garantie ab Lieferung — füllt `warrantyUntil` des Schranks.
+  warrantyMonths  Int     @default(24)
+
+  /// FRAGE 8 — die Physik des Schilds. Reine Angaben; der Druck richtet sich
+  /// danach (Seitenmass des PDFs), das Material steht für die Beschaffung da.
+  labelWidthMm   Float   @default(100)
+  labelHeightMm  Float   @default(60)
+  labelMaterial  String? @db.VarChar(80)
+  labelPrinter   String? @db.VarChar(120)
+  /// Adresse hinter dem QR-Code; leer = die Adresse der Anwendung.
+  labelQrBaseUrl String? @db.VarChar(200)
+
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("uretim_pano_ayarlari")
+}
+
+/// FRAGE 1 + 2 + 6 — DIE TYPENFAMILIE. Der Katalog, aus dem die Modellnummer
+/// ihren mittleren Teil nimmt: CP (Steuerschrank), DB (Verteiler), MCC …
+/// Die Familie bestimmt auch, WAS die Zahl in der Modellnummer bedeutet
+/// (kW, A oder kvar — Frage 2) und ob die Kurzschlussangabe auf das Schild
+/// muss (Frage 6). Nichts davon steht im Code; die Liste ist Stammdatenpflege.
+model PanelTypeFamily {
+  id                   String  @id
+  tenantId             String
+  /// 2–4 Grossbuchstaben/Ziffern — wie die Kürzel der ERP-Codes.
+  code                 String  @db.VarChar(4)
+  name                 String  @db.VarChar(80)
+  nameDe               String? @db.VarChar(80)
+  /// KW | A | KVAR | NONE — die Einheit der Zahl in `OT-CP-250`.
+  ratingUnit           String  @default("KW") @db.VarChar(8)
+  /// Muss Icw/Icc auf dem Typenschild dieser Familie stehen?
+  requiresShortCircuit Boolean @default(false)
+  /// Aus welchem Nummernkreis die PRODUKTNUMMER der Modelle kommt
+  /// (ArticleCodeScheme; leer = beim Anlegen wählen).
+  codeSchemeId         String?
+  /// Die Norm dieser Familie, falls sie von der Voreinstellung abweicht.
+  standard             String? @db.VarChar(80)
+  sortOrder            Int     @default(0)
+  isActive             Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  models PanelModel[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive, sortOrder])
+  @@map("uretim_pano_tipleri")
+}
+
+/// DAS MODELL = eine Produktkarte plus ihr Typenschild-Inhalt. Die Karte
+/// (`articleId`) trägt Produktnummer, Bezeichnung, Preis und Lagerbestand; hier
+/// stehen die technischen Werte, die auf jedem Schrank dieses Typs gleich sind.
+///
+/// `modelNumber` wird IMMER aus Präfix + Familie + Leistungsklasse + Variante
+/// gebildet (shared/panelModelNumber.ts) und ist je Firma eindeutig: gleiche
+/// Technik = gleiches Modell, abweichende Technik = anderes Modell.
+model PanelModel {
+  id           String @id
+  tenantId     String
+  /// Die Produktkarte dieses Modells — je Karte höchstens ein Modell.
+  articleId    String @unique
+  typeFamilyId String
+  /// Kopie des Familienkürzels zum Zeitpunkt der Bildung (CP).
+  typeCode     String @db.VarChar(4)
+  /// Die Zahl der Modellnummer (250) und ihre Einheit (KW | A | KVAR).
+  ratingValue  Int
+  ratingUnit   String @default("KW") @db.VarChar(8)
+  /// Variantenkürzel, falls zwei Schränke derselben Klasse technisch abweichen
+  /// (I65, 690, AUS). Leer, wenn keine Abweichung.
+  variantCode  String? @db.VarChar(8)
+  /// OT-CP-250 — gebildet, nie getippt.
+  modelNumber  String  @db.VarChar(40)
+
+  /// ── Typenschild (EN IEC 61439) ──────────────────────────────────────────
+  manufacturer     String  @default("OffiTec") @db.VarChar(120)
+  /// Bemessungsspannung Ue.
+  ratedVoltage     Float?
+  /// Bemessungsstrom InA.
+  ratedCurrent     Float?
+  phaseCount       Int?    @default(3)
+  frequency        Float?  @default(50)
+  /// Bemessungs-Kurzzeitstromfestigkeit Icw (kA) und ihre Dauer (s).
+  shortCircuitIcw  Float?
+  shortCircuitTime Float?
+  /// Bemessungsstossstromfestigkeit Ipk (kA).
+  shortCircuitIpk  Float?
+  ipRating         String? @db.VarChar(16)
+  standard         String? @db.VarChar(80)
+  ceMarking        Boolean @default(true)
+  /// Freitext fürs Schild (Schutzklasse, Umgebungsbedingungen …).
+  notes            String? @db.Text
+
+  isActive    Boolean  @default(true)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  typeFamily PanelTypeFamily @relation(fields: [typeFamilyId], references: [id])
+  units      PanelUnit[]
+
+  @@unique([tenantId, modelNumber])
+  @@index([tenantId, isActive])
+  @@index([typeFamilyId])
+  @@map("uretim_pano_modelleri")
+}
+
+/// EIN GEBAUTER SCHRANK. Entsteht, wenn die Produktion Seriennummern zieht —
+/// VOR dem Schaltplan, damit die Nummer schon im Plan steht (Vorgabe Baris).
+///
+/// `nameplate` ist die EINGEFRORENE Kopie der Schildwerte im Augenblick des
+/// Drucks: ändert sich das Modell später, bleibt der Satz zu dem Schild, das
+/// wirklich am Schrank klebt. (Dieselbe Regel wie `PurchaseOrder.tableColumns`.)
+model PanelUnit {
+  id             String @id
+  /// Die Firma, die den Schrank baut.
+  tenantId       String
+  /// Die Firma, aus deren Serie die Nummer gezogen wurde: bei GROUP die Wurzel
+  /// des Firmenbaums, bei COMPANY dieselbe wie `tenantId`. Der Eindeutigkeits-
+  /// schlüssel hängt daran — so kollidieren zwei Firmen nie.
+  serialTenantId String
+  /// 2026-000157 — die Nummer auf dem Schild.
+  serialNumber   String @db.VarChar(32)
+  serialYear     Int
+  serialSeq      Int
+  /// Nachträglich vergebene Nummer eines ALTEN Schranks (Block 9xxxxx).
+  isRetro        Boolean @default(false)
+
+  panelModelId       String
+  /// Kopien, damit Liste und Etikett ohne Nachladen lesbar sind.
+  articleId          String?
+  modelNumberSnapshot String? @db.VarChar(40)
+  /// Eingefrorene Schildwerte (JSON) — gesetzt beim ersten Etikettendruck.
+  nameplate          Json?
+
+  /// PLANNED | IN_PRODUCTION | TESTED | STOCKED | RESERVED | SHIPPED |
+  /// INSTALLED | CANCELLED
+  status String @default("PLANNED") @db.VarChar(20)
+
+  /// Woher der Schrank kommt — alles nur Ids, keine Fremdschlüssel.
+  productionProjectId String?
+  productionItemId    String?
+  projectId           String?
+  salesOrderId        String?
+  orderNumber         String? @db.VarChar(40)
+  customerId          String?
+  customerName        String? @db.VarChar(255)
+  siteName            String? @db.VarChar(255)
+
+  /// Der Schaltplan, der zu GENAU diesem Schrank gehört.
+  schemaNumber   String? @db.VarChar(60)
+  schemaRevision String? @db.VarChar(16)
+  /// Ablage wie die übrigen Anhänge: `local:`/`r2:`-Verweis.
+  schemaFileUrl  String? @db.Text
+
+  manufacturedAt   DateTime?
+  productionYear   Int?
+  testedAt         DateTime?
+  testedById       String?
+  labelPrintedAt   DateTime?
+  labelPrintedById String?
+  deliveredAt      DateTime?
+  warrantyUntil    DateTime?
+  /// Die Lagerbewegung, mit der der Schrank ins Lager kam (IN, Menge 1).
+  stockMovementId  String?
+
+  notes       String?  @db.Text
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  model PanelModel @relation(fields: [panelModelId], references: [id])
+
+  @@unique([serialTenantId, serialNumber])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, panelModelId])
+  @@index([tenantId, productionProjectId])
+  @@index([tenantId, projectId])
+  @@map("uretim_pano_seri")
+}

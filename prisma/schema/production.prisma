@@ -1,0 +1,188 @@
+/// ── PRODUKTION (19.09.2026, Vorgabe Samet) ──────────────────────────────────
+///
+/// Ein eigenes Modul, das die bestehenden Strukturen NICHT verändert: es liest
+/// die Verkaufsseite (Projekte, Aufträge AB/NT, deren Positionen) der Firmen,
+/// die unter Einstellungen → Firmenübertragungen gewählt sind, in eigene
+/// Tabellen (`uretim_*`) und hängt die Lieferantenbestellungen daran.
+///
+///   uretim_sirket_aktarimlari  woher die Projekte kommen (je Firma eine Zeile)
+///   uretim_projeler            ein Produktionsprojekt = ein ERP-Projekt
+///                              (Projektauftrag) oder ein Lieferauftrag
+///   uretim_proje_siparisleri   seine Aufträge (AB) und Nachträge (NT)
+///   uretim_proje_kalemleri     die Geräte und Leistungen daraus
+///   uretim_siparis_atamalari   Bestellung ↔ Projekt + gewählte Geräte
+///   uretim_siparisleri         die Zeilen BESTÄTIGTER Bestellungen
+///
+/// Keine Fremdschlüssel nach aussen (wie PurchaseOrder): die Quelle bleibt
+/// unberührt, und eine Zeile, auf die eine Bestellung zeigt, wird nie
+/// gelöscht, nur stillgelegt (`isActive`).
+
+model ProductionTransferSetting {
+  id              String    @id
+  /// Die Firma, deren Produktionsmodul hier eingestellt wird.
+  tenantId        String    @unique
+  /// JSON ["tenantId", …] — aus welchen Firmen die Projekte übernommen werden.
+  /// Leer/null = aus der eigenen Firma.
+  sourceTenantIds Json?
+  lastSyncedAt    DateTime?
+  updatedById     String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("uretim_sirket_aktarimlari")
+}
+
+model ProductionProject {
+  id                 String   @id
+  /// Die Firma, deren Produktion das Projekt führt (die lesende Firma).
+  tenantId           String
+  /// Die Firma, aus der das Projekt übernommen wurde.
+  sourceTenantId     String
+  /// «P:<projectId>» für einen Projektauftrag, «D:<salesOrderId>» für einen
+  /// Lieferauftrag — der Schlüssel, über den der Abgleich die Zeile wiederfindet.
+  sourceKey          String   @db.VarChar(200)
+  /// PROJECT | DELIVERY
+  sourceKind         String   @db.VarChar(16)
+  sourceProjectId    String?
+  sourceSalesOrderId String?
+  projectNumber      String
+  projectName        String   @db.VarChar(255)
+  customerName       String?  @db.VarChar(255)
+  /// Stand der Quelle (Projektstatus bzw. Auftragsstatus) — nur Anzeige.
+  sourceStatus       String?  @db.VarChar(40)
+  /// Verkaufswert: Summe der aktiven Geräte und Leistungen.
+  salesTotal         Float    @default(0)
+  isActive           Boolean  @default(true)
+  syncedAt           DateTime
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  orders ProductionProjectOrder[]
+  items  ProductionProjectItem[]
+
+  @@unique([tenantId, sourceKey])
+  @@index([tenantId, isActive, sourceKind])
+  @@map("uretim_projeler")
+}
+
+model ProductionProjectOrder {
+  id                  String    @id
+  tenantId            String
+  productionProjectId String
+  sourceSalesOrderId  String
+  /// Der Hauptauftrag eines Nachtrags (NT) — leer beim Hauptauftrag selbst.
+  parentSalesOrderId  String?
+  orderNumber         String
+  /// Auftragsart der Quelle (PROJECT_NEW, PROJECT_EXISTING, INVOICE, PROJECT_ADDON).
+  orderType           String    @db.VarChar(40)
+  /// PROJECT | DELIVERY | ADDON
+  orderKind           String    @db.VarChar(16)
+  orderDate           DateTime?
+  /// ORDERED | CANCELLED
+  status              String    @db.VarChar(24)
+  totalAmount         Float     @default(0)
+  isActive            Boolean   @default(true)
+  syncedAt            DateTime
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  project ProductionProject       @relation(fields: [productionProjectId], references: [id], onDelete: Cascade)
+  items   ProductionProjectItem[]
+
+  @@unique([tenantId, sourceSalesOrderId])
+  @@index([tenantId, productionProjectId])
+  @@map("uretim_proje_siparisleri")
+}
+
+/// Ein GERÄT oder eine LEISTUNG des Projekts — eine Verkaufsposition des
+/// Auftrags (AB) oder eine Zeile eines Nachtrags (NT). Bestellungen zeigen mit
+/// dieser Id darauf; darum bleibt sie über jeden Abgleich hinweg dieselbe.
+model ProductionProjectItem {
+  id                  String   @id
+  tenantId            String
+  productionProjectId String
+  productionOrderId   String
+  /// POSITION | EXTRA_MATERIAL | EXPENSE
+  sourceType          String   @db.VarChar(20)
+  sourceId            String
+  /// DEVICE | SERVICE
+  kind                String   @db.VarChar(12)
+  positionNumber      String?  @db.VarChar(40)
+  name                String   @db.VarChar(500)
+  description         String?  @db.Text
+  articleId           String?
+  articleCode         String?
+  quantity            Float    @default(0)
+  unit                String?  @db.VarChar(40)
+  unitPrice           Float    @default(0)
+  totalPrice          Float    @default(0)
+  sortOrder           Int      @default(0)
+  isActive            Boolean  @default(true)
+  syncedAt            DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  project ProductionProject      @relation(fields: [productionProjectId], references: [id], onDelete: Cascade)
+  order   ProductionProjectOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sourceType, sourceId])
+  @@index([tenantId, productionProjectId])
+  @@index([productionOrderId])
+  @@map("uretim_proje_kalemleri")
+}
+
+/// Welche Produktionsprojekt und welche Geräte eine Lieferantenbestellung
+/// betrifft (Preisanfrage, Bestellung, Wareneingang). Eine Zeile je Bestellung.
+model ProductionPurchaseAssignment {
+  id                  String   @id
+  tenantId            String
+  purchaseOrderId     String
+  productionProjectId String
+  /// JSON ["itemId", …] — freiwillig; leer heisst «nur das Projekt».
+  productionItemIds   Json
+  updatedById         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([tenantId, purchaseOrderId])
+  @@index([tenantId, productionProjectId])
+  @@map("uretim_siparis_atamalari")
+}
+
+/// ── PRODUKTIONSAUFTRÄGE ─────────────────────────────────────────────────────
+/// Die Zeilen einer BESTÄTIGTEN Lieferantenbestellung, im Augenblick der
+/// Bestätigung abgelegt — mit Projekt und Gerät. Geht die Bestellung zurück in
+/// den Entwurf oder wird sie gelöscht, verschwinden ihre Zeilen hier mit.
+model ProductionOrderLine {
+  id                  String   @id
+  tenantId            String
+  purchaseOrderId     String
+  purchaseOrderNumber String
+  supplierName        String?  @db.VarChar(255)
+  currency            String   @default("CHF") @db.VarChar(8)
+  productionProjectId String
+  productionItemId    String?
+  /// Stelle der Zeile in `PurchaseOrder.items`.
+  lineIndex           Int
+  articleId           String?
+  code                String?
+  name                String   @db.VarChar(500)
+  unit                String?  @db.VarChar(40)
+  quantity            Float    @default(0)
+  grossPrice          Float    @default(0)
+  discount            Float    @default(0)
+  discount2           Float    @default(0)
+  netPrice            Float    @default(0)
+  lineTotal           Float    @default(0)
+  receivedQuantity    Float    @default(0)
+  approvedAt          DateTime
+  approvedById        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([purchaseOrderId, lineIndex])
+  @@index([tenantId, productionProjectId])
+  @@index([tenantId, productionItemId])
+  @@index([tenantId, approvedAt])
+  @@map("uretim_siparisleri")
+}

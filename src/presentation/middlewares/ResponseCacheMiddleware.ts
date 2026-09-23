@@ -35,7 +35,10 @@ import { findTenantRootIdCached } from '../../shared/tenantTree';
  * und die Einstellungen (Einheiten, Nummernkreise).
  */
 const WRITE_NAMESPACES: Record<string, string[]> = {
-    inventory: ['catalog'],
+    // Die Lieferantenbestellung trägt die Produktionszuordnung und die
+    // bestätigten Zeilen (uretim_*) — jede Änderung dort ändert die Produktion.
+    inventory: ['catalog', 'production'],
+    production: ['production'],
     articles: ['catalog'],
     tenders: ['catalog', 'customers', 'tender', 'calendar'],
     'sales-orders': ['catalog', 'customers', 'tender', 'calendar'],

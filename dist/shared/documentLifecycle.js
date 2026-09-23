@@ -1,11 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.salesOrderFamilyIds = exports.revertTendersToDraft = exports.purgeProjectWithin = exports.uncancelProjectWithin = exports.cancelProjectWithin = exports.assertProjectCancellable = exports.assertProjectDeletable = exports.readProjectLifecycle = exports.uncancelTenderWithin = exports.cancelTenderWithin = exports.assertTenderCancellable = exports.assertTenderDeletable = exports.readTenderLifecycle = exports.uncancelSalesOrderWithin = exports.cancelSalesOrderWithin = exports.revertSalesOrderToDraftWithin = exports.assertSalesOrderCancellable = exports.assertSalesOrderRevertible = exports.readSalesOrderLifecycle = exports.countSalesOrderLinks = void 0;
+exports.readInvoiceLifecycle = exports.salesOrderFamilyIds = exports.revertTendersToDraft = exports.purgeProjectWithin = exports.uncancelProjectWithin = exports.cancelProjectWithin = exports.assertProjectCancellable = exports.assertProjectDeletable = exports.readProjectLifecycle = exports.uncancelTenderWithin = exports.cancelTenderWithin = exports.assertTenderCancellable = exports.assertTenderDeletable = exports.readTenderLifecycle = exports.uncancelSalesOrderWithin = exports.cancelSalesOrderWithin = exports.revertSalesOrderToDraftWithin = exports.assertSalesOrderCancellable = exports.assertSalesOrderRevertible = exports.assertUncancelAllowed = exports.countCreditDocuments = exports.readSalesOrderLifecycle = exports.countSalesOrderLinks = void 0;
 const nanoid_1 = require("nanoid");
 const salesOrderDeletion_1 = require("./salesOrderDeletion");
 Object.defineProperty(exports, "purgeProjectWithin", { enumerable: true, get: function () { return salesOrderDeletion_1.purgeProjectWithin; } });
 Object.defineProperty(exports, "revertTendersToDraft", { enumerable: true, get: function () { return salesOrderDeletion_1.revertTendersToDraft; } });
 Object.defineProperty(exports, "salesOrderFamilyIds", { enumerable: true, get: function () { return salesOrderDeletion_1.salesOrderFamilyIds; } });
+const invoicePayments_1 = require("./invoicePayments");
+const invoiceDrafts_1 = require("./invoiceDrafts");
 /**
  * Alles zählen, was an diesem Auftrag (und seinen Nachträgen) hängt.
  *
@@ -18,7 +20,7 @@ const countSalesOrderLinks = async (db, opts) => {
     const inFamily = { in: familyIds };
     const now = new Date();
     const [invoices, reports, deliveryReports, stockMovements, extraMaterials, expenses, startedAppointments, upcomingAppointments, addons] = await Promise.all([
-        db.invoice.count({ where: { salesOrderId: inFamily } }),
+        db.invoice.count({ where: { salesOrderId: inFamily, ...invoiceDrafts_1.issuedInvoiceWhere } }),
         db.projectReport.count({ where: { salesOrderId: inFamily } }),
         db.deliveryReport.count({ where: { salesOrderId: inFamily, tenantId } }),
         // Lagerbewegungen tragen als Referenz die Projekt-, Nachtrags- oder
@@ -92,6 +94,11 @@ const readSalesOrderLifecycle = async (db, order, tenantId) => {
     if (counts.addons > 0)
         revertBlockers.push('ADDON');
     const cancelBlockers = cancelled ? ['CANCELLED'] : [];
+    const [invoicesToSettle, creditDocuments] = await Promise.all([
+        db.invoice.count({ where: { tenantId, salesOrderId: { in: familyIds }, ...invoiceDrafts_1.settleableInvoiceWhere } }),
+        (0, exports.countCreditDocuments)(db, { tenantId, salesOrderIds: familyIds }),
+    ]);
+    const uncancelBlockers = creditDocuments > 0 ? ['CREDIT_DOCUMENT'] : [];
     return {
         familyIds,
         lastOfProject,
@@ -101,9 +108,35 @@ const readSalesOrderLifecycle = async (db, order, tenantId) => {
         cancelBlockers,
         canRevertToDraft: revertBlockers.length === 0,
         canCancel: cancelBlockers.length === 0,
+        invoicesToSettle,
+        uncancelBlockers,
     };
 };
 exports.readSalesOrderLifecycle = readSalesOrderLifecycle;
+/**
+ * F2 (17.09.2026): Wurde für einen Vorgang schon eine Storno-Rechnung oder
+ * Gutschrift ausgestellt, lässt er sich nicht wiederbeleben — der Gegenbeleg
+ * ist beim Kunden. Der Weg ist eine neue Offerte und ein neuer Auftrag.
+ */
+const countCreditDocuments = async (db, scope) => {
+    const or = [];
+    if (scope.salesOrderIds?.length)
+        or.push({ salesOrderId: { in: scope.salesOrderIds } });
+    if (scope.projectId)
+        or.push({ projectId: scope.projectId });
+    if (!or.length)
+        return 0;
+    return db.invoice.count({
+        where: { tenantId: scope.tenantId, kind: { in: [...invoiceDrafts_1.CREDIT_KINDS] }, NOT: { status: 'DRAFT' }, OR: or },
+    });
+};
+exports.countCreditDocuments = countCreditDocuments;
+const assertUncancelAllowed = (creditDocuments) => {
+    if (creditDocuments <= 0)
+        return;
+    throw Object.assign(new Error('Für diesen Vorgang ist bereits eine Storno-Rechnung oder Gutschrift ausgestellt. Er kann nicht wiederbelebt werden — legen Sie eine neue Offerte an.'), { status: 409, code: 'CREDIT_DOCUMENT_ISSUED', blockers: ['CREDIT_DOCUMENT'] });
+};
+exports.assertUncancelAllowed = assertUncancelAllowed;
 /** Wirft mit `status`, damit der Aufrufer die Meldung unverändert weiterreicht. */
 const refuse = (message, blockers, status = 400) => Object.assign(new Error(message), { status, blockers });
 const assertSalesOrderRevertible = (lifecycle) => {
@@ -292,6 +325,8 @@ const cancelSalesOrderWithin = async (tx, opts) => {
         where: { id: { in: familyIds }, tenantId },
         data: { status: 'CANCELLED', cancelledAt: now, cancelledById: employeeId, cancelReason: reason },
     });
+    // Ein stornierter Auftrag wird nicht mehr verrechnet — seine Entwürfe fallen.
+    await (0, invoiceDrafts_1.discardDraftInvoices)(tx, { salesOrderIds: familyIds, tenantId });
     // Künftige Termine dieser Auftragsfamilie sind gegenstandslos. Vergangene
     // bleiben, wie sie sind — sie sind Geschichte, keine Planung.
     const upcoming = await tx.appointment.findMany({
@@ -553,7 +588,7 @@ const readProjectLifecycle = async (db, project) => {
     const [orders, activeOrders, invoices, reports, deliveryReports, stockMovements] = await Promise.all([
         db.salesOrder.count({ where: { projectId: project.id, tenantId: project.tenantId } }),
         db.salesOrder.count({ where: { projectId: project.id, tenantId: project.tenantId, cancelledAt: null } }),
-        db.invoice.count({ where: { projectId: project.id } }),
+        db.invoice.count({ where: { projectId: project.id, ...invoiceDrafts_1.issuedInvoiceWhere } }),
         db.projectReport.count({ where: { projectId: project.id } }),
         db.deliveryReport.count({ where: { projectId: project.id, tenantId: project.tenantId } }),
         db.stockMovement.count({ where: { tenantId: project.tenantId, referenceId: project.id } }),
@@ -616,6 +651,7 @@ const cancelProjectWithin = async (tx, opts) => {
             data: { status: 'CANCELLED' },
         });
     }
+    await (0, invoiceDrafts_1.discardDraftInvoices)(tx, { projectId: opts.projectId, tenantId: opts.tenantId });
     await tx.project.updateMany({
         where: { id: opts.projectId, tenantId: opts.tenantId },
         data: {
@@ -641,4 +677,57 @@ const uncancelProjectWithin = async (tx, opts) => {
     });
 };
 exports.uncancelProjectWithin = uncancelProjectWithin;
+const money = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+const readInvoiceLifecycle = async (db, invoice) => {
+    const status = String(invoice.status);
+    const kind = String(invoice.kind || 'RECHNUNG');
+    const isDraft = status === 'DRAFT';
+    const isCreditDocument = invoiceDrafts_1.CREDIT_KINDS.includes(kind);
+    const cancelled = status === 'CANCELLED';
+    const paid = status === 'PAID';
+    const balance = isDraft ? null : await (0, invoicePayments_1.readInvoiceBalance)(db, invoice);
+    const paidAmount = balance ? money(Math.abs(balance.paidMoney)) : 0;
+    const creditedAmount = balance?.credited ?? 0;
+    const openAmount = balance?.open ?? 0;
+    const creditableAmount = !isDraft && !cancelled && !isCreditDocument
+        ? Math.max(0, money(Math.abs(Number(invoice.amount || 0)) - creditedAmount))
+        : 0;
+    const cancelBlockers = [];
+    if (isDraft)
+        cancelBlockers.push('INVOICE_DRAFT');
+    if (cancelled)
+        cancelBlockers.push('INVOICE_CANCELLED');
+    if (isCreditDocument)
+        cancelBlockers.push('CREDIT_DOCUMENT');
+    if (!isCreditDocument && (paid || paidAmount > 0.005 || creditedAmount > 0.005))
+        cancelBlockers.push('INVOICE_PAID');
+    const creditBlockers = [];
+    if (isCreditDocument)
+        creditBlockers.push('CREDIT_DOCUMENT');
+    else if (isDraft)
+        creditBlockers.push('INVOICE_DRAFT');
+    else if (cancelled)
+        creditBlockers.push('INVOICE_CANCELLED');
+    else if (creditableAmount <= 0.005)
+        creditBlockers.push('FULLY_CREDITED');
+    return {
+        isDraft,
+        isCreditDocument,
+        cancelled,
+        paid,
+        paidAmount,
+        creditedAmount,
+        openAmount,
+        creditableAmount,
+        canDiscard: isDraft,
+        canIssue: isDraft,
+        canRecordPayment: (status === 'ISSUED' || status === 'PAID') && kind !== 'STORNO' && openAmount > 0.005,
+        canUndoPayment: paidAmount > 0.005 && creditedAmount <= 0.005,
+        canCancel: cancelBlockers.length === 0,
+        canCredit: creditBlockers.length === 0,
+        cancelBlockers,
+        creditBlockers,
+    };
+};
+exports.readInvoiceLifecycle = readInvoiceLifecycle;
 //# sourceMappingURL=documentLifecycle.js.map

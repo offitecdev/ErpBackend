@@ -239,6 +239,7 @@ model Article {
   positionMappings PositionArticleMapping[]
 
   stockBalances        StockBalance[]
+  stockUnits           StockUnit[]
   stockMovements       StockMovement[]
   purchaseProposals    PurchaseProposal[]
   articleSuppliers     ArticleSupplier[]

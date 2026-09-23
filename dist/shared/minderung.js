@@ -23,6 +23,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadMinderungCapacity = exports.checkMinderungAgainstBilled = exports.loadBillingBase = exports.loadMinderungSum = exports.billingTargetsForGroup = exports.minderungSumOf = exports.isMinderung = void 0;
+const invoiceDrafts_1 = require("./invoiceDrafts");
 const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
 const isCancelled = (order) => Boolean(order.cancelledAt) || order.status === 'CANCELLED';
 /** Ein aktiver Nachtrag mit negativer Summe. */
@@ -89,7 +90,7 @@ const checkMinderungAgainstBilled = async (db, opts) => {
         db.salesOrder.findFirst({ where: { id: parentSalesOrderId, tenantId }, select: { totalAmount: true } }),
         (0, exports.loadMinderungSum)(db, tenantId, parentSalesOrderId, addonId),
         db.invoice.aggregate({
-            where: { tenantId, salesOrderId: parentSalesOrderId, NOT: { status: 'CANCELLED' } },
+            where: { tenantId, salesOrderId: parentSalesOrderId, ...invoiceDrafts_1.billedInvoiceWhere },
             _sum: { amount: true },
         }),
     ]);

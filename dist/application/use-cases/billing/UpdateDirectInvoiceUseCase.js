@@ -1,8 +1,12 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UpdateDirectInvoiceUseCase = void 0;
 const CreateDirectInvoiceUseCase_1 = require("./CreateDirectInvoiceUseCase");
 const invoiceErrors_1 = require("./invoiceErrors");
+const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
 /**
  * ── EINE DIREKTRECHNUNG ÄNDERN ───────────────────────────────────────────────
  *
@@ -42,6 +46,18 @@ class UpdateDirectInvoiceUseCase {
             throw (0, invoiceErrors_1.invoiceError)('PAID_LOCKED', 'Eine bezahlte Rechnung kann nicht geändert werden.', { status: 409 });
         if (existing.status === 'CANCELLED')
             throw (0, invoiceErrors_1.invoiceError)('CANCELLED_LOCKED', 'Eine stornierte Rechnung kann nicht geändert werden.', { status: 409 });
+        // Mit Zahlungseingang oder Gutschrift steht der Betrag fest (Schritt 7).
+        const [payments, credits] = await Promise.all([
+            prisma_client_1.default.invoicePayment.count({ where: { invoiceId: id } }),
+            prisma_client_1.default.invoice.count({ where: { reversesInvoiceId: id, NOT: { status: 'DRAFT' } } }),
+        ]);
+        if (payments > 0 || credits > 0) {
+            throw (0, invoiceErrors_1.invoiceError)('PAID_LOCKED', 'Auf dieser Rechnung sind Zahlungen oder Gutschriften erfasst — sie kann nicht mehr geändert werden.', { status: 409 });
+        }
+        // Gegenbelege sind endgültig (Schritt 6).
+        if (existing.kind === 'STORNO' || existing.kind === 'GUTSCHRIFT') {
+            throw (0, invoiceErrors_1.invoiceError)('CREDIT_DOCUMENT_FINAL', 'Ein Gegenbeleg wird nicht geändert.', { status: 409 });
+        }
         const draft = await (0, CreateDirectInvoiceUseCase_1.buildDirectInvoiceDraft)(input);
         return this.invoiceRepository.updateWithItems(id, {
             ...draft.invoice,

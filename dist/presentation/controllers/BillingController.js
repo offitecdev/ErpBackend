@@ -4,6 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingController = void 0;
+const documentLifecycle_1 = require("../../shared/documentLifecycle");
+const invoicePayments_1 = require("../../shared/invoicePayments");
+const accountingOverview_1 = require("../../shared/accountingOverview");
 const invoiceErrors_1 = require("../../application/use-cases/billing/invoiceErrors");
 const client_1 = require("@prisma/client");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
@@ -17,19 +20,184 @@ class BillingController {
     getSummaryUseCase;
     listInvoicesUseCase;
     updateStatusUseCase;
-    deleteInvoiceUseCase;
+    draftUseCase;
+    creditUseCase;
     createDirectInvoiceUseCase;
     updateDirectInvoiceUseCase;
     updateDatesUseCase;
-    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase, deleteInvoiceUseCase, createDirectInvoiceUseCase, updateDirectInvoiceUseCase, updateDatesUseCase) {
+    constructor(createInvoiceUseCase, getSummaryUseCase, listInvoicesUseCase, updateStatusUseCase, draftUseCase, creditUseCase, createDirectInvoiceUseCase, updateDirectInvoiceUseCase, updateDatesUseCase) {
         this.createInvoiceUseCase = createInvoiceUseCase;
         this.getSummaryUseCase = getSummaryUseCase;
         this.listInvoicesUseCase = listInvoicesUseCase;
         this.updateStatusUseCase = updateStatusUseCase;
-        this.deleteInvoiceUseCase = deleteInvoiceUseCase;
+        this.draftUseCase = draftUseCase;
+        this.creditUseCase = creditUseCase;
         this.createDirectInvoiceUseCase = createDirectInvoiceUseCase;
         this.updateDirectInvoiceUseCase = updateDirectInvoiceUseCase;
         this.updateDatesUseCase = updateDatesUseCase;
+    }
+    /** Verlauf: ein Entwurf ist angelegt (noch ohne Nummer). */
+    async logDraftCreated(req, invoice) {
+        await (0, documentGovernance_1.recordDocumentEvent)(prisma_client_1.default, {
+            tenantId: req.user.tenantId,
+            entityType: 'INVOICE',
+            entityId: invoice.id,
+            documentNumber: null,
+            action: 'DRAFT_CREATED',
+            actorId: req.user.id,
+            snapshot: { kind: invoice.kind, percent: Number(invoice.billedPercent || 0), amount: Number(invoice.amount || 0) },
+            links: { projectId: invoice.projectId ?? null, salesOrderId: invoice.salesOrderId ?? null },
+            ipAddress: (0, documentGovernance_1.requestIp)(req),
+        }).catch((error) => console.error('[Billing] Verlauf nicht geschrieben:', error?.message || error));
+    }
+    /** Eine Rechnung in voller Form (Detailseite der Buchhaltung) — mit ihren Regeln. */
+    async getById(req, res) {
+        try {
+            const [invoice] = await this.listInvoicesUseCase.execute({ tenantId: req.user.tenantId, id: String(req.params.id) });
+            if (!invoice)
+                return res.status(404).json({ error: 'Rechnung nicht gefunden.', code: 'NOT_FOUND' });
+            const [lifecycle, paymentRows] = await Promise.all([
+                (0, documentLifecycle_1.readInvoiceLifecycle)(prisma_client_1.default, invoice),
+                prisma_client_1.default.invoicePayment.findMany({
+                    where: { invoiceId: invoice.id },
+                    orderBy: [{ paidAt: 'asc' }, { createdAt: 'asc' }],
+                    select: { id: true, amount: true, kind: true, paidAt: true, note: true, createdById: true, createdAt: true },
+                }),
+            ]);
+            const authorIds = [...new Set(paymentRows.map((row) => row.createdById).filter(Boolean))];
+            const authors = authorIds.length
+                ? await prisma_client_1.default.employee.findMany({ where: { id: { in: authorIds } }, select: { id: true, firstName: true, lastName: true } })
+                : [];
+            const nameOf = new Map(authors.map((row) => [row.id, `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim()]));
+            const payments = paymentRows.map((row) => ({
+                id: row.id,
+                amount: Number(row.amount),
+                kind: row.kind,
+                paidAt: row.paidAt,
+                note: row.note ?? null,
+                createdByName: row.createdById ? nameOf.get(row.createdById) ?? null : null,
+                createdAt: row.createdAt,
+            }));
+            res.status(200).json({ ...invoice, lifecycle, payments });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** Den Entwurf einer Auftragsrechnung neu rechnen (Prozent, Daten, Notiz). */
+    async updateDraft(req, res) {
+        try {
+            const invoice = await this.draftUseCase.updateOrderDraft(String(req.params.id), req.user.tenantId, {
+                percent: req.body?.percent == null || req.body?.percent === '' ? null : Number(req.body.percent),
+                invoiceDate: req.body?.invoiceDate ?? null,
+                dueDate: req.body?.dueDate ?? null,
+                salespersonName: req.body?.salespersonName ?? null,
+                commissionNumber: req.body?.commissionNumber ?? null,
+                notes: req.body?.notes ?? null,
+            });
+            res.status(200).json({ message: 'Entwurf gespeichert.', invoice });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** Zahlungseingang erfassen (auch in Teilen) — Schritt 7 / G19. */
+    async addPayment(req, res) {
+        try {
+            const raw = req.body?.amount;
+            const payment = await prisma_client_1.default.$transaction((tx) => (0, invoicePayments_1.recordPaymentWithin)(tx, {
+                invoiceId: String(req.params.id),
+                tenantId: req.user.tenantId,
+                amount: raw == null || raw === '' ? null : Number(raw),
+                paidAt: req.body?.paidAt ?? null,
+                note: req.body?.note ? String(req.body.note) : null,
+                actor: { employeeId: req.user.id, ip: (0, documentGovernance_1.requestIp)(req) },
+            }));
+            res.status(201).json({ message: 'Zahlung erfasst.', payment });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** Einen falsch erfassten Eingang entfernen. */
+    async removePayment(req, res) {
+        try {
+            await prisma_client_1.default.$transaction((tx) => (0, invoicePayments_1.removePaymentWithin)(tx, {
+                invoiceId: String(req.params.id),
+                paymentId: String(req.params.paymentId),
+                tenantId: req.user.tenantId,
+                actor: { employeeId: req.user.id, ip: (0, documentGovernance_1.requestIp)(req) },
+            }));
+            res.status(200).json({ message: 'Zahlung entfernt.' });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** Die vier Zahlen, Altersstruktur, offene Rückzahlungen (Buchhaltung). */
+    async figures(req, res) {
+        try {
+            res.json(await (0, accountingOverview_1.loadAccountingFigures)(prisma_client_1.default, req.user.tenantId, String(req.query.today || '')));
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** «Zu verrechnen» — Schritt 7 / G14. */
+    async toBill(req, res) {
+        try {
+            res.json(await (0, accountingOverview_1.loadToBill)(prisma_client_1.default, req.user.tenantId, String(req.query.today || '')));
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** STORNO: eine offene Rechnung wird durch eine Storno-Rechnung aufgehoben. */
+    async storno(req, res) {
+        try {
+            if (!await (0, RbacMiddleware_1.userHasPermission)(req.user.id, 'invoices.cancel')) {
+                return res.status(403).json({ error: 'Ihrer Rolle fehlt das Recht, Rechnungen zu stornieren.', code: 'CANCEL_NOT_PERMITTED' });
+            }
+            const document = await this.creditUseCase.storno(String(req.params.id), req.user.tenantId, String(req.body?.reason ?? ''), {
+                employeeId: req.user.id,
+                ip: (0, documentGovernance_1.requestIp)(req),
+            });
+            res.status(201).json({ message: 'Storno-Rechnung ausgestellt.', document });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** GUTSCHRIFT zu einer bezahlten Rechnung (ganz oder teilweise). */
+    async credit(req, res) {
+        try {
+            if (!await (0, RbacMiddleware_1.userHasPermission)(req.user.id, 'invoices.cancel')) {
+                return res.status(403).json({ error: 'Ihrer Rolle fehlt das Recht, Gutschriften auszustellen.', code: 'CREDIT_NOT_PERMITTED' });
+            }
+            const raw = req.body?.amount;
+            const amount = raw == null || raw === '' ? null : Number(raw);
+            const document = await this.creditUseCase.credit(String(req.params.id), req.user.tenantId, amount, String(req.body?.reason ?? ''), {
+                employeeId: req.user.id,
+                ip: (0, documentGovernance_1.requestIp)(req),
+            });
+            res.status(201).json({ message: 'Gutschrift ausgestellt.', document });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
+    }
+    /** Ausstellen: der Entwurf bekommt seine RE-Nummer. */
+    async issue(req, res) {
+        try {
+            const invoice = await this.draftUseCase.issue(String(req.params.id), req.user.tenantId, {
+                employeeId: req.user.id,
+                ip: (0, documentGovernance_1.requestIp)(req),
+            });
+            res.status(200).json({ message: 'Rechnung ausgestellt.', invoice });
+        }
+        catch (error) {
+            res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
+        }
     }
     async getSummary(req, res) {
         try {
@@ -53,7 +221,7 @@ class BillingController {
                     SELECT i.projectId, i.salesOrderId, SUM(i.billedPercent) AS billedPercent
                     FROM Invoice i
                     WHERE i.tenantId = ${req.user.tenantId}
-                      AND i.status <> 'CANCELLED'
+                      AND i.status NOT IN ('CANCELLED', 'DRAFT') AND i.kind <> 'STORNO'
                       AND (i.projectId IS NOT NULL OR i.salesOrderId IS NOT NULL)
                     GROUP BY i.projectId, i.salesOrderId
                 `);
@@ -101,7 +269,11 @@ class BillingController {
                 // Fatura kodu sunucuda üretilir (RE-2026-10001); gövdeden gelen
                 // `invoiceNumber` artık kabul edilmiyor.
                 notes: req.body.notes,
+                // Buchhaltung (Schritt 5): zuerst ein Entwurf ohne Nummer.
+                draft: req.body.draft === true,
             });
+            if (req.body.draft === true)
+                await this.logDraftCreated(req, invoice);
             res.status(201).json({ message: 'Fatura oluşturuldu.', invoice });
         }
         catch (error) {
@@ -152,7 +324,10 @@ class BillingController {
                 closingText: req.body.closingText ?? null,
                 senderAddress: req.body.senderAddress ?? null,
                 paymentStages: req.body.paymentStages ?? null,
+                draft: req.body.draft === true,
             });
+            if (req.body.draft === true)
+                await this.logDraftCreated(req, invoice);
             res.status(201).json({ message: 'Rechnung erstellt.', invoice });
         }
         catch (error) {
@@ -213,6 +388,22 @@ class BillingController {
     async updateStatus(req, res) {
         try {
             const nextStatus = String(req.body.status || '');
+            // Ältere Oberflächen stornieren über den Status: das ist seit
+            // Schritt 6 eine Storno-Rechnung (Grund fehlt → «Storno»).
+            if (nextStatus === 'CANCELLED') {
+                const current = await prisma_client_1.default.invoice.findFirst({
+                    where: { id: String(req.params.id), tenantId: req.user.tenantId },
+                    select: { status: true, kind: true },
+                });
+                if (current && current.status === 'ISSUED' && current.kind !== 'STORNO' && current.kind !== 'GUTSCHRIFT') {
+                    if (!await (0, RbacMiddleware_1.userHasPermission)(req.user.id, 'invoices.cancel')) {
+                        return res.status(403).json({ error: 'Ihrer Rolle fehlt das Recht, Rechnungen zu stornieren.', code: 'CANCEL_NOT_PERMITTED' });
+                    }
+                    const document = await this.creditUseCase.storno(String(req.params.id), req.user.tenantId, String(req.body?.reason || '').trim() || 'Storno', { employeeId: req.user.id, ip: (0, documentGovernance_1.requestIp)(req) });
+                    const [invoice] = await this.listInvoicesUseCase.execute({ tenantId: req.user.tenantId, id: String(req.params.id) });
+                    return res.status(200).json({ message: 'Storno-Rechnung ausgestellt.', invoice, document });
+                }
+            }
             const invoice = await this.updateStatusUseCase.execute(req.params.id, req.user.tenantId, nextStatus, 
             // Zahlungseingang — die Liste schickt ihn beim Markieren als
             // bezahlt mit; fehlt er, nimmt der Server "jetzt".
@@ -263,10 +454,17 @@ class BillingController {
             res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));
         }
     }
+    /**
+     * Gelöscht wird nur ein ENTWURF (Schritt 5). Eine ausgestellte Rechnung
+     * bleibt als Beleg stehen — auch nach dem Storno (16.09.2026).
+     */
     async delete(req, res) {
         try {
-            await this.deleteInvoiceUseCase.execute(req.params.id, req.user.tenantId);
-            res.status(200).json({ message: 'Fatura kalıcı olarak silindi.' });
+            await this.draftUseCase.discard(req.params.id, req.user.tenantId, {
+                employeeId: req.user.id,
+                ip: (0, documentGovernance_1.requestIp)(req),
+            });
+            res.status(200).json({ message: 'Entwurf verworfen.' });
         }
         catch (error) {
             res.status(error?.status || 400).json((0, invoiceErrors_1.invoiceErrorBody)(error));

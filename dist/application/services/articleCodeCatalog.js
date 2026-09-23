@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.newSchemeData = exports.issueCodes = exports.previewNextCode = exports.highestIssuedNumber = exports.listCodeCategories = exports.looksLikeErpCode = exports.codePrefix = exports.formatErpCode = exports.isValidShortCode = exports.normalizeShortCode = exports.MAX_CODE_NAME_LENGTH = exports.CODE_DIGITS = void 0;
+exports.newSchemeData = exports.issueTemporaryReceiptCodes = exports.TEMPORARY_RECEIPT_DIGITS = exports.TEMPORARY_RECEIPT_SCHEME = exports.TEMPORARY_RECEIPT_CATEGORY = exports.issueCodes = exports.previewNextCode = exports.highestIssuedNumber = exports.listCodeCategories = exports.looksLikeErpCode = exports.codePrefix = exports.formatErpCode = exports.isValidShortCode = exports.normalizeShortCode = exports.MAX_CODE_NAME_LENGTH = exports.CODE_DIGITS = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 /* ERP-CODES (Einstellungen → Module → Lager → Code-Einstellungen, 10.09.2026)
@@ -36,7 +36,12 @@ const normalizeShortCode = (value) => String(value ?? '')
 exports.normalizeShortCode = normalizeShortCode;
 const isValidShortCode = (value) => SHORT_CODE.test(value);
 exports.isValidShortCode = isValidShortCode;
-const formatErpCode = (categoryCode, schemeCode, n) => `${categoryCode}-${schemeCode}-${String(n).padStart(exports.CODE_DIGITS, '0')}`;
+/* Der vorläufige Kreis des Wareneingangs (AA-BB, unten) zählt SECHSstellig —
+   AA-BB-000001 (Vorgabe Samet, 19.09.2026); jeder andere Kreis fünfstellig. */
+const digitsFor = (categoryCode, schemeCode) => (categoryCode === exports.TEMPORARY_RECEIPT_CATEGORY && schemeCode === exports.TEMPORARY_RECEIPT_SCHEME
+    ? exports.TEMPORARY_RECEIPT_DIGITS
+    : exports.CODE_DIGITS);
+const formatErpCode = (categoryCode, schemeCode, n) => `${categoryCode}-${schemeCode}-${String(n).padStart(digitsFor(categoryCode, schemeCode), '0')}`;
 exports.formatErpCode = formatErpCode;
 /** Das Praefix `KAT-UNTER-` eines Nummernkreises. */
 const codePrefix = (categoryCode, schemeCode) => `${categoryCode}-${schemeCode}-`;
@@ -123,6 +128,73 @@ const issueCodes = async (tenantId, schemeId, count) => {
     return { codes, scheme: scheme };
 };
 exports.issueCodes = issueCodes;
+/* ── VORLÄUFIGE CODES IM WARENEINGANG (19.09.2026, Vorgabe Samet) ──────────
+ *
+ * «ERP-Codes entstehen nicht mehr in Preisanfrage und Bestellung, nur noch im
+ *  Wareneingang — für ALLE Bestellungen, automatisch. Bis das Codesystem
+ *  steht, beginnen sie dort vorläufig mit AA-BB-000001 und laufen fortlaufend
+ *  weiter.» (Die erste Fassung vom selben Tag, AAA-BBB-00001, hat nie einen
+ *  Code vergeben.)
+ *
+ * Der Kreis ist ein gewöhnlicher Nummernkreis (Kategorie AA, Unterkategorie
+ * BB, sechsstellig) — derselbe atomare Zähler, dieselbe Sperre gegen schon
+ * vergebene Nummern. Er legt sich beim ersten Bedarf selbst an und ist dann in
+ * den Code-Einstellungen sichtbar. Er braucht keine Freigabe durch die IT: er
+ * ist die Vorgabe selbst, nicht eine Wahl. */
+exports.TEMPORARY_RECEIPT_CATEGORY = 'AA';
+exports.TEMPORARY_RECEIPT_SCHEME = 'BB';
+exports.TEMPORARY_RECEIPT_DIGITS = 6;
+const ensureTemporaryReceiptScheme = async (tenantId) => {
+    let category = await prisma_client_1.default.articleCodeCategory.findFirst({ where: { tenantId, code: exports.TEMPORARY_RECEIPT_CATEGORY } });
+    if (!category) {
+        try {
+            category = await prisma_client_1.default.articleCodeCategory.create({
+                data: { id: (0, nanoid_1.nanoid)(12), tenantId, code: exports.TEMPORARY_RECEIPT_CATEGORY, name: 'Wareneingang (vorläufig)', sortOrder: 9_999 },
+            });
+        }
+        catch (error) {
+            // Zwei Wareneingänge gleichzeitig: der andere war schneller.
+            if (error?.code !== 'P2002')
+                throw error;
+            category = await prisma_client_1.default.articleCodeCategory.findFirst({ where: { tenantId, code: exports.TEMPORARY_RECEIPT_CATEGORY } });
+        }
+    }
+    if (!category)
+        throw new Error('Vorläufiger Nummernkreis konnte nicht angelegt werden.');
+    let scheme = await prisma_client_1.default.articleCodeScheme.findFirst({
+        where: { tenantId, categoryId: category.id, code: exports.TEMPORARY_RECEIPT_SCHEME },
+    });
+    if (!scheme) {
+        try {
+            scheme = await prisma_client_1.default.articleCodeScheme.create({
+                data: {
+                    ...(0, exports.newSchemeData)(tenantId, category.id, exports.TEMPORARY_RECEIPT_SCHEME, 'Vorläufige Codes', 1, 0),
+                    isActive: true,
+                    activatedAt: new Date(),
+                },
+            });
+        }
+        catch (error) {
+            if (error?.code !== 'P2002')
+                throw error;
+            scheme = await prisma_client_1.default.articleCodeScheme.findFirst({
+                where: { tenantId, categoryId: category.id, code: exports.TEMPORARY_RECEIPT_SCHEME },
+            });
+        }
+    }
+    if (!scheme)
+        throw new Error('Vorläufiger Nummernkreis konnte nicht angelegt werden.');
+    if (!scheme.isActive) {
+        await prisma_client_1.default.articleCodeScheme.update({ where: { id: scheme.id }, data: { isActive: true, activatedAt: new Date() } });
+    }
+    return scheme.id;
+};
+/** `count` fortlaufende vorläufige Codes AA-BB-NNNNNN für den Wareneingang. */
+const issueTemporaryReceiptCodes = async (tenantId, count) => {
+    const schemeId = await ensureTemporaryReceiptScheme(tenantId);
+    return (await (0, exports.issueCodes)(tenantId, schemeId, count)).codes;
+};
+exports.issueTemporaryReceiptCodes = issueTemporaryReceiptCodes;
 /** Die Zeilen fuer einen neuen Nummernkreis — vom Aufrufer schon geprueft. */
 const newSchemeData = (tenantId, categoryId, code, name, startNumber, sortOrder) => ({
     id: (0, nanoid_1.nanoid)(12),

@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import prisma from "../database/prisma.client";
 import { Invoice, InvoiceCategory, InvoiceStatus } from "../../domain/entities/Invoice";
 import { billedInvoiceWhere } from "../../shared/invoiceDrafts";
-import { BilledSoFar, IInvoiceFilter, IInvoiceRepository, InvoiceLineItemInput, InvoiceListItem, InvoiceSummaryRow } from "../../domain/repositories/IInvoiceRepository";
+import { BilledSoFar, IInvoiceFilter, IInvoiceRepository, InvoiceLineItemInput, InvoiceListItem, InvoicePage, InvoiceSort, InvoiceStateKey, InvoiceSummaryRow } from "../../domain/repositories/IInvoiceRepository";
 
 /**
  * Rechnungstyp aus dem Beleg ABLEITEN, an dem die Rechnung hängt — sie trägt
@@ -60,6 +60,163 @@ const invoiceInclude = {
     issuedBy: { select: { id: true, firstName: true, lastName: true } },
 };
 
+/* ── DIE LISTE DER BUCHHALTUNG KOMMT SEITENWEISE (22.09.2026) ───────────────
+ *
+ * Vorgabe Samet: «20'şer 20'şer getirsin» — die Rechnungsliste lädt nicht mehr
+ * alle Belege, sondern eine SEITE (20 Zeilen), und zuoberst steht, woran
+ * zuletzt etwas geschehen ist: ausgestellt, bezahlt, geändert, storniert.
+ *
+ * Damit das geht, rechnet der Server, was bisher die Oberfläche rechnete —
+ * Reiter (Stand), Suche, Herkunft und die Zähler der Reiter. Die Regeln sind
+ * WÖRTLICH dieselben wie in `pages/accounting/accountingShared.ts`:
+ * «Überfällig» ist kein Status, sondern ein Datum, und «Offen» schliesst
+ * «Überfällig» ein.
+ */
+
+const todayString = () => new Date().toISOString().slice(0, 10);
+
+/** Ein Gegenbeleg (Storno/Gutschrift) hat einen eigenen Reiter — er ist weder offen noch bezahlt. */
+const NOT_CREDIT_SQL = Prisma.sql`i.kind NOT IN ('STORNO', 'GUTSCHRIFT')`;
+
+/**
+ * Bedingung EINES Reiters. «Offen» meint jede ausgestellte Rechnung, also
+ * auch die überfälligen — genau wie `matchesTab()` in der Oberfläche.
+ */
+const stateSql = (state: InvoiceStateKey, today: string): Prisma.Sql => {
+    switch (state) {
+        case "CREDIT":
+            return Prisma.sql`i.kind IN ('STORNO', 'GUTSCHRIFT')`;
+        case "DRAFT":
+            return Prisma.sql`(${NOT_CREDIT_SQL} AND i.status = 'DRAFT')`;
+        case "PAID":
+            return Prisma.sql`(${NOT_CREDIT_SQL} AND i.status = 'PAID')`;
+        case "CANCELLED":
+            return Prisma.sql`(${NOT_CREDIT_SQL} AND i.status = 'CANCELLED')`;
+        case "OVERDUE":
+            return Prisma.sql`(${NOT_CREDIT_SQL} AND i.status = 'ISSUED' AND i.dueDate IS NOT NULL AND DATE(i.dueDate) < ${today})`;
+        default:
+            return Prisma.sql`(${NOT_CREDIT_SQL} AND i.status = 'ISSUED')`;
+    }
+};
+
+/** `%` und `_` sind in LIKE Platzhalter — getippte Zeichen bleiben Zeichen. */
+const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (character) => "\\" + character);
+
+/**
+ * Die Suche der Liste: dieselben Felder, die die Tabelle zeigt — Nummer,
+ * Empfänger, Auftrag, Projekt, Verkäufer und der Betrag.
+ */
+const searchSql = (search: string): Prisma.Sql => {
+    const needle = `%${escapeLike(search)}%`;
+    return Prisma.sql`(
+        i.invoiceNumber LIKE ${needle}
+        OR i.legacyNumber LIKE ${needle}
+        OR COALESCE(c.companyName, i.recipientName) LIKE ${needle}
+        OR so.orderNumber LIKE ${needle}
+        OR pr.projectNumber LIKE ${needle}
+        OR pr.projectName LIKE ${needle}
+        OR i.salespersonName LIKE ${needle}
+        OR CAST(ROUND(ABS(i.amount), 2) AS CHAR) LIKE ${needle}
+    )`;
+};
+
+/**
+ * LETZTER VORGANG einer Rechnung: die Änderung am Beleg selbst ODER ein
+ * Zahlungseingang. Eine Teilzahlung ändert die Rechnung nicht (sie ist eine
+ * eigene Zeile) — ohne den Eingang fiele die eben verbuchte Rechnung nicht
+ * nach oben, und genau das ist die Sortierung, die verlangt wurde.
+ */
+const ACTIVITY_SQL = Prisma.sql`GREATEST(COALESCE(i.updatedAt, i.createdAt), COALESCE(pay.lastPaymentAt, i.createdAt))`;
+
+const orderBySql = (sort?: InvoiceSort | undefined): Prisma.Sql => {
+    switch (sort) {
+        // Rechnungsdatum — die alte Reihenfolge der Liste.
+        case "invoiceDate":
+            return Prisma.sql`ORDER BY COALESCE(i.invoiceDate, i.createdAt) DESC, i.invoiceNumber DESC`;
+        // Fälligkeit: die älteste zuerst — sie braucht zuerst einen Anruf.
+        case "dueDate":
+            return Prisma.sql`ORDER BY i.dueDate IS NULL, i.dueDate ASC, ${ACTIVITY_SQL} DESC`;
+        case "amount":
+            return Prisma.sql`ORDER BY ABS(i.amount) DESC, ${ACTIVITY_SQL} DESC`;
+        case "number":
+            return Prisma.sql`ORDER BY i.invoiceNumber DESC, i.createdAt DESC`;
+        default:
+            return Prisma.sql`ORDER BY ${ACTIVITY_SQL} DESC, i.createdAt DESC`;
+    }
+};
+
+/**
+ * Der FROM-Teil, den die WHERE-Kette braucht. Kunde und Projekt hängen daran,
+ * weil die Suche ihre Namen liest — Zähler, Positionen und Gegenbelege
+ * benutzen denselben Block, damit sie nie eine andere Menge treffen.
+ */
+const SCOPE_FROM_SQL = Prisma.sql`
+    FROM Invoice i
+    LEFT JOIN SalesOrder so ON so.id = i.salesOrderId
+    LEFT JOIN Customer c ON c.id = i.customerId
+    LEFT JOIN Project pr ON pr.id = i.projectId
+`;
+
+/** Dasselbe plus die Spalten, die nur die Zeile selbst braucht. */
+const ROWS_FROM_SQL = Prisma.sql`
+    ${SCOPE_FROM_SQL}
+    LEFT JOIN Employee e ON e.id = i.issuedByEmployeeId
+    LEFT JOIN Invoice rv ON rv.id = i.reversesInvoiceId
+    LEFT JOIN (
+        SELECT p.invoiceId, MAX(p.createdAt) AS lastPaymentAt
+        FROM InvoicePayment p
+        GROUP BY p.invoiceId
+    ) pay ON pay.invoiceId = i.id
+`;
+
+const ROW_COLUMNS_SQL = Prisma.sql`
+    i.id, i.tenantId, i.customerId, i.projectId, i.salesOrderId,
+    i.invoiceNumber, i.billingType, i.kind, i.invoiceDate, i.dueDate,
+    i.salespersonName, i.commissionNumber, i.billedPercent, i.baseAmount,
+    i.amount, i.status, i.notes, i.issuedByEmployeeId,
+    i.recipientName, i.recipientAddress, i.introText, i.vatRate,
+    -- Die drei Abschnitte, ihr Rabattstapel, der Schlusstext und
+    -- die eigene Absenderzeile: OHNE sie druckt die Liste eine
+    -- andere Rechnung als die Erfassungsseite (utils/pdf/invoicePdf.ts).
+    i.sections, i.discounts, i.closingText, i.senderAddress, i.paymentStages, i.paidAt,
+    i.createdAt, i.updatedAt,
+    -- Letzter Vorgang — wonach die Buchhaltung sortiert.
+    ${ACTIVITY_SQL} AS activityAt,
+    -- Gegenbeleg (17.09.2026): worauf er zeigt.
+    i.reversesInvoiceId, i.creditReason,
+    rv.invoiceNumber AS reversesNumber, rv.invoiceDate AS reversesDate,
+    rv.kind AS reversesKind, rv.amount AS reversesAmount,
+    -- Zahlungsstand (Schritt 7): Eingänge, davon Geld, Gutschriften.
+    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id) AS paidSum,
+    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id AND p.kind = 'PAYMENT') AS paidMoney,
+    (SELECT COALESCE(SUM(g.amount), 0) FROM Invoice g
+        WHERE g.reversesInvoiceId = i.id AND g.kind = 'GUTSCHRIFT' AND g.status <> 'DRAFT') AS creditSum,
+    c.companyName AS customerCompanyName,
+    pr.projectName AS projectName,
+    pr.projectNumber AS projectNumber,
+    so.orderNumber AS orderNumber,
+    so.orderType AS orderType,
+    -- Die Offerte hinter dem Auftrag: OHNE sie druckt die
+    -- Gesamtrechnung aus der Liste nur eine Sammelzeile statt
+    -- der Positionen (siehe utils/pdf/invoicePdf.ts).
+    so.tenderId AS orderTenderId,
+    so.paymentStages AS orderPaymentStages,
+    e.firstName AS issuerFirstName,
+    e.lastName AS issuerLastName
+`;
+
+const LINE_ITEM_COLUMNS_SQL = Prisma.sql`
+    li.id, li.invoiceId, li.description, li.sourceType, li.sourceId,
+    li.quantity, li.unitAmount, li.lineTotal, li.unit, li.sortOrder,
+    -- Beschreibung und Zeilenrabatt: OHNE sie druckt die
+    -- Liste eine andere Tabelle als die Erfassungsseite.
+    li.longDescription, li.discounts, li.discount
+`;
+
+const REVERSAL_COLUMNS_SQL = Prisma.sql`
+    r.id, r.reversesInvoiceId, r.invoiceNumber, r.kind, r.amount, r.status, r.invoiceDate
+`;
+
 export class InvoiceRepository implements IInvoiceRepository {
     async createWithItems(invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice> {
         return (await prisma.$transaction(async (tx) => {
@@ -108,16 +265,11 @@ export class InvoiceRepository implements IInvoiceRepository {
     }
 
     /**
-     * Fatura listesi — cevap şekli `invoiceInclude` ile birebir aynı, ama iki
-     * PARALEL ifadeyle üretiliyor (eskiden altı ARDIŞIK ifade).
-     *
-     * Prisma'da her `include` ayrı bir sorgu turu demek: veritabanı uzak olduğu
-     * için (ifade başına ~100 ms) müşteri/proje/sipariş/personel/kalem ilişkileri
-     * tek başına ~450 ms tutuyordu. Skaler ilişkiler artık tek JOIN'de geliyor;
-     * kalemler ise aynı WHERE'i alt sorgu olarak kullandığı için sayfa id'lerini
-     * beklemek zorunda değil, ilk sorguyla eş zamanlı koşuyor.
+     * Die WHERE-Kette der Liste: Mandant, Bezüge, Herkunft, Suche und Reiter.
+     * `withState: false` lässt den Reiter weg — die Zähler zählen ALLE Stände
+     * innerhalb derselben Suche/Herkunft.
      */
-    async list(filter: IInvoiceFilter): Promise<InvoiceListItem[]> {
+    private whereOf(filter: IInvoiceFilter, withState = true): Prisma.Sql {
         const conditions: Prisma.Sql[] = [Prisma.sql`i.tenantId = ${filter.tenantId}`];
         if (filter.id) conditions.push(Prisma.sql`i.id = ${filter.id}`);
         if (filter.projectId) conditions.push(Prisma.sql`i.projectId = ${filter.projectId}`);
@@ -135,79 +287,146 @@ export class InvoiceRepository implements IInvoiceRepository {
         } else if (filter.category === 'DIRECT') {
             conditions.push(Prisma.sql`(i.projectId IS NULL AND i.salesOrderId IS NULL)`);
         }
-        const whereSql = Prisma.join(conditions, ' AND ');
-        // Die Unterabfrage der Positionen braucht denselben Auftrags-JOIN, sonst
-        // stünde `so.orderType` dort ohne Tabelle.
-        const scopeSql = Prisma.sql`
-            FROM Invoice i
-            LEFT JOIN SalesOrder so ON so.id = i.salesOrderId
-            WHERE ${whereSql}
-        `;
+        const search = String(filter.search ?? '').trim();
+        if (search) conditions.push(searchSql(search));
+        if (withState && filter.state) conditions.push(stateSql(filter.state, filter.today || todayString()));
+        return Prisma.join(conditions, ' AND ');
+    }
+
+    /**
+     * Fatura listesi — cevap şekli `invoiceInclude` ile birebir aynı, ama iki
+     * PARALEL ifadeyle üretiliyor (eskiden altı ARDIŞIK ifade).
+     *
+     * Prisma'da her `include` ayrı bir sorgu turu demek: veritabanı uzak olduğu
+     * için (ifade başına ~100 ms) müşteri/proje/sipariş/personel/kalem ilişkileri
+     * tek başına ~450 ms tutuyordu. Skaler ilişkiler artık tek JOIN'de geliyor;
+     * kalemler ise aynı WHERE'i alt sorgu olarak kullandığı için sayfa id'lerini
+     * beklemek zorunda değil, ilk sorguyla eş zamanlı koşuyor.
+     *
+     * Bu yol TÜM satırları getirir (bir siparişin/projenin faturaları gibi
+     * sınırlı kümeler için). Muhasebe listesi `listPage` kullanır.
+     */
+    async list(filter: IInvoiceFilter): Promise<InvoiceListItem[]> {
+        const whereSql = this.whereOf(filter);
+        // Die Unterabfrage der Positionen braucht dieselben JOINs, sonst
+        // stünden `so.orderType` und die Suchfelder dort ohne Tabelle.
+        const scopeSql = Prisma.sql`${SCOPE_FROM_SQL} WHERE ${whereSql}`;
 
         const [rows, lineItems, reversals] = await Promise.all([
             prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
-                SELECT
-                    i.id, i.tenantId, i.customerId, i.projectId, i.salesOrderId,
-                    i.invoiceNumber, i.billingType, i.kind, i.invoiceDate, i.dueDate,
-                    i.salespersonName, i.commissionNumber, i.billedPercent, i.baseAmount,
-                    i.amount, i.status, i.notes, i.issuedByEmployeeId,
-                    i.recipientName, i.recipientAddress, i.introText, i.vatRate,
-                    -- Die drei Abschnitte, ihr Rabattstapel, der Schlusstext und
-                    -- die eigene Absenderzeile: OHNE sie druckt die Liste eine
-                    -- andere Rechnung als die Erfassungsseite (utils/pdf/invoicePdf.ts).
-                    i.sections, i.discounts, i.closingText, i.senderAddress, i.paymentStages, i.paidAt,
-                    i.createdAt, i.updatedAt,
-                    -- Gegenbeleg (17.09.2026): worauf er zeigt.
-                    i.reversesInvoiceId, i.creditReason,
-                    rv.invoiceNumber AS reversesNumber, rv.invoiceDate AS reversesDate,
-                    rv.kind AS reversesKind, rv.amount AS reversesAmount,
-                    -- Zahlungsstand (Schritt 7): Eingänge, davon Geld, Gutschriften.
-                    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id) AS paidSum,
-                    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id AND p.kind = 'PAYMENT') AS paidMoney,
-                    (SELECT COALESCE(SUM(g.amount), 0) FROM Invoice g
-                        WHERE g.reversesInvoiceId = i.id AND g.kind = 'GUTSCHRIFT' AND g.status <> 'DRAFT') AS creditSum,
-                    c.companyName AS customerCompanyName,
-                    pr.projectName AS projectName,
-                    pr.projectNumber AS projectNumber,
-                    so.orderNumber AS orderNumber,
-                    so.orderType AS orderType,
-                    -- Die Offerte hinter dem Auftrag: OHNE sie druckt die
-                    -- Gesamtrechnung aus der Liste nur eine Sammelzeile statt
-                    -- der Positionen (siehe utils/pdf/invoicePdf.ts).
-                    so.tenderId AS orderTenderId,
-                    so.paymentStages AS orderPaymentStages,
-                    e.firstName AS issuerFirstName,
-                    e.lastName AS issuerLastName
-                FROM Invoice i
-                LEFT JOIN Customer c ON c.id = i.customerId
-                LEFT JOIN Project pr ON pr.id = i.projectId
-                LEFT JOIN SalesOrder so ON so.id = i.salesOrderId
-                LEFT JOIN Employee e ON e.id = i.issuedByEmployeeId
-                LEFT JOIN Invoice rv ON rv.id = i.reversesInvoiceId
+                SELECT ${ROW_COLUMNS_SQL}
+                ${ROWS_FROM_SQL}
                 WHERE ${whereSql}
-                -- Neueste zuoberst. Alte Zeilen haben kein Rechnungsdatum, für
-                -- sie zählt der Anlagezeitpunkt — sonst fielen sie ans Ende.
-                ORDER BY COALESCE(i.invoiceDate, i.createdAt) DESC, i.invoiceNumber DESC
+                ${orderBySql(filter.sort)}
             `),
             prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
-                SELECT li.id, li.invoiceId, li.description, li.sourceType, li.sourceId,
-                       li.quantity, li.unitAmount, li.lineTotal, li.unit, li.sortOrder,
-                       -- Beschreibung und Zeilenrabatt: OHNE sie druckt die
-                       -- Liste eine andere Tabelle als die Erfassungsseite.
-                       li.longDescription, li.discounts, li.discount
+                SELECT ${LINE_ITEM_COLUMNS_SQL}
                 FROM InvoiceLineItem li
                 WHERE li.invoiceId IN (SELECT i.id ${scopeSql})
                 ORDER BY li.sortOrder ASC
             `),
             // Die Gegenbelege jeder gelisteten Rechnung (Storno/Gutschrift).
             prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
-                SELECT r.id, r.reversesInvoiceId, r.invoiceNumber, r.kind, r.amount, r.status, r.invoiceDate
+                SELECT ${REVERSAL_COLUMNS_SQL}
                 FROM Invoice r
                 WHERE r.reversesInvoiceId IN (SELECT i.id ${scopeSql})
                   AND r.status <> 'DRAFT'
                 ORDER BY r.createdAt ASC
             `),
         ]);
+
+        return this.mapRows(rows, lineItems, reversals);
+    }
+
+    /**
+     * EINE SEITE der Buchhaltungsliste (22.09.2026) — 20 Zeilen, sortiert nach
+     * dem letzten Vorgang, dazu die Gesamtzahl und die Zähler aller Reiter.
+     *
+     * Positionen und Gegenbelege werden NACH den Zeilen geholt: MySQL lässt
+     * kein `LIMIT` in einer `IN`-Unterabfrage zu — und für zwanzig Belege ist
+     * die zweite Runde ohnehin billiger als die Positionen aller Rechnungen.
+     */
+    async listPage(filter: IInvoiceFilter): Promise<InvoicePage> {
+        const page = Math.max(1, Math.floor(Number(filter.page) || 1));
+        const pageSize = Math.min(200, Math.max(1, Math.floor(Number(filter.pageSize) || 20)));
+        const today = filter.today || todayString();
+        const whereSql = this.whereOf(filter);
+        // Die Zähler gelten für dieselbe Suche und Herkunft, aber für JEDEN
+        // Stand — sonst zeigte der Reiter, auf dem man steht, als einziger eine Zahl.
+        const countWhereSql = this.whereOf(filter, false);
+
+        const [rows, totalRows, countRows] = await Promise.all([
+            prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                SELECT ${ROW_COLUMNS_SQL}
+                ${ROWS_FROM_SQL}
+                WHERE ${whereSql}
+                ${orderBySql(filter.sort)}
+                LIMIT ${Prisma.raw(String(pageSize))} OFFSET ${Prisma.raw(String((page - 1) * pageSize))}
+            `),
+            prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                SELECT COUNT(*) AS total
+                ${SCOPE_FROM_SQL}
+                WHERE ${whereSql}
+            `),
+            prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                SELECT
+                    COUNT(*) AS allCount,
+                    SUM(CASE WHEN ${stateSql('DRAFT', today)} THEN 1 ELSE 0 END) AS draftCount,
+                    SUM(CASE WHEN ${stateSql('OPEN', today)} THEN 1 ELSE 0 END) AS openCount,
+                    SUM(CASE WHEN ${stateSql('OVERDUE', today)} THEN 1 ELSE 0 END) AS overdueCount,
+                    SUM(CASE WHEN ${stateSql('PAID', today)} THEN 1 ELSE 0 END) AS paidCount,
+                    SUM(CASE WHEN ${stateSql('CANCELLED', today)} THEN 1 ELSE 0 END) AS cancelledCount,
+                    SUM(CASE WHEN ${stateSql('CREDIT', today)} THEN 1 ELSE 0 END) AS creditCount
+                ${SCOPE_FROM_SQL}
+                WHERE ${countWhereSql}
+            `),
+        ]);
+
+        const ids = rows.map((row) => String(row.id));
+        const [lineItems, reversals] = ids.length === 0
+            ? [[] as Array<Record<string, any>>, [] as Array<Record<string, any>>]
+            : await Promise.all([
+                prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                    SELECT ${LINE_ITEM_COLUMNS_SQL}
+                    FROM InvoiceLineItem li
+                    WHERE li.invoiceId IN (${Prisma.join(ids)})
+                    ORDER BY li.sortOrder ASC
+                `),
+                prisma.$queryRaw<Array<Record<string, any>>>(Prisma.sql`
+                    SELECT ${REVERSAL_COLUMNS_SQL}
+                    FROM Invoice r
+                    WHERE r.reversesInvoiceId IN (${Prisma.join(ids)})
+                      AND r.status <> 'DRAFT'
+                    ORDER BY r.createdAt ASC
+                `),
+            ]);
+
+        const counts = countRows[0] ?? {};
+        const number = (value: unknown) => Number(value ?? 0) || 0;
+        return {
+            items: this.mapRows(rows, lineItems, reversals),
+            total: number(totalRows[0]?.total),
+            page,
+            pageSize,
+            counts: {
+                ALL: number(counts.allCount),
+                DRAFT: number(counts.draftCount),
+                // «Offen» enthält die überfälligen — wie der Reiter selbst.
+                OPEN: number(counts.openCount),
+                OVERDUE: number(counts.overdueCount),
+                PAID: number(counts.paidCount),
+                CANCELLED: number(counts.cancelledCount),
+                CREDIT: number(counts.creditCount),
+            },
+        };
+    }
+
+    /** Aus den drei Abfragen wird EINE Zeile je Rechnung. */
+    private mapRows(
+        rows: Array<Record<string, any>>,
+        lineItems: Array<Record<string, any>>,
+        reversals: Array<Record<string, any>>,
+    ): InvoiceListItem[] {
         const reversalsByInvoice = new Map<string, any[]>();
         for (const row of reversals) {
             const entry = {
@@ -282,6 +501,8 @@ export class InvoiceRepository implements IInvoiceRepository {
             issuedByEmployeeId: row.issuedByEmployeeId,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
+            // Letzter Vorgang: Aenderung am Beleg oder Zahlungseingang.
+            activityAt: row.activityAt ?? row.updatedAt ?? row.createdAt,
             lineItems: itemsByInvoice.get(row.id) ?? [],
             customer: row.customerId
                 ? { id: row.customerId, companyName: row.customerCompanyName }

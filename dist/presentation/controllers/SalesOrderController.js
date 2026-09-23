@@ -410,6 +410,8 @@ class SalesOrderController {
                         salesOrderId: true,
                         invoiceNumber: true,
                         billingType: true,
+                        // Stornobelege fallen aus der Summe — dafür braucht es die Art.
+                        kind: true,
                         billedPercent: true,
                         amount: true,
                         status: true,
@@ -620,6 +622,16 @@ class SalesOrderController {
                 return res.status(404).json({ error: 'Sipariş bulunamadı.' });
             const lifecycle = await (0, documentLifecycle_1.readSalesOrderLifecycle)(prisma_client_1.default, order, tenantId);
             (0, documentLifecycle_1.assertSalesOrderCancellable)(lifecycle);
+            // Schritt 6: ausgestellte Rechnungen blieben sonst offen unter einem
+            // stornierten Auftrag stehen — sie werden über «Gesamten Vorgang
+            // stornieren» geregelt (Storno-Rechnung / Gutschrift).
+            if (lifecycle.invoicesToSettle > 0) {
+                return res.status(409).json({
+                    error: 'An diesem Auftrag hängen ausgestellte Rechnungen. Stornieren Sie den ganzen Vorgang — die Rechnungen werden dabei storniert bzw. gutgeschrieben.',
+                    code: 'INVOICES_NEED_DECISION',
+                    blockers: ['OPEN_INVOICE'],
+                });
+            }
             const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
             // Die Absagen EINSAMMELN, solange die Termine noch stehen — genau
             // wie beim Löschen eines Termins. Verschickt wird erst, wenn das
@@ -690,6 +702,11 @@ class SalesOrderController {
                 }
             }
             const familyIds = await (0, salesOrderDeletion_1.salesOrderFamilyIds)(prisma_client_1.default, order, tenantId);
+            (0, documentLifecycle_1.assertUncancelAllowed)(await (0, documentLifecycle_1.countCreditDocuments)(prisma_client_1.default, {
+                tenantId,
+                salesOrderIds: familyIds,
+                projectId: order.projectId ?? null,
+            }));
             const result = await prisma_client_1.default.$transaction(async (tx) => {
                 const restored = await (0, documentLifecycle_1.uncancelSalesOrderWithin)(tx, {
                     order,
@@ -718,7 +735,7 @@ class SalesOrderController {
             res.json({ ...result, orderNumber: order.orderNumber });
         }
         catch (error) {
-            res.status(error?.status || 400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message, code: error?.code, blockers: error?.blockers });
         }
     }
     /**

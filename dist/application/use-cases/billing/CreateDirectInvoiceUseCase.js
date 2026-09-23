@@ -165,6 +165,9 @@ class CreateDirectInvoiceUseCase {
     }
     async execute(input) {
         const draft = await (0, exports.buildDirectInvoiceDraft)(input);
+        if (input.draft) {
+            return this.invoiceRepository.createWithItems({ ...draft.invoice, invoiceNumber: '', status: 'DRAFT', issuedByEmployeeId: input.issuedByEmployeeId }, draft.lineItems);
+        }
         // Die Nummer wird ERST hier gezogen — ein abgewiesener Entwurf soll
         // keine Lücke in der RE-Reihe hinterlassen.
         const invoiceNumber = await (0, documentNumber_1.nextDocumentNumber)(input.tenantId, 'INVOICE');

@@ -200,7 +200,28 @@ model SupplyRequest {
 model PurchaseOrder {
   id              String  @id
   tenantId        String
-  referenceNumber String // "Bestellung" BE-2026-001 (arada üretilen AU-2026-001 ve eski BE-2026-0001 kayıtları da geçerlidir) — tenant başına benzersiz, kullanıcı düzenleyebilir
+  /// GÜNCEL BELGENİN KODU — kayıt fiyat talebi aşamasındayken `priceRequestNumber`,
+  /// sipariş aşamasından itibaren `orderNumber` ile aynıdır. Tüm uygulama bunu okur.
+  /// Depoda hep ALMANCA yazım durur (`PA-2026-001` / `BE-2026-001`); ekranda ve
+  /// PDF'te dile göre önek değişir (tr FT/SP, en PR/PO) — `shared/purchaseDocumentCode.ts`.
+  /// Eski `AU-2026-001` ve dört haneli `BE-2026-0001` kayıtları da geçerlidir;
+  /// tenant başına benzersizdir ve kullanıcı elle değiştirebilir.
+  referenceNumber String
+  /// FİYAT TALEBİ KODU (`PA-2026-001`) — kayıt fiyat talebi aşamasında açıldığında
+  /// verilir ve siparişe dönüşse de KALIR: eski kodu arayan tedarikçi kaydı bulur.
+  /// NULL = kayıt doğrudan sipariş olarak açılmış (hiç talep aşaması yaşamamış).
+  priceRequestNumber String?
+  /// HER AŞAMANIN KENDİ BELGESİ (JSON) — `{"1": {…}, "2": {…}, "3": {…}}`:
+  /// fiyat talebi, sipariş ve mal kabul AYRI satır listeleri, ayrı ek ücretleri
+  /// ve ayrı toplamları taşır (Samet, 21.09.2026: «fiyat talebi ayrı sipariş ayrı
+  /// olacak»). `items` ve toplamlar her zaman GÜNCEL aşamanın kopyasıdır; aşama
+  /// değişince ayrılan aşama buraya yazılır, girilen aşama buradan yüklenir.
+  /// NULL = henüz tek aşama yaşamış eski kayıt.
+  stageDocuments  String?   @db.LongText
+  /// SİPARİŞ KODU (`BE-2026-001`) — kayıt ilk kez sipariş aşamasına geçtiğinde
+  /// verilir. Bir aşama geri alınıp tekrar ilerlense de AYNI kod kullanılır:
+  /// numara yanmaz. NULL = henüz fiyat talebi aşamasında.
+  orderNumber        String?
   quoteNumber     String? // opsiyonel teklif numarası (PDF'te görünür)
   orderedByName   String? // "Besteller" — siparişi veren kişi (varsayılan: oturumdaki kullanıcı)
   projectName     String? // tedarik edilen projenin adı (PDF kapak kartında)
@@ -429,18 +450,24 @@ model ArticleCodeCategory {
   @@index([tenantId, sortOrder])
 }
 
-/// Ein NUMMERNKREIS = Unterkategorie innerhalb einer Kategorie: «PLC» in
-/// «Elektro» vergibt ELK-PLC-00001, ELK-PLC-00002 … Die IT bereitet ihn vor
-/// (startNumber); erst nach FREIGABE ueber die IT-Schleuse (isActive) taucht er
-/// in der Schnellerfassung auf. lastNumber = zuletzt vergebene Laufnummer,
-/// wird atomar hochgezaehlt.
+/// Ein NUMMERNKREIS = die ZELLEN nach der Kategorie: «PANO-PLC-H» in «ELK»
+/// vergibt ELK-PANO-PLC-H-00001, ELK-PANO-PLC-H-00002 … Die IT bereitet ihn
+/// vor (startNumber); erst nach FREIGABE ueber die IT-Schleuse (isActive)
+/// taucht er in der Schnellerfassung auf. lastNumber = zuletzt vergebene
+/// Laufnummer, wird atomar hochgezaehlt.
+///
+/// `code` haelt die Zellen 2..n mit Bindestrich verbunden (22.09.2026, Vorgabe
+/// Samet: «mindestens 2, hoechstens 4 Zellen, die 5. ist der Zaehler») — also
+/// 1 bis 3 Zellen, weil die Kategorie die erste stellt. `digits` sagt, wie
+/// breit der Zaehler laeuft (Vorgabe 5; der vorlaeufige Kreis AA-BB: 6).
 model ArticleCodeScheme {
   id            String    @id
   tenantId      String
   categoryId    String
-  code          String    @db.VarChar(8)
+  code          String    @db.VarChar(32)
   name          String    @db.VarChar(80)
   startNumber   Int       @default(1)
+  digits        Int       @default(5)
   lastNumber    Int       @default(0)
   isActive      Boolean   @default(false)
   activatedById String?
@@ -456,10 +483,7 @@ model ArticleCodeScheme {
   @@index([categoryId])
 }
 
-/// WEITERE BARCODES EINES ARTIKELS (10.09.2026, Nachtrag Samet: «dasselbe
-/// Modell kann verschiedene Barcodes haben»). Article.supplierBarcode bleibt
-/// der erste/haupt Barcode; alles, was die Schnellerfassung danach auf denselben
-/// Artikel bucht, landet hier — ein Barcode gehört im Mandanten genau EINEM Artikel.
+/// Product/model barcodes only. Unique device labels belong to StockUnit.
 model ArticleBarcode {
   id        String   @id
   tenantId  String
@@ -470,5 +494,21 @@ model ArticleBarcode {
   article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, barcode])
+  @@index([articleId])
+}
+
+/// One physical device received by QuickAdd. Its barcode cannot be received twice.
+model StockUnit {
+  id           String   @id
+  tenantId     String
+  articleId    String
+  barcode      String   @db.VarChar(120)
+  serialNumber String?  @db.VarChar(120)
+  createdAt    DateTime @default(now())
+
+  article Article @relation(fields: [articleId], references: [id])
+
+  @@unique([tenantId, barcode])
+  @@unique([tenantId, serialNumber])
   @@index([articleId])
 }

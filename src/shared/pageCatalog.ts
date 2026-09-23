@@ -429,6 +429,42 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
         ],
     },
     {
+        // PRODUKTION (19.09.2026, Vorgabe Samet): die Produktionsaufträge —
+        // Projekte und Aufträge mit ihren Geräten, die bestätigten
+        // Lieferantenbestellungen je Gerät, der Kostenvergleich. Die
+        // Projektseite (/production/orders/:id) gehört zur ersten Zeile.
+        //   1 = ansehen, 2 = zusätzlich sofort mit dem Verkauf abgleichen.
+        key: 'production',
+        labelKey: 'nav.production',
+        catalogKeys: ['production'],
+        pages: [
+            {
+                key: 'production.orders',
+                path: '/production/orders',
+                labelKey: 'nav.productionOrders',
+                maxLevel: 2,
+                grants: { read: ['production.view'], write: ['production.manage'] },
+            },
+            {
+                key: 'production.lines',
+                path: '/production/lines',
+                labelKey: 'nav.productionLines',
+                maxLevel: 1,
+                grants: { read: ['production.view'] },
+            },
+            /* SCHALTSCHRÄNKE (20.09.2026, Vorgabe Baris): die Seriennummern der
+               gebauten Schränke und der Katalog ihrer Typen. 1 = ansehen,
+               2 = Seriennummern ziehen, ins Lager buchen, Typenschild drucken. */
+            {
+                key: 'production.panels',
+                path: '/production/panels',
+                labelKey: 'nav.panels',
+                maxLevel: 2,
+                grants: { read: ['panels.view'], write: ['panels.manage'] },
+            },
+        ],
+    },
+    {
         // GÖREVLER (13.09.2026, Vorgabe Samet): ein EIGENES Aufgabenmodul nach
         // dem Vorbild Görevly — nicht die CRM-Aufgaben unter /crm/tasks. Eine
         // Zeile, drei Stufen, genau die zwei Sichten des Moduls:
@@ -548,6 +584,8 @@ export const RETIRED_PAGE_KEYS: Readonly<Record<string, string>> = {
     'personnel.incoming': 'personnel.requestsIncoming',
     // Rechnungsliste: vom Verkauf in die Buchhaltung (16.09.2026).
     'sales.invoices': 'accounting.invoices',
+    // Der Modellkatalog ist seit 20.09.2026 der zweite Reiter der Pano-Zentrale.
+    'production.panelModels': 'production.panels',
 };
 
 /**
@@ -580,6 +618,11 @@ export const PAGE_LEVEL_FALLBACKS: Readonly<Record<string, string>> = {
     'settings.pdf': 'sales.quotes',
     // Wer die Rechnungen sieht, sieht auch, was zu verrechnen ist.
     'accounting.toBill': 'accounting.invoices',
+    // Die Produktion liest die Lieferantenbestellungen — wer sie führt,
+    // sieht die Produktionsaufträge (19.09.2026).
+    'production.orders': 'inventory.orders',
+    'production.lines': 'inventory.orders',
+    'production.panels': 'inventory.orders',
 };
 
 /**

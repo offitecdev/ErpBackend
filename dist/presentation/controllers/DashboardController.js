@@ -8,6 +8,7 @@ const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const serviceTenantScope_1 = require("./serviceTenantScope");
 const salesOrder_pricing_1 = require("./salesOrder.pricing");
+const invoiceDrafts_1 = require("../../shared/invoiceDrafts");
 const round2 = (value) => Math.round(value * 100) / 100;
 // Percentage with one decimal; 0 when the denominator is empty.
 const rate = (part, whole) => whole > 0 ? Math.round((part / whole) * 1000) / 10 : 0;
@@ -78,11 +79,13 @@ class DashboardController {
                 prisma_client_1.default.$queryRaw(tenderGrossSql(tenantIds)),
                 // Cancelled invoices never count as billed.
                 prisma_client_1.default.invoice.aggregate({
-                    where: { ...scoped, status: { not: 'CANCELLED' } },
+                    where: { ...scoped, ...invoiceDrafts_1.billedInvoiceWhere },
                     _sum: { amount: true },
                 }),
-                prisma_client_1.default.invoice.aggregate({
-                    where: { ...scoped, status: 'PAID' },
+                // Bezahlt = echte Zahlungseingänge (auch Teilzahlungen, Rückzahlungen
+                // von Gutschriften negativ) — Schritt 7 / G19.
+                prisma_client_1.default.invoicePayment.aggregate({
+                    where: { ...scoped, kind: 'PAYMENT' },
                     _sum: { amount: true },
                 }),
             ]);
@@ -174,7 +177,7 @@ class DashboardController {
                         COALESCE(SUM(i.amount), 0) AS total
                     FROM Invoice i
                     WHERE i.tenantId IN (${tenantIn})
-                        AND i.status <> 'CANCELLED'
+                        AND i.status NOT IN ('CANCELLED', 'DRAFT') AND i.kind <> 'STORNO'
                         AND COALESCE(i.invoiceDate, i.createdAt) >= ${from}
                     GROUP BY month
                 `),
@@ -182,7 +185,7 @@ class DashboardController {
                 prisma_client_1.default.project.groupBy({ by: ['status'], where: scoped, _count: { _all: true } }),
                 prisma_client_1.default.invoice.groupBy({
                     by: ['kind'],
-                    where: { ...scoped, status: { not: 'CANCELLED' } },
+                    where: { ...scoped, ...invoiceDrafts_1.billedInvoiceWhere },
                     _count: { _all: true },
                     _sum: { amount: true },
                 }),

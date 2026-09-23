@@ -3033,6 +3033,13 @@ class ProjectController {
                 return res.status(400).json({ error: 'Dieses Projekt ist nicht storniert.' });
             }
             const orders = await prisma_client_1.default.salesOrder.count({ where: { projectId, tenantId } });
+            // Schritt 6 / F2: mit einem Gegenbeleg lebt der Vorgang nicht wieder auf.
+            const projectOrderIds = await prisma_client_1.default.salesOrder.findMany({
+                where: { projectId, tenantId }, select: { id: true },
+            });
+            (0, documentLifecycle_1.assertUncancelAllowed)(await (0, documentLifecycle_1.countCreditDocuments)(prisma_client_1.default, {
+                tenantId, projectId, salesOrderIds: projectOrderIds.map((row) => row.id),
+            }));
             await prisma_client_1.default.$transaction(async (tx) => {
                 await (0, documentLifecycle_1.uncancelProjectWithin)(tx, { projectId, tenantId, hasOrders: orders > 0 });
                 await (0, documentGovernance_1.recordDocumentEvent)(tx, {
@@ -3051,7 +3058,7 @@ class ProjectController {
             res.json({ projectId, cancelled: false });
         }
         catch (error) {
-            res.status(error?.status || 400).json({ error: error.message });
+            res.status(error?.status || 400).json({ error: error.message, code: error?.code, blockers: error?.blockers });
         }
     }
     /**

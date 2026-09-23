@@ -13,6 +13,7 @@ import { loadAccountingFigures, loadToBill } from '../../shared/accountingOvervi
 import { UpdateInvoiceDatesUseCase } from '../../application/use-cases/billing/UpdateInvoiceDatesUseCase';
 import { invoiceErrorBody } from '../../application/use-cases/billing/invoiceErrors';
 import { InvoiceCategory, InvoiceStatus } from '../../domain/entities/Invoice';
+import { INVOICE_SORTS, INVOICE_STATE_KEYS, InvoiceSort, InvoiceStateKey } from '../../domain/repositories/IInvoiceRepository';
 import { Prisma } from '@prisma/client';
 import { userHasPermission } from '../middlewares/RbacMiddleware';
 import { recordDocumentEvent, requestIp } from '../../shared/documentGovernance';
@@ -21,6 +22,8 @@ import { getArticleThumbnails } from '../../infrastructure/services/PdfImageThum
 import { peekDocumentNumber } from '../../shared/documentNumber';
 
 const INVOICE_CATEGORIES: InvoiceCategory[] = ['PROJECT', 'DELIVERY', 'DIRECT'];
+/** Kalendertag der Person (YYYY-MM-DD) — er entscheidet, was «überfällig» ist. */
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export class BillingController {
     constructor(
@@ -242,14 +245,40 @@ export class BillingController {
             const category = INVOICE_CATEGORIES.includes(rawCategory as InvoiceCategory)
                 ? (rawCategory as InvoiceCategory)
                 : undefined;
-            const invoices = await this.listInvoicesUseCase.execute({
+            // Reiter, Suche und Reihenfolge rechnet seit dem 22.09.2026 der
+            // Server: die Buchhaltungsliste hat nie mehr alle Rechnungen in der
+            // Hand. Unbekannte Werte fallen still weg, statt die Liste zu leeren.
+            const rawState = String(req.query.state || '');
+            const state = INVOICE_STATE_KEYS.includes(rawState as InvoiceStateKey) ? (rawState as InvoiceStateKey) : undefined;
+            const rawSort = String(req.query.sort || '');
+            const sort = INVOICE_SORTS.includes(rawSort as InvoiceSort) ? (rawSort as InvoiceSort) : undefined;
+            const rawToday = String(req.query.today || '');
+            const filter = {
                 tenantId: req.user!.tenantId,
                 projectId: req.query.projectId ? String(req.query.projectId) : undefined,
                 salesOrderId: req.query.salesOrderId ? String(req.query.salesOrderId) : undefined,
                 customerId: req.query.customerId ? String(req.query.customerId) : undefined,
                 status: req.query.status ? (String(req.query.status) as InvoiceStatus) : undefined,
                 category,
-            });
+                search: req.query.search ? String(req.query.search).slice(0, 120) : undefined,
+                state,
+                today: DAY_PATTERN.test(rawToday) ? rawToday : undefined,
+                sort,
+            };
+
+            // MIT `page` antwortet die Liste als SEITE (Vorgabe 20 Zeilen) samt
+            // Gesamtzahl und Reiterzählern; OHNE bleibt die alte Form — Projekt,
+            // Auftrag und Kundenkarte lesen weiterhin ihre ganze Liste.
+            if (req.query.page) {
+                const pageResult = await this.listInvoicesUseCase.executePage({
+                    ...filter,
+                    page: Number(req.query.page) || 1,
+                    pageSize: Number(req.query.pageSize) || 20,
+                });
+                return res.status(200).json(pageResult);
+            }
+
+            const invoices = await this.listInvoicesUseCase.execute(filter);
             res.status(200).json(invoices);
         } catch (error: any) {
             res.status(error?.status || 400).json(invoiceErrorBody(error));
@@ -263,7 +292,14 @@ export class BillingController {
                 issuedByEmployeeId: req.user!.id,
                 salesOrderId: req.body.salesOrderId,
                 projectId: req.body.projectId,
-                billingType: req.body.billingType === 'PARTIAL' ? 'PARTIAL' : 'FULL',
+                // Die ART FOLGT DEM ANTEIL (G17): hier zaehlt nur, was der
+                // Client AUSDRUECKLICH schickt. Ein fehlendes Feld auf 'FULL'
+                // zu setzen machte aus jeder Teilrechnung der Buchhaltung eine
+                // Schluss-/Gesamtrechnung ueber den ganzen offenen Rest: der
+                // eingetragene Prozentsatz (z.B. 15%) ging dabei verloren.
+                billingType: req.body.billingType === 'PARTIAL' || req.body.billingType === 'FULL'
+                    ? req.body.billingType
+                    : null,
                 kind: req.body.kind ?? null,
                 percent: req.body.percent,
                 invoiceDate: req.body.invoiceDate ?? null,

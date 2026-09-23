@@ -5,6 +5,7 @@ const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const SystemAdminMiddleware_1 = require("../middlewares/SystemAdminMiddleware");
 const SalesOrderController_1 = require("../controllers/SalesOrderController");
+const FullCancelController_1 = require("../controllers/FullCancelController");
 const router = (0, express_1.Router)();
 const controller = new SalesOrderController_1.SalesOrderController();
 router.use(AuthMiddleware_1.requireAuth);
@@ -28,6 +29,9 @@ router.get('/:id/lifecycle', (0, RbacMiddleware_1.requirePermission)('crm.custom
 // aufheben gehört der Systemverwaltung allein (16.09.2026, D2/D3).
 router.post('/:id/revert-to-draft', (0, RbacMiddleware_1.requirePermission)('salesOrders.revert'), (req, res) => controller.revertToDraft(req, res));
 router.post('/:id/cancel', (0, RbacMiddleware_1.requirePermission)('salesOrders.cancel'), (req, res) => controller.cancel(req, res));
+// «Gesamten Vorgang stornieren» (17.09.2026): Vorschau + Ausführung samt Rechnungen.
+router.get('/:id/full-cancel', (0, RbacMiddleware_1.requirePermission)('salesOrders.cancel'), (0, FullCancelController_1.previewFullCancel)('ORDER'));
+router.post('/:id/full-cancel', (0, RbacMiddleware_1.requirePermission)('salesOrders.cancel'), (0, FullCancelController_1.runFullCancel)('ORDER'));
 router.post('/:id/uncancel', SystemAdminMiddleware_1.requireSystemAdmin, (req, res) => controller.uncancel(req, res));
 // Der alte Weg, mit den neuen Regeln: ein Hauptauftrag geht damit zurück in den
 // Entwurf, ein Nachtrag ohne Rechnung verschwindet ganz.

@@ -7,6 +7,7 @@ exports.CustomerRepository = void 0;
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const Customer_1 = require("../../domain/entities/Customer");
 const nanoid_1 = require("nanoid");
+const invoiceDrafts_1 = require("../../shared/invoiceDrafts");
 // Lifecycle statuses that count as "inactive" for the legacy isActive flag.
 // Active, Potential and Problematic customers remain active relationships.
 const INACTIVE_CUSTOMER_STATUSES = new Set(["PASSIVE", "BLOCKED"]);
@@ -336,7 +337,7 @@ class CustomerRepository {
             }),
             // Stornierte Rechnungen zählen nicht als verrechnet.
             prisma_client_1.default.invoice.aggregate({
-                where: { customerId: id, tenantId, status: { not: 'CANCELLED' } },
+                where: { customerId: id, tenantId, ...invoiceDrafts_1.billedInvoiceWhere },
                 _sum: { amount: true },
             }),
         ]);
