@@ -35,6 +35,7 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const documentText_1 = require("../../infrastructure/services/documentText");
 const gptExtract_1 = require("../../infrastructure/services/gptExtract");
 const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
+const standardOrderTemplate_1 = require("../../shared/standardOrderTemplate");
 exports.purchaseOrderImportRouter = (0, express_1.Router)();
 /* ── Grenzen ──────────────────────────────────────────────────────────────
    Ein Beleg ist eine Handvoll Seiten. Die Stückgrösse ist bewusst kleiner als
@@ -639,6 +640,10 @@ exports.purchaseOrderImportRouter.get('/supplier-templates', AuthMiddleware_1.re
         const tenantId = req.user.tenantId;
         const supplierId = String(req.query.supplierId ?? '').trim();
         const documentType = templateDocumentType(req.query.documentType);
+        // STANDART ŞABLON (24.09.2026): sipariş ve fiyat talebinin sabit
+        // şablonu yoksa burada kurulur — liste onu hep içerir.
+        if (documentType !== 'GOODS_RECEIPT')
+            await (0, standardOrderTemplate_1.ensureStandardTemplateOnce)(tenantId, documentType);
         /* Mit Lieferant: SEINE Vorlagen und die allgemeinen (supplierId
            NULL). Ohne: alles — die Vorlagenliste im Fenster. */
         const where = supplierId

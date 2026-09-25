@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.APPROVED_PURCHASE_STATUSES = exports.OPEN_PURCHASE_STATUSES = exports.sumCostFigures = exports.costFiguresByItem = exports.receivedValueOf = exports.finishCostFigures = exports.emptyCostFigures = exports.effectiveNetPrice = exports.assignPurchaseLines = exports.parseAssignmentItemIds = exports.parsePurchaseLines = exports.planProductionSnapshot = exports.itemSourceKey = exports.PRODUCTION_ORDER_TYPES = exports.round2 = void 0;
+exports.APPROVED_PURCHASE_STATUSES = exports.OPEN_PURCHASE_STATUSES = exports.sumCostFigures = exports.costFiguresByItem = exports.receivedValueOf = exports.finishCostFigures = exports.emptyCostFigures = exports.effectiveNetPrice = exports.assignPurchaseLines = exports.parseAssignmentItemIds = exports.parsePurchaseLines = exports.restrictToOrderedDevices = exports.planProductionSnapshot = exports.itemSourceKey = exports.PRODUCTION_ORDER_TYPES = exports.round2 = void 0;
 /**
  * ── DIE REGELN DES PRODUKTIONSMODULS ────────────────────────────────────────
  *
@@ -127,6 +127,52 @@ const planProductionSnapshot = (source, existing, newId) => {
     return { projects: [...projects.values()], orders: [...orders.values()], items };
 };
 exports.planProductionSnapshot = planProductionSnapshot;
+/**
+ * «Üretim şirketindeki Projelerim modülüne artık cihazlar otomatik/toplu
+ *  çekilmemeli. Yalnızca siparişi verilip onaylanan cihazlar ilgili projeye
+ *  dahil edilmeli; aynı projeye ait cihazlar sipariş onaylandıkça projede
+ *  toplanmalı.»
+ *
+ * Der Abgleich liest weiter die ganzen Aufträge (die Ids bleiben stabil), aber
+ * AKTIV bleibt nur:
+ *   · eine Offertposition, für die eine bestätigte interne Bestellung besteht
+ *     — mit deren Menge (nicht der Auftragsmenge) und anteiligem Betrag;
+ *   · was schon eigene Lieferantenbestellungen trägt (sonst zeigten diese
+ *     Bestellungen ins Leere);
+ * ein Auftrag lebt, solange eines seiner Geräte lebt, ein Projekt ebenso.
+ */
+const restrictToOrderedDevices = (plan, demand) => {
+    const items = plan.items.map((item) => {
+        if (!item.isActive)
+            return item;
+        const ordered = item.sourceType === 'POSITION' ? demand.orderedByPosition.get(item.sourceId) : undefined;
+        if (ordered !== undefined && ordered > 0) {
+            const share = item.quantity > 0 ? ordered / item.quantity : 1;
+            return { ...item, quantity: ordered, totalPrice: (0, exports.round2)(item.totalPrice * share) };
+        }
+        if (demand.pinnedItemIds.has(item.id))
+            return item;
+        return { ...item, isActive: false };
+    });
+    const liveOrders = new Set(items.filter((item) => item.isActive).map((item) => item.productionOrderId));
+    const liveProjects = new Set(items.filter((item) => item.isActive).map((item) => item.productionProjectId));
+    const orders = plan.orders.map((order) => ({
+        ...order,
+        isActive: order.isActive && (liveOrders.has(order.id) || demand.pinnedProjectIds.has(order.productionProjectId)),
+    }));
+    const totals = new Map();
+    for (const item of items) {
+        if (item.isActive)
+            totals.set(item.productionProjectId, (0, exports.round2)((totals.get(item.productionProjectId) ?? 0) + item.totalPrice));
+    }
+    const projects = plan.projects.map((project) => ({
+        ...project,
+        isActive: project.isActive && (liveProjects.has(project.id) || demand.pinnedProjectIds.has(project.id)),
+        salesTotal: totals.get(project.id) ?? 0,
+    }));
+    return { projects, orders, items };
+};
+exports.restrictToOrderedDevices = restrictToOrderedDevices;
 /* ═══════════════════════════════════════════════════════════════════════════
    2) DIE BESTELLZEILE UND IHR GERÄT
    ═════════════════════════════════════════════════════════════════════════ */

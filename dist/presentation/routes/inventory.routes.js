@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.nextPurchaseReference = exports.parsePurchaseOrderRow = exports.purchaseOrderTotalVat = exports.normalizePurchaseOrderItems = exports.refreshProducerProduction = exports.poLineSource = exports.supplierAddressSnapshot = exports.sendPurchaseOrderError = void 0;
 const express_1 = require("express");
 const InventoryController_1 = require("../controllers/InventoryController");
 const InventoryRepository_1 = require("../../infrastructure/repositories/InventoryRepository");
@@ -10,6 +11,7 @@ const ProcessStockMovementUseCase_1 = require("../../application/use-cases/inven
 const ManagePurchaseProposalsUseCase_1 = require("../../application/use-cases/inventory/ManagePurchaseProposalsUseCase");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const quickAddStockUnit_1 = require("../../application/services/quickAddStockUnit");
 const ItGateMiddleware_1 = require("../middlewares/ItGateMiddleware");
 const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 // Schnellerfassung: der markierte Bildausschnitt geht ueber den Server zu
@@ -20,6 +22,7 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
 const mailSignature_1 = require("../../infrastructure/services/mailSignature");
 const postalAddress_1 = require("../../shared/postalAddress");
+const purchaseDocumentCode_1 = require("../../shared/purchaseDocumentCode");
 const articleImage_1 = require("../../shared/articleImage");
 // Produktbilder liegen in R2 und gehen ueber die eigene Domain am Eimer
 // hinaus (assets.demo.offitec.ch) — dieselbe Adresse wie die
@@ -32,11 +35,17 @@ const measurementUnitCatalog_1 = require("../../application/services/measurement
 // ERP-Codes aus den Nummernkreisen der Code-Einstellungen (10.09.2026) — und
 // die vorläufigen AA-BB-Codes des Wareneingangs (19.09.2026).
 const articleCodeCatalog_1 = require("../../application/services/articleCodeCatalog");
+// Yeni ürün formu (23.09.2026): üçlü ürün türü ve şirket türüne bağlı
+// zorunlu alanlar.
+const articleKind_1 = require("../../shared/articleKind");
+const companyType_1 = require("../../shared/companyType");
 const nanoid_1 = require("nanoid");
 const serviceTenantScope_1 = require("../controllers/serviceTenantScope");
 const purchaseOrderImport_routes_1 = require("./purchaseOrderImport.routes");
 // Produktion (19.09.2026): Pflichtauswahl Projekt + Gerät, bestätigte Zeilen.
 const productionModule_1 = require("../composition/productionModule");
+const producerOrders_1 = require("../../shared/producerOrders");
+const standardOrderTemplate_1 = require("../../shared/standardOrderTemplate");
 const ProductionPurchaseLinkService_1 = require("../../application/use-cases/production/ProductionPurchaseLinkService");
 const productionErrors_1 = require("../../application/use-cases/production/productionErrors");
 const purchaseOrderApproval_1 = require("../../domain/services/purchaseOrderApproval");
@@ -50,6 +59,7 @@ const sendPurchaseOrderError = (res, error) => {
         return res.status(error.status).json((0, productionErrors_1.productionErrorBody)(error));
     return res.status(400).json({ error: error?.message || 'Error' });
 };
+exports.sendPurchaseOrderError = sendPurchaseOrderError;
 /** Tedarikçi adresinin ayrı bileşenleri (tek serbest metin alanı yoktur). */
 const SUPPLIER_ADDRESS_FIELDS = ['address', 'addressSupplement', 'postalCode', 'city', 'state', 'country'];
 /** Kayıttaki bileşenler → PDF/ekran için 2 satırlık snapshot metni. */
@@ -61,6 +71,32 @@ const supplierAddressSnapshot = (supplier) => (0, postalAddress_1.composeAddress
     state: supplier?.state,
     country: supplier?.country,
 });
+exports.supplierAddressSnapshot = supplierAddressSnapshot;
+/**
+ * Tedarikçinin KDV ayarı (24.09.2026). `vatLiable` üç hâllidir: null =
+ * belirtilmedi, false = KDV yok, true = ülke + oran siparişe aktarılır.
+ * Yalnızca gövdede gelen alanlar döner (PATCH kısmi kalır); KDV yoksa ülke
+ * ve oran temizlenir.
+ */
+const readSupplierVat = (body) => {
+    const patch = {};
+    if (body.vatLiable !== undefined) {
+        patch.vatLiable = body.vatLiable === null ? null : Boolean(body.vatLiable);
+    }
+    if (body.vatCountry !== undefined) {
+        const country = body.vatCountry ? String(body.vatCountry).trim().slice(0, 80) : '';
+        patch.vatCountry = country || null;
+    }
+    if (body.vatRate !== undefined) {
+        const rate = body.vatRate === null || body.vatRate === '' ? NaN : Number(body.vatRate);
+        patch.vatRate = Number.isFinite(rate) ? Math.min(100, Math.max(0, rate)) : null;
+    }
+    if (patch.vatLiable === false || patch.vatLiable === null) {
+        patch.vatCountry = null;
+        patch.vatRate = null;
+    }
+    return patch;
+};
 const router = (0, express_1.Router)();
 const smtp = new SmtpMailService_1.SmtpMailService();
 const repository = new InventoryRepository_1.InventoryRepository();
@@ -373,6 +409,135 @@ const articleCostSummary = async (tenantId, articleId) => {
     };
 };
 /**
+ * ÜRÜNÜN TEDARİKÇİLERİ (23.09.2026) — detay formundaki çoklu seçimin kaynağı.
+ * Üç yerden toplanır: alım partileri (ArticleSupplier), tedarikçisi işaretli
+ * stok GİRİŞLERİ ve kartın varsayılan tedarikçisi. `locked` = alım geçmişi
+ * var (adetli parti ya da giriş hareketi): formdan çıkarılamaz, geçmiş
+ * silinmesin. Sıra: tercih edilen önce, sonra ilk bağlanan.
+ */
+const articleSupplierLinks = async (tenantId, articleId) => {
+    const rows = await prisma_client_1.default.$queryRawUnsafe(`SELECT s.\`id\` AS supplierId,
+                s.\`companyName\` AS companyName,
+                MAX(p.preferred) AS preferred,
+                MAX(p.history) AS history,
+                MIN(p.firstAt) AS firstAt
+         FROM (
+             SELECT \`supplierId\`,
+                    CASE WHEN \`isPreferred\` THEN 1 ELSE 0 END AS preferred,
+                    CASE WHEN \`quantity\` > 0 OR \`remainingQuantity\` > 0 THEN 1 ELSE 0 END AS history,
+                    \`createdAt\` AS firstAt
+             FROM \`ArticleSupplier\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+             UNION ALL
+             SELECT \`supplierId\`, 0 AS preferred, 1 AS history, \`transactionDate\` AS firstAt
+             FROM \`StockMovement\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+               AND \`supplierId\` IS NOT NULL AND \`movementType\` = 'IN' AND \`quantity\` > 0
+             UNION ALL
+             SELECT \`defaultSupplierId\` AS supplierId, 1 AS preferred, 0 AS history, \`createdAt\` AS firstAt
+             FROM \`Article\`
+             WHERE \`tenantId\` = ? AND \`id\` = ? AND \`defaultSupplierId\` IS NOT NULL
+         ) p
+         INNER JOIN \`Supplier\` s ON s.\`id\` = p.supplierId
+         WHERE s.\`tenantId\` = ?
+         GROUP BY s.\`id\`, s.\`companyName\`
+         ORDER BY preferred DESC, firstAt ASC, companyName ASC`, tenantId, articleId, tenantId, articleId, tenantId, articleId, tenantId);
+    return rows.map((row) => ({
+        supplierId: String(row.supplierId),
+        companyName: String(row.companyName || ''),
+        preferred: Number(row.preferred) > 0,
+        locked: Number(row.history) > 0,
+    }));
+};
+/** Formdan gelen tedarikçi listesi: kayıtlı olan kimliğiyle, yeni olan adıyla. */
+const readSupplierRefs = (value) => (Array.isArray(value) ? value : [])
+    .map((ref) => (ref?.supplierId
+    ? { supplierId: String(ref.supplierId) }
+    : { supplierName: String(ref?.supplierName ?? '').trim() }))
+    .filter((ref) => ref.supplierId || ref.supplierName)
+    .slice(0, 20);
+/**
+ * Detay formundaki tedarikçi listesini ürüne yazma PLANI (23.09.2026): yeni
+ * gelenler miktarsız TANIM partisi olur; çıkarılanların yalnızca tanım
+ * partileri silinir — alım geçmişi yerinde kalır. 24.09.2026'dan beri liste en
+ * çok BİR tedarikçidir; o, kartın `defaultSupplierId`'si olur. Denetim önce,
+ * yazma sonra: `apply(tx)` ürün alanlarıyla AYNI işlemde çalışır.
+ */
+const planArticleSupplierSync = async (tenantId, articleId, refs) => {
+    const cache = new Map();
+    const invalidIds = await warmSupplierCache(tenantId, refs, cache);
+    if (refs.some((ref) => ref.supplierId && invalidIds.has(ref.supplierId))) {
+        return { error: { status: 404, body: { error: 'Tedarikçi bulunamadı.' } } };
+    }
+    const desired = [...new Set(refs.map((ref) => cachedSupplier(cache, ref)?.id).filter((id) => Boolean(id)))];
+    const [current, article] = await Promise.all([
+        articleSupplierLinks(tenantId, articleId),
+        prisma_client_1.default.article.findFirst({ where: { id: articleId, tenantId }, select: { baseCost: true, defaultSupplierId: true } }),
+    ]);
+    // Ürünün TEK tedarikçisi olur (Samet, 24.09.2026).
+    if (desired.length > 1) {
+        return { error: { status: 400, body: { error: 'Bir ürüne yalnızca bir tedarikçi atanabilir.', code: 'SUPPLIER_SINGLE' } } };
+    }
+    // Değiştirilen tedarikçinin yalnızca TANIM partisi silinir; alım geçmişi
+    // (adetli partiler, giriş hareketleri) olduğu gibi kalır.
+    const removed = current.filter((link) => !desired.includes(link.supplierId));
+    const currentIds = new Set(current.map((link) => link.supplierId));
+    const added = desired.filter((supplierId) => !currentIds.has(supplierId));
+    const first = desired[0] ?? null;
+    const preferredNow = current.find((link) => link.preferred)?.supplierId ?? null;
+    const defaultChanges = (article?.defaultSupplierId ?? null) !== first;
+    if (!added.length && !removed.length && first === preferredNow && !defaultChanges)
+        return { apply: null };
+    const location = added.length ? await repository.ensureDefaultLocation(tenantId) : null;
+    return {
+        apply: async (tx) => {
+            if (removed.length) {
+                await tx.articleSupplier.deleteMany({
+                    where: {
+                        tenantId,
+                        articleId,
+                        supplierId: { in: removed.map((link) => link.supplierId) },
+                        quantity: 0,
+                        remainingQuantity: 0,
+                    },
+                });
+            }
+            if (added.length) {
+                await tx.articleSupplier.createMany({
+                    data: added.map((supplierId) => ({
+                        id: (0, nanoid_1.nanoid)(10),
+                        tenantId,
+                        articleId,
+                        supplierId,
+                        locationId: location?.id ?? null,
+                        purchasePrice: Math.max(0, Number(article?.baseCost) || 0),
+                        quantity: 0,
+                        remainingQuantity: 0,
+                        lastPurchaseDate: null,
+                        stockMovementId: null,
+                        isPreferred: false,
+                    })),
+                });
+            }
+            if (first !== preferredNow) {
+                await tx.articleSupplier.updateMany({ where: { tenantId, articleId }, data: { isPreferred: false } });
+                if (first) {
+                    const lot = await tx.articleSupplier.findFirst({
+                        where: { tenantId, articleId, supplierId: first },
+                        orderBy: [{ lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }],
+                        select: { id: true },
+                    });
+                    if (lot)
+                        await tx.articleSupplier.update({ where: { id: lot.id }, data: { isPreferred: true } });
+                }
+            }
+            if (defaultChanges) {
+                await tx.article.update({ where: { id: articleId }, data: { defaultSupplierId: first } });
+            }
+        },
+    };
+};
+/**
  * Ürün detay ekranının kritik AÇILIŞ verisi. Büyük LONGTEXT görseli, açık
  * sipariş JSON'ları ve maliyet hareketleri bu sorguya bilinçli olarak girmez;
  * ekran bu küçük yanıtla açılır, diğerleri paralel uçlardan tamamlanır.
@@ -381,25 +546,30 @@ const articleCostSummary = async (tenantId, articleId) => {
  * durur — ekran kaydettikten sonra yanıttan tazelenir.
  */
 const buildArticleDetail = async (tenantId, id) => {
-    const article = await prisma_client_1.default.article.findFirst({
-        where: { id, tenantId, deletedAt: null },
-        select: {
-            id: true,
-            articleCode: true,
-            name: true,
-            unit: true,
-            description: true,
-            salePrice: true,
-            itemType: true,
-            imageUrl: true,
-            updatedAt: true,
-            modelNumber: true,
-            serialNumber: true,
-            supplierBarcode: true,
-            systemBarcode: true,
-            stockBalances: { select: { currentQuantity: true } },
-        },
-    });
+    const [article, suppliers] = await Promise.all([
+        prisma_client_1.default.article.findFirst({
+            where: { id, tenantId, deletedAt: null },
+            select: {
+                id: true,
+                articleCode: true,
+                name: true,
+                unit: true,
+                description: true,
+                salePrice: true,
+                itemType: true,
+                articleKind: true,
+                imageUrl: true,
+                updatedAt: true,
+                modelNumber: true,
+                serialNumber: true,
+                supplierBarcode: true,
+                systemBarcode: true,
+                stockBalances: { select: { currentQuantity: true } },
+            },
+        }),
+        // Detay formundaki tedarikçi seçimi (23.09.2026) — aynı anda okunur.
+        articleSupplierLinks(tenantId, id),
+    ]);
     if (!article)
         return null;
     return {
@@ -416,6 +586,11 @@ const buildArticleDetail = async (tenantId, id) => {
         description: article.description,
         salePrice: article.salePrice ?? 0,
         itemType: article.itemType ?? 'PRODUCT',
+        // Üçlü ürün türü (Üretilecek / Satılacak / Ek Hizmet); null = seçilmedi.
+        articleKind: (0, articleKind_1.parseArticleKind)(article.articleKind),
+        // TEK tedarikçi (24.09.2026): tercih edilen/varsayılan. Alım geçmişindeki
+        // diğer tedarikçiler "Tedarikçiler" sekmesinde görünmeye devam eder.
+        suppliers: suppliers.slice(0, 1).map(({ supplierId, companyName, locked }) => ({ supplierId, companyName, locked })),
         /* GÖRSELİN ADRESİ — base64 değil (01.09.2026).
          *
          * Dosya R2'de duruyor; sütun yalnızca `r2:...` verisini taşır, yani
@@ -554,6 +729,15 @@ router.get('/articles/:id/image', AuthMiddleware_1.requireAuth, (0, RbacMiddlewa
  *               unit: { type: string }
  *               salePrice: { type: number }
  *               itemType: { type: string, enum: [PRODUCT, SERVICE] }
+ *               articleKind: { type: string, nullable: true, enum: [MANUFACTURED, RESALE, SERVICE], description: "itemType'ı da belirler" }
+ *               suppliers:
+ *                 type: array
+ *                 description: "En çok BİR tedarikçi (400 SUPPLIER_SINGLE); boş liste = tedarikçiyi kaldır. Eski tedarikçinin alım geçmişi korunur"
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     supplierId: { type: string, nullable: true }
+ *                     supplierName: { type: string, nullable: true }
  *               description: { type: string, nullable: true }
  *               imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... | null = sil" }
  */
@@ -632,6 +816,36 @@ router.patch('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             }
             data.itemType = itemType;
         }
+        // Üçlü ürün türü (23.09.2026) — ürün/hizmet ayrımını da taşır:
+        // seçilen tür `itemType`'ı belirler, boş değer yalnızca türü siler.
+        if (body.articleKind !== undefined) {
+            const cleared = body.articleKind === null || body.articleKind === '';
+            const articleKind = cleared ? null : (0, articleKind_1.parseArticleKind)(body.articleKind);
+            if (!cleared && !articleKind) {
+                return res.status(400).json({ error: 'Ürün türü geçersiz.' });
+            }
+            data.articleKind = articleKind;
+            if (articleKind)
+                data.itemType = (0, articleKind_1.itemTypeForArticleKind)(articleKind);
+        }
+        // Tedarikçiler (23.09.2026): formdaki çoklu seçim, TAM liste olarak.
+        const supplierRefs = body.suppliers !== undefined ? readSupplierRefs(body.suppliers) : null;
+        // Proje/satış şirketinde tür ve tedarikçi zorunludur — boşaltılamaz.
+        const clearsKind = body.articleKind !== undefined && !data.articleKind;
+        const clearsSuppliers = supplierRefs !== null && !supplierRefs.length;
+        if ((clearsKind || clearsSuppliers) && (0, companyType_1.companyRequiresArticleKindAndSupplier)(await (0, companyType_1.readTenantCompanyType)(tenantId))) {
+            return clearsKind
+                ? res.status(400).json({ error: 'Ürün türü zorunludur.', code: 'KIND_REQUIRED' })
+                : res.status(400).json({ error: 'En az bir tedarikçi seçin.', code: 'SUPPLIER_REQUIRED' });
+        }
+        // Denetim görselden ÖNCE: reddedilen istek depoda sahipsiz dosya bırakmasın.
+        let applySuppliers = null;
+        if (supplierRefs) {
+            const plan = await planArticleSupplierSync(tenantId, id, supplierRefs);
+            if ('error' in plan)
+                return res.status(plan.error.status).json(plan.error.body);
+            applySuppliers = plan.apply;
+        }
         // Açıklama biçimli metindir — dar beyaz listeden geçer.
         if (body.description !== undefined)
             data.description = (0, richText_1.normalizeRichText)(body.description);
@@ -668,10 +882,21 @@ router.patch('/articles/:id/detail', AuthMiddleware_1.requireAuth, (0, RbacMiddl
                 previousImage = before?.imageUrl ?? null;
             }
         }
-        if (Object.keys(data).length) {
+        const fieldsChanged = Object.keys(data).length > 0;
+        if (fieldsChanged && !applySuppliers) {
             await prisma_client_1.default.article.update({ where: { id }, data });
-            await (0, ImageStore_1.forgetArticleImage)(previousImage, data.imageUrl ?? null);
         }
+        else if (applySuppliers) {
+            // Alanlar ve tedarikçiler birlikte yazılır — yarım kayıt olmaz.
+            const writeSuppliers = applySuppliers;
+            await prisma_client_1.default.$transaction(async (tx) => {
+                if (fieldsChanged)
+                    await tx.article.update({ where: { id }, data });
+                await writeSuppliers(tx);
+            });
+        }
+        if (fieldsChanged)
+            await (0, ImageStore_1.forgetArticleImage)(previousImage, data.imageUrl ?? null);
         const detail = await buildArticleDetail(tenantId, id);
         return res.status(200).json(detail);
     }
@@ -737,6 +962,9 @@ router.get('/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requ
                 state: true,
                 country: true,
                 notes: true,
+                vatLiable: true,
+                vatCountry: true,
+                vatRate: true,
                 isActive: true,
                 createdAt: true,
                 updatedAt: true,
@@ -824,6 +1052,7 @@ router.post('/suppliers', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.req
                     req.body[field] ? String(req.body[field]).trim() : null,
                 ])),
                 notes: req.body.notes ? String(req.body.notes).trim() : null,
+                ...readSupplierVat(req.body),
                 isActive: req.body.isActive ?? true,
             },
             include: supplierInclude,
@@ -848,6 +1077,24 @@ router.get('/suppliers/:supplierId', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         res.status(400).json({ error: error.message });
     }
 });
+/**
+ * Sipariş ekranı tedarikçi seçilince yalnızca KDV ayarını ister — tam kayıt
+ * (tüm ürün bağlantıları + görseller) burada gereksiz yüktür.
+ */
+router.get('/suppliers/:supplierId/vat', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 60 }), async (req, res) => {
+    try {
+        const supplier = await prisma_client_1.default.supplier.findFirst({
+            where: { id: req.params.supplierId, tenantId: req.user.tenantId },
+            select: { id: true, vatLiable: true, vatCountry: true, vatRate: true },
+        });
+        if (!supplier)
+            return res.status(404).json({ error: 'Tedarikçi bulunamadı.' });
+        res.status(200).json(supplier);
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 router.patch('/suppliers/:supplierId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.articles.update'), async (req, res) => {
     try {
         const existing = await prisma_client_1.default.supplier.findFirst({
@@ -862,6 +1109,7 @@ router.patch('/suppliers/:supplierId', AuthMiddleware_1.requireAuth, (0, RbacMid
         });
         if (req.body.isActive !== undefined)
             patch.isActive = Boolean(req.body.isActive);
+        Object.assign(patch, readSupplierVat(req.body));
         if (patch.companyName === '')
             return res.status(400).json({ error: 'Tedarikçi şirket adı zorunludur.' });
         const supplier = await prisma_client_1.default.supplier.update({
@@ -1256,16 +1504,31 @@ router.post('/movements/scan', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
  */
 router.get('/movements/:articleId', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), (req, res) => controller.getMovements(req, res));
 /**
+ * EK TEDARİKÇİLER (23.09.2026) — yeni ürün formunda birden fazla tedarikçi
+ * seçilebilir. İlki satırın `supplierId`/`supplierName` alanında gider (tercih
+ * edilen parti); geri kalanlar `additionalSuppliers` dizisinde, aynı biçimde.
+ */
+const readAdditionalSuppliers = (item) => (Array.isArray(item?.additionalSuppliers) ? item.additionalSuppliers : [])
+    .filter((ref) => ref && (ref.supplierId || String(ref.supplierName ?? '').trim()))
+    .slice(0, 20);
+/** Önbellekten tedarikçiyi okur — satırın kendi alanı da ek tedarikçi de. */
+const cachedSupplier = (cache, ref) => cache.get(ref.supplierId
+    ? `id:${String(ref.supplierId)}`
+    : `name:${ref.supplierName ? String(ref.supplierName).trim().toLowerCase() : ''}`) || null;
+/**
  * Toplu uçlarda tedarikçiler satırlar işlenmeden ÖNCE, sabit sayıda sorguyla çözülür:
  * tüm ad/kimlikler beraber okunur ve satır döngüsü tamamen bellekte kalır.
  * Çözülemeyen tedarikçi kimlikleri döner; ilgili satır kendi hatasını alır.
  */
 const warmSupplierCache = async (tenantId, items, cache) => {
-    const requestedIds = Array.from(new Set(items
+    // Satırın kendi tedarikçisi ve (yeni ürün formundan gelen) ek tedarikçileri
+    // aynı `supplierId` / `supplierName` biçimini taşır — hepsi birlikte çözülür.
+    const refs = items.flatMap((item) => [item, ...readAdditionalSuppliers(item)]);
+    const requestedIds = Array.from(new Set(refs
         .map((item) => item?.supplierId ? String(item.supplierId) : '')
         .filter(Boolean)));
     const requestedNames = new Map();
-    items.forEach((item) => {
+    refs.forEach((item) => {
         if (item?.supplierId)
             return;
         const companyName = item?.supplierName ? String(item.supplierName).trim() : '';
@@ -1754,12 +2017,21 @@ const runBulkCreateArticles = async (req, options = {}) => {
                     throw new Error(imageProblem);
                 // Yukarıda depoya yazıldı; sütuna yalnızca verweis girer.
                 const imageUrl = imageRefByIndex.get(index) ?? null;
-                if (item.supplierId && invalidSupplierIds.has(String(item.supplierId)))
+                const additionalRefs = readAdditionalSuppliers(item);
+                if ([item, ...additionalRefs].some((ref) => ref.supplierId && invalidSupplierIds.has(String(ref.supplierId)))) {
                     throw new Error('Tedarikçi bulunamadı.');
+                }
                 // Tedarikçiler yukarıda toplu çözüldü; burada yalnızca okunur.
-                const supplier = supplierCache.get(item.supplierId
-                    ? `id:${String(item.supplierId)}`
-                    : `name:${item.supplierName ? String(item.supplierName).trim().toLowerCase() : ''}`) || null;
+                const supplier = cachedSupplier(supplierCache, item);
+                // Ek tedarikçiler: tekrarlar ve satırın kendi tedarikçisi düşer.
+                const additionalSuppliers = additionalRefs
+                    .map((ref) => cachedSupplier(supplierCache, ref))
+                    .filter((entry, position, list) => Boolean(entry) && entry.id !== supplier?.id && list.findIndex((other) => other?.id === entry.id) === position);
+                // Üçlü ürün türü seçildiyse ürün/hizmet ayrımı ondan türer.
+                const articleKind = (0, articleKind_1.parseArticleKind)(item.articleKind);
+                const itemType = articleKind
+                    ? (0, articleKind_1.itemTypeForArticleKind)(articleKind)
+                    : item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType;
                 // ÜZERİNE YAZMA: kodu kayıtlı ürün DOSYADAKİ değerlerle güncellenir
                 // (ad her zaman; birim/fiyat/tedarikçi doluysa), çöpteyse geri
                 // alınır. Stok DOKUNULMAZ — sipariş akışı stok hareketi değildir.
@@ -1807,7 +2079,8 @@ const runBulkCreateArticles = async (req, options = {}) => {
                     modelNumber,
                     serialNumber,
                     supplierBarcode,
-                    itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType,
+                    itemType,
+                    ...(articleKind ? { articleKind } : {}),
                     status: 'ACTIVE',
                     isActive: true,
                     ...(quantity > 0 ? { lastPurchaseDate: new Date() } : {}),
@@ -1860,7 +2133,25 @@ const runBulkCreateArticles = async (req, options = {}) => {
                         isPreferred: true,
                     });
                 }
-                existingCodes.set(articleCode, { id: articleId, deleted: false, itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType });
+                // Ek tedarikçiler: MİKTARSIZ tanım partileri. Ürünün tedarikçi
+                // listesinde görünürler ama maliyet ortalamasını ve stoğu
+                // etkilemezler (0 adet); tercih edilen parti yukarıdakidir.
+                additionalSuppliers.forEach((extra) => {
+                    lotCreates.push({
+                        id: (0, nanoid_1.nanoid)(10),
+                        tenantId,
+                        articleId,
+                        supplierId: extra.id,
+                        locationId: defaultLocation.id,
+                        purchasePrice,
+                        quantity: 0,
+                        remainingQuantity: 0,
+                        lastPurchaseDate: null,
+                        stockMovementId: null,
+                        isPreferred: false,
+                    });
+                });
+                existingCodes.set(articleCode, { id: articleId, deleted: false, itemType });
                 created.push({ id: articleId, articleCode, name });
                 // Satırı id'siyle eşle: toplu yazma düşerse tek tek yeniden
                 // denenecek ve hata SATIRINA yazılacak (aşağıya bakınız).
@@ -2133,6 +2424,127 @@ router.post('/articles/quick', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
         res.status(400).json({ error: error.message });
     }
 });
+/* ═══════════════ TEKLİ ÜRÜN — YENİ ÜRÜN FORMU (23.09.2026) ═══════════════
+   Vorgabe Samet: ERP-Code-Feld «şimdilik» weg; Ürün adı Pflicht; Lieferant
+   Pflicht und MEHRFACH wählbar; Typ Pflicht (Üretilecek / Satılacak / Ek
+   Hizmet) — beides aber nur in Projekt- und Verkaufsfirmen. In einer
+   Produktionsfirma (und in einer Firma ohne Typ) ist nur der Name Pflicht.
+
+   Kein Code von Hand, keine Kategorie: der Artikel zieht den VORLÄUFIGEN
+   Code AA-BB-NNNNNN des Wareneingangs (issueTemporaryReceiptCodes); die IT
+   kann ihn später in einen echten ERP-Code ändern. Die Zeile läuft durch
+   DENSELBEN Rumpf wie Tabelle und Schnellerfassung (Artikel + Bewegung +
+   Partie + Bestand in einem Zug); weitere Lieferanten werden als mengenlose
+   Definitionspartien geschrieben. */
+/**
+ * @swagger
+ * /inventory/articles/single:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Ein neuer Artikel aus dem Produktformular — ohne ERP-Code, mit mehreren Lieferanten
+ *     description: >
+ *       Name ist Pflicht. In Firmen vom Typ PROJECT oder SALES sind zusätzlich
+ *       `articleKind` und mindestens ein Lieferant Pflicht (400 KIND_REQUIRED /
+ *       SUPPLIER_REQUIRED). Der Code ist ein vorläufiger AA-BB-Code. Antwortform
+ *       wie `/articles/bulk`, dazu `article` (derselbe Körper wie `/articles/:id/detail`).
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name: { type: string }
+ *               articleKind: { type: string, nullable: true, enum: [MANUFACTURED, RESALE, SERVICE] }
+ *               suppliers:
+ *                 type: array
+ *                 description: "Erster = bevorzugter Lieferant; bekannte mit supplierId, neue mit supplierName"
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     supplierId: { type: string, nullable: true }
+ *                     supplierName: { type: string, nullable: true }
+ *               modelNumber: { type: string, nullable: true }
+ *               serialNumber: { type: string, nullable: true }
+ *               barcode: { type: string, nullable: true }
+ *               quantity: { type: number, description: "Anfangsbestand, Standard 0" }
+ *               unit: { type: string, nullable: true }
+ *               purchasePrice: { type: number, nullable: true }
+ *               salePrice: { type: number, nullable: true }
+ *               description: { type: string, nullable: true }
+ *               imageUrl: { type: string, nullable: true }
+ */
+router.post('/articles/single', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.articles.create'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const body = req.body ?? {};
+        const name = String(body.name ?? '').trim();
+        if (!name)
+            return res.status(400).json({ error: 'Ürün adı zorunludur.', code: 'NAME_REQUIRED' });
+        const kindGiven = body.articleKind !== undefined && body.articleKind !== null && body.articleKind !== '';
+        const articleKind = kindGiven ? (0, articleKind_1.parseArticleKind)(body.articleKind) : null;
+        if (kindGiven && !articleKind)
+            return res.status(400).json({ error: 'Ürün türü geçersiz.', code: 'KIND_INVALID' });
+        // Kayıtlı tedarikçi kimliğiyle, formda yeni yazılan adıyla gelir.
+        const supplierRefs = readSupplierRefs(body.suppliers);
+        // Proje ve satış şirketinde tür ve en az bir tedarikçi şarttır —
+        // form da aynısını ister, ama kural sunucuda da durur.
+        if ((0, companyType_1.companyRequiresArticleKindAndSupplier)(await (0, companyType_1.readTenantCompanyType)(tenantId))) {
+            if (!articleKind)
+                return res.status(400).json({ error: 'Ürün türü zorunludur.', code: 'KIND_REQUIRED' });
+            if (!supplierRefs.length)
+                return res.status(400).json({ error: 'En az bir tedarikçi seçin.', code: 'SUPPLIER_REQUIRED' });
+        }
+        // Ürünün TEK tedarikçisi olur (24.09.2026).
+        if (supplierRefs.length > 1) {
+            return res.status(400).json({ error: 'Bir ürüne yalnızca bir tedarikçi atanabilir.', code: 'SUPPLIER_SINGLE' });
+        }
+        const [primary, ...additional] = supplierRefs;
+        const itemType = articleKind ? (0, articleKind_1.itemTypeForArticleKind)(articleKind) : 'PRODUCT';
+        const item = {
+            name,
+            // Başlangıç stoğu: boş = 0 (ürün yalnızca tanımlanır).
+            quantity: Math.max(0, Number(body.quantity) || 0),
+            unit: body.unit ? String(body.unit) : null,
+            purchasePrice: Math.max(0, Number(body.purchasePrice) || 0),
+            salePrice: Math.max(0, Number(body.salePrice) || 0),
+            supplierId: primary?.supplierId ?? null,
+            supplierName: primary?.supplierName ?? null,
+            additionalSuppliers: additional,
+            description: typeof body.description === 'string' && body.description ? body.description : null,
+            imageUrl: typeof body.imageUrl === 'string' && body.imageUrl ? body.imageUrl : null,
+            modelNumber: readTag(body.modelNumber),
+            serialNumber: readTag(body.serialNumber),
+            supplierBarcode: readTag(body.barcode ?? body.supplierBarcode),
+            articleKind,
+            itemType,
+            articleCode: '',
+        };
+        // Çekilen numara içe aktarılmış eski bir koda denk gelirse taze
+        // numarayla yeniden — Schnellerfassung ile aynı kural, en çok üç kez.
+        let outcome = null;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const codes = await (0, articleCodeCatalog_1.issueTemporaryReceiptCodes)(tenantId, 1);
+            item.articleCode = codes[0] ?? '';
+            outcome = await runBulkCreateArticles({ user: req.user, body: { items: [item], itemType } }, { origin: 'MANUAL' });
+            if (outcome.body?.errors?.[0]?.code !== 'CODE_TAKEN')
+                break;
+        }
+        const createdRow = outcome?.body?.created?.[0];
+        if (!outcome || !createdRow) {
+            return res.status(outcome && outcome.status !== 201 ? outcome.status : 400)
+                .json(outcome?.body ?? { error: 'Ürün kaydedilemedi.' });
+        }
+        // Teklif satırı yeni ürüne bu yanıtla bağlanır: birim, fiyat ve
+        // açıklama sunucunun yazdığı hâliyle döner — ikinci istek gerekmez.
+        res.status(201).json({ ...outcome.body, article: await buildArticleDetail(tenantId, createdRow.id) });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
 /**
  * @swagger
  * /inventory/articles/scan-lookup:
@@ -2151,45 +2563,32 @@ router.post('/articles/quick', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
  *         required: true
  *         schema: { type: string }
  */
-router.get('/articles/scan-lookup', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (0, ResponseCacheMiddleware_1.responseCache)({ namespaces: ['catalog'], ttlSec: 30 }), async (req, res) => {
+router.get('/articles/scan-lookup', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const code = String(req.query.code ?? '').trim();
         if (!code)
             return res.status(400).json({ error: 'Kein Code erhalten.' });
-        const rows = await prisma_client_1.default.article.findMany({
-            where: {
-                tenantId,
-                deletedAt: null,
-                OR: [
-                    { supplierBarcode: code },
-                    { systemBarcode: code },
-                    { serialNumber: code },
-                    { articleCode: code },
-                    // Mancher Lieferant druckt die Modellnummer als Barcode.
-                    { modelNumber: code },
-                    // Weitere Etiketten desselben Artikels (ArticleBarcode).
-                    { barcodes: { some: { barcode: code } } },
-                ],
-            },
-            select: {
-                id: true, articleCode: true, name: true, unit: true,
-                modelNumber: true, serialNumber: true, supplierBarcode: true, systemBarcode: true,
-                stockBalances: { select: { currentQuantity: true } },
-            },
-            take: 4,
+        res.setHeader('Cache-Control', 'no-store');
+        const stockUnit = await prisma_client_1.default.stockUnit.findFirst({
+            where: { tenantId, OR: [{ barcode: code }, { serialNumber: code }] },
+            include: { article: { select: quickAddStockUnit_1.quickScanArticleSelect } },
+        });
+        const rows = stockUnit ? [stockUnit.article] : await prisma_client_1.default.article.findMany({
+            where: (0, quickAddStockUnit_1.quickScanArticleWhere)(tenantId, code),
+            select: quickAddStockUnit_1.quickScanArticleSelect,
+            take: 2,
         });
         if (!rows.length)
             return res.status(200).json({ found: false });
-        // Bei mehreren Treffern gewinnt die genaueste Kennung: Serie vor
-        // Barcode vor ERP-Code.
-        const rank = (row) => (row.serialNumber === code ? 0 : row.supplierBarcode === code || row.systemBarcode === code ? 1 : 2);
-        rows.sort((a, b) => rank(a) - rank(b));
+        if (rows.length > 1)
+            return res.status(200).json({ found: false, ambiguous: true });
         const hit = rows[0];
         const matchedBy = hit.serialNumber === code ? 'serial' : hit.supplierBarcode === code || hit.systemBarcode === code ? 'barcode' : 'code';
         return res.status(200).json({
             found: true,
             matchedBy,
+            stockUnit: stockUnit ? { id: stockUnit.id, barcode: stockUnit.barcode, serialNumber: stockUnit.serialNumber } : null,
             article: {
                 id: hit.id,
                 articleCode: hit.articleCode,
@@ -2205,6 +2604,49 @@ router.get('/articles/scan-lookup', AuthMiddleware_1.requireAuth, (0, RbacMiddle
     }
     catch (error) {
         res.status(400).json({ error: error.message });
+    }
+});
+// Exactly one device per request. No article is created without an explicit newArticle.
+router.post('/stock-units/quick', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const barcode = String(req.body?.barcode ?? '').trim();
+        const serialNumber = String(req.body?.serialNumber ?? '').trim() || null;
+        const articleId = String(req.body?.articleId ?? '').trim() || undefined;
+        if (!barcode || barcode.length > 120 || (serialNumber && serialNumber.length > 120)) {
+            return res.status(400).json({ error: 'Ungültiger Barcode oder Seriennummer.', code: 'INVALID_BARCODE' });
+        }
+        let newArticle;
+        if (req.body?.newArticle) {
+            if (articleId)
+                return res.status(400).json({ error: 'Nur einen Artikel angeben.' });
+            if (!await (0, RbacMiddleware_1.userHasPermission)(req.user.id, 'inventory.articles.create')) {
+                return res.status(403).json((0, RbacMiddleware_1.permissionDeniedBody)('inventory.articles.create'));
+            }
+            const name = String(req.body.newArticle.name ?? '').trim();
+            const schemeId = String(req.body.newArticle.schemeId ?? '').trim();
+            const modelNumber = String(req.body.newArticle.modelNumber ?? '').trim() || null;
+            if (!name || !schemeId || (modelNumber && modelNumber.length > 120)) {
+                return res.status(400).json({ error: 'Bezeichnung und Nummernkreis erforderlich.' });
+            }
+            const issue = await (0, articleCodeCatalog_1.issueCodes)(tenantId, schemeId, 1);
+            newArticle = { name, modelNumber, articleCode: issue.codes[0], unit: (0, measurementUnitCatalog_1.resolveUnit)(null, await (0, measurementUnitCatalog_1.listUnits)(tenantId)) };
+        }
+        const location = await repository.ensureDefaultLocation(tenantId);
+        const result = await prisma_client_1.default.$transaction((tx) => (0, quickAddStockUnit_1.receiveQuickStockUnit)(tx, {
+            tenantId, employeeId: req.user.id, locationId: location.id,
+            barcode, serialNumber, articleId, newArticle,
+        }));
+        return res.status(201).json(result);
+    }
+    catch (error) {
+        if (error?.code === 'P2002') {
+            const target = JSON.stringify(error.meta?.target ?? '');
+            if (error.meta?.modelName === 'StockUnit' || /barcode|serialNumber/.test(target)) {
+                return res.status(409).json({ code: 'STOCK_UNIT_EXISTS', error: 'Dieses Gerät wurde bereits erfasst.' });
+            }
+        }
+        return res.status(error?.status || 400).json({ error: error.message, code: error?.code });
     }
 });
 /**
@@ -2665,8 +3107,6 @@ router.post('/movements/bulk', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
                 await bulkUpdateArticlePurchases(tx, tenantId, preferredByArticle);
             });
         }
-        // Kritik stok önerileri: satır başına değil, çıkış yapılan ürünler için
-        // toplu olarak (üç sorgu, satır sayısından bağımsız).
         if (outArticleIds.size) {
             const criticalCandidates = articleRows.filter((row) => outArticleIds.has(row.id) && (row.criticalStockLevel || 0) > 0);
             if (criticalCandidates.length) {
@@ -3086,6 +3526,15 @@ const PO_INITIAL_STATUSES = new Set(['DRAFT', 'ORDER_DRAFT', 'PRICE_REQUEST', 'P
 // FİYAT TALEBİ AŞAMALARI — satırlar fiyatsızdır, belge "Preisanfrage"dir.
 // Frontend eşi: `utils/orderStatus.ts` → `isPriceRequestStage`.
 const PO_PRICE_REQUEST_STATUSES = new Set(['DRAFT', 'PRICE_REQUEST']);
+/**
+ * ── İKİ AYRI MODÜL (Vorgabe Samet, 22.09.2026) ─────────────────────────────
+ * «Fiyat modülü ile sipariş modülünü ayırman lazım, artık bir süreç değil.»
+ * Bir kayıt ya FİYAT TALEBİDİR ya SİPARİŞTİR ve aşama atlamaz: talep siparişe
+ * dönüştürülünce talep LİSTEDE KALIR, YENİ bir sipariş kaydı doğar
+ * (`/purchase-orders/:id/convert-to-order`). Mal kabul artık ayrı bir aşama
+ * değil, SİPARİŞİN KENDİ DURUMUDUR (TO_BE_STOCKED = «MAL KABULDE»).
+ */
+const PO_ORDER_STATUSES = new Set(['ORDER_DRAFT', 'PENDING', 'ORDERED', 'TO_BE_STOCKED', 'COMPLETED']);
 // Satır hesap kipleri: AUTO hesaplar, DIRECT gönderileni saklar (eski directCopy),
 // SUPPLIER tedarikçi hesabından gelen SABİT net birim fiyatla çarpar (indirim kilitli).
 const PO_CALC_MODES = new Set(['AUTO', 'DIRECT', 'SUPPLIER']);
@@ -3178,6 +3627,49 @@ const normalizePurchaseOrderExtras = (raw) => {
     }
     return extras;
 };
+/**
+ * Satırın proje kaynağı — `{ projectId, positionId, producerTenantId }`.
+ * Projesiz kaynak kaynak değildir; alanlar kimlik gibi kırpılır.
+ * `manual`: satır «Siparişlerim»de Türsüzler'den işaretlenip ELLE açılan
+ * siparişe girdi (U1, U2 …) — düzenlemelerde kaybolmasın diye taşınır.
+ */
+const poLineSource = (raw) => {
+    if (!raw || typeof raw !== 'object')
+        return null;
+    const clean = (value) => typeof value === 'string' && value.trim() ? value.trim().slice(0, 64) : null;
+    const projectId = clean(raw.projectId);
+    if (!projectId)
+        return null;
+    return {
+        projectId,
+        positionId: clean(raw.positionId),
+        producerTenantId: clean(raw.producerTenantId),
+        ...(raw.manual === true ? { manual: true } : {}),
+    };
+};
+exports.poLineSource = poLineSource;
+/**
+ * ÜRETİM EMRİ (24.09.2026): proje şirketinin üretim şirketine verdiği sipariş
+ * onaylanınca (ya da onay geri alınınca / değişince / silinince) üretim
+ * şirketinin projeleri HEMEN yeniden kurulur — cihaz ancak onaylı sipariş
+ * satırıyla projeye girer (bkz. SyncProductionProjectsUseCase). Hangi
+ * siparişin üretime gittiğini shared/producerOrders.ts söyler: satırdaki
+ * `producerTenantId` YA DA tedarikçisi üretim şirketinin kendisi olan
+ * sipariş. Arka planda çalışır: sipariş cevabını bekletmez, hata siparişi
+ * bozmaz.
+ */
+const refreshProducerProduction = (order) => {
+    void (0, producerOrders_1.producerTenantIdsForOrder)(order)
+        .then((producerIds) => {
+        for (const producerId of producerIds) {
+            void productionModule_1.productionModule.sync.execute(producerId, { force: true }).catch((error) => {
+                console.warn('[production] producer sync failed', producerId, error?.message);
+            });
+        }
+    })
+        .catch((error) => console.warn('[production] producer lookup failed', error?.message));
+};
+exports.refreshProducerProduction = refreshProducerProduction;
 const normalizePurchaseOrderItems = (raw) => {
     if (!Array.isArray(raw) || raw.length === 0)
         throw new Error('Sipariş için en az bir ürün satırı gereklidir.');
@@ -3308,6 +3800,13 @@ const normalizePurchaseOrderItems = (raw) => {
             ...(displayNetPrice !== null ? { displayNetPrice } : {}),
             ...(receivedQuantity > 0 ? { receivedQuantity, receivedAt } : {}),
             ...(productionItemId ? { productionItemId } : {}),
+            // PROJE KAYNAĞI (24.09.2026): satır bir projenin pozisyonundan
+            // «Siparişe Git» ile geldiyse proje/pozisyon (ve üretimse üretim
+            // şirketi) burada durur — birleştirme ve «Siparişlerim» bunu okur.
+            ...(() => {
+                const source = (0, exports.poLineSource)(r?.source);
+                return source ? { source } : {};
+            })(),
             // Eski bayrak geriye uyumluluk için korunur (eski frontend sürümleri
             // ve mevcut snapshot okuyucuları DIRECT kipini bundan tanır).
             ...(calcMode === 'DIRECT' ? { directCopy: true } : {}),
@@ -3318,6 +3817,7 @@ const normalizePurchaseOrderItems = (raw) => {
     const totalVat = Math.round(items.reduce((sum, it) => sum + it.lineVat, 0) * 100) / 100;
     return { items, totalNet, totalGross, totalVat };
 };
+exports.normalizePurchaseOrderItems = normalizePurchaseOrderItems;
 /**
  * Sipariş düzeyi KDV kipi: LINE = satır KDV'lerinin toplamı (eski davranış),
  * TOTAL = tek oran genel toplam üzerinden — KDV ayarları penceresinden ülke +
@@ -3363,6 +3863,7 @@ const purchaseOrderTotalVat = (vat, totalNet, _totalFees, lineVatSum, lineTotals
     }
     return Math.round(Math.round(totalNet * 100) / 100 * rate * 100) / 100;
 };
+exports.purchaseOrderTotalVat = purchaseOrderTotalVat;
 /**
  * EK ÜCRETLER (nakliye, ambalaj, montaj…) — sipariş düzeyinde ad + tutar.
  * Kalem DEĞİLDİR: miktarı, indirimi ve KDV oranı yoktur; tutar NET kabul edilir
@@ -3442,8 +3943,40 @@ const parsePurchaseOrderRow = (row) => {
     const emailRecipient = rawRecipient?.startsWith(PO_MANUAL_MAIL_PREFIX)
         ? (rawRecipient.slice(PO_MANUAL_MAIL_PREFIX.length) || null)
         : rawRecipient;
-    return { ...row, items, additionalFees, hiddenColumnKeys, tableColumns, emailRecipient, emailSentManually, itemCount: items.length };
+    /* WELCHE STUFEN SCHON EIN BLATT TRAGEN (21.09.2026): die Oberfläche zeigt
+       es im Schrittband, ohne dass die ganzen Blattdaten mitreisen müssten —
+       eine Liste mit 20 Aufträgen schleppte sonst 20 Positionslisten mit. */
+    const stageDocs = (() => {
+        try {
+            const parsed = JSON.parse(String(row.stageDocuments || '{}'));
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                return [];
+            return Object.entries(parsed)
+                .filter(([, doc]) => Array.isArray(doc?.items) && doc.items.length > 0)
+                .map(([stage]) => Number(stage))
+                .filter((stage) => stage >= 1 && stage <= 3);
+        }
+        catch {
+            return [];
+        }
+    })();
+    const currentStage = purchaseFlowStage(row.status);
+    const documentStages = [...new Set([...stageDocs, ...(items.length ? [currentStage] : [])])].sort();
+    const { stageDocuments: _stageDocuments, ...rest } = row;
+    return {
+        ...rest,
+        requestSuppliers: poReadRequestSuppliers(row),
+        items,
+        additionalFees,
+        hiddenColumnKeys,
+        tableColumns,
+        emailRecipient,
+        emailSentManually,
+        itemCount: items.length,
+        documentStages,
+    };
 };
+exports.parsePurchaseOrderRow = parsePurchaseOrderRow;
 /**
  * MAIL VON HAND GESENDET (Vorgabe Samet, 14.09.2026): «Es gibt kein
  * automatisches Senden; auf der Auftragsseite steht ein Mailfenster, und ein
@@ -3457,50 +3990,86 @@ const parsePurchaseOrderRow = (row) => {
  */
 const PO_MANUAL_MAIL_PREFIX = 'manual:';
 /**
- * SİPARİŞ KODU: **BE-{yıl}-{sıra3}** — BE-2026-001, BE-2026-002 … (kullanıcı
- * isteği 2026-08-03: belge "Bestellung"dur, kod da BE- önekini taşır; arada
- * denenen AU- öneki geri alındı). Tenant başına max-scan (MaintenanceRepository
- * emsali). Yalnızca ÖNERİDİR: kullanıcı sipariş kodunu elle değiştirebilir
- * (create ve patch gövdesinde `referenceNumber`), benzersizliği DB indeksi korur.
+ * BELGE KODU: **FİYAT TALEBİ ve SİPARİŞ AYRI SAYAR** (kullanıcı isteği Samet,
+ * 21.09.2026 — «fiyat talebi kısaltması ayrı olmalı, BE-2026-001 değil»).
  *
- * ⚠ TARAMA HER İKİ ÖNEKİ DE OKUR (BE- ve eski AU-), YAZMA yalnızca BE- yapar:
- * böylece AU-2026-004'ten sonraki sipariş BE-2026-005 olur — kullanıcının daha
- * önce gördüğü bir sıra numarası ikinci kez dağıtılmaz. Eski dört haneli
- * BE-2026-0001 kayıtları da sayısal olarak taranır (0001 → sıra 1).
- * ⚠ `PO_REFERENCE_PREFIX`, `PO_REFERENCE_SEQ_PAD` ve `PO_REFERENCE_SCAN_RE`
- * BİRLİKTE değişmelidir — regex öneki bulamazsa sıra her seferinde 1'e döner
- * ve P2002 çakışmasıyla kaydetme başarısız olur.
+ *   Fiyat talebi → `PA-{yıl}-{sıra3}`   (ekranda tr FT- · en PR-)
+ *   Sipariş      → `BE-{yıl}-{sıra3}`   (ekranda tr SP- · en PO-)
+ *
+ * Depoda hep ALMANCA yazım durur; dil yalnızca öneki değiştirir
+ * (`shared/purchaseDocumentCode.ts`). Kaydın kodu AŞAMASIYLA değişir: talep
+ * aşamasında `priceRequestNumber`, sipariş aşamasından itibaren `orderNumber`;
+ * `referenceNumber` her zaman GÜNCEL belgenin kodudur ve tüm uygulama onu okur.
+ *
+ * ⚠ TARAMA TÜRÜN BÜTÜN YAZIMLARINI OKUR (BE-, eski AU-, başka bir dilde elle
+ * girilmiş SP-/PO-), YAZMA yalnızca depo yazımını yapar — böylece kullanıcının
+ * daha önce gördüğü bir sıra ikinci kez dağıtılmaz. Eski dört haneli
+ * BE-2026-0001 kayıtları da sayısal taranır (0001 → sıra 1). Üretilen kod yalnızca
+ * ÖNERİDİR: kullanıcı elle değiştirebilir, benzersizliği DB indeksi korur.
  */
-const PO_REFERENCE_PREFIX = 'BE-';
-const PO_REFERENCE_SEQ_PAD = 3;
-const PO_REFERENCE_SCAN_RE = /^(?:BE|AU)-\d{4}-(\d+)$/;
-const nextPurchaseOrderReference = async (tenantId) => {
+const nextPurchaseReference = async (tenantId, kind) => {
     const year = new Date().getFullYear();
-    const prefix = `${PO_REFERENCE_PREFIX}${year}-`;
+    const prefixes = (0, purchaseDocumentCode_1.purchasePrefixesOf)(kind);
     const rows = await prisma_client_1.default.purchaseOrder.findMany({
         where: {
             tenantId,
-            OR: [
-                { referenceNumber: { startsWith: prefix } },
-                { referenceNumber: { startsWith: `AU-${year}-` } },
-            ],
+            OR: prefixes.flatMap((prefix) => [
+                { referenceNumber: { startsWith: `${prefix}-${year}-` } },
+                { priceRequestNumber: { startsWith: `${prefix}-${year}-` } },
+                { orderNumber: { startsWith: `${prefix}-${year}-` } },
+            ]),
         },
-        select: { referenceNumber: true },
+        select: { referenceNumber: true, priceRequestNumber: true, orderNumber: true },
     });
     const max = rows.reduce((value, row) => {
-        const m = PO_REFERENCE_SCAN_RE.exec(row.referenceNumber || '');
-        return m ? Math.max(value, Number(m[1]) || 0) : value;
+        for (const code of [row.referenceNumber, row.priceRequestNumber, row.orderNumber]) {
+            const parsed = (0, purchaseDocumentCode_1.parsePurchaseCode)(code);
+            if (parsed && parsed.kind === kind && parsed.year === year)
+                value = Math.max(value, parsed.seq);
+        }
+        return value;
     }, 0);
     // 999'dan sonra doğal olarak dört haneye taşar (BE-2026-1000).
-    return `${prefix}${String(max + 1).padStart(PO_REFERENCE_SEQ_PAD, '0')}`;
+    return (0, purchaseDocumentCode_1.formatPurchaseCode)(kind, year, max + 1);
 };
+exports.nextPurchaseReference = nextPurchaseReference;
+/** Bu durumdaki kayıt hangi belgeyi taşır? Talep aşaması → fiyat talebi. */
+const purchaseKindOfStatus = (status) => PO_PRICE_REQUEST_STATUSES.has(String(status || '').toUpperCase()) ? 'PRICE_REQUEST' : 'ORDER';
+/**
+ * AŞAMANIN KODU — bir kez çekilir, bir daha değişmez. Sipariş bir aşama geri
+ * alınıp tekrar ilerletilirse AYNI sipariş kodu geri gelir: numara yanmaz ve
+ * tedarikçi iki farklı kod görmez.
+ */
+const purchaseStageCodePatch = async (tenantId, row, kind) => {
+    const column = kind === 'PRICE_REQUEST' ? 'priceRequestNumber' : 'orderNumber';
+    const code = row?.[column] ? String(row[column]) : await (0, exports.nextPurchaseReference)(tenantId, kind);
+    return { referenceNumber: code, [column]: code };
+};
+/**
+ * DIE STUFE DES ABLAUFS — drei, wie das Schrittband der Oberfläche sie zeigt:
+ * 1 Preisanfrage (DRAFT · PRICE_REQUEST) → 2 Bestellung (ORDER_DRAFT · PENDING ·
+ * ORDERED) → 3 Wareneingang (TO_BE_STOCKED · COMPLETED). `purchaseStageRank`
+ * oben ist FEINER (fünf Ränge) und sagt, ob es vorwärts geht; hier geht es um
+ * den BELEG, nicht um den Fortschritt.
+ */
+const PURCHASE_FLOW_STAGE = {
+    DRAFT: 1, PRICE_REQUEST: 1,
+    ORDER_DRAFT: 2, PENDING: 2, ORDERED: 2,
+    TO_BE_STOCKED: 3, COMPLETED: 3,
+};
+const purchaseFlowStage = (status) => PURCHASE_FLOW_STAGE[String(status || '').toUpperCase()] ?? 1;
 /**
  * ── BESTÄTIGEN NUR, WENN JEDE ZEILE VOLLSTÄNDIG IST (19.09.2026) ────────────
  * Produktname, Menge, Einzelpreis, Nettopreis und Zeilensumme sind Pflicht;
  * Rabatt und Rabatt 2 nicht (Vorgabe Samet). Die Antwort nennt je Zeile, was
  * fehlt — die Maske markiert genau diese Zellen.
  */
-const PO_APPROVED_STATUSES = new Set(['PENDING', 'ORDERED', 'TO_BE_STOCKED', 'COMPLETED']);
+/**
+ * ONAY BUTONU KALKTI (22.09.2026): bir sipariş doğduğu anda siparıştır, ayrıca
+ * onaylanmaz. Bu küme bu yüzden SİPARİŞ TASLAĞINI da içerir — üretime giden
+ * satırlar artık ilk kayıtta gider.
+ */
+const PO_APPROVED_STATUSES = new Set(['ORDER_DRAFT', 'PENDING', 'ORDERED', 'TO_BE_STOCKED', 'COMPLETED']);
 /** Wie weit eine Bestellung im Ablauf ist — ein höherer Rang ist ein Schritt nach vorn. */
 const purchaseStageRank = (status) => ({
     DRAFT: 1, PRICE_REQUEST: 1, ORDER_DRAFT: 2, PENDING: 3, ORDERED: 3, TO_BE_STOCKED: 4, COMPLETED: 5,
@@ -3514,14 +4083,19 @@ const assertApprovable = (items) => {
         params: { rows: gaps.map((gap) => gap.index + 1).join(', ') },
     });
 };
-/** Elle girilen sipariş kodu: boş olamaz, 60 karakteri aşamaz. */
+/**
+ * Elle girilen belge kodu: boş olamaz, 60 karakteri aşamaz ve DEPO YAZIMINA
+ * çevrilir — Türkçe ekranda yazılan `FT-2026-007` depoda `PA-2026-007` olur,
+ * ekranda yine `FT-2026-007` okunur. Tanınmayan serbest kodlar dokunulmadan
+ * saklanır.
+ */
 const normalizeReferenceNumber = (value) => {
     const reference = String(value ?? '').trim().replace(/\s+/g, ' ');
     if (!reference)
         throw new Error('Sipariş kodu boş olamaz.');
     if (reference.length > 60)
         throw new Error('Sipariş kodu 60 karakteri aşamaz.');
-    return reference;
+    return (0, purchaseDocumentCode_1.canonicalPurchaseCode)(reference);
 };
 // supplierId doğrulanır; yalnızca ad verildiyse tedarikçi upsert edilir
 // (movements/bulk davranışıyla tutarlı). E-posta snapshot'ı kayıttan tamamlanır.
@@ -3542,7 +4116,7 @@ const resolvePurchaseOrderSupplier = async (tenantId, input) => {
             supplierId,
             supplierName: supplierName || supplier.companyName,
             supplierEmail,
-            supplierAddress: supplierAddressSnapshot(supplier),
+            supplierAddress: (0, exports.supplierAddressSnapshot)(supplier),
         };
     }
     if (!supplierName)
@@ -3558,8 +4132,90 @@ const resolvePurchaseOrderSupplier = async (tenantId, input) => {
         supplierId: supplier.id,
         supplierName,
         supplierEmail,
-        supplierAddress: supplierAddressSnapshot(supplier),
+        supplierAddress: (0, exports.supplierAddressSnapshot)(supplier),
     };
+};
+const PO_REQUEST_SUPPLIERS_MAX = 10;
+const PO_MULTI_SUPPLIER_ROLE_RE = /muhasebe|buchhalt|accounting/i;
+const PO_NO_SUPPLIER = { supplierId: null, supplierName: '', supplierEmail: null, supplierAddress: null };
+/** Administrator ya da muhasebe rolü: fiyat talebine tedarikçi(ler) seçebilir. */
+const poCanPickRequestSuppliers = async (employeeId) => {
+    const rows = await prisma_client_1.default.$queryRaw `
+        SELECT r.roleName AS roleName, r.isSystemAdmin AS isSystemAdmin
+        FROM EmployeeRole er JOIN Role r ON r.id = er.roleId
+        WHERE er.employeeId = ${employeeId}
+    `;
+    return rows.some((row) => Boolean(Number(row.isSystemAdmin)) || PO_MULTI_SUPPLIER_ROLE_RE.test(String(row.roleName || '')));
+};
+const poSameSupplier = (a, b) => (a.supplierId && a.supplierId === b.supplierId)
+    || (!a.supplierId && !b.supplierId && a.supplierName.trim().toLowerCase() === b.supplierName.trim().toLowerCase());
+/** Kayıttaki tedarikçi listesi. Eski/tek tedarikçili talep, sütunlarından tek kayıtlık liste olur. */
+const poReadRequestSuppliers = (row) => {
+    let parsed = null;
+    try {
+        parsed = row?.requestSuppliers ? JSON.parse(row.requestSuppliers) : null;
+    }
+    catch {
+        parsed = null;
+    }
+    if (Array.isArray(parsed) && parsed.length) {
+        return parsed
+            .filter((entry) => entry && (entry.supplierId || String(entry.supplierName ?? '').trim()))
+            .map((entry) => ({
+            supplierId: entry.supplierId ? String(entry.supplierId) : null,
+            supplierName: String(entry.supplierName ?? ''),
+            supplierEmail: entry.supplierEmail ? String(entry.supplierEmail) : null,
+            supplierAddress: entry.supplierAddress ? String(entry.supplierAddress) : null,
+            emailSentAt: entry.emailSentAt ? String(entry.emailSentAt) : null,
+            emailRecipient: entry.emailRecipient ? String(entry.emailRecipient) : null,
+        }));
+    }
+    if (!PO_PRICE_REQUEST_STATUSES.has(row?.status) || (!row?.supplierId && !String(row?.supplierName ?? '').trim()))
+        return [];
+    return [{
+            supplierId: row.supplierId ?? null,
+            supplierName: String(row.supplierName ?? ''),
+            supplierEmail: row.supplierEmail ?? null,
+            supplierAddress: row.supplierAddress ?? null,
+            emailSentAt: row.emailSentAt ? new Date(row.emailSentAt).toISOString() : null,
+            emailRecipient: row.emailRecipient ?? null,
+        }];
+};
+/** Gelen listeyi çözer (bilinen: id, yeni: ad → upsert); aynı tedarikçinin mail damgası korunur. */
+const poResolveRequestSuppliers = async (tenantId, raw, previous) => {
+    const input = Array.isArray(raw) ? raw : [];
+    if (input.length > PO_REQUEST_SUPPLIERS_MAX) {
+        throw new Error(`Bir fiyat talebine en fazla ${PO_REQUEST_SUPPLIERS_MAX} tedarikçi eklenebilir.`);
+    }
+    const out = [];
+    for (const entry of input) {
+        if (!entry || (!entry.supplierId && !String(entry.supplierName ?? '').trim()))
+            continue;
+        const resolved = await resolvePurchaseOrderSupplier(tenantId, entry);
+        if (out.some((known) => poSameSupplier(known, resolved)))
+            continue;
+        const before = previous.find((known) => poSameSupplier(known, resolved));
+        out.push({
+            ...resolved,
+            supplierAddress: resolved.supplierAddress ?? null,
+            emailSentAt: before?.emailSentAt ?? null,
+            emailRecipient: before?.emailRecipient ?? null,
+        });
+    }
+    return out;
+};
+/** Liste → sütunlar: JSON + ilk tedarikçinin aynası. */
+const poRequestSupplierColumns = (list) => ({
+    requestSuppliers: list.length ? JSON.stringify(list) : null,
+    supplierId: list[0]?.supplierId ?? null,
+    supplierName: list[0]?.supplierName ?? '',
+    supplierEmail: list[0]?.supplierEmail ?? null,
+    supplierAddress: list[0]?.supplierAddress ?? null,
+});
+/** Gövdedeki `supplierIndex` — listede yoksa null. */
+const poSupplierIndex = (value, list) => {
+    const index = Number(value);
+    return Number.isInteger(index) && index >= 0 && index < list.length ? index : null;
 };
 /**
  * @swagger
@@ -3579,20 +4235,44 @@ router.get('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
         const status = req.query.status ? String(req.query.status).toUpperCase() : '';
         if (status && PO_STATUSES.has(status))
             where.status = status;
+        /* LİSTE İKİYE AYRILDI (22.09.2026): `kind=PRICE_REQUEST` yalnızca
+           talepleri, `kind=ORDER` yalnızca siparişleri döner. Belirli bir
+           durum süzgeci varsa o daha dardır ve üstün gelir. */
+        const kind = String(req.query.kind || '').toUpperCase();
+        if (!where.status && (kind === 'PRICE_REQUEST' || kind === 'ORDER')) {
+            where.status = { in: [...(kind === 'PRICE_REQUEST' ? PO_PRICE_REQUEST_STATUSES : PO_ORDER_STATUSES)] };
+        }
         if (req.query.supplierId)
             where.supplierId = String(req.query.supplierId);
         const search = String(req.query.search || '').trim();
         if (search) {
+            // ARAMA DİLDEN BAĞIMSIZ: `FT-2026-001` de `PA-2026-001` de aynı
+            // kaydı bulur — tanıdık bir önek varsa atılır, kuyruk aranır. Eski
+            // (talepken taşınan) kod da aranır: tedarikçi onu yazıyor olabilir.
+            const codeSearch = (0, purchaseDocumentCode_1.purchaseSearchTerm)(search);
             where.OR = [
-                { referenceNumber: { contains: search } },
+                { referenceNumber: { contains: codeSearch } },
+                { priceRequestNumber: { contains: codeSearch } },
+                { orderNumber: { contains: codeSearch } },
                 { quoteNumber: { contains: search } },
                 { projectName: { contains: search } },
                 { supplierName: { contains: search } },
             ];
         }
         const reference = String(req.query.reference || '').trim();
-        if (reference)
-            where.referenceNumber = { contains: reference };
+        if (reference) {
+            const referenceSearch = (0, purchaseDocumentCode_1.purchaseSearchTerm)(reference);
+            where.AND = [
+                ...(Array.isArray(where.AND) ? where.AND : []),
+                {
+                    OR: [
+                        { referenceNumber: { contains: referenceSearch } },
+                        { priceRequestNumber: { contains: referenceSearch } },
+                        { orderNumber: { contains: referenceSearch } },
+                    ],
+                },
+            ];
+        }
         const quote = String(req.query.quote || '').trim();
         if (quote)
             where.quoteNumber = { contains: quote };
@@ -3623,7 +4303,7 @@ router.get('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_
                 take: pageSize,
             }),
         ]);
-        res.status(200).json({ items: rows.map(parsePurchaseOrderRow), total, page, pageSize });
+        res.status(200).json({ items: rows.map(exports.parsePurchaseOrderRow), total, page, pageSize });
     }
     catch (error) {
         res.status(400).json({ error: error.message });
@@ -3862,7 +4542,7 @@ router.get('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddlew
         const production = await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId)
             ? await productionModule_1.productionModule.picker.assignmentFor(tenantId, row.id)
             : null;
-        res.status(200).json({ ...parsePurchaseOrderRow(row), production });
+        res.status(200).json({ ...(0, exports.parsePurchaseOrderRow)(row), production });
     }
     catch (error) {
         res.status(400).json({ error: error.message });
@@ -3891,7 +4571,7 @@ router.put('/purchase-orders/:id/production', AuthMiddleware_1.requireAuth, (0, 
         if (!(await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId))) {
             return res.status(403).json({ error: 'Das Produktionsmodul ist für diese Firma nicht eingeschaltet.', code: 'MODULE_DISABLED' });
         }
-        const input = ProductionPurchaseLinkService_1.ProductionPurchaseLinkService.readInput(req.body) ?? { productionProjectId: '', productionItemIds: [] };
+        const input = ProductionPurchaseLinkService_1.ProductionPurchaseLinkService.readInput(req.body) ?? { productionProjectId: null, productionItemIds: [] };
         const current = await productionModule_1.productionModule.purchaseLink.getAssignment(tenantId, existing.id);
         const checked = await productionModule_1.productionModule.purchaseLink.validate(tenantId, input, current);
         let items = [];
@@ -3916,18 +4596,19 @@ router.put('/purchase-orders/:id/production', AuthMiddleware_1.requireAuth, (0, 
             where: { id: existing.id },
             data: {
                 items: JSON.stringify(items),
-                ...(existing.projectName ? {} : { projectName: checked.label }),
+                // Ohne Projekt gibt es auch keine Beschriftung zu setzen.
+                ...(existing.projectName || !checked.label ? {} : { projectName: checked.label }),
             },
         });
         await productionModule_1.productionModule.purchaseLink.saveAssignment(tenantId, existing.id, checked.selection, req.user.id);
         await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user.id);
         res.status(200).json({
-            ...parsePurchaseOrderRow(updated),
+            ...(0, exports.parsePurchaseOrderRow)(updated),
             production: await productionModule_1.productionModule.picker.assignmentFor(tenantId, existing.id),
         });
     }
     catch (error) {
-        sendPurchaseOrderError(res, error);
+        (0, exports.sendPurchaseOrderError)(res, error);
     }
 });
 /**
@@ -3952,29 +4633,53 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
         // PRODUKTION (19.09.2026): wo das Modul an ist, braucht schon die
         // Preisanfrage ein Projekt und mindestens ein Gerät (Vorgabe Samet).
         const productionOn = await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId);
+        let canPickSuppliers;
         for (const raw of rawOrders) {
-            const normalized = normalizePurchaseOrderItems(raw?.items);
+            const normalized = (0, exports.normalizePurchaseOrderItems)(raw?.items);
             let items = normalized.items;
             const { totalNet, totalGross, totalVat } = normalized;
             const { fees, totalFees } = normalizePurchaseOrderFees(raw?.additionalFees);
             const vat = normalizePurchaseOrderVat(raw || {});
-            const supplier = await resolvePurchaseOrderSupplier(tenantId, raw || {});
             // Üç giriş yolu: taslak (DRAFT), fiyat talebi (PRICE_REQUEST — satırlar
             // fiyatsız olabilir), doğrudan sipariş (PENDING, varsayılan).
             const requestedStatus = String(raw?.status || 'PENDING').toUpperCase();
             if (!PO_INITIAL_STATUSES.has(requestedStatus)) {
                 throw new Error('Yeni sipariş yalnızca DRAFT, PRICE_REQUEST veya PENDING durumuyla açılabilir.');
             }
+            /* FİYAT TALEBİ: tedarikçi(ler)i yalnızca Administrator + muhasebe
+               seçer (25.09.2026); başka rolde talep tedarikçisiz kaydedilir.
+               Sipariş eskisi gibi TEK ve ZORUNLU tedarikçiyle açılır. */
+            let supplier;
+            let requestSuppliers = null;
+            if (PO_PRICE_REQUEST_STATUSES.has(requestedStatus)) {
+                canPickSuppliers ??= await poCanPickRequestSuppliers(req.user.id);
+                if (!canPickSuppliers) {
+                    supplier = { ...PO_NO_SUPPLIER };
+                }
+                else {
+                    const rawList = Array.isArray(raw?.requestSuppliers)
+                        ? raw.requestSuppliers
+                        : (raw?.supplierId || String(raw?.supplierName ?? '').trim() ? [raw] : []);
+                    const columns = poRequestSupplierColumns(await poResolveRequestSuppliers(tenantId, rawList, []));
+                    ({ requestSuppliers, ...supplier } = columns);
+                }
+            }
+            else {
+                supplier = await resolvePurchaseOrderSupplier(tenantId, raw || {});
+            }
             let production = null;
             let productionLabel = null;
             if (productionOn) {
+                // Projekt und Gerät sind FREIWILLIG (21.09.2026): kommt nichts
+                // mit, entsteht der Vorgang ohne Produktionsbezug und lässt
+                // sich später zuordnen.
                 const selection = ProductionPurchaseLinkService_1.ProductionPurchaseLinkService.readInput(raw);
-                if (!selection)
-                    throw (0, productionErrors_1.productionError)('PROJECT_REQUIRED', 'Bitte ein Produktionsprojekt wählen.');
-                const checked = await productionModule_1.productionModule.purchaseLink.validate(tenantId, selection, null);
-                items = productionModule_1.productionModule.purchaseLink.assignLines(items, checked.selection);
-                production = checked.selection;
-                productionLabel = checked.label;
+                if (selection) {
+                    const checked = await productionModule_1.productionModule.purchaseLink.validate(tenantId, selection, null);
+                    items = productionModule_1.productionModule.purchaseLink.assignLines(items, checked.selection);
+                    production = checked.selection;
+                    productionLabel = checked.label || null;
+                }
             }
             // Direkt als bestätigte Bestellung angelegt: dieselbe Pflicht wie beim Bestätigen.
             if (requestedStatus === 'PENDING')
@@ -4000,13 +4705,14 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
                 status: requestedStatus,
                 ...vat,
                 ...supplier,
+                requestSuppliers,
                 items,
                 additionalFees: fees,
                 totalNet,
                 totalGross,
                 // Die Zeilenbeträge gehen mit: die Steuer wird JE ZEILE
                 // gerechnet und addiert (Vorgabe Samet, 07.09.2026).
-                totalVat: purchaseOrderTotalVat(vat, totalNet, totalFees, totalVat, items.map((it) => it.lineTotal)),
+                totalVat: (0, exports.purchaseOrderTotalVat)(vat, totalNet, totalFees, totalVat, items.map((it) => it.lineTotal)),
                 totalFees,
                 production,
             });
@@ -4016,14 +4722,21 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
             let row = null;
             // Numara benzersiz indeksle korunur. Kullanıcı kod verdiyse çakışma
             // hatadır; otomatik numarada yeniden taranıp denenir.
+            const kind = purchaseKindOfStatus(order.status);
+            const codeColumn = kind === 'PRICE_REQUEST' ? 'priceRequestNumber' : 'orderNumber';
             for (let attempt = 0; attempt < 3 && !row; attempt++) {
-                const referenceNumber = order.referenceNumber ?? await nextPurchaseOrderReference(tenantId);
+                // Elle girilen kod da depo yazımına çevrilir: Türkçe ekranda
+                // yazılan FT-2026-007, PA-2026-007 olarak saklanır.
+                const referenceNumber = order.referenceNumber ?? await (0, exports.nextPurchaseReference)(tenantId, kind);
                 try {
                     row = await prisma_client_1.default.purchaseOrder.create({
                         data: {
                             id: (0, nanoid_1.nanoid)(12),
                             tenantId,
                             referenceNumber,
+                            // Kayıt hangi aşamada doğduysa kod o sütuna da yazılır;
+                            // öbürü boş kalır ve sırası geldiğinde çekilir.
+                            [codeColumn]: referenceNumber,
                             quoteNumber: order.quoteNumber,
                             orderedByName: order.orderedByName,
                             projectName: order.projectName,
@@ -4039,6 +4752,7 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
                             supplierName: order.supplierName,
                             supplierEmail: order.supplierEmail,
                             supplierAddress: order.supplierAddress,
+                            requestSuppliers: order.requestSuppliers,
                             items: JSON.stringify(order.items),
                             additionalFees: JSON.stringify(order.additionalFees),
                             currency: order.currency,
@@ -4060,19 +4774,19 @@ router.post('/purchase-orders', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
             }
             if (!row)
                 throw new Error('Sipariş numarası üretilemedi, lütfen tekrar deneyin.');
-            if (order.production) {
+            if (order.production?.productionProjectId) {
                 await productionModule_1.productionModule.purchaseLink.saveAssignment(tenantId, row.id, order.production, req.user.id);
                 // Schon bestätigt angelegt: die Zeilen stehen sofort bei der Produktion.
                 if (PO_APPROVED_STATUSES.has(row.status)) {
                     await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, row, req.user.id);
                 }
             }
-            created.push(parsePurchaseOrderRow(row));
+            created.push((0, exports.parsePurchaseOrderRow)(row));
         }
         res.status(201).json({ createdCount: created.length, orders: created });
     }
     catch (error) {
-        sendPurchaseOrderError(res, error);
+        (0, exports.sendPurchaseOrderError)(res, error);
     }
 });
 /**
@@ -4097,6 +4811,12 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         // tedarikçiye giden ürün listesi değişmediği sürece "güncellendi" yok.
         if (b.referenceNumber !== undefined) {
             data.referenceNumber = normalizeReferenceNumber(b.referenceNumber);
+            // Elle değiştirilen kod, kaydın ŞU ANKİ aşamasının kodudur — yoksa
+            // bir sonraki aşama değişikliğinde eski kod geri gelirdi.
+            const editedColumn = purchaseKindOfStatus(existing.status) === 'PRICE_REQUEST'
+                ? 'priceRequestNumber'
+                : 'orderNumber';
+            data[editedColumn] = data.referenceNumber;
         }
         if (b.quoteNumber !== undefined) {
             data.quoteNumber = b.quoteNumber === null ? null : String(b.quoteNumber).trim() || null;
@@ -4149,16 +4869,15 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         if (productionInput !== undefined) {
             const checked = await productionModule_1.productionModule.purchaseLink.validate(tenantId, productionInput, currentAssignment);
             productionSelection = checked.selection;
-            if (!existing.projectName && b.projectName === undefined)
+            if (!existing.projectName && b.projectName === undefined && checked.label)
                 data.projectName = checked.label;
         }
         if (b.items !== undefined) {
-            const normalized = normalizePurchaseOrderItems(b.items);
+            const normalized = (0, exports.normalizePurchaseOrderItems)(b.items);
             let items = normalized.items;
+            // Ohne Projekt bleiben die Zeilen unetikettiert — das ist erlaubt.
             if (productionOn) {
-                if (!productionSelection)
-                    throw (0, productionErrors_1.productionError)('PROJECT_REQUIRED', 'Bitte ein Produktionsprojekt wählen.');
-                items = productionModule_1.productionModule.purchaseLink.assignLines(items, productionSelection);
+                items = productionModule_1.productionModule.purchaseLink.assignLines(items, productionSelection ?? { productionProjectId: null, productionItemIds: [] });
             }
             data.items = JSON.stringify(items);
             data.totalNet = normalized.totalNet;
@@ -4202,7 +4921,20 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             data.currency = String(b.currency || 'CHF');
             contentChanged = true;
         }
-        if (b.supplierId !== undefined || b.supplierName !== undefined || b.supplierEmail !== undefined) {
+        const touchesSupplier = b.supplierId !== undefined || b.supplierName !== undefined || b.supplierEmail !== undefined;
+        if (PO_PRICE_REQUEST_STATUSES.has(existing.status)) {
+            /* FİYAT TALEBİ (25.09.2026): tedarikçi LİSTESİ, yalnızca
+               Administrator + muhasebe. Başka rolün gönderdiği tedarikçi
+               alanları sessizce yok sayılır — kayıttaki liste kalır. */
+            if ((b.requestSuppliers !== undefined || touchesSupplier) && await poCanPickRequestSuppliers(req.user.id)) {
+                const rawList = b.requestSuppliers !== undefined
+                    ? b.requestSuppliers
+                    : (b.supplierId || String(b.supplierName ?? '').trim() ? [b] : []);
+                Object.assign(data, poRequestSupplierColumns(await poResolveRequestSuppliers(tenantId, rawList, poReadRequestSuppliers(existing))));
+                contentChanged = true;
+            }
+        }
+        else if (touchesSupplier) {
             const supplier = await resolvePurchaseOrderSupplier(tenantId, {
                 supplierId: b.supplierId !== undefined ? b.supplierId : existing.supplierId,
                 supplierName: b.supplierName !== undefined ? b.supplierName : existing.supplierName,
@@ -4242,7 +4974,7 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             const lineVatSum = b.items !== undefined
                 ? data.totalVat
                 : Math.round(effectiveItems.reduce((sum, it) => sum + (Number(it?.lineVat) || 0), 0) * 100) / 100;
-            data.totalVat = purchaseOrderTotalVat({
+            data.totalVat = (0, exports.purchaseOrderTotalVat)({
                 vatMode: data.vatMode ?? existing.vatMode ?? 'LINE',
                 orderVatRate: data.orderVatRate ?? existing.orderVatRate ?? 0,
             }, data.totalNet ?? existing.totalNet ?? 0, data.totalFees ?? existing.totalFees ?? 0, lineVatSum, effectiveItems.map((it) => Number(it?.lineTotal) || 0));
@@ -4256,13 +4988,13 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         // durumu kaldırıldı (kullanıcı isteği 2026-08-03), sipariş verilmiş
         // olarak (ORDERED) kalır. Fiyat talebi aşamasındaki ve TO_BE_STOCKED'daki
         // değişiklikler revizyon da üretmez (kullanıcı akışı 2026-08-02).
-        const stageTakesRevision = existing.status === 'PENDING' || existing.status === 'ORDERED';
+        const stageTakesRevision = existing.status === 'ORDER_DRAFT' || existing.status === 'PENDING' || existing.status === 'ORDERED';
         if (contentChanged && existing.emailSentAt && stageTakesRevision) {
             data.revision = (existing.revision || 0) + 1;
         }
         try {
             const updated = await prisma_client_1.default.purchaseOrder.update({ where: { id: existing.id }, data });
-            if (productionOn && productionInput !== undefined && productionSelection) {
+            if (productionOn && productionInput !== undefined && productionSelection !== null) {
                 await productionModule_1.productionModule.purchaseLink.saveAssignment(tenantId, existing.id, productionSelection, req.user.id);
             }
             // Eine bestätigte Bestellung (etwa im Wareneingang bearbeitet):
@@ -4270,7 +5002,14 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
             if (productionOn && PO_APPROVED_STATUSES.has(updated.status) && (data.items !== undefined || productionInput !== undefined)) {
                 await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user.id);
             }
-            res.status(200).json(parsePurchaseOrderRow(updated));
+            // Onaylı iç sipariş düzenlendi (miktar, satır): üretim projesi
+            // hemen yeni hâli alır — eski satırların üreticisi de dahil.
+            if (PO_APPROVED_STATUSES.has(updated.status) && data.items !== undefined) {
+                // Aynı üreticinin ikinci çağrısı süren senkrona katılır.
+                (0, exports.refreshProducerProduction)(existing);
+                (0, exports.refreshProducerProduction)(updated);
+            }
+            res.status(200).json((0, exports.parsePurchaseOrderRow)(updated));
         }
         catch (err) {
             if (err?.code === 'P2002') {
@@ -4280,7 +5019,7 @@ router.patch('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMiddl
         }
     }
     catch (error) {
-        sendPurchaseOrderError(res, error);
+        (0, exports.sendPurchaseOrderError)(res, error);
     }
 });
 /**
@@ -4325,29 +5064,772 @@ router.patch('/purchase-orders/:id/status', AuthMiddleware_1.requireAuth, (0, Rb
         catch {
             storedItems = [];
         }
-        // BESTÄTIGEN (19.09.2026): nur mit vollständigen Zeilen.
-        if (PO_APPROVED_STATUSES.has(status) && !PO_APPROVED_STATUSES.has(existing.status)) {
-            assertApprovable(storedItems);
-        }
-        // PRODUKTION: VORWÄRTS (umwandeln, bestätigen, Wareneingang) nur mit
-        // Projekt und Geräten — zurück geht immer.
+        /* ONAY KONTROLÜ KALKTI (22.09.2026, Vorgabe Samet: «onay butonları da
+       olmayacak»): eksik satır siparişi durdurmaz, mal kabulde zaten her
+       satır tek tek ele alınır. */
+        // PRODUKTION: der Stufenwechsel verlangt NICHTS mehr (21.09.2026) —
+        // ist ein Projekt zugeordnet, bekommen die Zeilen ihre Geräte, sonst
+        // geht es ohne weiter und die Zuordnung kann später kommen.
         const productionOn = await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId);
         if (productionOn && purchaseStageRank(status) > purchaseStageRank(existing.status)) {
-            const assignment = await productionModule_1.productionModule.purchaseLink.requireAssignment(tenantId, existing.id);
-            productionModule_1.productionModule.purchaseLink.assignLines(storedItems, {
-                productionProjectId: assignment.productionProjectId,
-                productionItemIds: assignment.productionItemIds,
-            });
+            const assignment = await productionModule_1.productionModule.purchaseLink.getAssignment(tenantId, existing.id);
+            if (assignment) {
+                productionModule_1.productionModule.purchaseLink.assignLines(storedItems, {
+                    productionProjectId: assignment.productionProjectId,
+                    productionItemIds: assignment.productionItemIds,
+                });
+            }
         }
-        const updated = await prisma_client_1.default.purchaseOrder.update({ where: { id: existing.id }, data: { status } });
+        // AŞAMA DEĞİŞİNCE BELGE DEĞİŞİR: fiyat talebi siparişe dönünce kendi
+        // sipariş kodunu alır (PA-2026-001 → BE-2026-004), bir aşama geri
+        // alınırsa eski talep kodu geri gelir. Her iki kod da kayıtta kalır ve
+        // aranabilir — tedarikçi hangisini yazıyorsa kayıt bulunur.
+        const codePatch = await purchaseStageCodePatch(tenantId, existing, purchaseKindOfStatus(status));
+        /* BELGE TAKASI KALKTI (22.09.2026): bir kaydın TEK belgesi vardır.
+           Fiyat talebi ile sipariş ayrı kayıtlardır, mal kabul de siparişin
+           kendi satırları üzerinde çalışır — takas edilecek ikinci bir liste
+           yoktur ve olsaydı mal kabulde girilen miktarları silerdi. */
+        const updated = await prisma_client_1.default.purchaseOrder.update({
+            where: { id: existing.id },
+            data: { status, ...codePatch },
+        });
         // Bestätigt → die Zeilen stehen bei der Produktion; zurück in den
         // Entwurf → sie verschwinden dort wieder.
         if (productionOn)
             await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user.id);
-        res.status(200).json(parsePurchaseOrderRow(updated));
+        // Üretim şirketine giden sipariş: onay (ya da geri alma) üretim emrini
+        // kurar ya da kaldırır.
+        (0, exports.refreshProducerProduction)(updated);
+        res.status(200).json((0, exports.parsePurchaseOrderRow)(updated));
     }
     catch (error) {
-        sendPurchaseOrderError(res, error);
+        (0, exports.sendPurchaseOrderError)(res, error);
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/convert-to-order:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Fiyat talebinden YENİ bir sipariş oluştur (talep listede kalır)"
+ *     security:
+ *       - bearerAuth: []
+ */
+/* ══ FİYAT TALEBİ → YENİ SİPARİŞ (Vorgabe Samet, 22.09.2026) ══════════════
+ *
+ * «Eğer fiyat modülü siparişe dönüştür derse fiyat talebi yine listede kalması
+ *  lazım ama yeni sipariş oluşturması lazım ve siparişin otomatik açılması
+ *  lazım — artık bir süreç olmayacak.»
+ *
+ * Eskiden dönüştürme AYNI kaydın durumunu değiştiriyordu: talep ekrandan
+ * kayboluyor, yerine sipariş geçiyordu. Artık talep DOKUNULMADAN kalır ve
+ * satırlarının bir KOPYASI yeni bir kayıt olarak doğar:
+ *
+ *   • Yeni kayıt kendi SİPARİŞ numarasını çeker (BE-YYYY-NNN).
+ *   • `priceRequestNumber` alanına talebin numarası yazılır — iz burada kalır
+ *     ve tedarikçi eski kodu yazınca arama iki kaydı da bulur.
+ *   • Satırlar kopyalanırken MAL KABUL DAMGALARI SIFIRLANIR: talebin
+ *     (olmayan) kabulü yeni siparişe geçmez.
+ *   • Üretim ataması (proje + cihazlar) varsa o da kopyalanır.
+ *
+ * Bir talep birden çok kez dönüştürülebilir (iki tedarikçiden iki sipariş) —
+ * engel yoktur, her çağrı yeni bir kayıt açar.
+ */
+router.post('/purchase-orders/:id/convert-to-order', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const source = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!source)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        if (!PO_PRICE_REQUEST_STATUSES.has(source.status)) {
+            return res.status(400).json({ error: 'Yalnızca fiyat talebi siparişe dönüştürülebilir.' });
+        }
+        /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): sipariş TEK tedarikçilidir —
+           hangisiyle açılacağını `supplierIndex` söyler (yoksa ilki). */
+        const requestSuppliers = poReadRequestSuppliers(source);
+        const chosen = requestSuppliers[poSupplierIndex(req.body?.supplierIndex, requestSuppliers) ?? 0];
+        const orderSupplier = chosen
+            ? {
+                supplierId: chosen.supplierId,
+                supplierName: chosen.supplierName,
+                supplierEmail: chosen.supplierEmail,
+                supplierAddress: chosen.supplierAddress,
+            }
+            : {
+                supplierId: source.supplierId,
+                supplierName: source.supplierName,
+                supplierEmail: source.supplierEmail,
+                supplierAddress: source.supplierAddress,
+            };
+        /* SİPARİŞTEN GELEN TALEP YERİNDE GERİ DÖNER (24.09.2026): «Fiyat
+           talebi almak istiyorum» ile talebe dönmüş bir sipariş kendi
+           sipariş numarasını taşır — dönüştürünce AYNI kayıt, AYNI numarayla
+           yeniden sipariş olur; kopya açılmaz, numara yanmaz. */
+        if (source.orderNumber) {
+            const taken = await prisma_client_1.default.purchaseOrder.findFirst({
+                where: { tenantId, referenceNumber: source.orderNumber, NOT: { id: source.id } },
+                select: { id: true },
+            });
+            if (!taken) {
+                const standard = (0, standardOrderTemplate_1.isStandardColumns)(source.tableColumns);
+                const flipped = await prisma_client_1.default.purchaseOrder.update({
+                    where: { id: source.id },
+                    data: {
+                        status: 'ORDER_DRAFT',
+                        referenceNumber: source.orderNumber,
+                        ...orderSupplier,
+                        requestSuppliers: null,
+                        ...(standard || !source.tableColumns
+                            ? { tableColumns: (0, standardOrderTemplate_1.standardTableColumnsJson)('ORDER'), hiddenColumnKeys: (0, standardOrderTemplate_1.standardHiddenKeysJson)('ORDER') }
+                            : {}),
+                    },
+                });
+                if (await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId)) {
+                    await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, flipped, req.user.id);
+                }
+                return res.status(200).json((0, exports.parsePurchaseOrderRow)(flipped));
+            }
+        }
+        let items = [];
+        try {
+            items = JSON.parse(source.items || '[]');
+        }
+        catch {
+            items = [];
+        }
+        // Kopyanın satırları TEMİZ gelir: talepte kabul edilmiş bir şey yoktur.
+        const copiedItems = (Array.isArray(items) ? items : []).map((item) => ({
+            ...item,
+            receivedQuantity: 0,
+            receivedAt: null,
+        }));
+        let row = null;
+        for (let attempt = 0; attempt < 3 && !row; attempt++) {
+            const referenceNumber = await (0, exports.nextPurchaseReference)(tenantId, 'ORDER');
+            try {
+                row = await prisma_client_1.default.purchaseOrder.create({
+                    data: {
+                        id: (0, nanoid_1.nanoid)(12),
+                        tenantId,
+                        referenceNumber,
+                        orderNumber: referenceNumber,
+                        // Nereden geldiği kayıtta durur: talebin numarası.
+                        priceRequestNumber: source.priceRequestNumber || source.referenceNumber,
+                        status: 'ORDER_DRAFT',
+                        quoteNumber: source.quoteNumber,
+                        orderedByName: source.orderedByName,
+                        projectName: source.projectName,
+                        recipientName: source.recipientName,
+                        coverLetter: source.coverLetter,
+                        // Standart talep şablonu → standart sipariş şablonu (24.09.2026).
+                        ...((0, standardOrderTemplate_1.isStandardColumns)(source.tableColumns)
+                            ? { tableColumns: (0, standardOrderTemplate_1.standardTableColumnsJson)('ORDER'), hiddenColumnKeys: (0, standardOrderTemplate_1.standardHiddenKeysJson)('ORDER') }
+                            : { tableColumns: source.tableColumns, hiddenColumnKeys: source.hiddenColumnKeys }),
+                        ...orderSupplier,
+                        items: JSON.stringify(copiedItems),
+                        additionalFees: source.additionalFees,
+                        currency: source.currency,
+                        vatMode: source.vatMode,
+                        orderVatRate: source.orderVatRate,
+                        orderVatCountry: source.orderVatCountry,
+                        totalNet: source.totalNet,
+                        totalGross: source.totalGross,
+                        totalVat: source.totalVat,
+                        totalFees: source.totalFees,
+                        createdByEmpId: req.user.id,
+                    },
+                });
+            }
+            catch (err) {
+                if (err?.code !== 'P2002')
+                    throw err;
+            }
+        }
+        if (!row)
+            return res.status(400).json({ error: 'Sipariş numarası üretilemedi, lütfen tekrar deneyin.' });
+        // Üretim ataması (proje + cihazlar) kopyaya da geçer.
+        if (await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId)) {
+            const assignment = await productionModule_1.productionModule.purchaseLink.getAssignment(tenantId, source.id);
+            if (assignment) {
+                await productionModule_1.productionModule.purchaseLink.saveAssignment(tenantId, row.id, {
+                    productionProjectId: assignment.productionProjectId,
+                    productionItemIds: assignment.productionItemIds,
+                }, req.user.id);
+                await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, row, req.user.id);
+            }
+        }
+        res.status(201).json((0, exports.parsePurchaseOrderRow)(row));
+    }
+    catch (error) {
+        (0, exports.sendPurchaseOrderError)(res, error);
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/duplicate:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Fiyat talebinin ya da siparişin TASLAK kopyasını aç"
+ *     security:
+ *       - bearerAuth: []
+ */
+/* ══ KOPYA AÇ (Vorgabe Samet, 25.09.2026) ═══════════════════════════════════
+ *
+ * «Fiyat taleplerinin ve siparişlerin de başka kopyaları açılabilsin ama
+ *  taslak olarak açılması lazım.»
+ *
+ * Kopya kaynağın TÜRÜNDE kalır ve her zaman TASLAK doğar:
+ *   • fiyat talebi → DRAFT, yeni PA- numarası
+ *   • sipariş (hangi durumda olursa olsun) → ORDER_DRAFT, yeni BE- numarası
+ * Kaynak hiç değişmez. Kopyaya GEÇMEYENLER: mail damgası / revizyon, mal kabul
+ * damgaları, stoğa işlenme, talep ↔ sipariş izi — ve satırların PROJE BAĞI
+ * (`source`): proje tedarik ekranı sipariş edilen miktarı bu bağdan sayar,
+ * kopya onu iki kez saydırırdı. Üretim ataması da aynı sebeple kopyalanmaz.
+ */
+router.post('/purchase-orders/:id/duplicate', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const source = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!source)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        const kind = PO_PRICE_REQUEST_STATUSES.has(source.status) ? 'PRICE_REQUEST' : 'ORDER';
+        const codeColumn = kind === 'PRICE_REQUEST' ? 'priceRequestNumber' : 'orderNumber';
+        let items = [];
+        try {
+            items = JSON.parse(source.items || '[]');
+        }
+        catch {
+            items = [];
+        }
+        const copiedItems = (Array.isArray(items) ? items : []).map((item) => {
+            const { source: _projectLink, ...rest } = item ?? {};
+            return { ...rest, receivedQuantity: 0, receivedAt: null };
+        });
+        let row = null;
+        for (let attempt = 0; attempt < 3 && !row; attempt++) {
+            const referenceNumber = await (0, exports.nextPurchaseReference)(tenantId, kind);
+            try {
+                row = await prisma_client_1.default.purchaseOrder.create({
+                    data: {
+                        id: (0, nanoid_1.nanoid)(12),
+                        tenantId,
+                        referenceNumber,
+                        [codeColumn]: referenceNumber,
+                        status: kind === 'PRICE_REQUEST' ? 'DRAFT' : 'ORDER_DRAFT',
+                        quoteNumber: source.quoteNumber,
+                        orderedByName: source.orderedByName,
+                        projectName: source.projectName,
+                        recipientName: source.recipientName,
+                        coverLetter: source.coverLetter,
+                        tableColumns: source.tableColumns,
+                        hiddenColumnKeys: source.hiddenColumnKeys,
+                        supplierId: source.supplierId,
+                        supplierName: source.supplierName,
+                        supplierEmail: source.supplierEmail,
+                        supplierAddress: source.supplierAddress,
+                        // Talebin tedarikçi listesi gelir — mail damgaları gelmez.
+                        requestSuppliers: kind === 'PRICE_REQUEST' && source.requestSuppliers
+                            ? JSON.stringify(poReadRequestSuppliers(source).map((entry) => ({ ...entry, emailSentAt: null, emailRecipient: null })))
+                            : null,
+                        items: JSON.stringify(copiedItems),
+                        additionalFees: source.additionalFees,
+                        currency: source.currency,
+                        vatMode: source.vatMode,
+                        orderVatRate: source.orderVatRate,
+                        orderVatCountry: source.orderVatCountry,
+                        totalNet: source.totalNet,
+                        totalGross: source.totalGross,
+                        totalVat: source.totalVat,
+                        totalFees: source.totalFees,
+                        createdByEmpId: req.user.id,
+                    },
+                });
+            }
+            catch (err) {
+                if (err?.code !== 'P2002')
+                    throw err;
+            }
+        }
+        if (!row)
+            return res.status(400).json({ error: 'Numara üretilemedi, lütfen tekrar deneyin.' });
+        res.status(201).json((0, exports.parsePurchaseOrderRow)(row));
+    }
+    catch (error) {
+        (0, exports.sendPurchaseOrderError)(res, error);
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/convert-to-request:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Siparişi fiyat talebine geri çevir (Fiyat talebi almak istiyorum)"
+ *     security:
+ *       - bearerAuth: []
+ */
+/* ══ SİPARİŞ → FİYAT TALEBİ (Vorgabe Samet, 24.09.2026) ═════════════════════
+ *
+ * «Sipariş ekranında ‹fiyat talebi almak istiyorum› butonu olsun, tıklayınca
+ *  sipariş geri fiyat talebine dönsün, fiyat talebi açılsın.»
+ *
+ * AYNI kayıt talebe döner (kopya açılmaz): durum DRAFT, görünen kod talebin
+ * kodu (varsa eskisi, yoksa yeni PA-), sipariş numarası kayıtta SAKLI kalır ve
+ * talep yeniden siparişe dönüştürülünce aynı numara geri gelir. Sütunlar
+ * standart fiyat talebi şablonuna geçer (ÜRÜN - MALZEME / MİKTAR). Onaylanmış
+ * (mal kabulde) ya da stoğa işlenmiş sipariş geri dönemez — önce onay geri
+ * alınır. Üretim satırları ve üretim emri düşer.
+ */
+router.post('/purchase-orders/:id/convert-to-request', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const source = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!source)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        if (!['ORDER_DRAFT', 'PENDING', 'ORDERED'].includes(String(source.status))) {
+            return res.status(400).json({
+                error: 'Yalnızca onaylanmamış sipariş fiyat talebine çevrilebilir.',
+                code: 'ORDER_LOCKED',
+            });
+        }
+        let referenceNumber = source.priceRequestNumber || null;
+        if (referenceNumber) {
+            const taken = await prisma_client_1.default.purchaseOrder.findFirst({
+                where: { tenantId, referenceNumber, NOT: { id: source.id } },
+                select: { id: true },
+            });
+            if (taken)
+                referenceNumber = null;
+        }
+        let row = null;
+        for (let attempt = 0; attempt < 3 && !row; attempt++) {
+            const code = referenceNumber ?? await (0, exports.nextPurchaseReference)(tenantId, 'PRICE_REQUEST');
+            try {
+                row = await prisma_client_1.default.purchaseOrder.update({
+                    where: { id: source.id },
+                    data: {
+                        status: 'DRAFT',
+                        referenceNumber: code,
+                        priceRequestNumber: code,
+                        // Sipariş numarası SAKLI kalır: geri dönüşte aynı kod gelir.
+                        orderNumber: source.orderNumber || source.referenceNumber,
+                        tableColumns: (0, standardOrderTemplate_1.standardTableColumnsJson)('PRICE_REQUEST'),
+                        hiddenColumnKeys: (0, standardOrderTemplate_1.standardHiddenKeysJson)('PRICE_REQUEST'),
+                    },
+                });
+            }
+            catch (err) {
+                if (err?.code !== 'P2002')
+                    throw err;
+                referenceNumber = null;
+            }
+        }
+        if (!row)
+            return res.status(400).json({ error: 'Fiyat talebi numarası üretilemedi, lütfen tekrar deneyin.' });
+        if (await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId)) {
+            await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, row, req.user.id);
+        }
+        (0, exports.refreshProducerProduction)(row);
+        res.status(200).json((0, exports.parsePurchaseOrderRow)(row));
+    }
+    catch (error) {
+        (0, exports.sendPurchaseOrderError)(res, error);
+    }
+});
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/receive/revert-line:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Stoğa gitmiş TEK satırı geri gönder (o satırın lager buchungları geri alınır)"
+ *     security:
+ *       - bearerAuth: []
+ */
+/* ══ «STOĞA GİDENLER» SEKMESİNDEKİ GERİ GÖNDERME (22.09.2026) ═════════════
+ *
+ * «Stoğa gidenler olarak ayrı bir tab de olacak, orada geri gönderme butonu
+ *  olacak; geri gönderince gidecek.»
+ *
+ * Bütün mal kabulü geri almak (`/receive/revert`) yerine TEK SATIRIN
+ * buchunglarını geri alır: o satırın ürününe ait, bu siparişin yazdığı giriş
+ * hareketleri en yeniden başlayarak satırın kabul miktarı kadar geri sarılır
+ * (tam örtüşen hareket silinir, artan bir hareket küçültülür), bakiye düşer,
+ * partiler silinir ve satır yeniden «mal kabul bekliyor» olur.
+ *
+ * Son kabul edilmiş satır da geri gelince sipariş MAL KABULDEN ÇIKAR ve
+ * sipariş durumuna döner (mail gitmişse ORDERED, gitmemişse ORDER_DRAFT).
+ */
+router.post('/purchase-orders/:id/receive/revert-line', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const existing = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!existing)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        let items = [];
+        try {
+            items = JSON.parse(existing.items || '[]');
+        }
+        catch {
+            items = [];
+        }
+        const index = Number(req.body?.index);
+        if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+            return res.status(400).json({ error: 'Geçersiz satır indeksi.' });
+        }
+        const item = items[index];
+        const receivedQuantity = Number(item?.receivedQuantity) || 0;
+        if (receivedQuantity <= 0) {
+            return res.status(400).json({ error: 'Bu satır stoğa aktarılmamış.' });
+        }
+        const articleId = item?.articleId ? String(item.articleId) : null;
+        /* Bu satırın hareketleri: aynı siparişin, aynı ürünün giriş
+           hareketleri. En YENİden geri sarılır — kısmî kabullerde son
+           yapılan işlem ilk geri alınandır. */
+        const movements = articleId
+            ? await prisma_client_1.default.stockMovement.findMany({
+                where: { tenantId, referenceId: existing.id, movementType: 'IN', articleId },
+                orderBy: { transactionDate: 'desc' },
+                select: { id: true, articleId: true, quantity: true, destinationLocationId: true },
+            })
+            : [];
+        let need = receivedQuantity;
+        const dropIds = [];
+        const shrink = [];
+        const deltasByLocation = new Map();
+        const noteDelta = (locationId, article, amount) => {
+            if (!locationId)
+                return;
+            const perArticle = deltasByLocation.get(locationId) ?? new Map();
+            perArticle.set(article, (perArticle.get(article) ?? 0) - amount);
+            deltasByLocation.set(locationId, perArticle);
+        };
+        for (const movement of movements) {
+            if (need <= 0.0000001)
+                break;
+            const quantity = Number(movement.quantity) || 0;
+            const locationId = movement.destinationLocationId ? String(movement.destinationLocationId) : null;
+            if (quantity <= need + 0.0000001) {
+                dropIds.push(String(movement.id));
+                noteDelta(locationId, String(movement.articleId), quantity);
+                need -= quantity;
+            }
+            else {
+                shrink.push({ id: String(movement.id), quantity: quantity - need, taken: need });
+                noteDelta(locationId, String(movement.articleId), need);
+                need = 0;
+            }
+        }
+        item.receivedQuantity = 0;
+        item.receivedAt = null;
+        const stillReceived = items.some((entry) => (Number(entry?.receivedQuantity) || 0) > 0);
+        // Son kabul de geri geldiyse sipariş mal kabulden çıkar.
+        const targetStatus = stillReceived
+            ? 'TO_BE_STOCKED'
+            : (existing.emailSentAt ? 'ORDERED' : 'ORDER_DRAFT');
+        const updated = await prisma_client_1.default.$transaction(async (tx) => {
+            if (dropIds.length) {
+                await tx.articleSupplier.deleteMany({ where: { tenantId, stockMovementId: { in: dropIds } } });
+                await tx.stockMovement.deleteMany({ where: { tenantId, id: { in: dropIds } } });
+            }
+            for (const entry of shrink) {
+                await tx.stockMovement.update({ where: { id: entry.id }, data: { quantity: entry.quantity } });
+                /* Partinin kalanı da düşer; sıfırlanırsa parti gider. */
+                const lots = await tx.articleSupplier.findMany({ where: { tenantId, stockMovementId: entry.id }, select: { id: true, quantity: true, remainingQuantity: true } });
+                for (const lot of lots) {
+                    const nextQuantity = Math.max(0, (Number(lot.quantity) || 0) - entry.taken);
+                    const nextRemaining = Math.max(0, (Number(lot.remainingQuantity) || 0) - entry.taken);
+                    if (nextQuantity <= 0)
+                        await tx.articleSupplier.delete({ where: { id: lot.id } });
+                    else
+                        await tx.articleSupplier.update({ where: { id: lot.id }, data: { quantity: nextQuantity, remainingQuantity: nextRemaining } });
+                }
+            }
+            for (const [locationId, perArticle] of deltasByLocation) {
+                await bulkApplyStockBalanceDeltas(tx, tenantId, locationId, perArticle);
+            }
+            return tx.purchaseOrder.update({
+                where: { id: existing.id },
+                data: {
+                    items: JSON.stringify(items),
+                    status: targetStatus,
+                    stockedAt: null,
+                },
+            });
+        });
+        if (await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId)) {
+            await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user.id);
+        }
+        res.status(200).json({
+            revertedMovements: dropIds.length + shrink.length,
+            order: (0, exports.parsePurchaseOrderRow)(updated),
+        });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+const readStageDocuments = (value) => {
+    try {
+        const parsed = JSON.parse(String(value || '{}'));
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    }
+    catch {
+        return {};
+    }
+};
+/** Das Blatt, das der Datensatz GERADE offen hat. */
+const currentStageDoc = (row) => {
+    const parse = (value) => {
+        try {
+            const data = JSON.parse(String(value || '[]'));
+            return Array.isArray(data) ? data : [];
+        }
+        catch {
+            return [];
+        }
+    };
+    return {
+        items: parse(row.items),
+        additionalFees: parse(row.additionalFees),
+        totalNet: Number(row.totalNet) || 0,
+        totalGross: Number(row.totalGross) || 0,
+        totalVat: Number(row.totalVat) || 0,
+        totalFees: Number(row.totalFees) || 0,
+        vatMode: String(row.vatMode || 'LINE'),
+        orderVatRate: Number(row.orderVatRate) || 0,
+        orderVatCountry: row.orderVatCountry ?? null,
+    };
+};
+/** Ein Blatt in die Spalten des Datensatzes zurücklegen. */
+const stageDocToData = (doc) => ({
+    items: JSON.stringify(doc.items ?? []),
+    additionalFees: JSON.stringify(doc.additionalFees ?? []),
+    totalNet: Number(doc.totalNet) || 0,
+    totalGross: Number(doc.totalGross) || 0,
+    totalVat: Number(doc.totalVat) || 0,
+    totalFees: Number(doc.totalFees) || 0,
+    vatMode: doc.vatMode === 'TOTAL' ? 'TOTAL' : 'LINE',
+    orderVatRate: Number(doc.orderVatRate) || 0,
+    orderVatCountry: doc.orderVatCountry ?? null,
+});
+/**
+ * DER STUFENWECHSEL ALS BLATTWECHSEL: das verlassene Blatt wird abgelegt, das
+ * betretene geholt. Fehlt das betretene, bleibt die Liste stehen — so
+ * entsteht die Bestellung wie eh und je aus der Anfrage.
+ */
+const purchaseStageDocPatch = (row, fromStage, toStage) => {
+    if (fromStage === toStage)
+        return {};
+    const docs = readStageDocuments(row.stageDocuments);
+    docs[String(fromStage)] = currentStageDoc(row);
+    const target = docs[String(toStage)];
+    return {
+        stageDocuments: JSON.stringify(docs),
+        ...(target ? stageDocToData(target) : {}),
+    };
+};
+/**
+ * ══ ZWEI VORGÄNGE WERDEN EINER (Vorgabe Samet, 21.09.2026) ═══════════════
+ *
+ * «Fiyat talebi ↔ sipariş, sipariş ↔ mal kabul birleştirilebilsin … ayrı ayrı
+ * oluşturulanlar detayda birleştirilebilsin, ikili ikili. Hangisinden
+ * ekliyorsak geçerli numara o olacak.»
+ *
+ * Es werden nicht zwei Tabellen addiert, sondern ZWEI ABLÄUFE ZU EINEM: der
+ * Vorgang, auf dessen Seite man steht (das ZIEL), nimmt den anderen (die
+ * QUELLE) in sich auf und BEHÄLT SEINE NUMMER — sie bleibt die gültige.
+ *
+ *   • Die Positionen der Quelle hängen sich UNTEN an (nichts wird verrechnet
+ *     oder zusammengezogen: eine Zeile bleibt die Zeile, die sie war, mit
+ *     ihrer eingelagerten Menge). Zusatzkosten kommen mit.
+ *   • DIE CODES: ein LEERES Fach des Ziels füllt die Quelle. Eine Anfrage,
+ *     die eine Bestellung aufnimmt, trägt deren `BE-` in ihrem Bestellfach —
+ *     wird sie später umgewandelt, bekommt sie GENAU DIESE Nummer und keine
+ *     neue. Das volle Fach des Ziels bleibt unangetastet.
+ *   • DIE STUFE: das Ziel bleibt, wo es steht — AUSSER die Quelle ist schon im
+ *     Wareneingang (Stufe 3). Was im Lager gebucht ist, lässt sich nicht
+ *     stillschweigend zurücknehmen; dann rückt das Ziel auf diese Stufe und
+ *     die Lagerbewegungen der Quelle zeigen fortan auf das Ziel.
+ *   • Zusammengeführt wird nur über EINE Stufe hinweg (1↔2, 2↔3) und nie mit
+ *     einem abgeschlossenen Vorgang — der ist nicht mehr zu bearbeiten.
+ *   • Die Quelle VERSCHWINDET: ihre Mailentwürfe, ihre Produktionszuordnung
+ *     und ihre Zeile gehen; ihre Nummer wird nie wieder vergeben.
+ */
+router.get('/purchase-orders/:id/merge-candidates', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const existing = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!existing)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        const stage = purchaseFlowStage(existing.status);
+        // Nur die NACHBARSTUFEN, und nie ein abgeschlossener Vorgang.
+        const statuses = Object.keys(PURCHASE_FLOW_STAGE).filter((status) => (status !== 'COMPLETED' && Math.abs(PURCHASE_FLOW_STAGE[status] - stage) === 1));
+        const search = String(req.query.search || '').trim();
+        const rows = await prisma_client_1.default.purchaseOrder.findMany({
+            where: {
+                tenantId,
+                id: { not: existing.id },
+                status: { in: statuses },
+                ...(search ? {
+                    OR: [
+                        { referenceNumber: { contains: (0, purchaseDocumentCode_1.purchaseSearchTerm)(search) } },
+                        { priceRequestNumber: { contains: (0, purchaseDocumentCode_1.purchaseSearchTerm)(search) } },
+                        { orderNumber: { contains: (0, purchaseDocumentCode_1.purchaseSearchTerm)(search) } },
+                        { supplierName: { contains: search } },
+                        { projectName: { contains: search } },
+                    ],
+                } : {}),
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 60,
+            select: {
+                id: true, referenceNumber: true, priceRequestNumber: true, orderNumber: true,
+                status: true, supplierName: true, projectName: true, currency: true,
+                totalNet: true, createdAt: true, items: true,
+            },
+        });
+        res.status(200).json({
+            stage,
+            orders: rows.map((row) => {
+                let items = [];
+                try {
+                    items = JSON.parse(row.items || '[]');
+                }
+                catch {
+                    items = [];
+                }
+                const { items: _drop, ...rest } = row;
+                return { ...rest, itemCount: Array.isArray(items) ? items.length : 0, stage: purchaseFlowStage(row.status) };
+            }),
+        });
+    }
+    catch (error) {
+        (0, exports.sendPurchaseOrderError)(res, error);
+    }
+});
+router.post('/purchase-orders/:id/merge', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.transfer'), async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const target = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+        if (!target)
+            return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+        const sourceId = String(req.body?.sourceId || '').trim();
+        const source = sourceId
+            ? await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: sourceId, tenantId } })
+            : null;
+        if (!source)
+            return res.status(400).json({ error: 'Birleştirilecek kayıt bulunamadı.', code: 'MERGE_SOURCE_NOT_FOUND' });
+        if (source.id === target.id)
+            return res.status(400).json({ error: 'Bir kayıt kendisiyle birleştirilemez.', code: 'MERGE_SAME_RECORD' });
+        if (target.status === 'COMPLETED' || source.status === 'COMPLETED') {
+            return res.status(400).json({ error: 'Tamamlanmış (stoğa eklenmiş) kayıt birleştirilemez.', code: 'MERGE_COMPLETED' });
+        }
+        const targetStage = purchaseFlowStage(target.status);
+        const sourceStage = purchaseFlowStage(source.status);
+        if (Math.abs(targetStage - sourceStage) !== 1) {
+            return res.status(400).json({
+                error: 'Yalnızca komşu aşamadaki iki kayıt birleştirilebilir: fiyat talebi ↔ sipariş, sipariş ↔ mal kabul.',
+                code: 'MERGE_STAGE_MISMATCH',
+            });
+        }
+        /* ZEILEN WERDEN NICHT ZUSAMMENGESCHÜTTET (Vorgabe Samet, 21.09.2026):
+           die Preisanfrage bleibt die Preisanfrage, die Bestellung die
+           Bestellung. Die BLÄTTER der Quelle füllen die LEEREN FÄCHER des
+           Ziels; ein Fach, das das Ziel schon hat, bleibt unberührt. */
+        const targetDocs = readStageDocuments(target.stageDocuments);
+        targetDocs[String(targetStage)] = currentStageDoc(target);
+        const sourceDocs = readStageDocuments(source.stageDocuments);
+        sourceDocs[String(sourceStage)] = currentStageDoc(source);
+        const adopted = [];
+        const skipped = [];
+        for (const [stage, doc] of Object.entries(sourceDocs)) {
+            if (!doc || !Array.isArray(doc.items) || !doc.items.length)
+                continue;
+            const existingDoc = targetDocs[stage];
+            if (existingDoc && Array.isArray(existingDoc.items) && existingDoc.items.length) {
+                skipped.push(Number(stage));
+                continue;
+            }
+            targetDocs[stage] = doc;
+            adopted.push(Number(stage));
+        }
+        if (!adopted.length) {
+            return res.status(400).json({
+                error: 'Bu süreçte o aşamanın belgesi zaten var — alınacak yeni bir belge yok.',
+                code: 'MERGE_NOTHING_TO_ADOPT',
+            });
+        }
+        // Leeres Fach füllt die Quelle; das volle Fach des Ziels bleibt.
+        const priceRequestNumber = target.priceRequestNumber ?? source.priceRequestNumber ?? null;
+        const orderNumber = target.orderNumber ?? source.orderNumber ?? null;
+        // Gebuchte Ware zieht die Stufe mit — sonst bleibt das Ziel, wo es ist,
+        // und mit ihm SEIN Blatt (die Zeilen der Seite ändern sich nicht).
+        const adoptsReceipt = sourceStage === 3 && targetStage < 3 && adopted.includes(3);
+        const status = adoptsReceipt ? source.status : target.status;
+        const currentCode = purchaseKindOfStatus(status) === 'PRICE_REQUEST' ? priceRequestNumber : orderNumber;
+        const openDoc = adoptsReceipt ? targetDocs['3'] : null;
+        const updated = await prisma_client_1.default.$transaction(async (tx) => {
+            const row = await tx.purchaseOrder.update({
+                where: { id: target.id },
+                data: {
+                    stageDocuments: JSON.stringify(targetDocs),
+                    ...(openDoc ? stageDocToData(openDoc) : {}),
+                    status,
+                    priceRequestNumber,
+                    orderNumber,
+                    referenceNumber: currentCode ?? target.referenceNumber,
+                    ...(adoptsReceipt && source.stockedAt ? { stockedAt: source.stockedAt } : {}),
+                    // Ist das offene Blatt ein anderes geworden, trägt die
+                    // nächste Mail den Stempel «aktualisiert».
+                    ...(openDoc && target.emailSentAt ? { revision: (target.revision || 0) + 1 } : {}),
+                },
+            });
+            // Die Buchungen der Quelle gehören jetzt zum Ziel.
+            await tx.stockMovement.updateMany({ where: { tenantId, referenceId: source.id }, data: { referenceId: target.id } });
+            await tx.purchaseOrderMailDraft.deleteMany({ where: { tenantId, orderId: source.id } });
+            await tx.purchaseOrder.delete({ where: { id: source.id } });
+            return row;
+        });
+        // PRODUKTION: hat das Ziel noch kein Projekt, erbt es das der Quelle.
+        if (await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId)) {
+            const targetAssignment = await productionModule_1.productionModule.purchaseLink.getAssignment(tenantId, target.id);
+            const sourceAssignment = await productionModule_1.productionModule.purchaseLink.getAssignment(tenantId, source.id);
+            if (!targetAssignment && sourceAssignment) {
+                await productionModule_1.productionModule.purchaseLink.saveAssignment(tenantId, target.id, {
+                    productionProjectId: sourceAssignment.productionProjectId,
+                    productionItemIds: sourceAssignment.productionItemIds,
+                }, req.user.id);
+            }
+            await productionModule_1.productionModule.purchaseLink.removeForPurchaseOrder(tenantId, source.id);
+            await productionModule_1.productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user.id);
+        }
+        AuditLogService_1.auditLog.log({
+            action: 'inventory.purchaseOrder.merge',
+            tenantId,
+            employeeId: req.user.id,
+            entityType: 'PurchaseOrder',
+            entityId: target.id,
+            metadata: {
+                kept: updated.referenceNumber,
+                merged: source.referenceNumber,
+                targetStage,
+                sourceStage,
+                adoptedStages: adopted,
+                skippedStages: skipped,
+            },
+            ...AuditLogService_1.auditLog.context(req),
+        });
+        res.status(200).json({
+            ...(0, exports.parsePurchaseOrderRow)(updated),
+            mergedFrom: source.referenceNumber,
+            adoptedStages: adopted,
+            skippedStages: skipped,
+            production: await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId)
+                ? await productionModule_1.productionModule.picker.assignmentFor(tenantId, target.id)
+                : null,
+        });
+    }
+    catch (error) {
+        (0, exports.sendPurchaseOrderError)(res, error);
     }
 });
 /**
@@ -4369,7 +5851,7 @@ router.post('/purchase-orders/:id/mark-stocked', AuthMiddleware_1.requireAuth, (
             where: { id: existing.id },
             data: { status: 'COMPLETED', stockedAt: new Date() },
         });
-        res.status(200).json(parsePurchaseOrderRow(updated));
+        res.status(200).json((0, exports.parsePurchaseOrderRow)(updated));
     }
     catch (error) {
         res.status(400).json({ error: error.message });
@@ -4451,16 +5933,17 @@ router.post('/purchase-orders/:id/receive', AuthMiddleware_1.requireAuth, (0, Rb
             if (!plan.size)
                 return res.status(400).json({ error: 'Seçilen satırların tamamı zaten stoğa aktarılmış.' });
         }
-        // PRODUKTION (19.09.2026): auch der Wareneingang braucht das Projekt,
-        // wo das Modul an ist — Geräte sind freiwillig (20.09.2026); sind
-        // mehrere gewählt, braucht jede Zeile ihres.
+        // PRODUKTION: der Wareneingang läuft auch OHNE Projekt (21.09.2026).
+        // Ist eines zugeordnet, tragen die Zeilen ihre Geräte wie bisher.
         const productionOn = await productionModule_1.productionModule.purchaseLink.isEnabled(tenantId);
         if (productionOn) {
-            const assignment = await productionModule_1.productionModule.purchaseLink.requireAssignment(tenantId, existing.id);
-            productionModule_1.productionModule.purchaseLink.assignLines(items, {
-                productionProjectId: assignment.productionProjectId,
-                productionItemIds: assignment.productionItemIds,
-            });
+            const assignment = await productionModule_1.productionModule.purchaseLink.getAssignment(tenantId, existing.id);
+            if (assignment) {
+                productionModule_1.productionModule.purchaseLink.assignLines(items, {
+                    productionProjectId: assignment.productionProjectId,
+                    productionItemIds: assignment.productionItemIds,
+                });
+            }
         }
         /* ── ERST HIER ENTSTEHT DER ARTIKEL (Vorgabe Samet, 14.09.2026) ─────
            «Bevor es in den Wareneingang übertragen ist, kommt nichts ins
@@ -4663,11 +6146,11 @@ router.post('/purchase-orders/:id/receive', AuthMiddleware_1.requireAuth, (0, Rb
             errors,
             // Wie viele Artikel der Wareneingang aus dem Papierkorb geholt hat.
             restoredCount: reviveIds.size,
-            order: parsePurchaseOrderRow(updated),
+            order: (0, exports.parsePurchaseOrderRow)(updated),
         });
     }
     catch (error) {
-        sendPurchaseOrderError(res, error);
+        (0, exports.sendPurchaseOrderError)(res, error);
     }
 });
 /**
@@ -4739,8 +6222,8 @@ router.post('/purchase-orders/:id/receive/revert', AuthMiddleware_1.requireAuth,
             item.receivedQuantity = 0;
             item.receivedAt = null;
         });
-        // Mail gitmişse sipariş "verilmiş"tir, gitmemişse yalnızca onaylanmış.
-        const targetStatus = existing.emailSentAt ? 'ORDERED' : 'PENDING';
+        // Mail gitmişse sipariş "verilmiş"tir, gitmemişse taslaktır (onay yok).
+        const targetStatus = existing.emailSentAt ? 'ORDERED' : 'ORDER_DRAFT';
         const updated = await prisma_client_1.default.$transaction(async (tx) => {
             if (movementIds.length) {
                 // Partiler önce: hareketlere bağlıdırlar.
@@ -4750,6 +6233,8 @@ router.post('/purchase-orders/:id/receive/revert', AuthMiddleware_1.requireAuth,
             for (const [locationId, perArticle] of deltasByLocation) {
                 await bulkApplyStockBalanceDeltas(tx, tenantId, locationId, perArticle);
             }
+            /* Mal kabul siparişin İÇİNDEDİR: geri alınca satırlar kalır,
+               yalnızca kabul damgaları düşer (belge takası yok). */
             return tx.purchaseOrder.update({
                 where: { id: existing.id },
                 data: {
@@ -4765,7 +6250,7 @@ router.post('/purchase-orders/:id/receive/revert', AuthMiddleware_1.requireAuth,
         }
         res.status(200).json({
             revertedMovements: movementIds.length,
-            order: parsePurchaseOrderRow(updated),
+            order: (0, exports.parsePurchaseOrderRow)(updated),
         });
     }
     catch (error) {
@@ -4788,6 +6273,14 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
         if (!existing)
             return res.status(404).json({ error: 'Sipariş bulunamadı.' });
         const settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tenantId) } });
+        /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): mail listedeki BİR tedarikçiye
+           gider (`supplierIndex`), ekindeki PDF de onun adını taşır; damga
+           o tedarikçinin kaydına düşer. */
+        const requestSuppliers = PO_PRICE_REQUEST_STATUSES.has(existing.status) ? poReadRequestSuppliers(existing) : [];
+        const supplierIndex = poSupplierIndex(req.body?.supplierIndex, requestSuppliers);
+        const target = supplierIndex !== null
+            ? requestSuppliers[supplierIndex]
+            : { supplierId: existing.supplierId ?? null, supplierEmail: existing.supplierEmail ?? null };
         // Alıcı: kullanıcının girdiği herhangi geçerli adres (kullanıcı isteği
         // 2026-09-15 — önceki "yalnızca tedarikçinin adresi" kısıtı kaldırıldı).
         // Girilmezse sipariş snapshot'ındaki / tedarikçi kaydındaki e-posta.
@@ -4800,13 +6293,13 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
             }
         }
         else {
-            const snapshot = String(existing.supplierEmail || '').trim();
+            const snapshot = String(target.supplierEmail || '').trim();
             if (snapshot && PO_EMAIL_RE.test(snapshot)) {
                 to = snapshot;
             }
-            else if (existing.supplierId) {
+            else if (target.supplierId) {
                 const supplier = await prisma_client_1.default.supplier.findFirst({
-                    where: { id: existing.supplierId, tenantId },
+                    where: { id: target.supplierId, tenantId },
                     select: { email: true },
                 });
                 const supplierEmail = String(supplier?.email || '').trim();
@@ -4923,12 +6416,20 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
                 : null;
         let order = existing;
         if (!result.preview) {
+            const sentAt = new Date();
             order = await prisma_client_1.default.purchaseOrder.update({
                 where: { id: existing.id },
                 data: {
-                    emailSentAt: new Date(),
+                    emailSentAt: sentAt,
                     emailRecipient: to,
                     ...(statusAfterSend ? { status: statusAfterSend } : {}),
+                    ...(supplierIndex !== null
+                        ? {
+                            requestSuppliers: JSON.stringify(requestSuppliers.map((entry, index) => (index === supplierIndex
+                                ? { ...entry, emailSentAt: sentAt.toISOString(), emailRecipient: to }
+                                : entry))),
+                        }
+                        : {}),
                 },
             });
         }
@@ -4937,7 +6438,7 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
                 ? 'SMTP ayarı olmadığı için sipariş maili önizleme olarak hazırlandı.'
                 : 'Sipariş maili gönderildi.',
             ...result,
-            order: parsePurchaseOrderRow(order),
+            order: (0, exports.parsePurchaseOrderRow)(order),
         });
     }
     catch (error) {
@@ -4968,6 +6469,29 @@ router.post('/purchase-orders/:id/mail-manual', AuthMiddleware_1.requireAuth, (0
         if (!existing)
             return res.status(404).json({ error: 'Sipariş bulunamadı.' });
         const sent = req.body?.sent === true;
+        /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): işaret BİR tedarikçinin. Talep
+           «gönderildi» olur, ilki işaretlenince; «gönderilmedi»ye ancak
+           SONUNCUSUNUN işareti kalkınca döner. */
+        const requestSuppliers = PO_PRICE_REQUEST_STATUSES.has(existing.status) ? poReadRequestSuppliers(existing) : [];
+        const supplierIndex = poSupplierIndex(req.body?.supplierIndex, requestSuppliers);
+        if (supplierIndex !== null) {
+            const now = new Date();
+            const recipient = poStripHeader(String(req.body?.recipient ?? requestSuppliers[supplierIndex].supplierEmail ?? '')).slice(0, 180);
+            const list = requestSuppliers.map((entry, index) => (index === supplierIndex
+                ? { ...entry, emailSentAt: sent ? now.toISOString() : null, emailRecipient: sent ? `${PO_MANUAL_MAIL_PREFIX}${recipient}` : null }
+                : entry));
+            const stillSent = list.some((entry) => entry.emailSentAt);
+            const updated = await prisma_client_1.default.purchaseOrder.update({
+                where: { id: existing.id },
+                data: {
+                    requestSuppliers: JSON.stringify(list),
+                    ...(sent
+                        ? { status: 'PRICE_REQUEST', emailSentAt: now, emailRecipient: `${PO_MANUAL_MAIL_PREFIX}${recipient}` }
+                        : (stillSent ? {} : { status: 'DRAFT', emailSentAt: null, emailRecipient: null })),
+                },
+            });
+            return res.status(200).json((0, exports.parsePurchaseOrderRow)(updated));
+        }
         // 15.09.2026 (Samet): «istediğim zaman değiştirebiliyor olmam gerek» —
         // das Häkchen lässt sich jederzeit setzen und entfernen, auch auf
         // einem Auftragsentwurf und auch nach einer Systemsendung.
@@ -4979,7 +6503,7 @@ router.post('/purchase-orders/:id/mail-manual', AuthMiddleware_1.requireAuth, (0
                     : null;
             if (!next) {
                 if (existing.status === 'PRICE_REQUEST' || existing.status === 'ORDERED') {
-                    return res.status(200).json(parsePurchaseOrderRow(existing));
+                    return res.status(200).json((0, exports.parsePurchaseOrderRow)(existing));
                 }
                 return res.status(400).json({ error: 'Im Wareneingang gibt es keine Mail mehr.', code: 'NOT_SENDABLE' });
             }
@@ -4992,7 +6516,7 @@ router.post('/purchase-orders/:id/mail-manual', AuthMiddleware_1.requireAuth, (0
                     emailRecipient: `${PO_MANUAL_MAIL_PREFIX}${recipient}`,
                 },
             });
-            return res.status(200).json(parsePurchaseOrderRow(updated));
+            return res.status(200).json((0, exports.parsePurchaseOrderRow)(updated));
         }
         const back = existing.status === 'PRICE_REQUEST'
             ? 'DRAFT'
@@ -5007,7 +6531,7 @@ router.post('/purchase-orders/:id/mail-manual', AuthMiddleware_1.requireAuth, (0
                 emailRecipient: null,
             },
         });
-        res.status(200).json(parsePurchaseOrderRow(updated));
+        res.status(200).json((0, exports.parsePurchaseOrderRow)(updated));
     }
     catch (error) {
         res.status(400).json({ error: error.message });
@@ -5160,15 +6684,23 @@ router.delete('/purchase-orders/:id', AuthMiddleware_1.requireAuth, (0, RbacMidd
         const existing = await prisma_client_1.default.purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
         if (!existing)
             return res.status(404).json({ error: 'Sipariş bulunamadı.' });
-        await prisma_client_1.default.purchaseOrder.delete({ where: { id: existing.id } });
+        /* EIN VORGANG (Vorgabe Samet, 22.09.2026): die Bestellung und ihre
+           Produktionszeilen gehen zusammen — oder gar nicht. Sonst bliebe in
+           der Produktion ein bestelltes Produkt ohne Bestellung stehen, das
+           niemand mehr zuordnen kann («boş bağımsız ürün»).
+           Produktion (19.09.2026): «Wird die Bestellung gelöscht, müssen auch
+           ihre Zeilen in dieser Tabelle gelöscht werden» — samt Zuordnung. */
+        await prisma_client_1.default.$transaction(async (tx) => {
+            await productionModule_1.productionModule.purchaseLink.removeForPurchaseOrder(tenantId, existing.id, tx);
+            await tx.purchaseOrder.delete({ where: { id: existing.id } });
+        });
         // Die Mail-Entwürfe gehören dem Auftrag und gehen mit. Ein Fehler hier
         // (etwa eine noch nicht ausgerollte Tabelle) darf das Löschen nicht kippen.
         await prisma_client_1.default.purchaseOrderMailDraft
             .deleteMany({ where: { tenantId, orderId: existing.id } })
             .catch(() => undefined);
-        // Produktion (19.09.2026): «Wird die Bestellung gelöscht, müssen auch
-        // ihre Zeilen in dieser Tabelle gelöscht werden» — samt Zuordnung.
-        await productionModule_1.productionModule.purchaseLink.removeForPurchaseOrder(tenantId, existing.id);
+        // Onaylı bir üretim siparişi silindiyse cihazlar üretim projesinden düşer.
+        (0, exports.refreshProducerProduction)(existing);
         res.status(204).send();
     }
     catch (error) {

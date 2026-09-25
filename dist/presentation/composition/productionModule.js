@@ -4,9 +4,13 @@ exports.productionModule = exports.isProductionEnabled = void 0;
 const ProductionRepository_1 = require("../../infrastructure/repositories/ProductionRepository");
 const SalesSourceReader_1 = require("../../infrastructure/repositories/SalesSourceReader");
 const PurchaseOrderReader_1 = require("../../infrastructure/repositories/PurchaseOrderReader");
+const ProductionDemandReader_1 = require("../../infrastructure/repositories/ProductionDemandReader");
+const ProductionIntakeReader_1 = require("../../infrastructure/repositories/ProductionIntakeReader");
+const ProductionProjectSourceReader_1 = require("../../infrastructure/repositories/ProductionProjectSourceReader");
 const SyncProductionProjectsUseCase_1 = require("../../application/use-cases/production/SyncProductionProjectsUseCase");
 const GetProductionOverviewUseCase_1 = require("../../application/use-cases/production/GetProductionOverviewUseCase");
 const GetProductionProjectUseCase_1 = require("../../application/use-cases/production/GetProductionProjectUseCase");
+const GetProductionProjectDevicesUseCase_1 = require("../../application/use-cases/production/GetProductionProjectDevicesUseCase");
 const ListProductionLinesUseCase_1 = require("../../application/use-cases/production/ListProductionLinesUseCase");
 const GetProductionItemUseCase_1 = require("../../application/use-cases/production/GetProductionItemUseCase");
 const ProductionPickerUseCase_1 = require("../../application/use-cases/production/ProductionPickerUseCase");
@@ -29,11 +33,12 @@ const purchaseOrders = new PurchaseOrderReader_1.PrismaPurchaseOrderReader();
 /** Ist die Produktion in dieser Firma eingeschaltet (Firmenkategorie)? */
 const isProductionEnabled = (tenantId) => (0, tenantModules_1.isModuleEnabledForTenant)(tenantId, 'production');
 exports.isProductionEnabled = isProductionEnabled;
-const sync = new SyncProductionProjectsUseCase_1.SyncProductionProjectsUseCase(settings, projects, salesReader, tenants);
+const sync = new SyncProductionProjectsUseCase_1.SyncProductionProjectsUseCase(settings, projects, salesReader, tenants, new ProductionDemandReader_1.PrismaProductionDemandReader());
 exports.productionModule = {
     sync,
     overview: new GetProductionOverviewUseCase_1.GetProductionOverviewUseCase(projects, purchase, purchaseOrders, settings, tenants),
     project: new GetProductionProjectUseCase_1.GetProductionProjectUseCase(projects, purchase, purchaseOrders, tenants),
+    devices: new GetProductionProjectDevicesUseCase_1.GetProductionProjectDevicesUseCase(projects, new ProductionIntakeReader_1.PrismaProductionIntakeReader(), tenants, new ProductionProjectSourceReader_1.PrismaProductionProjectSourceReader()),
     lines: new ListProductionLinesUseCase_1.ListProductionLinesUseCase(projects, purchase, purchaseOrders),
     item: new GetProductionItemUseCase_1.GetProductionItemUseCase(projects, purchase, purchaseOrders),
     picker: new ProductionPickerUseCase_1.ProductionPickerUseCase(projects, purchase),

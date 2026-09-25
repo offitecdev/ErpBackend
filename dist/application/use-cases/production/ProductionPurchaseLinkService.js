@@ -27,11 +27,15 @@ const tolerant = async (work) => {
  *
  * Die eine Stelle, an der das Lager die Produktion berührt:
  *
- *   • PFLICHTAUSWAHL — Preisanfrage, Bestellung und Wareneingang verlangen ein
- *     PROJEKT, wo das Modul eingeschaltet ist. Geräte und Leistungen daraus
- *     sind freiwillig (Vorgabe Samet, 20.09.2026), und NICHTS wird ihnen
+ *   • FREIWILLIGE AUSWAHL (Vorgabe Samet, 21.09.2026: «proje ve hizmet
+ *     seçmek zorunlu olmasın … sonradan seçilebilsin») — Preisanfrage,
+ *     Bestellung und Wareneingang laufen AUCH OHNE Projekt; es lässt sich
+ *     jederzeit nachtragen (Auftragsseite › Produktion › Wählen). Geräte
+ *     waren schon vorher freiwillig (20.09.2026), und NICHTS wird ihnen
  *     automatisch zugeschlagen: eine Zeile zählt beim Projekt, solange sie
  *     nicht selbst ein Gerät trägt (`productionItemId` in `items`).
+ *     Ohne Projekt steht die Bestellung einfach NICHT bei der Produktion —
+ *     `syncConfirmedLines` räumt ihre Zeilen dort weg.
  *   • BESTÄTIGTE ZEILEN — sobald die Bestellung bestätigt ist, stehen ihre
  *     Zeilen mit Projekt und Gerät in `uretim_siparisleri`; geht sie zurück in
  *     den Entwurf oder wird gelöscht, verschwinden sie wieder. Jede spätere
@@ -68,7 +72,10 @@ class ProductionPurchaseLinkService {
                 continue;
             itemIds.push(id);
         }
-        return { productionProjectId: projectId, productionItemIds: itemIds };
+        // Ohne Projekt gibt es auch kein Gerät — ein Gerät lebt in seinem Projekt.
+        return projectId
+            ? { productionProjectId: projectId, productionItemIds: itemIds }
+            : { productionProjectId: null, productionItemIds: [] };
     }
     /**
      * Prüft eine Auswahl gegen die Tabellen des Moduls. Ein stillgelegtes
@@ -76,8 +83,10 @@ class ProductionPurchaseLinkService {
      * eine alte Bestellung soll sich weiter bearbeiten lassen.
      */
     async validate(tenantId, input, current) {
+        // KEIN PROJEKT IST EINE ANTWORT: der Vorgang läuft ohne Produktion
+        // weiter, und wer will, trägt es später nach.
         if (!input.productionProjectId) {
-            throw (0, productionErrors_1.productionError)('PROJECT_REQUIRED', 'Bitte ein Produktionsprojekt wählen.');
+            return { selection: { productionProjectId: null, productionItemIds: [] }, label: '' };
         }
         const project = await this.projects.getProject(tenantId, input.productionProjectId);
         if (!project)
@@ -120,16 +129,18 @@ class ProductionPurchaseLinkService {
     getAssignment(tenantId, purchaseOrderId) {
         return this.purchase.getAssignment(tenantId, purchaseOrderId);
     }
+    /**
+     * Die Auswahl sichern — oder, wenn KEIN Projekt mehr dasteht, die
+     * Zuordnung samt ihrer Produktionszeilen wegräumen. Sonst bliebe eine
+     * Bestellung bei der Produktion stehen, die dort niemand mehr will.
+     */
     async saveAssignment(tenantId, purchaseOrderId, selection, userId) {
-        await this.purchase.saveAssignment(tenantId, { purchaseOrderId, ...selection }, userId);
-    }
-    /** Das Projekt einer bestehenden Bestellung — ohne es geht es nicht weiter. */
-    async requireAssignment(tenantId, purchaseOrderId) {
-        const assignment = await this.purchase.getAssignment(tenantId, purchaseOrderId);
-        if (!assignment || !assignment.productionProjectId) {
-            throw (0, productionErrors_1.productionError)('PROJECT_REQUIRED', 'Diese Bestellung hat noch kein Produktionsprojekt.');
+        const projectId = selection.productionProjectId;
+        if (!projectId) {
+            await this.purchase.removeForPurchaseOrder(tenantId, purchaseOrderId);
+            return;
         }
-        return assignment;
+        await this.purchase.saveAssignment(tenantId, { purchaseOrderId, productionProjectId: projectId, productionItemIds: selection.productionItemIds }, userId);
     }
     /**
      * Schreibt die Zeilen einer BESTÄTIGTEN Bestellung in die Tabelle der
@@ -178,9 +189,13 @@ class ProductionPurchaseLinkService {
             })));
         });
     }
-    /** Die Bestellung ist gelöscht: Zuordnung und Zeilen gehen mit. */
-    async removeForPurchaseOrder(tenantId, purchaseOrderId) {
-        await tolerant(() => this.purchase.removeForPurchaseOrder(tenantId, purchaseOrderId));
+    /**
+     * Die Bestellung ist gelöscht: Zuordnung und Zeilen gehen mit. Wer `tx`
+     * mitgibt, räumt im SELBEN Vorgang — dann kann die Bestellung nicht
+     * verschwinden und ihre Produktionszeilen stehen bleiben.
+     */
+    async removeForPurchaseOrder(tenantId, purchaseOrderId, tx) {
+        await tolerant(() => this.purchase.removeForPurchaseOrder(tenantId, purchaseOrderId, tx));
     }
 }
 exports.ProductionPurchaseLinkService = ProductionPurchaseLinkService;

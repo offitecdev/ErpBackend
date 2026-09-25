@@ -23,11 +23,19 @@ class SyncProductionProjectsUseCase {
     projects;
     reader;
     tenants;
-    constructor(settings, projects, reader, tenants) {
+    demand;
+    constructor(settings, projects, reader, tenants, 
+    /**
+     * SİPARİŞ BAZLI (Vorgabe Samet, 24.09.2026): «Projelerim'e cihazlar
+     * otomatik/toplu çekilmemeli» — aktif kalan yalnızca onaylı iç
+     * siparişle gelen cihazdır (bkz. restrictToOrderedDevices).
+     */
+    demand) {
         this.settings = settings;
         this.projects = projects;
         this.reader = reader;
         this.tenants = tenants;
+        this.demand = demand;
     }
     /** Die Firmen, aus denen gelesen wird — nur bestehende, aktive. */
     async sourcesFor(tenantId, configured) {
@@ -45,12 +53,18 @@ class SyncProductionProjectsUseCase {
         if (pending)
             return pending;
         const run = (async () => {
-            const sources = await this.sourcesFor(tenantId, settings?.sourceTenantIds ?? []);
+            const demand = this.demand ? await this.demand.read(tenantId) : null;
+            // Sipariş gönderen proje şirketleri kendiliğinden kaynak sayılır.
+            const configured = settings?.sourceTenantIds ?? [];
+            const sources = await this.sourcesFor(tenantId, demand?.sourceTenantIds.length
+                ? [...new Set([...(configured.length ? configured : [tenantId]), ...demand.sourceTenantIds])]
+                : configured);
             const [snapshot, existing] = await Promise.all([
                 this.reader.read(sources),
                 this.projects.existingIds(tenantId),
             ]);
-            const plan = (0, production_1.planProductionSnapshot)(snapshot, existing, () => (0, nanoid_1.nanoid)(12));
+            const fullPlan = (0, production_1.planProductionSnapshot)(snapshot, existing, () => (0, nanoid_1.nanoid)(12));
+            const plan = demand ? (0, production_1.restrictToOrderedDevices)(fullPlan, demand) : fullPlan;
             const now = new Date();
             await this.projects.applySnapshot(tenantId, plan, now);
             await this.settings.markSynced(tenantId, now);

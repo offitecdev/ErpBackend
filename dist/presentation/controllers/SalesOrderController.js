@@ -21,6 +21,8 @@ const calendarMailService_1 = require("../../infrastructure/services/calendarMai
 const minderung_1 = require("../../shared/minderung");
 const documentGovernance_1 = require("../../shared/documentGovernance");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
+const tenderCustomer_1 = require("../../shared/tenderCustomer");
+const projectEvents_1 = require("../../shared/projectEvents");
 const billingSummaryUseCase = new GetBillingSummaryUseCase_1.GetBillingSummaryUseCase(new InvoiceRepository_1.InvoiceRepository());
 // Resolve billing summaries for a set of orders with one invoice query (no N+1).
 // `baseAmount` comes from the already-loaded order rows, so no extra lookups are made.
@@ -874,6 +876,8 @@ class SalesOrderController {
             // Gövdede `projectName` gelse bile yok sayılır.
             const existingProjectId = String(req.body.projectId || '').trim();
             const overtimeHourlyRate = Math.max(0, Number(req.body.overtimeHourlyRate || 0));
+            // Nur für eine Offerte OHNE Kundschaft: der im Auftragsfenster getippte Name.
+            const customerName = String(req.body.customerName || '').trim().slice(0, 190);
             // Teslimat siparişinde (proje açılmayan yol) teslim tarihi ZORUNLUDUR:
             // siparişin tek zaman taahhüdü budur, projeli siparişte ise takvimi
             // randevular taşır. Tarih teklifin `internalDeliveryDate` alanına yazılır.
@@ -906,8 +910,19 @@ class SalesOrderController {
                 if (tender.status === 'Cancelled' || tender.cancelledAt) {
                     throw new Error('Aus einer stornierten Offerte kann kein Auftrag entstehen.');
                 }
-                if (!tender.customerId)
+                // Offerte ganz ohne Kundschaft: der Name kommt aus dem
+                // Auftragsfenster (Vorgabe Samet, 25.09.2026 — «müşteri ismi
+                // girilirse oluşsun») und wird zuerst an der Offerte vermerkt,
+                // als wäre er dort frei erfasst worden.
+                if (!tender.salesOrder && !tender.customerId && !String(tender.manualCustomerName || '').trim() && customerName) {
+                    await tx.tender.update({ where: { id: tenderId }, data: { manualCustomerName: customerName } });
+                    tender.manualCustomerName = customerName;
+                }
+                // Frei erfasster Kunde (nur `manualCustomer*`): er wird jetzt in
+                // den Kundenstamm übernommen, statt den Auftrag abzuweisen.
+                if (!tender.salesOrder && !(await (0, tenderCustomer_1.ensureTenderCustomer)(tx, tender, tenantId))) {
                     throw new Error('Siparis icin teklifin musterisi olmalidir.');
+                }
                 // Sipariş zaten açılmışsa hiçbir şey doğrulanmaz/yazılmaz —
                 // bu çağrı mevcut siparişi geri vermekten ibarettir.
                 if (tender.salesOrder) {
@@ -1168,6 +1183,14 @@ class SalesOrderController {
                     relinkedAppointments: parkedAppointments.length,
                 };
             });
+            /* SİPARİŞLERİM (Vorgabe Samet, 24.09.2026): «proje oluşturulunca
+               siparişler otomatik oluşturulacak». YENİ proje açıldıysa, türü
+               «Satın Alınacak» ve «Üretilecek» olan pozisyonların eksikleri
+               arka planda sipariş edilir (projectProcurement.routes.ts). Cevabı
+               bekletmez; sipariş yazılamasa da proje oluşmuştur. */
+            if (!result.reused && mode === 'PROJECT_NEW' && result.project?.id) {
+                (0, projectEvents_1.emitProjectCreated)({ tenantId, projectId: String(result.project.id), userId: employeeId });
+            }
             res.status(result.reused ? 200 : 201).json({
                 message: result.reused ? 'Bu teklif icin siparis zaten olusturulmus.' : 'Siparis olusturuldu.',
                 ...result,

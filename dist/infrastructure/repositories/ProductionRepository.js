@@ -314,11 +314,11 @@ class PrismaProductionPurchaseRepository {
                 ...(filter.projectIds ? { productionProjectId: { in: filter.projectIds } } : {}),
             },
         });
-        return rows.map((row) => ({
+        return this.withoutDeletedOrders(tenantId, rows.map((row) => ({
             purchaseOrderId: row.purchaseOrderId,
             productionProjectId: row.productionProjectId,
             productionItemIds: (0, production_1.parseAssignmentItemIds)(row.productionItemIds),
-        }));
+        })));
     }
     async saveAssignment(tenantId, assignment, updatedById) {
         await prisma_client_1.default.productionPurchaseAssignment.upsert({
@@ -338,11 +338,50 @@ class PrismaProductionPurchaseRepository {
             },
         });
     }
-    async removeForPurchaseOrder(tenantId, purchaseOrderId) {
+    async removeForPurchaseOrder(tenantId, purchaseOrderId, tx) {
+        const where = { tenantId, purchaseOrderId };
+        // Im fremden Vorgang nacheinander: eine Transaktion ist EINE Verbindung.
+        if (tx) {
+            await tx.productionOrderLine.deleteMany({ where });
+            await tx.productionPurchaseAssignment.deleteMany({ where });
+            return;
+        }
         await Promise.all([
-            prisma_client_1.default.productionOrderLine.deleteMany({ where: { tenantId, purchaseOrderId } }),
-            prisma_client_1.default.productionPurchaseAssignment.deleteMany({ where: { tenantId, purchaseOrderId } }),
+            prisma_client_1.default.productionOrderLine.deleteMany({ where }),
+            prisma_client_1.default.productionPurchaseAssignment.deleteMany({ where }),
         ]);
+    }
+    async removeForPurchaseOrders(tenantId, purchaseOrderIds) {
+        if (!purchaseOrderIds.length)
+            return;
+        const where = { tenantId, purchaseOrderId: { in: purchaseOrderIds } };
+        await Promise.all([
+            prisma_client_1.default.productionOrderLine.deleteMany({ where }),
+            prisma_client_1.default.productionPurchaseAssignment.deleteMany({ where }),
+        ]);
+    }
+    /**
+     * ── RESTE EINER GELÖSCHTEN BESTELLUNG ───────────────────────────────────
+     * Zeile und Zuordnung gehen mit der Bestellung (Löschen räumt im selben
+     * Vorgang auf). Was trotzdem stehen bleibt — eine Bestellung, die vor
+     * dieser Regel verschwand, ein abgebrochener Vorgang —, wäre in der
+     * Produktion ein Produkt ohne Bestellung: «boş bağımsız ürün». Darum
+     * prüft JEDES Lesen, ob es die Bestellung noch gibt: was fehlt, kommt
+     * nicht in die Antwort und wird nebenbei weggeräumt.
+     */
+    async withoutDeletedOrders(tenantId, rows) {
+        const ids = [...new Set(rows.map((row) => row.purchaseOrderId))];
+        if (!ids.length)
+            return rows;
+        const alive = await prisma_client_1.default.purchaseOrder.findMany({
+            where: { tenantId, id: { in: ids } },
+            select: { id: true },
+        });
+        if (alive.length === ids.length)
+            return rows;
+        const live = new Set(alive.map((row) => row.id));
+        void this.removeForPurchaseOrders(tenantId, ids.filter((id) => !live.has(id))).catch(() => undefined);
+        return rows.filter((row) => live.has(row.purchaseOrderId));
     }
     async replaceLines(tenantId, purchaseOrderId, lines) {
         await prisma_client_1.default.$transaction([
@@ -382,7 +421,7 @@ class PrismaProductionPurchaseRepository {
             },
             orderBy: [{ approvedAt: 'desc' }, { purchaseOrderNumber: 'desc' }, { lineIndex: 'asc' }],
         });
-        return rows.map(toLine);
+        return this.withoutDeletedOrders(tenantId, rows.map(toLine));
     }
 }
 exports.PrismaProductionPurchaseRepository = PrismaProductionPurchaseRepository;

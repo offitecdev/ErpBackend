@@ -19,6 +19,7 @@ const panel_routes_1 = __importDefault(require("./panel.routes"));
  *   POST /sync                         Abgleich mit dem Verkauf (force = sofort)
  *   GET  /overview                     Seite «Produktionsaufträge»
  *   GET  /projects/:id                 Projektseite (zwei Reiter + Vergleich)
+ *   GET  /projects/:id/devices         Projektseite + Geräteseite: Tabelle, Geräte (24.09.2026)
  *   GET  /lines                        Seite «Bestellte Produkte»
  *   GET  /items/:id                    das Gerät im Fenster
  *   GET  /picker/projects              Auswahl in der Lieferantenbestellung
@@ -39,6 +40,7 @@ router.use(AuthMiddleware_1.requireAuth);
 router.get('/status', (req, res, next) => controller.status(req, res, next));
 router.post('/sync', VIEW_OR_INVENTORY, ProductionController_1.ProductionController.requireModule, (req, res, next) => controller.sync(req, res, next));
 router.get('/overview', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.overview(req, res, next));
+router.get('/projects/:id/devices', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.projectDevices(req, res, next));
 router.get('/projects/:id', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.project(req, res, next));
 router.get('/lines', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.lines(req, res, next));
 router.get('/items/:id', VIEW_OR_INVENTORY, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.item(req, res, next));

@@ -7,6 +7,7 @@ exports.UpdateDirectInvoiceUseCase = void 0;
 const CreateDirectInvoiceUseCase_1 = require("./CreateDirectInvoiceUseCase");
 const invoiceErrors_1 = require("./invoiceErrors");
 const prisma_client_1 = __importDefault(require("../../../infrastructure/database/prisma.client"));
+const directInvoiceDocument_1 = require("../../../shared/directInvoiceDocument");
 /**
  * ── EINE DIREKTRECHNUNG ÄNDERN ───────────────────────────────────────────────
  *
@@ -15,11 +16,9 @@ const prisma_client_1 = __importDefault(require("../../../infrastructure/databas
  * geöffnet und als GANZES neu geschrieben werden — Empfänger, Texte,
  * Positionen, Rabatte, Zahlungsplan.
  *
- * Zwei Dinge ändert sie NIE:
- *   • **Die Nummer bleibt.** Sie ist die Kennung des Belegs; eine neue würde
- *     eine zweite Rechnung erfinden und eine Lücke in der Reihe lassen.
- *   • **Der Status bleibt** (samt Zahlungsdatum): «bezahlt» ist eine Tatsache
- *     aus der Buchhaltung, keine Eingabe dieser Maske.
+ * Die Belegnummer ist editierbar und wird innerhalb der Schreibtransaktion
+ * auf Eindeutigkeit geprüft. Der Zahlungsstand bleibt erhalten; ein Entwurf
+ * kann mit `draft: false` direkt ausgestellt werden.
  *
  * Und zwei Rechnungen sind hier NICHT zu ändern: eine BEZAHLTE (das Geld ist
  * gegen den alten Betrag geflossen) und eine STORNIERTE (sie ist Geschichte).
@@ -58,15 +57,26 @@ class UpdateDirectInvoiceUseCase {
         if (existing.kind === 'STORNO' || existing.kind === 'GUTSCHRIFT') {
             throw (0, invoiceErrors_1.invoiceError)('CREDIT_DOCUMENT_FINAL', 'Ein Gegenbeleg wird nicht geändert.', { status: 409 });
         }
-        const draft = await (0, CreateDirectInvoiceUseCase_1.buildDirectInvoiceDraft)(input);
+        // Older clients preserve document preferences when they do not send them.
+        let savedOptions;
+        try {
+            savedOptions = JSON.parse(existing.sections || '{}').document;
+        }
+        catch {
+            savedOptions = undefined;
+        }
+        const draft = await (0, CreateDirectInvoiceUseCase_1.buildDirectInvoiceDraft)({ ...input, documentOptions: input.documentOptions ?? savedOptions });
+        const options = (0, directInvoiceDocument_1.normalizeDirectInvoiceDocument)(input.documentOptions ?? savedOptions, Number(input.vatRate) || 0);
         return this.invoiceRepository.updateWithItems(id, {
             ...draft.invoice,
-            // Kennung und Zahlungsstand gehören dem bestehenden Beleg.
+            // Payment state stays with the existing invoice; its code may be edited.
             invoiceNumber: existing.invoiceNumber,
-            status: existing.status,
+            status: existing.status === 'DRAFT' && input.draft === false ? 'ISSUED' : existing.status,
             paidAt: existing.paidAt ?? null,
             issuedByEmployeeId: existing.issuedByEmployeeId,
-        }, draft.lineItems);
+        }, draft.lineItems, (existing.status !== 'DRAFT' && input.invoiceNumber != null) || (existing.status === 'DRAFT' && input.draft === false)
+            ? { requested: input.invoiceNumber || existing.invoiceNumber, proforma: options.language === 'en', year: draft.invoice.invoiceDate.getFullYear() }
+            : undefined);
     }
 }
 exports.UpdateDirectInvoiceUseCase = UpdateDirectInvoiceUseCase;

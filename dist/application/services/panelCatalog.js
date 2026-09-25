@@ -411,25 +411,56 @@ const updatePanelModel = async (tenantId, id, patch) => {
 };
 exports.updatePanelModel = updatePanelModel;
 /**
- * Ein Modell darf nur verschwinden, solange noch kein physischer Schrank davon
- * existiert. Die Produktkarte wird nicht hart gelöscht: Lager- und
- * Angebotsverweise bleiben dadurch revisionssicher.
+ * DIE EINLAGERUNG EINES GELÖSCHTEN SCHRANKS ZURÜCKNEHMEN — seine `IN`-Bewegung
+ * fällt weg und der Bestand geht um dieselbe Menge zurück (dieselbe Regel wie
+ * beim gelöschten Wareneingang). Ohne das stünde im Lager ein Stück, dessen
+ * Schrank es nicht mehr gibt.
+ */
+const revertPanelStockMovements = async (tx, tenantId, movementIds) => {
+    const ids = movementIds.filter(Boolean).map(String);
+    if (!ids.length)
+        return;
+    const movements = await tx.stockMovement.findMany({
+        where: { tenantId, id: { in: ids } },
+        select: { id: true, articleId: true, quantity: true, destinationLocationId: true },
+    });
+    if (!movements.length)
+        return;
+    await tx.stockMovement.deleteMany({ where: { tenantId, id: { in: movements.map((row) => String(row.id)) } } });
+    for (const movement of movements) {
+        // Konumsuz hareket bakiye yazmamıştır — geri alacak bir şey de yoktur.
+        if (!movement.destinationLocationId)
+            continue;
+        await tx.$executeRawUnsafe('UPDATE `StockBalance` SET `currentQuantity` = `currentQuantity` - ?, `updatedAt` = NOW(3) '
+            + 'WHERE `tenantId` = ? AND `articleId` = ? AND `locationId` = ?', Number(movement.quantity) || 0, tenantId, movement.articleId, movement.destinationLocationId);
+    }
+};
+/**
+ * Ein Modell wird DIREKT gelöscht — auch wenn schon Schränke davon gezählt
+ * sind (Vorgabe Samet, 21.09.2026: kein «Modell stilllegen»-Umweg mehr).
+ * Die Seriensätze hängen am Fremdschlüssel und müssen deshalb im selben
+ * Zug mitgehen; die gezogenen Nummern bleiben im Zähler verbraucht und
+ * werden nie erneut vergeben. Die Produktkarte wird NICHT hart gelöscht:
+ * Lager- und Angebotsverweise bleiben dadurch revisionssicher.
  */
 const deletePanelModel = async (tenantId, id) => {
     const model = await prisma_client_1.default.panelModel.findFirst({ where: { id, tenantId } });
     if (!model)
         throw fail(404, 'MODEL_NOT_FOUND', 'Pano modeli bulunamadı.');
-    const unitCount = await prisma_client_1.default.panelUnit.count({ where: { tenantId, panelModelId: id } });
-    if (unitCount > 0) {
-        throw fail(409, 'MODEL_IN_USE', 'Bu modelden üretilmiş panolar bulunduğu için silinemez. Modeli pasife alın.');
-    }
-    await prisma_client_1.default.$transaction([
-        prisma_client_1.default.panelModel.delete({ where: { id: model.id } }),
-        prisma_client_1.default.article.update({
+    // Eingelagerte Schränke dieses Modells: ihre Buchungen gehen mit.
+    const stocked = await prisma_client_1.default.panelUnit.findMany({
+        where: { tenantId, panelModelId: model.id, stockMovementId: { not: null } },
+        select: { stockMovementId: true },
+    });
+    await prisma_client_1.default.$transaction(async (tx) => {
+        await revertPanelStockMovements(tx, tenantId, stocked.map((row) => String(row.stockMovementId)));
+        await tx.panelUnit.deleteMany({ where: { panelModelId: model.id } });
+        await tx.panelModel.delete({ where: { id: model.id } });
+        await tx.article.update({
             where: { id: model.articleId },
             data: { deletedAt: new Date(), status: 'INACTIVE', isActive: false },
-        }),
-    ]);
+        });
+    });
 };
 exports.deletePanelModel = deletePanelModel;
 /**
@@ -734,19 +765,27 @@ const updatePanelUnit = async (tenantId, unitId, patch) => {
 };
 exports.updatePanelUnit = updatePanelUnit;
 /**
- * Nur ein noch nicht verbuchter/etikettierter Produktionssatz kann gelöscht
- * werden. Die gezogene Seriennummer bleibt im Zähler verbraucht und wird nie
- * erneut vergeben.
+ * SCHRANK LÖSCHEN — jeder Satz, in jedem Zustand (Vorgabe Samet, 21.09.2026):
+ * «direkt silinebilmeli». Früher war ein etikettierter, eingelagerter oder
+ * fertiger Schrank gesperrt; diese Sperre gibt es nicht mehr.
+ *
+ * Gelöscht wird aber nicht nur die Zeile: liegt der Schrank im Lager, wird
+ * SEINE EINLAGERUNG ZURÜCKGENOMMEN — die `IN`-Bewegung fällt weg und der
+ * Bestand geht um dieselbe Menge zurück (dieselbe Regel wie beim gelöschten
+ * Wareneingang). Sonst stünde im Lager ein Stück, das es nicht mehr gibt.
+ *
+ * Die gezogene Seriennummer bleibt im Zähler verbraucht und wird nie erneut
+ * vergeben — eine Nummer, die einmal auf einem Schild stand, kommt nicht wieder.
  */
 const deletePanelUnit = async (tenantId, unitId) => {
     const unit = await prisma_client_1.default.panelUnit.findFirst({ where: { id: unitId, tenantId } });
     if (!unit)
         throw fail(404, 'UNIT_NOT_FOUND', 'Pano bulunamadı.');
-    const removableStatuses = new Set(['PLANNED', 'IN_PRODUCTION', 'CANCELLED']);
-    if (unit.stockMovementId || unit.labelPrintedAt || !removableStatuses.has(String(unit.status))) {
-        throw fail(409, 'UNIT_DELETE_BLOCKED', 'Etiketlenmiş, stoklanmış veya üretimi tamamlanmış pano silinemez; iptal durumunda saklanmalıdır.');
-    }
-    await prisma_client_1.default.panelUnit.delete({ where: { id: unit.id } });
+    await prisma_client_1.default.$transaction(async (tx) => {
+        // Liegt der Schrank im Lager, wird SEINE Einlagerung zurückgenommen.
+        await revertPanelStockMovements(tx, tenantId, unit.stockMovementId ? [String(unit.stockMovementId)] : []);
+        await tx.panelUnit.delete({ where: { id: unit.id } });
+    });
 };
 exports.deletePanelUnit = deletePanelUnit;
 /**

@@ -79,6 +79,7 @@ const moduleProfile_routes_1 = __importDefault(require("./presentation/routes/mo
 const tender_routes_1 = __importDefault(require("./presentation/routes/tender.routes"));
 const article_routes_1 = __importDefault(require("./presentation/routes/article.routes"));
 const inventory_routes_1 = __importDefault(require("./presentation/routes/inventory.routes"));
+const projectProcurement_routes_1 = __importDefault(require("./presentation/routes/projectProcurement.routes"));
 const project_routes_1 = __importDefault(require("./presentation/routes/project.routes"));
 const booking_routes_1 = __importDefault(require("./presentation/routes/booking.routes"));
 const mail_routes_1 = __importDefault(require("./presentation/routes/mail.routes"));
@@ -297,6 +298,9 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/module-profiles`, moduleProfile_routes_1.default);
     app.use(`${prefix}/tenders`, tender_routes_1.default);
     app.use(`${prefix}/articles`, article_routes_1.default);
+    // Proje pozisyonlarından sipariş (24.09.2026) — /inventory altında: yazışlar
+    // envanter önbelleğini tazeler.
+    app.use(`${prefix}/inventory/project-procurement`, projectProcurement_routes_1.default);
     app.use(`${prefix}/inventory`, inventory_routes_1.default);
     app.use(`${prefix}/projects`, project_routes_1.default);
     app.use(`${prefix}/booking`, booking_routes_1.default);

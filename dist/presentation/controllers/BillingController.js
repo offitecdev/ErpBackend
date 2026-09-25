@@ -4,10 +4,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingController = void 0;
+const directInvoiceNumber_1 = require("../../shared/directInvoiceNumber");
 const documentLifecycle_1 = require("../../shared/documentLifecycle");
 const invoicePayments_1 = require("../../shared/invoicePayments");
 const accountingOverview_1 = require("../../shared/accountingOverview");
 const invoiceErrors_1 = require("../../application/use-cases/billing/invoiceErrors");
+const IInvoiceRepository_1 = require("../../domain/repositories/IInvoiceRepository");
 const client_1 = require("@prisma/client");
 const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const documentGovernance_1 = require("../../shared/documentGovernance");
@@ -15,6 +17,8 @@ const prisma_client_1 = __importDefault(require("../../infrastructure/database/p
 const PdfImageThumbnailService_1 = require("../../infrastructure/services/PdfImageThumbnailService");
 const documentNumber_1 = require("../../shared/documentNumber");
 const INVOICE_CATEGORIES = ['PROJECT', 'DELIVERY', 'DIRECT'];
+/** Kalendertag der Person (YYYY-MM-DD) — er entscheidet, was «überfällig» ist. */
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 class BillingController {
     createInvoiceUseCase;
     getSummaryUseCase;
@@ -238,14 +242,38 @@ class BillingController {
             const category = INVOICE_CATEGORIES.includes(rawCategory)
                 ? rawCategory
                 : undefined;
-            const invoices = await this.listInvoicesUseCase.execute({
+            // Reiter, Suche und Reihenfolge rechnet seit dem 22.09.2026 der
+            // Server: die Buchhaltungsliste hat nie mehr alle Rechnungen in der
+            // Hand. Unbekannte Werte fallen still weg, statt die Liste zu leeren.
+            const rawState = String(req.query.state || '');
+            const state = IInvoiceRepository_1.INVOICE_STATE_KEYS.includes(rawState) ? rawState : undefined;
+            const rawSort = String(req.query.sort || '');
+            const sort = IInvoiceRepository_1.INVOICE_SORTS.includes(rawSort) ? rawSort : undefined;
+            const rawToday = String(req.query.today || '');
+            const filter = {
                 tenantId: req.user.tenantId,
                 projectId: req.query.projectId ? String(req.query.projectId) : undefined,
                 salesOrderId: req.query.salesOrderId ? String(req.query.salesOrderId) : undefined,
                 customerId: req.query.customerId ? String(req.query.customerId) : undefined,
                 status: req.query.status ? String(req.query.status) : undefined,
                 category,
-            });
+                search: req.query.search ? String(req.query.search).slice(0, 120) : undefined,
+                state,
+                today: DAY_PATTERN.test(rawToday) ? rawToday : undefined,
+                sort,
+            };
+            // MIT `page` antwortet die Liste als SEITE (Vorgabe 20 Zeilen) samt
+            // Gesamtzahl und Reiterzählern; OHNE bleibt die alte Form — Projekt,
+            // Auftrag und Kundenkarte lesen weiterhin ihre ganze Liste.
+            if (req.query.page) {
+                const pageResult = await this.listInvoicesUseCase.executePage({
+                    ...filter,
+                    page: Number(req.query.page) || 1,
+                    pageSize: Number(req.query.pageSize) || 20,
+                });
+                return res.status(200).json(pageResult);
+            }
+            const invoices = await this.listInvoicesUseCase.execute(filter);
             res.status(200).json(invoices);
         }
         catch (error) {
@@ -259,7 +287,14 @@ class BillingController {
                 issuedByEmployeeId: req.user.id,
                 salesOrderId: req.body.salesOrderId,
                 projectId: req.body.projectId,
-                billingType: req.body.billingType === 'PARTIAL' ? 'PARTIAL' : 'FULL',
+                // Die ART FOLGT DEM ANTEIL (G17): hier zaehlt nur, was der
+                // Client AUSDRUECKLICH schickt. Ein fehlendes Feld auf 'FULL'
+                // zu setzen machte aus jeder Teilrechnung der Buchhaltung eine
+                // Schluss-/Gesamtrechnung ueber den ganzen offenen Rest: der
+                // eingetragene Prozentsatz (z.B. 15%) ging dabei verloren.
+                billingType: req.body.billingType === 'PARTIAL' || req.body.billingType === 'FULL'
+                    ? req.body.billingType
+                    : null,
                 kind: req.body.kind ?? null,
                 percent: req.body.percent,
                 invoiceDate: req.body.invoiceDate ?? null,
@@ -289,7 +324,10 @@ class BillingController {
      */
     async nextInvoiceNumber(req, res) {
         try {
-            const invoiceNumber = await (0, documentNumber_1.peekDocumentNumber)(req.user.tenantId, 'INVOICE');
+            const year = Number(req.query.year) || new Date().getFullYear();
+            const invoiceNumber = req.query.direct === 'true'
+                ? await (0, directInvoiceNumber_1.peekDirectInvoiceNumber)(req.user.tenantId, req.query.language === 'en', Math.min(9999, Math.max(1900, Math.trunc(year))))
+                : await (0, documentNumber_1.peekDocumentNumber)(req.user.tenantId, 'INVOICE');
             res.status(200).json({ invoiceNumber, preview: true });
         }
         catch (error) {
@@ -305,6 +343,8 @@ class BillingController {
         try {
             const invoice = await this.createDirectInvoiceUseCase.execute({
                 tenantId: req.user.tenantId,
+                invoiceNumber: req.body.invoiceNumber,
+                documentOptions: req.body.documentOptions,
                 issuedByEmployeeId: req.user.id,
                 customerId: req.body.customerId ?? null,
                 recipientName: String(req.body.recipientName || ''),
@@ -344,6 +384,9 @@ class BillingController {
         try {
             const invoice = await this.updateDirectInvoiceUseCase.execute(String(req.params.id), {
                 tenantId: req.user.tenantId,
+                invoiceNumber: req.body.invoiceNumber,
+                documentOptions: req.body.documentOptions,
+                draft: typeof req.body.draft === 'boolean' ? req.body.draft : undefined,
                 issuedByEmployeeId: req.user.id,
                 customerId: req.body.customerId ?? null,
                 recipientName: String(req.body.recipientName || ''),

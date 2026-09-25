@@ -13,6 +13,7 @@ const RoleRepository_1 = require("../../infrastructure/repositories/RoleReposito
 const JwtTokenService_1 = require("../../infrastructure/services/JwtTokenService");
 const RefreshSessionService_1 = require("../../infrastructure/services/RefreshSessionService");
 const AuthErrors_1 = require("../../application/errors/AuthErrors");
+const pageCatalog_1 = require("../../shared/pageCatalog");
 /** Seitenstufen hängen an derselben Rollenzeile wie die Rechte; der Zugriff
     läuft über dieselbe zwischenspeichernde Ablage (siehe RoleRepository). */
 const roleRepositoryForPages = new RoleRepository_1.RoleRepository();
@@ -354,6 +355,7 @@ class AuthController {
                     employee.roleName,
                     role.id AS roleId,
                     role.roleName AS assignedRoleName,
+                    role.isSystemAdmin AS isSystemAdmin,
                     config.tenantId AS configTenantId,
                     config.moduleKeys
                 FROM Employee AS employee
@@ -386,6 +388,17 @@ class AuthController {
                     const coveredRoles = new Set(tenantRows.map((row) => row.roleId).filter(Boolean));
                     if (coveredRoles.size < roleIds.length)
                         continue;
+                    // ADMINISTRATOR SIEHT JEDES MODUL DES KATALOGS — auch eines, das
+                    // nach dem letzten Speichern der Rolle dazugekommen ist. Sonst
+                    // haengt ein neues Modul (Produktion, 19.09.2026) unsichtbar in
+                    // einem alten `RoleModuleConfig`-Paket fest, bis jemand die
+                    // Berechtigungsseite oeffnet — `ensureSystemAdminRole` zieht das
+                    // Paket erst dort nach. Die Firmenkategorie schraenkt weiter ein:
+                    // das Menue zeigt Kategorie ∩ Paket.
+                    if (tenantRows.some((row) => Boolean(row.isSystemAdmin))) {
+                        roleModuleKeysByTenant[tenantId] = (0, pageCatalog_1.adminModuleKeys)();
+                        continue;
+                    }
                     roleModuleKeysByTenant[tenantId] = [...new Set(tenantRows.flatMap((row) => {
                             if (Array.isArray(row.moduleKeys))
                                 return row.moduleKeys.map(String);

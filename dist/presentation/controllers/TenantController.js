@@ -9,6 +9,7 @@ const tenantAccess_1 = require("../utils/tenantAccess");
 const client_1 = require("@prisma/client");
 const authIdentityCache_1 = require("../../shared/authIdentityCache");
 const tenantSwitchAccess_1 = require("../../shared/tenantSwitchAccess");
+const companyType_1 = require("../../shared/companyType");
 class TenantController {
     createTenantUseCase;
     updateTenantUseCase;
@@ -39,6 +40,7 @@ class TenantController {
                     tenant.createdAt,
                     tenant.moduleProfileId,
                     tenant.companyNumber,
+                    tenant.companyType,
                     tenant.addressLine1,
                     tenant.addressLine2,
                     tenant.postalCode,
@@ -77,6 +79,9 @@ class TenantController {
                     createdAt: row.createdAt,
                     moduleProfileId: row.moduleProfileId,
                     companyNumber: row.companyNumber,
+                    // Şirket türü (A Üretim / B Proje / C Satış) — yeni ürün
+                    // formunun zorunlu alanlarını belirler; null = seçilmedi.
+                    companyType: (0, companyType_1.parseCompanyType)(row.companyType),
                     // Eigene Absenderadresse für die PDFs; null = die gemeinsame
                     // aus den PDF-Einstellungen (pdfSettingsStore im Frontend).
                     companyAddress: row.addressLine1 || row.city ? {

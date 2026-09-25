@@ -10,6 +10,7 @@ const RbacMiddleware_1 = require("../middlewares/RbacMiddleware");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const moduleCatalog_1 = require("../../shared/moduleCatalog");
 const tenantModules_1 = require("../../shared/tenantModules");
+const companyType_1 = require("../../shared/companyType");
 /**
  * Company categories ("Numara" profiles). Admin-only: every route requires
  * roles.manage. Profiles are scoped to the caller's company tree (root
@@ -199,6 +200,36 @@ router.patch('/assign/tenant-number', async (req, res) => {
             data: { companyNumber },
         });
         res.status(200).json({ message: 'Şirket numarası güncellendi.', companyNumber });
+    }
+    catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+/**
+ * ŞİRKET TÜRÜ — A Üretim / B Proje / C Satış (kodda PRODUCTION / PROJECT /
+ * SALES); boş değer türü temizler. Yeni ürün formunun zorunlu alanlarını
+ * belirler (bkz. shared/companyType.ts). Modül kategorisinden ve şirket
+ * numarasından bağımsızdır.
+ */
+router.patch('/assign/tenant-type', async (req, res) => {
+    try {
+        const rootTenantId = await callerRootId(req.user.homeTenantId);
+        const tenantId = String(req.body?.tenantId || '');
+        const raw = req.body?.companyType;
+        const cleared = raw === null || raw === undefined || raw === '';
+        const companyType = cleared ? null : (0, companyType_1.parseCompanyType)(raw);
+        if (!cleared && !companyType) {
+            return res.status(400).json({ error: 'Şirket türü geçersiz.' });
+        }
+        const tenantRootId = await (0, AuthMiddleware_1.findTenantRootId)(tenantId);
+        if (!tenantId || tenantRootId !== rootTenantId) {
+            return res.status(404).json({ error: 'Şirket bulunamadı.' });
+        }
+        await prisma_client_1.default.tenant.update({
+            where: { id: tenantId },
+            data: { companyType },
+        });
+        res.status(200).json({ message: 'Şirket türü güncellendi.', companyType });
     }
     catch (error) {
         res.status(400).json({ error: error.message });
