@@ -941,6 +941,8 @@ export class SalesOrderController {
             // Gövdede `projectName` gelse bile yok sayılır.
             const existingProjectId = String(req.body.projectId || '').trim();
             const overtimeHourlyRate = Math.max(0, Number(req.body.overtimeHourlyRate || 0));
+            // Nur für eine Offerte OHNE Kundschaft: der im Auftragsfenster getippte Name.
+            const customerName = String(req.body.customerName || '').trim().slice(0, 190);
             // Teslimat siparişinde (proje açılmayan yol) teslim tarihi ZORUNLUDUR:
             // siparişin tek zaman taahhüdü budur, projeli siparişte ise takvimi
             // randevular taşır. Tarih teklifin `internalDeliveryDate` alanına yazılır.
@@ -970,6 +972,14 @@ export class SalesOrderController {
                 // Samet 06.09.2026) — erst das Storno aufheben.
                 if (tender.status === 'Cancelled' || tender.cancelledAt) {
                     throw new Error('Aus einer stornierten Offerte kann kein Auftrag entstehen.');
+                }
+                // Offerte ganz ohne Kundschaft: der Name kommt aus dem
+                // Auftragsfenster (Vorgabe Samet, 25.09.2026 — «müşteri ismi
+                // girilirse oluşsun») und wird zuerst an der Offerte vermerkt,
+                // als wäre er dort frei erfasst worden.
+                if (!tender.salesOrder && !tender.customerId && !String(tender.manualCustomerName || '').trim() && customerName) {
+                    await (tx as any).tender.update({ where: { id: tenderId }, data: { manualCustomerName: customerName } });
+                    tender.manualCustomerName = customerName;
                 }
                 // Frei erfasster Kunde (nur `manualCustomer*`): er wird jetzt in
                 // den Kundenstamm übernommen, statt den Auftrag abzuweisen.

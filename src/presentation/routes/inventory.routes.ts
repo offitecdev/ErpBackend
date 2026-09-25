@@ -4318,6 +4318,7 @@ export const parsePurchaseOrderRow = (row: any) => {
     const { stageDocuments: _stageDocuments, ...rest } = row;
     return {
         ...rest,
+        requestSuppliers: poReadRequestSuppliers(row),
         items,
         additionalFees,
         hiddenColumnKeys,
@@ -4493,6 +4494,114 @@ const resolvePurchaseOrderSupplier = async (
         supplierEmail,
         supplierAddress: supplierAddressSnapshot(supplier),
     };
+};
+
+/* ══ FİYAT TALEBİNDE ÇOK TEDARİKÇİ (Vorgabe Samet, 25.09.2026) ══════════════
+ *
+ * «Fiyat taleplerinde birden fazla tedarikçi ekleyebilelim, her tedarikçi için
+ *  ayrı bir PDF oluşsun ama bu yöneticide (Administrator) ve muhasebe
+ *  rollerinde geçerli olsun, diğerleri için tedarikçi yeri olmasın — sadece
+ *  fiyat talebi için, sipariş eskisi gibi kalacak.»
+ *
+ *   • Liste `requestSuppliers` (JSON) sütunundadır; İLK kayıt `supplier*`
+ *     sütunlarına da yazılır — liste, arama ve «siparişe dönüştür» onu okur.
+ *   • Her tedarikçi kendi mail damgasını taşır (`emailSentAt`/`emailRecipient`);
+ *     herhangi birine giden mail talebi «gönderildi» (PRICE_REQUEST) yapar.
+ *   • Yetki SUNUCUDA da denetlenir: başka rolden gelen tedarikçi alanları
+ *     fiyat talebinde yok sayılır, talep tedarikçisiz kaydedilir.
+ */
+type PoRequestSupplier = {
+    supplierId: string | null;
+    supplierName: string;
+    supplierEmail: string | null;
+    supplierAddress: string | null;
+    emailSentAt: string | null;
+    emailRecipient: string | null;
+};
+const PO_REQUEST_SUPPLIERS_MAX = 10;
+const PO_MULTI_SUPPLIER_ROLE_RE = /muhasebe|buchhalt|accounting/i;
+const PO_NO_SUPPLIER = { supplierId: null, supplierName: '', supplierEmail: null, supplierAddress: null };
+
+/** Administrator ya da muhasebe rolü: fiyat talebine tedarikçi(ler) seçebilir. */
+const poCanPickRequestSuppliers = async (employeeId: string): Promise<boolean> => {
+    const rows = await (prisma as any).$queryRaw`
+        SELECT r.roleName AS roleName, r.isSystemAdmin AS isSystemAdmin
+        FROM EmployeeRole er JOIN Role r ON r.id = er.roleId
+        WHERE er.employeeId = ${employeeId}
+    ` as Array<{ roleName: string | null; isSystemAdmin: unknown }>;
+    return rows.some((row) => Boolean(Number(row.isSystemAdmin)) || PO_MULTI_SUPPLIER_ROLE_RE.test(String(row.roleName || '')));
+};
+
+const poSameSupplier = (a: { supplierId: string | null; supplierName: string }, b: { supplierId: string | null; supplierName: string }) =>
+    (a.supplierId && a.supplierId === b.supplierId)
+    || (!a.supplierId && !b.supplierId && a.supplierName.trim().toLowerCase() === b.supplierName.trim().toLowerCase());
+
+/** Kayıttaki tedarikçi listesi. Eski/tek tedarikçili talep, sütunlarından tek kayıtlık liste olur. */
+const poReadRequestSuppliers = (row: any): PoRequestSupplier[] => {
+    let parsed: unknown = null;
+    try { parsed = row?.requestSuppliers ? JSON.parse(row.requestSuppliers) : null; } catch { parsed = null; }
+    if (Array.isArray(parsed) && parsed.length) {
+        return parsed
+            .filter((entry: any) => entry && (entry.supplierId || String(entry.supplierName ?? '').trim()))
+            .map((entry: any) => ({
+                supplierId: entry.supplierId ? String(entry.supplierId) : null,
+                supplierName: String(entry.supplierName ?? ''),
+                supplierEmail: entry.supplierEmail ? String(entry.supplierEmail) : null,
+                supplierAddress: entry.supplierAddress ? String(entry.supplierAddress) : null,
+                emailSentAt: entry.emailSentAt ? String(entry.emailSentAt) : null,
+                emailRecipient: entry.emailRecipient ? String(entry.emailRecipient) : null,
+            }));
+    }
+    if (!PO_PRICE_REQUEST_STATUSES.has(row?.status) || (!row?.supplierId && !String(row?.supplierName ?? '').trim())) return [];
+    return [{
+        supplierId: row.supplierId ?? null,
+        supplierName: String(row.supplierName ?? ''),
+        supplierEmail: row.supplierEmail ?? null,
+        supplierAddress: row.supplierAddress ?? null,
+        emailSentAt: row.emailSentAt ? new Date(row.emailSentAt).toISOString() : null,
+        emailRecipient: row.emailRecipient ?? null,
+    }];
+};
+
+/** Gelen listeyi çözer (bilinen: id, yeni: ad → upsert); aynı tedarikçinin mail damgası korunur. */
+const poResolveRequestSuppliers = async (
+    tenantId: string,
+    raw: unknown,
+    previous: PoRequestSupplier[],
+): Promise<PoRequestSupplier[]> => {
+    const input = Array.isArray(raw) ? raw : [];
+    if (input.length > PO_REQUEST_SUPPLIERS_MAX) {
+        throw new Error(`Bir fiyat talebine en fazla ${PO_REQUEST_SUPPLIERS_MAX} tedarikçi eklenebilir.`);
+    }
+    const out: PoRequestSupplier[] = [];
+    for (const entry of input) {
+        if (!entry || (!(entry as any).supplierId && !String((entry as any).supplierName ?? '').trim())) continue;
+        const resolved = await resolvePurchaseOrderSupplier(tenantId, entry as any);
+        if (out.some((known) => poSameSupplier(known, resolved))) continue;
+        const before = previous.find((known) => poSameSupplier(known, resolved));
+        out.push({
+            ...resolved,
+            supplierAddress: resolved.supplierAddress ?? null,
+            emailSentAt: before?.emailSentAt ?? null,
+            emailRecipient: before?.emailRecipient ?? null,
+        });
+    }
+    return out;
+};
+
+/** Liste → sütunlar: JSON + ilk tedarikçinin aynası. */
+const poRequestSupplierColumns = (list: PoRequestSupplier[]) => ({
+    requestSuppliers: list.length ? JSON.stringify(list) : null,
+    supplierId: list[0]?.supplierId ?? null,
+    supplierName: list[0]?.supplierName ?? '',
+    supplierEmail: list[0]?.supplierEmail ?? null,
+    supplierAddress: list[0]?.supplierAddress ?? null,
+});
+
+/** Gövdedeki `supplierIndex` — listede yoksa null. */
+const poSupplierIndex = (value: unknown, list: PoRequestSupplier[]): number | null => {
+    const index = Number(value);
+    return Number.isInteger(index) && index >= 0 && index < list.length ? index : null;
 };
 
 /**
@@ -4948,6 +5057,7 @@ router.post(
                 supplierName: string;
                 supplierEmail: string | null;
                 supplierAddress: string | null;
+                requestSuppliers: string | null;
                 items: any[];
                 additionalFees: Array<{ name: string; amount: number }>;
                 totalNet: number;
@@ -4959,18 +5069,37 @@ router.post(
             // PRODUKTION (19.09.2026): wo das Modul an ist, braucht schon die
             // Preisanfrage ein Projekt und mindestens ein Gerät (Vorgabe Samet).
             const productionOn = await productionModule.purchaseLink.isEnabled(tenantId);
+            let canPickSuppliers: boolean | undefined;
             for (const raw of rawOrders) {
                 const normalized = normalizePurchaseOrderItems(raw?.items);
                 let items = normalized.items;
                 const { totalNet, totalGross, totalVat } = normalized;
                 const { fees, totalFees } = normalizePurchaseOrderFees(raw?.additionalFees);
                 const vat = normalizePurchaseOrderVat(raw || {});
-                const supplier = await resolvePurchaseOrderSupplier(tenantId, raw || {});
                 // Üç giriş yolu: taslak (DRAFT), fiyat talebi (PRICE_REQUEST — satırlar
                 // fiyatsız olabilir), doğrudan sipariş (PENDING, varsayılan).
                 const requestedStatus = String(raw?.status || 'PENDING').toUpperCase();
                 if (!PO_INITIAL_STATUSES.has(requestedStatus)) {
                     throw new Error('Yeni sipariş yalnızca DRAFT, PRICE_REQUEST veya PENDING durumuyla açılabilir.');
+                }
+                /* FİYAT TALEBİ: tedarikçi(ler)i yalnızca Administrator + muhasebe
+                   seçer (25.09.2026); başka rolde talep tedarikçisiz kaydedilir.
+                   Sipariş eskisi gibi TEK ve ZORUNLU tedarikçiyle açılır. */
+                let supplier: { supplierId: string | null; supplierName: string; supplierEmail: string | null; supplierAddress: string | null };
+                let requestSuppliers: string | null = null;
+                if (PO_PRICE_REQUEST_STATUSES.has(requestedStatus)) {
+                    canPickSuppliers ??= await poCanPickRequestSuppliers(req.user!.id);
+                    if (!canPickSuppliers) {
+                        supplier = { ...PO_NO_SUPPLIER };
+                    } else {
+                        const rawList = Array.isArray(raw?.requestSuppliers)
+                            ? raw.requestSuppliers
+                            : (raw?.supplierId || String(raw?.supplierName ?? '').trim() ? [raw] : []);
+                        const columns = poRequestSupplierColumns(await poResolveRequestSuppliers(tenantId, rawList, []));
+                        ({ requestSuppliers, ...supplier } = columns);
+                    }
+                } else {
+                    supplier = await resolvePurchaseOrderSupplier(tenantId, raw || {});
                 }
                 let production: ProductionSelectionInput | null = null;
                 let productionLabel: string | null = null;
@@ -5009,6 +5138,7 @@ router.post(
                     status: requestedStatus,
                     ...vat,
                     ...supplier,
+                    requestSuppliers,
                     items,
                     additionalFees: fees,
                     totalNet,
@@ -5059,6 +5189,7 @@ router.post(
                                 supplierName: order.supplierName,
                                 supplierEmail: order.supplierEmail,
                                 supplierAddress: order.supplierAddress,
+                                requestSuppliers: order.requestSuppliers,
                                 items: JSON.stringify(order.items),
                                 additionalFees: JSON.stringify(order.additionalFees),
                                 currency: order.currency,
@@ -5226,7 +5357,21 @@ router.patch(
                 data.currency = String(b.currency || 'CHF');
                 contentChanged = true;
             }
-            if (b.supplierId !== undefined || b.supplierName !== undefined || b.supplierEmail !== undefined) {
+            const touchesSupplier = b.supplierId !== undefined || b.supplierName !== undefined || b.supplierEmail !== undefined;
+            if (PO_PRICE_REQUEST_STATUSES.has(existing.status)) {
+                /* FİYAT TALEBİ (25.09.2026): tedarikçi LİSTESİ, yalnızca
+                   Administrator + muhasebe. Başka rolün gönderdiği tedarikçi
+                   alanları sessizce yok sayılır — kayıttaki liste kalır. */
+                if ((b.requestSuppliers !== undefined || touchesSupplier) && await poCanPickRequestSuppliers(req.user!.id)) {
+                    const rawList = b.requestSuppliers !== undefined
+                        ? b.requestSuppliers
+                        : (b.supplierId || String(b.supplierName ?? '').trim() ? [b] : []);
+                    Object.assign(data, poRequestSupplierColumns(
+                        await poResolveRequestSuppliers(tenantId, rawList, poReadRequestSuppliers(existing)),
+                    ));
+                    contentChanged = true;
+                }
+            } else if (touchesSupplier) {
                 const supplier = await resolvePurchaseOrderSupplier(tenantId, {
                     supplierId: b.supplierId !== undefined ? b.supplierId : existing.supplierId,
                     supplierName: b.supplierName !== undefined ? b.supplierName : existing.supplierName,
@@ -5433,6 +5578,23 @@ router.post(
             if (!PO_PRICE_REQUEST_STATUSES.has(source.status)) {
                 return res.status(400).json({ error: 'Yalnızca fiyat talebi siparişe dönüştürülebilir.' });
             }
+            /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): sipariş TEK tedarikçilidir —
+               hangisiyle açılacağını `supplierIndex` söyler (yoksa ilki). */
+            const requestSuppliers = poReadRequestSuppliers(source);
+            const chosen = requestSuppliers[poSupplierIndex(req.body?.supplierIndex, requestSuppliers) ?? 0];
+            const orderSupplier = chosen
+                ? {
+                    supplierId: chosen.supplierId,
+                    supplierName: chosen.supplierName,
+                    supplierEmail: chosen.supplierEmail,
+                    supplierAddress: chosen.supplierAddress,
+                }
+                : {
+                    supplierId: source.supplierId,
+                    supplierName: source.supplierName,
+                    supplierEmail: source.supplierEmail,
+                    supplierAddress: source.supplierAddress,
+                };
 
             /* SİPARİŞTEN GELEN TALEP YERİNDE GERİ DÖNER (24.09.2026): «Fiyat
                talebi almak istiyorum» ile talebe dönmüş bir sipariş kendi
@@ -5450,6 +5612,8 @@ router.post(
                         data: {
                             status: 'ORDER_DRAFT',
                             referenceNumber: source.orderNumber,
+                            ...orderSupplier,
+                            requestSuppliers: null,
                             ...(standard || !source.tableColumns
                                 ? { tableColumns: standardTableColumnsJson('ORDER'), hiddenColumnKeys: standardHiddenKeysJson('ORDER') }
                                 : {}),
@@ -5493,10 +5657,7 @@ router.post(
                             ...(isStandardColumns(source.tableColumns)
                                 ? { tableColumns: standardTableColumnsJson('ORDER'), hiddenColumnKeys: standardHiddenKeysJson('ORDER') }
                                 : { tableColumns: source.tableColumns, hiddenColumnKeys: source.hiddenColumnKeys }),
-                            supplierId: source.supplierId,
-                            supplierName: source.supplierName,
-                            supplierEmail: source.supplierEmail,
-                            supplierAddress: source.supplierAddress,
+                            ...orderSupplier,
                             items: JSON.stringify(copiedItems),
                             additionalFees: source.additionalFees,
                             currency: source.currency,
@@ -5528,6 +5689,98 @@ router.post(
                 }
             }
 
+            res.status(201).json(parsePurchaseOrderRow(row));
+        } catch (error: any) {
+            sendPurchaseOrderError(res, error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/duplicate:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Fiyat talebinin ya da siparişin TASLAK kopyasını aç"
+ *     security:
+ *       - bearerAuth: []
+ */
+/* ══ KOPYA AÇ (Vorgabe Samet, 25.09.2026) ═══════════════════════════════════
+ *
+ * «Fiyat taleplerinin ve siparişlerin de başka kopyaları açılabilsin ama
+ *  taslak olarak açılması lazım.»
+ *
+ * Kopya kaynağın TÜRÜNDE kalır ve her zaman TASLAK doğar:
+ *   • fiyat talebi → DRAFT, yeni PA- numarası
+ *   • sipariş (hangi durumda olursa olsun) → ORDER_DRAFT, yeni BE- numarası
+ * Kaynak hiç değişmez. Kopyaya GEÇMEYENLER: mail damgası / revizyon, mal kabul
+ * damgaları, stoğa işlenme, talep ↔ sipariş izi — ve satırların PROJE BAĞI
+ * (`source`): proje tedarik ekranı sipariş edilen miktarı bu bağdan sayar,
+ * kopya onu iki kez saydırırdı. Üretim ataması da aynı sebeple kopyalanmaz.
+ */
+router.post(
+    '/purchase-orders/:id/duplicate',
+    requireAuth,
+    requirePermission('inventory.transfer'),
+    async (req, res) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const source = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+            if (!source) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            const kind: PurchaseDocKind = PO_PRICE_REQUEST_STATUSES.has(source.status) ? 'PRICE_REQUEST' : 'ORDER';
+            const codeColumn = kind === 'PRICE_REQUEST' ? 'priceRequestNumber' : 'orderNumber';
+
+            let items: any[] = [];
+            try { items = JSON.parse(source.items || '[]'); } catch { items = []; }
+            const copiedItems = (Array.isArray(items) ? items : []).map((item: any) => {
+                const { source: _projectLink, ...rest } = item ?? {};
+                return { ...rest, receivedQuantity: 0, receivedAt: null };
+            });
+
+            let row: any = null;
+            for (let attempt = 0; attempt < 3 && !row; attempt++) {
+                const referenceNumber = await nextPurchaseReference(tenantId, kind);
+                try {
+                    row = await (prisma as any).purchaseOrder.create({
+                        data: {
+                            id: nanoid(12),
+                            tenantId,
+                            referenceNumber,
+                            [codeColumn]: referenceNumber,
+                            status: kind === 'PRICE_REQUEST' ? 'DRAFT' : 'ORDER_DRAFT',
+                            quoteNumber: source.quoteNumber,
+                            orderedByName: source.orderedByName,
+                            projectName: source.projectName,
+                            recipientName: source.recipientName,
+                            coverLetter: source.coverLetter,
+                            tableColumns: source.tableColumns,
+                            hiddenColumnKeys: source.hiddenColumnKeys,
+                            supplierId: source.supplierId,
+                            supplierName: source.supplierName,
+                            supplierEmail: source.supplierEmail,
+                            supplierAddress: source.supplierAddress,
+                            // Talebin tedarikçi listesi gelir — mail damgaları gelmez.
+                            requestSuppliers: kind === 'PRICE_REQUEST' && source.requestSuppliers
+                                ? JSON.stringify(poReadRequestSuppliers(source).map((entry) => ({ ...entry, emailSentAt: null, emailRecipient: null })))
+                                : null,
+                            items: JSON.stringify(copiedItems),
+                            additionalFees: source.additionalFees,
+                            currency: source.currency,
+                            vatMode: source.vatMode,
+                            orderVatRate: source.orderVatRate,
+                            orderVatCountry: source.orderVatCountry,
+                            totalNet: source.totalNet,
+                            totalGross: source.totalGross,
+                            totalVat: source.totalVat,
+                            totalFees: source.totalFees,
+                            createdByEmpId: req.user!.id,
+                        },
+                    });
+                } catch (err: any) {
+                    if (err?.code !== 'P2002') throw err;
+                }
+            }
+            if (!row) return res.status(400).json({ error: 'Numara üretilemedi, lütfen tekrar deneyin.' });
             res.status(201).json(parsePurchaseOrderRow(row));
         } catch (error: any) {
             sendPurchaseOrderError(res, error);
@@ -6498,6 +6751,15 @@ router.post(
 
             const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
 
+            /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): mail listedeki BİR tedarikçiye
+               gider (`supplierIndex`), ekindeki PDF de onun adını taşır; damga
+               o tedarikçinin kaydına düşer. */
+            const requestSuppliers = PO_PRICE_REQUEST_STATUSES.has(existing.status) ? poReadRequestSuppliers(existing) : [];
+            const supplierIndex = poSupplierIndex(req.body?.supplierIndex, requestSuppliers);
+            const target = supplierIndex !== null
+                ? requestSuppliers[supplierIndex]!
+                : { supplierId: existing.supplierId ?? null, supplierEmail: existing.supplierEmail ?? null };
+
             // Alıcı: kullanıcının girdiği herhangi geçerli adres (kullanıcı isteği
             // 2026-09-15 — önceki "yalnızca tedarikçinin adresi" kısıtı kaldırıldı).
             // Girilmezse sipariş snapshot'ındaki / tedarikçi kaydındaki e-posta.
@@ -6509,12 +6771,12 @@ router.post(
                     return res.status(400).json({ error: 'Geçersiz alıcı e-posta adresi.' });
                 }
             } else {
-                const snapshot = String(existing.supplierEmail || '').trim();
+                const snapshot = String(target.supplierEmail || '').trim();
                 if (snapshot && PO_EMAIL_RE.test(snapshot)) {
                     to = snapshot;
-                } else if (existing.supplierId) {
+                } else if (target.supplierId) {
                     const supplier = await (prisma as any).supplier.findFirst({
-                        where: { id: existing.supplierId, tenantId },
+                        where: { id: target.supplierId, tenantId },
                         select: { email: true },
                     });
                     const supplierEmail = String(supplier?.email || '').trim();
@@ -6629,12 +6891,20 @@ router.post(
                     : null;
             let order = existing;
             if (!result.preview) {
+                const sentAt = new Date();
                 order = await (prisma as any).purchaseOrder.update({
                     where: { id: existing.id },
                     data: {
-                        emailSentAt: new Date(),
+                        emailSentAt: sentAt,
                         emailRecipient: to,
                         ...(statusAfterSend ? { status: statusAfterSend } : {}),
+                        ...(supplierIndex !== null
+                            ? {
+                                requestSuppliers: JSON.stringify(requestSuppliers.map((entry, index) => (index === supplierIndex
+                                    ? { ...entry, emailSentAt: sentAt.toISOString(), emailRecipient: to }
+                                    : entry))),
+                            }
+                            : {}),
                     },
                 });
             }
@@ -6679,6 +6949,30 @@ router.post(
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
             const sent = req.body?.sent === true;
+
+            /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): işaret BİR tedarikçinin. Talep
+               «gönderildi» olur, ilki işaretlenince; «gönderilmedi»ye ancak
+               SONUNCUSUNUN işareti kalkınca döner. */
+            const requestSuppliers = PO_PRICE_REQUEST_STATUSES.has(existing.status) ? poReadRequestSuppliers(existing) : [];
+            const supplierIndex = poSupplierIndex(req.body?.supplierIndex, requestSuppliers);
+            if (supplierIndex !== null) {
+                const now = new Date();
+                const recipient = poStripHeader(String(req.body?.recipient ?? requestSuppliers[supplierIndex]!.supplierEmail ?? '')).slice(0, 180);
+                const list = requestSuppliers.map((entry, index) => (index === supplierIndex
+                    ? { ...entry, emailSentAt: sent ? now.toISOString() : null, emailRecipient: sent ? `${PO_MANUAL_MAIL_PREFIX}${recipient}` : null }
+                    : entry));
+                const stillSent = list.some((entry) => entry.emailSentAt);
+                const updated = await (prisma as any).purchaseOrder.update({
+                    where: { id: existing.id },
+                    data: {
+                        requestSuppliers: JSON.stringify(list),
+                        ...(sent
+                            ? { status: 'PRICE_REQUEST', emailSentAt: now, emailRecipient: `${PO_MANUAL_MAIL_PREFIX}${recipient}` }
+                            : (stillSent ? {} : { status: 'DRAFT', emailSentAt: null, emailRecipient: null })),
+                    },
+                });
+                return res.status(200).json(parsePurchaseOrderRow(updated));
+            }
 
             // 15.09.2026 (Samet): «istediğim zaman değiştirebiliyor olmam gerek» —
             // das Häkchen lässt sich jederzeit setzen und entfernen, auch auf

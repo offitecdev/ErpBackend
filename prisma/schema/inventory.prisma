@@ -240,6 +240,12 @@ model PurchaseOrder {
   // doluysa PDF'in alıcı bloğunda firma adının ALTINDA tek küçük satır olarak
   // basılır. Tedarikçi kaydından bağımsızdır: siparişe özgü kişi/departmandır.
   recipientName   String? // max 120
+  /// FİYAT TALEBİNDE ÇOK TEDARİKÇİ (25.09.2026) — JSON [{supplierId, supplierName,
+  /// supplierEmail, supplierAddress, emailSentAt, emailRecipient}]; her tedarikçi
+  /// kendi PDF'ini ve mailini alır. Yalnızca Administrator + muhasebe rolü yazar.
+  /// İlk kayıt `supplier*` sütunlarına da yazılır (liste/arama/dönüştürme onu okur).
+  /// NULL = tek tedarikçi ya da hiç (siparişlerde hep NULL).
+  requestSuppliers String?  @db.Text
 
   // ANSCHREIBEN (ön yazı): PDF'in ilk sayfasında başlığın altında, pozisyon
   // tablosundan ÖNCE basılan hitap + giriş metni. Düz metindir (satır sonları
