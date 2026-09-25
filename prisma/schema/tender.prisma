@@ -225,6 +225,11 @@ model Article {
   /// value was folded into PRODUCT when the separate materials category was
   /// removed, 2026-08-14). Toggled from the product detail screen.
   itemType           String    @default("PRODUCT")
+  /// ÜRÜN TÜRÜ (23.09.2026) — yeni ürün formundaki üçlü seçim:
+  /// MANUFACTURED (Üretilecek) | RESALE (Satın Alınacak) | SERVICE (Ek Hizmet).
+  /// NULL = seçilmedi (eski kayıtlar). `itemType` bundan türetilir: SERVICE →
+  /// SERVICE, diğer ikisi → PRODUCT (bkz. shared/articleKind.ts).
+  articleKind        String?   @db.VarChar(16)
   status             String    @default("ACTIVE")
   lastPurchaseDate   DateTime?
   isActive           Boolean   @default(true)

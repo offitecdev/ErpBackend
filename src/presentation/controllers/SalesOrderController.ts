@@ -25,6 +25,8 @@ import { buildAppointmentCancellation, queueAppointmentCancellation } from '../.
 import { billingTargetsForGroup } from '../../shared/minderung';
 import { decideOverride, overrideErrorBody, recordDocumentEvent, requestIp, type OverrideRequest } from '../../shared/documentGovernance';
 import { permissionDeniedBody, userHasPermission } from '../middlewares/RbacMiddleware';
+import { ensureTenderCustomer } from '../../shared/tenderCustomer';
+import { emitProjectCreated } from '../../shared/projectEvents';
 
 const billingSummaryUseCase = new GetBillingSummaryUseCase(new InvoiceRepository());
 
@@ -969,7 +971,11 @@ export class SalesOrderController {
                 if (tender.status === 'Cancelled' || tender.cancelledAt) {
                     throw new Error('Aus einer stornierten Offerte kann kein Auftrag entstehen.');
                 }
-                if (!tender.customerId) throw new Error('Siparis icin teklifin musterisi olmalidir.');
+                // Frei erfasster Kunde (nur `manualCustomer*`): er wird jetzt in
+                // den Kundenstamm übernommen, statt den Auftrag abzuweisen.
+                if (!tender.salesOrder && !(await ensureTenderCustomer(tx, tender, tenantId))) {
+                    throw new Error('Siparis icin teklifin musterisi olmalidir.');
+                }
 
                 // Sipariş zaten açılmışsa hiçbir şey doğrulanmaz/yazılmaz —
                 // bu çağrı mevcut siparişi geri vermekten ibarettir.
@@ -1240,6 +1246,15 @@ export class SalesOrderController {
                     relinkedAppointments: parkedAppointments.length,
                 };
             });
+
+            /* SİPARİŞLERİM (Vorgabe Samet, 24.09.2026): «proje oluşturulunca
+               siparişler otomatik oluşturulacak». YENİ proje açıldıysa, türü
+               «Satın Alınacak» ve «Üretilecek» olan pozisyonların eksikleri
+               arka planda sipariş edilir (projectProcurement.routes.ts). Cevabı
+               bekletmez; sipariş yazılamasa da proje oluşmuştur. */
+            if (!result.reused && mode === 'PROJECT_NEW' && result.project?.id) {
+                emitProjectCreated({ tenantId, projectId: String(result.project.id), userId: employeeId });
+            }
 
             res.status(result.reused ? 200 : 201).json({
                 message: result.reused ? 'Bu teklif icin siparis zaten olusturulmus.' : 'Siparis olusturuldu.',

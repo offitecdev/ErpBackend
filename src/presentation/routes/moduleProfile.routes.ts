@@ -5,6 +5,7 @@ import { requirePermission } from '../middlewares/RbacMiddleware';
 import prisma from '../../infrastructure/database/prisma.client';
 import { sanitizeModuleKeys } from '../../shared/moduleCatalog';
 import { clearTenantModuleCache } from '../../shared/tenantModules';
+import { parseCompanyType } from '../../shared/companyType';
 
 /**
  * Company categories ("Numara" profiles). Admin-only: every route requires
@@ -203,6 +204,38 @@ router.patch('/assign/tenant-number', async (req, res) => {
             data: { companyNumber },
         });
         res.status(200).json({ message: 'Şirket numarası güncellendi.', companyNumber });
+    } catch (error: any) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+/**
+ * ŞİRKET TÜRÜ — A Üretim / B Proje / C Satış (kodda PRODUCTION / PROJECT /
+ * SALES); boş değer türü temizler. Yeni ürün formunun zorunlu alanlarını
+ * belirler (bkz. shared/companyType.ts). Modül kategorisinden ve şirket
+ * numarasından bağımsızdır.
+ */
+router.patch('/assign/tenant-type', async (req, res) => {
+    try {
+        const rootTenantId = await callerRootId(req.user!.homeTenantId);
+        const tenantId = String(req.body?.tenantId || '');
+        const raw = req.body?.companyType;
+        const cleared = raw === null || raw === undefined || raw === '';
+        const companyType = cleared ? null : parseCompanyType(raw);
+        if (!cleared && !companyType) {
+            return res.status(400).json({ error: 'Şirket türü geçersiz.' });
+        }
+
+        const tenantRootId = await findTenantRootId(tenantId);
+        if (!tenantId || tenantRootId !== rootTenantId) {
+            return res.status(404).json({ error: 'Şirket bulunamadı.' });
+        }
+
+        await (prisma as any).tenant.update({
+            where: { id: tenantId },
+            data: { companyType },
+        });
+        res.status(200).json({ message: 'Şirket türü güncellendi.', companyType });
     } catch (error: any) {
         res.status(400).json({ error: error.message });
     }

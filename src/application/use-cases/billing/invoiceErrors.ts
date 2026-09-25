@@ -8,6 +8,10 @@
  * `message` bleibt als Rückfall für ältere Oberflächen stehen.
  */
 export type InvoiceErrorCode =
+    | 'NUMBER_INVALID'
+    | 'NUMBER_EXISTS'
+    | 'VAT_INVALID'
+    | 'DOCUMENT_INVALID'
     | 'NOT_FOUND'
     | 'ORDER_NOT_FOUND'
     | 'PROJECT_NOT_FOUND'

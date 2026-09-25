@@ -4,17 +4,27 @@ import type {
     ProductionOrderLine,
     ProductionProject,
     ProductionProjectOrder,
+    ProductionProjectSource,
     ProductionTransferSettings,
+    ProductionIntakeOrder,
     PurchaseOrderView,
     SalesSourceSnapshot,
 } from '../entities/Production';
-import type { ExistingProductionIds, SnapshotPlan } from '../services/production';
+import type { ExistingProductionIds, ProductionDemand, SnapshotPlan } from '../services/production';
 
 /** Einstellungen → Firmenübertragungen. */
 export interface IProductionSettingsRepository {
     get(tenantId: string): Promise<ProductionTransferSettings | null>;
     save(tenantId: string, sourceTenantIds: string[], updatedById: string): Promise<ProductionTransferSettings>;
     markSynced(tenantId: string, at: Date): Promise<void>;
+}
+
+/**
+ * Die bestätigten internen Bestellungen der Projektfirmen an diese
+ * Produktionsfirma (24.09.2026) — nur lesend.
+ */
+export interface IProductionDemandReader {
+    read(producerTenantId: string): Promise<ProductionDemand>;
 }
 
 /** Die Verkaufsseite der Quellfirmen — nur lesend (die Grenze zum Verkauf). */
@@ -90,4 +100,17 @@ export interface TenantDirectoryEntry {
 /** Alle Firmen der Installation — für die Wahl der Quellfirmen. */
 export interface ITenantDirectory {
     list(): Promise<TenantDirectoryEntry[]>;
+}
+
+/**
+ * Welche bestätigte interne Bestellung welches Gerät gebracht hat — je
+ * Offertposition (`ProductionItem.sourceId`), nur lesend.
+ */
+export interface IProductionIntakeReader {
+    byPosition(producerTenantId: string, positionIds: string[]): Promise<Map<string, ProductionIntakeOrder[]>>;
+}
+
+/** Leitung, Termine und Adressen des Quellprojekts — nur lesend (24.09.2026). */
+export interface IProductionProjectSourceReader {
+    read(project: ProductionProject): Promise<ProductionProjectSource | null>;
 }

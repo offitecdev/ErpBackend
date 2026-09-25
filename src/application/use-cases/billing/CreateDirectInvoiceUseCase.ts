@@ -2,7 +2,8 @@ import { normalizePaymentStages, serializePaymentStages, validatePaymentStages }
 import { IInvoiceRepository, InvoiceLineItemInput } from "../../../domain/repositories/IInvoiceRepository";
 import { Invoice } from "../../../domain/entities/Invoice";
 import prisma from "../../../infrastructure/database/prisma.client";
-import { nextDocumentNumber } from "../../../shared/documentNumber";
+import { normalizeDirectInvoiceDocument } from '../../../shared/directInvoiceDocument';
+import { validateDirectInvoiceNumber } from '../../../shared/directInvoiceNumber';
 import {
     combinedDiscountPercent,
     MAX_LINE_DISCOUNTS,
@@ -81,6 +82,8 @@ export const readSectionFlags = (raw: unknown): InvoiceSectionFlags => {
 };
 
 export interface CreateDirectInvoiceInput {
+    invoiceNumber?: string | null;
+    documentOptions?: unknown;
     tenantId: string;
     issuedByEmployeeId: string;
     /** Bestandskunde — optional: der Empfänger darf auch frei getippt sein. */
@@ -153,7 +156,10 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
         if (!customer) throw invoiceError('CUSTOMER_NOT_FOUND', 'Kunde nicht gefunden.', { status: 404 });
     }
 
-    const vatRate = Number.isFinite(Number(input.vatRate)) ? Math.max(0, Number(input.vatRate)) : 0;
+    validateDirectInvoiceNumber(input.invoiceNumber);
+    const documentOptions = normalizeDirectInvoiceDocument(input.documentOptions, Number(input.vatRate) || 0);
+    const vatRate = documentOptions.vatEnabled ? Number(input.vatRate ?? 0) : 0;
+    if (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100) throw invoiceError('VAT_INVALID', 'Der MWST-Satz muss zwischen 0 und 100 liegen.');
 
     const lineItems: InvoiceLineItemInput[] = lines.map((line, index) => {
         const quantity = Number(line.quantity ?? 1);
@@ -199,14 +205,18 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
 
     const linesTotal = round2(lineItems.reduce((sum, item) => sum + item.lineTotal, 0));
     const netTotal = round2(remainingAfterDiscounts(linesTotal, discountList));
-    const grossTotal = round2(netTotal * (1 + vatRate / 100));
-    if (grossTotal <= 0) throw invoiceError('AMOUNT_ZERO', 'Rechnungsbetrag muss grösser als 0 sein.');
+    const grossTotal = round2(netTotal + round2(netTotal * vatRate / 100));
+    if (!Number.isFinite(grossTotal) || grossTotal <= 0) throw invoiceError('AMOUNT_ZERO', 'Rechnungsbetrag muss grösser als 0 sein.');
 
     const stages = normalizePaymentStages(input.paymentStages);
     if (input.paymentStages != null && !stages && !(Array.isArray(input.paymentStages) && input.paymentStages.length === 0)) throw invoiceError('PLAN_INVALID', 'Zahlungsplan ungültig.');
     const planError = stages?.length ? validatePaymentStages(stages) : null;
     if (planError) throw invoiceError('PLAN_INVALID', planError);
     const invoiceDate = parseIsoDate(input.invoiceDate) ?? new Date();
+    if (input.invoiceDate && !parseIsoDate(input.invoiceDate)) throw invoiceError('DATE_INVALID', 'Ungültiges Rechnungsdatum.');
+    if (input.dueDate && !parseIsoDate(input.dueDate)) throw invoiceError('DATE_INVALID', 'Ungültiges Fälligkeitsdatum.');
+    const dueDate = parseIsoDate(input.dueDate) ?? invoiceDate;
+    if (dueDate < invoiceDate) throw invoiceError('DUE_BEFORE_DATE', 'Fälligkeit liegt vor dem Rechnungsdatum.');
 
     return {
         invoice: {
@@ -221,7 +231,7 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
             invoiceDate,
             // Fälligkeit folgt dem Rechnungsdatum, wenn keine gesetzt ist —
             // dieselbe Regel wie bei der Auftragsrechnung.
-            dueDate: parseIsoDate(input.dueDate) ?? invoiceDate,
+            dueDate,
             salespersonName: input.salespersonName?.trim() || null,
             commissionNumber: input.commissionNumber?.trim() || null,
             billedPercent: 100,
@@ -234,7 +244,7 @@ export const buildDirectInvoiceDraft = async (input: CreateDirectInvoiceInput): 
             vatRate,
             // Der Beleg selbst: welche Abschnitte er zeigt, sein
             // Rabattstapel, sein Schlussabsatz und seine Absenderzeile.
-            sections: JSON.stringify(sections),
+            sections: JSON.stringify({ ...sections, document: documentOptions }),
             discounts: discountsJson,
             closingText: sections.closing ? (input.closingText?.trim() || null) : null,
             // Die Absenderzeile wird EINGEFROREN: eine später geänderte
@@ -260,12 +270,11 @@ export class CreateDirectInvoiceUseCase {
                 draft.lineItems,
             );
         }
-        // Die Nummer wird ERST hier gezogen — ein abgewiesener Entwurf soll
-        // keine Lücke in der RE-Reihe hinterlassen.
-        const invoiceNumber = await nextDocumentNumber(input.tenantId, 'INVOICE');
+        const options = normalizeDirectInvoiceDocument(input.documentOptions, Number(input.vatRate) || 0);
         return this.invoiceRepository.createWithItems(
-            { ...draft.invoice, invoiceNumber, status: 'ISSUED', issuedByEmployeeId: input.issuedByEmployeeId },
+            { ...draft.invoice, status: 'ISSUED', issuedByEmployeeId: input.issuedByEmployeeId },
             draft.lineItems,
+            { requested: input.invoiceNumber ?? null, proforma: options.language === 'en', year: (draft.invoice.invoiceDate as Date).getFullYear() },
         );
     }
 }

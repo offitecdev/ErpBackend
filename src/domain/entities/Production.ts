@@ -186,3 +186,34 @@ export interface PurchaseOrderLineView {
     receivedQuantity: number;
     productionItemId: string | null;
 }
+
+/**
+ * Eine bestätigte interne Bestellung einer Projektfirma, die ein Gerät dieser
+ * Produktion gebracht hat (24.09.2026) — «sipariş hangi projeden geliyorsa».
+ */
+export interface ProductionIntakeOrder {
+    purchaseOrderId: string;
+    referenceNumber: string;
+    sourceTenantId: string;
+    status: string;
+    /** Menge dieser Offertposition in der Bestellung. */
+    quantity: number;
+}
+
+/**
+ * Was die Verkaufsseite über ein Projekt weiss, das der Spiegel nicht führt
+ * (24.09.2026, Vorgabe Samet: «proje bilgileri tablo halinde, daha fazla
+ * detay»): Leitung, Termine und Adressen aus Projekt und Offerte der Quelle.
+ */
+export interface ProductionProjectSource {
+    managerName: string | null;
+    salespersonName: string | null;
+    startDate: Date | null;
+    endDate: Date | null;
+    /** Interner Liefertermin der Offerte. */
+    deliveryDate: Date | null;
+    installationAddress: string | null;
+    deliveryAddress: string | null;
+    commissionNumber: string | null;
+    customerReference: string | null;
+}

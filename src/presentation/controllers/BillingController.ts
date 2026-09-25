@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { peekDirectInvoiceNumber } from '../../shared/directInvoiceNumber';
 import { CreateInvoiceUseCase } from '../../application/use-cases/billing/CreateInvoiceUseCase';
 import { CreateDirectInvoiceUseCase } from '../../application/use-cases/billing/CreateDirectInvoiceUseCase';
 import { UpdateDirectInvoiceUseCase } from '../../application/use-cases/billing/UpdateDirectInvoiceUseCase';
@@ -328,7 +329,10 @@ export class BillingController {
      */
     async nextInvoiceNumber(req: Request, res: Response) {
         try {
-            const invoiceNumber = await peekDocumentNumber(req.user!.tenantId, 'INVOICE');
+            const year = Number(req.query.year) || new Date().getFullYear();
+            const invoiceNumber = req.query.direct === 'true'
+                ? await peekDirectInvoiceNumber(req.user!.tenantId, req.query.language === 'en', Math.min(9999, Math.max(1900, Math.trunc(year))))
+                : await peekDocumentNumber(req.user!.tenantId, 'INVOICE');
             res.status(200).json({ invoiceNumber, preview: true });
         } catch (error: any) {
             res.status(error?.status || 400).json(invoiceErrorBody(error));
@@ -344,6 +348,8 @@ export class BillingController {
         try {
             const invoice = await this.createDirectInvoiceUseCase.execute({
                 tenantId: req.user!.tenantId,
+                invoiceNumber: req.body.invoiceNumber,
+                documentOptions: req.body.documentOptions,
                 issuedByEmployeeId: req.user!.id,
                 customerId: req.body.customerId ?? null,
                 recipientName: String(req.body.recipientName || ''),
@@ -382,6 +388,9 @@ export class BillingController {
         try {
             const invoice = await this.updateDirectInvoiceUseCase.execute(String(req.params.id), {
                 tenantId: req.user!.tenantId,
+                invoiceNumber: req.body.invoiceNumber,
+                documentOptions: req.body.documentOptions,
+                draft: typeof req.body.draft === 'boolean' ? req.body.draft : undefined,
                 issuedByEmployeeId: req.user!.id,
                 customerId: req.body.customerId ?? null,
                 recipientName: String(req.body.recipientName || ''),

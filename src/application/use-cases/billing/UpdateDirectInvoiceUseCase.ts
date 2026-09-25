@@ -3,6 +3,7 @@ import { Invoice } from '../../../domain/entities/Invoice';
 import { buildDirectInvoiceDraft, type CreateDirectInvoiceInput } from './CreateDirectInvoiceUseCase';
 import { invoiceError } from './invoiceErrors';
 import prisma from '../../../infrastructure/database/prisma.client';
+import { normalizeDirectInvoiceDocument } from '../../../shared/directInvoiceDocument';
 
 /**
  * ── EINE DIREKTRECHNUNG ÄNDERN ───────────────────────────────────────────────
@@ -12,11 +13,9 @@ import prisma from '../../../infrastructure/database/prisma.client';
  * geöffnet und als GANZES neu geschrieben werden — Empfänger, Texte,
  * Positionen, Rabatte, Zahlungsplan.
  *
- * Zwei Dinge ändert sie NIE:
- *   • **Die Nummer bleibt.** Sie ist die Kennung des Belegs; eine neue würde
- *     eine zweite Rechnung erfinden und eine Lücke in der Reihe lassen.
- *   • **Der Status bleibt** (samt Zahlungsdatum): «bezahlt» ist eine Tatsache
- *     aus der Buchhaltung, keine Eingabe dieser Maske.
+ * Die Belegnummer ist editierbar und wird innerhalb der Schreibtransaktion
+ * auf Eindeutigkeit geprüft. Der Zahlungsstand bleibt erhalten; ein Entwurf
+ * kann mit `draft: false` direkt ausgestellt werden.
  *
  * Und zwei Rechnungen sind hier NICHT zu ändern: eine BEZAHLTE (das Geld ist
  * gegen den alten Betrag geflossen) und eine STORNIERTE (sie ist Geschichte).
@@ -51,18 +50,25 @@ export class UpdateDirectInvoiceUseCase {
             throw invoiceError('CREDIT_DOCUMENT_FINAL', 'Ein Gegenbeleg wird nicht geändert.', { status: 409 });
         }
 
-        const draft = await buildDirectInvoiceDraft(input);
+        // Older clients preserve document preferences when they do not send them.
+        let savedOptions: unknown;
+        try { savedOptions = JSON.parse(existing.sections || '{}').document; } catch { savedOptions = undefined; }
+        const draft = await buildDirectInvoiceDraft({ ...input, documentOptions: input.documentOptions ?? savedOptions });
+        const options = normalizeDirectInvoiceDocument(input.documentOptions ?? savedOptions, Number(input.vatRate) || 0);
         return this.invoiceRepository.updateWithItems(
             id,
             {
                 ...draft.invoice,
-                // Kennung und Zahlungsstand gehören dem bestehenden Beleg.
+                // Payment state stays with the existing invoice; its code may be edited.
                 invoiceNumber: existing.invoiceNumber,
-                status: existing.status,
+                status: existing.status === 'DRAFT' && input.draft === false ? 'ISSUED' : existing.status,
                 paidAt: existing.paidAt ?? null,
                 issuedByEmployeeId: existing.issuedByEmployeeId,
             },
             draft.lineItems,
+            (existing.status !== 'DRAFT' && input.invoiceNumber != null) || (existing.status === 'DRAFT' && input.draft === false)
+                ? { requested: input.invoiceNumber || existing.invoiceNumber, proforma: options.language === 'en', year: (draft.invoice.invoiceDate as Date).getFullYear() }
+                : undefined,
         );
     }
 }

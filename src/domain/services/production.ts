@@ -214,6 +214,68 @@ export const planProductionSnapshot = (
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   1a) NUR BESTELLTE GERÄTE (Vorgabe Samet, 24.09.2026)
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Was die Produktionsfirma an Bestellungen der Projektfirmen hat: je
+ * Offertposition die Menge aus BESTÄTIGTEN internen Bestellungen — und die
+ * Geräte/Projekte, an denen schon eigene Lieferantenbestellungen hängen.
+ */
+export interface ProductionDemand {
+    /** Firmen, die dieser Produktion bestätigte Bestellungen geschickt haben. */
+    sourceTenantIds: string[];
+    /** Offertposition → bestätigte Menge. */
+    orderedByPosition: Map<string, number>;
+    /** Geräte/Projekte mit eigenen Bestellungen (Zuordnung oder Zeile) — bleiben stehen. */
+    pinnedItemIds: Set<string>;
+    pinnedProjectIds: Set<string>;
+}
+
+/**
+ * «Üretim şirketindeki Projelerim modülüne artık cihazlar otomatik/toplu
+ *  çekilmemeli. Yalnızca siparişi verilip onaylanan cihazlar ilgili projeye
+ *  dahil edilmeli; aynı projeye ait cihazlar sipariş onaylandıkça projede
+ *  toplanmalı.»
+ *
+ * Der Abgleich liest weiter die ganzen Aufträge (die Ids bleiben stabil), aber
+ * AKTIV bleibt nur:
+ *   · eine Offertposition, für die eine bestätigte interne Bestellung besteht
+ *     — mit deren Menge (nicht der Auftragsmenge) und anteiligem Betrag;
+ *   · was schon eigene Lieferantenbestellungen trägt (sonst zeigten diese
+ *     Bestellungen ins Leere);
+ * ein Auftrag lebt, solange eines seiner Geräte lebt, ein Projekt ebenso.
+ */
+export const restrictToOrderedDevices = (plan: SnapshotPlan, demand: ProductionDemand): SnapshotPlan => {
+    const items = plan.items.map((item) => {
+        if (!item.isActive) return item;
+        const ordered = item.sourceType === 'POSITION' ? demand.orderedByPosition.get(item.sourceId) : undefined;
+        if (ordered !== undefined && ordered > 0) {
+            const share = item.quantity > 0 ? ordered / item.quantity : 1;
+            return { ...item, quantity: ordered, totalPrice: round2(item.totalPrice * share) };
+        }
+        if (demand.pinnedItemIds.has(item.id)) return item;
+        return { ...item, isActive: false };
+    });
+    const liveOrders = new Set(items.filter((item) => item.isActive).map((item) => item.productionOrderId));
+    const liveProjects = new Set(items.filter((item) => item.isActive).map((item) => item.productionProjectId));
+    const orders = plan.orders.map((order) => ({
+        ...order,
+        isActive: order.isActive && (liveOrders.has(order.id) || demand.pinnedProjectIds.has(order.productionProjectId)),
+    }));
+    const totals = new Map<string, number>();
+    for (const item of items) {
+        if (item.isActive) totals.set(item.productionProjectId, round2((totals.get(item.productionProjectId) ?? 0) + item.totalPrice));
+    }
+    const projects = plan.projects.map((project) => ({
+        ...project,
+        isActive: project.isActive && (liveProjects.has(project.id) || demand.pinnedProjectIds.has(project.id)),
+        salesTotal: totals.get(project.id) ?? 0,
+    }));
+    return { projects, orders, items };
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
    2) DIE BESTELLZEILE UND IHR GERÄT
    ═════════════════════════════════════════════════════════════════════════ */
 

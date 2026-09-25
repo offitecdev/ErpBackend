@@ -26,6 +26,12 @@ model Tenant {
   /// paylaşıp farklı numara taşıyabilir. /settings/company-categories altında
   /// şirket başına düzenlenir; bkz. shared/documentNumber.ts.
   companyNumber          Int                   @default(0)
+  /// ŞİRKET TÜRÜ (23.09.2026) — A: PRODUCTION (Üretim), B: PROJECT (Proje),
+  /// C: SALES (Satış); NULL = seçilmedi. Kodda İngilizce değer durur, arayüz
+  /// etiketi çeviriden gelir. Yeni ürün formunun zorunlu alanlarını belirler
+  /// (bkz. shared/companyType.ts). /settings/company-categories altında
+  /// şirket başına seçilir; kategoriden ve şirket numarasından bağımsızdır.
+  companyType            String?               @db.VarChar(16)
   moduleProfileId        String?
   moduleProfile          ModuleProfile?        @relation(fields: [moduleProfileId], references: [id])
   checkInQrSecret        String?               @db.VarChar(512)

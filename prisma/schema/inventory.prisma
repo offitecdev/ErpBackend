@@ -137,6 +137,12 @@ model Supplier {
   state             String? // eyalet / kanton / bölge
   country           String?
   notes             String?  @db.Text
+  // KDV (24.09.2026): tedarikçi KDV'ye tabi mi? NULL = belirtilmedi (sipariş
+  // kendi varsayılanında kalır), false = KDV yok (sipariş oranı 0), true =
+  // `vatCountry` + `vatRate` seçilen tedarikçiyle siparişe otomatik aktarılır.
+  vatLiable         Boolean?
+  vatCountry        String?  @db.VarChar(80)
+  vatRate           Float?
   isActive          Boolean  @default(true)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt

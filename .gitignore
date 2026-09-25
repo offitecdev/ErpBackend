@@ -15,3 +15,5 @@ node_modules
 
 # Odoo product export (182 MB, ueber GitHubs 100-MB-Grenze)
 /Produkt (product.template)*.csv
+
+scratchpad/

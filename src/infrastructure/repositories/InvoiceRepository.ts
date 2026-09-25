@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { assignDirectInvoiceNumber, type DirectInvoiceNumberRequest } from '../../shared/directInvoiceNumber';
 import prisma from "../database/prisma.client";
 import { Invoice, InvoiceCategory, InvoiceStatus } from "../../domain/entities/Invoice";
 import { billedInvoiceWhere } from "../../shared/invoiceDrafts";
@@ -218,8 +219,9 @@ const REVERSAL_COLUMNS_SQL = Prisma.sql`
 `;
 
 export class InvoiceRepository implements IInvoiceRepository {
-    async createWithItems(invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice> {
+    async createWithItems(invoice: Partial<Invoice>, items: InvoiceLineItemInput[], numbering?: DirectInvoiceNumberRequest): Promise<Invoice> {
         return (await prisma.$transaction(async (tx) => {
+            if (numbering) invoice = { ...invoice, invoiceNumber: await assignDirectInvoiceNumber(tx, invoice.tenantId!, numbering) };
             const created = await (tx as any).invoice.create({ data: invoice as any });
             if (items.length > 0) {
                 await (tx as any).invoiceLineItem.createMany({
@@ -230,8 +232,9 @@ export class InvoiceRepository implements IInvoiceRepository {
         })) as unknown as Invoice;
     }
 
-    async updateWithItems(id: string, invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice> {
+    async updateWithItems(id: string, invoice: Partial<Invoice>, items: InvoiceLineItemInput[], numbering?: DirectInvoiceNumberRequest): Promise<Invoice> {
         return (await prisma.$transaction(async (tx) => {
+            if (numbering) invoice = { ...invoice, invoiceNumber: await assignDirectInvoiceNumber(tx, invoice.tenantId!, numbering, id) };
             await (tx as any).invoice.update({ where: { id }, data: invoice as any });
             await (tx as any).invoiceLineItem.deleteMany({ where: { invoiceId: id } });
             if (items.length > 0) {

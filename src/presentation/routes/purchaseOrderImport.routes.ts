@@ -53,6 +53,7 @@ import {
     type TemplateLabel,
 } from '../../infrastructure/services/gptExtract';
 import { responseCache } from '../middlewares/ResponseCacheMiddleware';
+import { ensureStandardTemplateOnce } from '../../shared/standardOrderTemplate';
 
 export const purchaseOrderImportRouter = Router();
 
@@ -702,6 +703,9 @@ purchaseOrderImportRouter.get(
             const tenantId = req.user!.tenantId;
             const supplierId = String(req.query.supplierId ?? '').trim();
             const documentType = templateDocumentType(req.query.documentType);
+            // STANDART ŞABLON (24.09.2026): sipariş ve fiyat talebinin sabit
+            // şablonu yoksa burada kurulur — liste onu hep içerir.
+            if (documentType !== 'GOODS_RECEIPT') await ensureStandardTemplateOnce(tenantId, documentType);
             /* Mit Lieferant: SEINE Vorlagen und die allgemeinen (supplierId
                NULL). Ohne: alles — die Vorlagenliste im Fenster. */
             const where: any = supplierId

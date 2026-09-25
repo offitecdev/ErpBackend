@@ -44,11 +44,21 @@ import { listUnits, resolveUnit } from '../../application/services/measurementUn
 // ERP-Codes aus den Nummernkreisen der Code-Einstellungen (10.09.2026) — und
 // die vorläufigen AA-BB-Codes des Wareneingangs (19.09.2026).
 import { issueCodes, issueTemporaryReceiptCodes } from '../../application/services/articleCodeCatalog';
+// Yeni ürün formu (23.09.2026): üçlü ürün türü ve şirket türüne bağlı
+// zorunlu alanlar.
+import { itemTypeForArticleKind, parseArticleKind } from '../../shared/articleKind';
+import { companyRequiresArticleKindAndSupplier, readTenantCompanyType } from '../../shared/companyType';
 import { nanoid } from 'nanoid';
 import { getMailTenantId } from "../controllers/serviceTenantScope";
 import { purchaseOrderImportRouter } from './purchaseOrderImport.routes';
 // Produktion (19.09.2026): Pflichtauswahl Projekt + Gerät, bestätigte Zeilen.
 import { productionModule } from '../composition/productionModule';
+import { producerTenantIdsForOrder } from '../../shared/producerOrders';
+import {
+    isStandardColumns,
+    standardHiddenKeysJson,
+    standardTableColumnsJson,
+} from '../../shared/standardOrderTemplate';
 import { ProductionPurchaseLinkService, type ProductionSelectionInput } from '../../application/use-cases/production/ProductionPurchaseLinkService';
 import { isProductionError, productionError, productionErrorBody } from '../../application/use-cases/production/productionErrors';
 import { missingApprovalFields } from '../../domain/services/purchaseOrderApproval';
@@ -58,7 +68,7 @@ import { missingApprovalFields } from '../../domain/services/purchaseOrderApprov
  * Bestätigung tragen eine Kennung (die Oberfläche übersetzt sie), alles
  * andere bleibt, wie es war (400 + Satz).
  */
-const sendPurchaseOrderError = (res: any, error: any) => {
+export const sendPurchaseOrderError = (res: any, error: any) => {
     if (isProductionError(error)) return res.status(error.status).json(productionErrorBody(error));
     return res.status(400).json({ error: error?.message || 'Error' });
 };
@@ -67,7 +77,7 @@ const sendPurchaseOrderError = (res: any, error: any) => {
 const SUPPLIER_ADDRESS_FIELDS = ['address', 'addressSupplement', 'postalCode', 'city', 'state', 'country'] as const;
 
 /** Kayıttaki bileşenler → PDF/ekran için 2 satırlık snapshot metni. */
-const supplierAddressSnapshot = (supplier: any): string | null => composeAddressSnapshot({
+export const supplierAddressSnapshot = (supplier: any): string | null => composeAddressSnapshot({
     street: supplier?.address,
     addressSupplement: supplier?.addressSupplement,
     postalCode: supplier?.postalCode,
@@ -75,6 +85,32 @@ const supplierAddressSnapshot = (supplier: any): string | null => composeAddress
     state: supplier?.state,
     country: supplier?.country,
 });
+
+/**
+ * Tedarikçinin KDV ayarı (24.09.2026). `vatLiable` üç hâllidir: null =
+ * belirtilmedi, false = KDV yok, true = ülke + oran siparişe aktarılır.
+ * Yalnızca gövdede gelen alanlar döner (PATCH kısmi kalır); KDV yoksa ülke
+ * ve oran temizlenir.
+ */
+const readSupplierVat = (body: any): Record<string, unknown> => {
+    const patch: Record<string, unknown> = {};
+    if (body.vatLiable !== undefined) {
+        patch.vatLiable = body.vatLiable === null ? null : Boolean(body.vatLiable);
+    }
+    if (body.vatCountry !== undefined) {
+        const country = body.vatCountry ? String(body.vatCountry).trim().slice(0, 80) : '';
+        patch.vatCountry = country || null;
+    }
+    if (body.vatRate !== undefined) {
+        const rate = body.vatRate === null || body.vatRate === '' ? NaN : Number(body.vatRate);
+        patch.vatRate = Number.isFinite(rate) ? Math.min(100, Math.max(0, rate)) : null;
+    }
+    if (patch.vatLiable === false || patch.vatLiable === null) {
+        patch.vatCountry = null;
+        patch.vatRate = null;
+    }
+    return patch;
+};
 
 const router = Router();
 const smtp = new SmtpMailService();
@@ -452,6 +488,149 @@ const articleCostSummary = async (tenantId: string, articleId: string) => {
     };
 };
 
+type ArticleSupplierLink = { supplierId: string; companyName: string; preferred: boolean; locked: boolean };
+
+/**
+ * ÜRÜNÜN TEDARİKÇİLERİ (23.09.2026) — detay formundaki çoklu seçimin kaynağı.
+ * Üç yerden toplanır: alım partileri (ArticleSupplier), tedarikçisi işaretli
+ * stok GİRİŞLERİ ve kartın varsayılan tedarikçisi. `locked` = alım geçmişi
+ * var (adetli parti ya da giriş hareketi): formdan çıkarılamaz, geçmiş
+ * silinmesin. Sıra: tercih edilen önce, sonra ilk bağlanan.
+ */
+const articleSupplierLinks = async (tenantId: string, articleId: string): Promise<ArticleSupplierLink[]> => {
+    const rows: any[] = await (prisma as any).$queryRawUnsafe(
+        `SELECT s.\`id\` AS supplierId,
+                s.\`companyName\` AS companyName,
+                MAX(p.preferred) AS preferred,
+                MAX(p.history) AS history,
+                MIN(p.firstAt) AS firstAt
+         FROM (
+             SELECT \`supplierId\`,
+                    CASE WHEN \`isPreferred\` THEN 1 ELSE 0 END AS preferred,
+                    CASE WHEN \`quantity\` > 0 OR \`remainingQuantity\` > 0 THEN 1 ELSE 0 END AS history,
+                    \`createdAt\` AS firstAt
+             FROM \`ArticleSupplier\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+             UNION ALL
+             SELECT \`supplierId\`, 0 AS preferred, 1 AS history, \`transactionDate\` AS firstAt
+             FROM \`StockMovement\`
+             WHERE \`tenantId\` = ? AND \`articleId\` = ?
+               AND \`supplierId\` IS NOT NULL AND \`movementType\` = 'IN' AND \`quantity\` > 0
+             UNION ALL
+             SELECT \`defaultSupplierId\` AS supplierId, 1 AS preferred, 0 AS history, \`createdAt\` AS firstAt
+             FROM \`Article\`
+             WHERE \`tenantId\` = ? AND \`id\` = ? AND \`defaultSupplierId\` IS NOT NULL
+         ) p
+         INNER JOIN \`Supplier\` s ON s.\`id\` = p.supplierId
+         WHERE s.\`tenantId\` = ?
+         GROUP BY s.\`id\`, s.\`companyName\`
+         ORDER BY preferred DESC, firstAt ASC, companyName ASC`,
+        tenantId, articleId, tenantId, articleId, tenantId, articleId, tenantId,
+    );
+    return rows.map((row) => ({
+        supplierId: String(row.supplierId),
+        companyName: String(row.companyName || ''),
+        preferred: Number(row.preferred) > 0,
+        locked: Number(row.history) > 0,
+    }));
+};
+
+type SupplierRef = { supplierId?: string; supplierName?: string };
+
+/** Formdan gelen tedarikçi listesi: kayıtlı olan kimliğiyle, yeni olan adıyla. */
+const readSupplierRefs = (value: unknown): SupplierRef[] =>
+    (Array.isArray(value) ? value : [])
+        .map((ref: any): SupplierRef => (ref?.supplierId
+            ? { supplierId: String(ref.supplierId) }
+            : { supplierName: String(ref?.supplierName ?? '').trim() }))
+        .filter((ref) => ref.supplierId || ref.supplierName)
+        .slice(0, 20);
+
+/**
+ * Detay formundaki tedarikçi listesini ürüne yazma PLANI (23.09.2026): yeni
+ * gelenler miktarsız TANIM partisi olur; çıkarılanların yalnızca tanım
+ * partileri silinir — alım geçmişi yerinde kalır. 24.09.2026'dan beri liste en
+ * çok BİR tedarikçidir; o, kartın `defaultSupplierId`'si olur. Denetim önce,
+ * yazma sonra: `apply(tx)` ürün alanlarıyla AYNI işlemde çalışır.
+ */
+const planArticleSupplierSync = async (
+    tenantId: string,
+    articleId: string,
+    refs: SupplierRef[],
+): Promise<{ error: { status: number; body: any } } | { apply: ((tx: any) => Promise<void>) | null }> => {
+    const cache: SupplierCache = new Map();
+    const invalidIds = await warmSupplierCache(tenantId, refs, cache);
+    if (refs.some((ref) => ref.supplierId && invalidIds.has(ref.supplierId))) {
+        return { error: { status: 404, body: { error: 'Tedarikçi bulunamadı.' } } };
+    }
+    const desired = [...new Set(refs.map((ref) => cachedSupplier(cache, ref)?.id).filter((id): id is string => Boolean(id)))];
+    const [current, article] = await Promise.all([
+        articleSupplierLinks(tenantId, articleId),
+        (prisma as any).article.findFirst({ where: { id: articleId, tenantId }, select: { baseCost: true, defaultSupplierId: true } }),
+    ]);
+    // Ürünün TEK tedarikçisi olur (Samet, 24.09.2026).
+    if (desired.length > 1) {
+        return { error: { status: 400, body: { error: 'Bir ürüne yalnızca bir tedarikçi atanabilir.', code: 'SUPPLIER_SINGLE' } } };
+    }
+    // Değiştirilen tedarikçinin yalnızca TANIM partisi silinir; alım geçmişi
+    // (adetli partiler, giriş hareketleri) olduğu gibi kalır.
+    const removed = current.filter((link) => !desired.includes(link.supplierId));
+    const currentIds = new Set(current.map((link) => link.supplierId));
+    const added = desired.filter((supplierId) => !currentIds.has(supplierId));
+    const first = desired[0] ?? null;
+    const preferredNow = current.find((link) => link.preferred)?.supplierId ?? null;
+    const defaultChanges = (article?.defaultSupplierId ?? null) !== first;
+    if (!added.length && !removed.length && first === preferredNow && !defaultChanges) return { apply: null };
+
+    const location = added.length ? await repository.ensureDefaultLocation(tenantId) : null;
+    return {
+        apply: async (tx: any) => {
+            if (removed.length) {
+                await tx.articleSupplier.deleteMany({
+                    where: {
+                        tenantId,
+                        articleId,
+                        supplierId: { in: removed.map((link) => link.supplierId) },
+                        quantity: 0,
+                        remainingQuantity: 0,
+                    },
+                });
+            }
+            if (added.length) {
+                await tx.articleSupplier.createMany({
+                    data: added.map((supplierId) => ({
+                        id: nanoid(10),
+                        tenantId,
+                        articleId,
+                        supplierId,
+                        locationId: location?.id ?? null,
+                        purchasePrice: Math.max(0, Number(article?.baseCost) || 0),
+                        quantity: 0,
+                        remainingQuantity: 0,
+                        lastPurchaseDate: null,
+                        stockMovementId: null,
+                        isPreferred: false,
+                    })),
+                });
+            }
+            if (first !== preferredNow) {
+                await tx.articleSupplier.updateMany({ where: { tenantId, articleId }, data: { isPreferred: false } });
+                if (first) {
+                    const lot = await tx.articleSupplier.findFirst({
+                        where: { tenantId, articleId, supplierId: first },
+                        orderBy: [{ lastPurchaseDate: 'desc' }, { updatedAt: 'desc' }],
+                        select: { id: true },
+                    });
+                    if (lot) await tx.articleSupplier.update({ where: { id: lot.id }, data: { isPreferred: true } });
+                }
+            }
+            if (defaultChanges) {
+                await tx.article.update({ where: { id: articleId }, data: { defaultSupplierId: first } });
+            }
+        },
+    };
+};
+
 /**
  * Ürün detay ekranının kritik AÇILIŞ verisi. Büyük LONGTEXT görseli, açık
  * sipariş JSON'ları ve maliyet hareketleri bu sorguya bilinçli olarak girmez;
@@ -461,25 +640,30 @@ const articleCostSummary = async (tenantId: string, articleId: string) => {
  * durur — ekran kaydettikten sonra yanıttan tazelenir.
  */
 const buildArticleDetail = async (tenantId: string, id: string) => {
-    const article = await (prisma as any).article.findFirst({
-        where: { id, tenantId, deletedAt: null },
-        select: {
-            id: true,
-            articleCode: true,
-            name: true,
-            unit: true,
-            description: true,
-            salePrice: true,
-            itemType: true,
-            imageUrl: true,
-            updatedAt: true,
-            modelNumber: true,
-            serialNumber: true,
-            supplierBarcode: true,
-            systemBarcode: true,
-            stockBalances: { select: { currentQuantity: true } },
-        },
-    });
+    const [article, suppliers] = await Promise.all([
+        (prisma as any).article.findFirst({
+            where: { id, tenantId, deletedAt: null },
+            select: {
+                id: true,
+                articleCode: true,
+                name: true,
+                unit: true,
+                description: true,
+                salePrice: true,
+                itemType: true,
+                articleKind: true,
+                imageUrl: true,
+                updatedAt: true,
+                modelNumber: true,
+                serialNumber: true,
+                supplierBarcode: true,
+                systemBarcode: true,
+                stockBalances: { select: { currentQuantity: true } },
+            },
+        }),
+        // Detay formundaki tedarikçi seçimi (23.09.2026) — aynı anda okunur.
+        articleSupplierLinks(tenantId, id),
+    ]);
     if (!article) return null;
 
     return {
@@ -496,6 +680,11 @@ const buildArticleDetail = async (tenantId: string, id: string) => {
         description: article.description,
         salePrice: article.salePrice ?? 0,
         itemType: article.itemType ?? 'PRODUCT',
+        // Üçlü ürün türü (Üretilecek / Satılacak / Ek Hizmet); null = seçilmedi.
+        articleKind: parseArticleKind(article.articleKind),
+        // TEK tedarikçi (24.09.2026): tercih edilen/varsayılan. Alım geçmişindeki
+        // diğer tedarikçiler "Tedarikçiler" sekmesinde görünmeye devam eder.
+        suppliers: suppliers.slice(0, 1).map(({ supplierId, companyName, locked }) => ({ supplierId, companyName, locked })),
         /* GÖRSELİN ADRESİ — base64 değil (01.09.2026).
          *
          * Dosya R2'de duruyor; sütun yalnızca `r2:...` verisini taşır, yani
@@ -655,6 +844,15 @@ router.get(
  *               unit: { type: string }
  *               salePrice: { type: number }
  *               itemType: { type: string, enum: [PRODUCT, SERVICE] }
+ *               articleKind: { type: string, nullable: true, enum: [MANUFACTURED, RESALE, SERVICE], description: "itemType'ı da belirler" }
+ *               suppliers:
+ *                 type: array
+ *                 description: "En çok BİR tedarikçi (400 SUPPLIER_SINGLE); boş liste = tedarikçiyi kaldır. Eski tedarikçinin alım geçmişi korunur"
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     supplierId: { type: string, nullable: true }
+ *                     supplierName: { type: string, nullable: true }
  *               description: { type: string, nullable: true }
  *               imageUrl: { type: string, nullable: true, description: "data:image/...;base64,... | null = sil" }
  */
@@ -740,6 +938,38 @@ router.patch(
                 data.itemType = itemType;
             }
 
+            // Üçlü ürün türü (23.09.2026) — ürün/hizmet ayrımını da taşır:
+            // seçilen tür `itemType`'ı belirler, boş değer yalnızca türü siler.
+            if (body.articleKind !== undefined) {
+                const cleared = body.articleKind === null || body.articleKind === '';
+                const articleKind = cleared ? null : parseArticleKind(body.articleKind);
+                if (!cleared && !articleKind) {
+                    return res.status(400).json({ error: 'Ürün türü geçersiz.' });
+                }
+                data.articleKind = articleKind;
+                if (articleKind) data.itemType = itemTypeForArticleKind(articleKind);
+            }
+
+            // Tedarikçiler (23.09.2026): formdaki çoklu seçim, TAM liste olarak.
+            const supplierRefs = body.suppliers !== undefined ? readSupplierRefs(body.suppliers) : null;
+
+            // Proje/satış şirketinde tür ve tedarikçi zorunludur — boşaltılamaz.
+            const clearsKind = body.articleKind !== undefined && !data.articleKind;
+            const clearsSuppliers = supplierRefs !== null && !supplierRefs.length;
+            if ((clearsKind || clearsSuppliers) && companyRequiresArticleKindAndSupplier(await readTenantCompanyType(tenantId))) {
+                return clearsKind
+                    ? res.status(400).json({ error: 'Ürün türü zorunludur.', code: 'KIND_REQUIRED' })
+                    : res.status(400).json({ error: 'En az bir tedarikçi seçin.', code: 'SUPPLIER_REQUIRED' });
+            }
+
+            // Denetim görselden ÖNCE: reddedilen istek depoda sahipsiz dosya bırakmasın.
+            let applySuppliers: ((tx: any) => Promise<void>) | null = null;
+            if (supplierRefs) {
+                const plan = await planArticleSupplierSync(tenantId, id, supplierRefs);
+                if ('error' in plan) return res.status(plan.error.status).json(plan.error.body);
+                applySuppliers = plan.apply;
+            }
+
             // Açıklama biçimli metindir — dar beyaz listeden geçer.
             if (body.description !== undefined) data.description = normalizeRichText(body.description);
 
@@ -775,10 +1005,18 @@ router.patch(
                 }
             }
 
-            if (Object.keys(data).length) {
+            const fieldsChanged = Object.keys(data).length > 0;
+            if (fieldsChanged && !applySuppliers) {
                 await (prisma as any).article.update({ where: { id }, data });
-                await forgetArticleImage(previousImage, data.imageUrl ?? null);
+            } else if (applySuppliers) {
+                // Alanlar ve tedarikçiler birlikte yazılır — yarım kayıt olmaz.
+                const writeSuppliers = applySuppliers;
+                await (prisma as any).$transaction(async (tx: any) => {
+                    if (fieldsChanged) await tx.article.update({ where: { id }, data });
+                    await writeSuppliers(tx);
+                });
             }
+            if (fieldsChanged) await forgetArticleImage(previousImage, data.imageUrl ?? null);
 
             const detail = await buildArticleDetail(tenantId, id);
             return res.status(200).json(detail);
@@ -857,6 +1095,9 @@ router.get(
                     state: true,
                     country: true,
                     notes: true,
+                    vatLiable: true,
+                    vatCountry: true,
+                    vatRate: true,
                     isActive: true,
                     createdAt: true,
                     updatedAt: true,
@@ -954,6 +1195,7 @@ router.post(
                         req.body[field] ? String(req.body[field]).trim() : null,
                     ])),
                     notes: req.body.notes ? String(req.body.notes).trim() : null,
+                    ...readSupplierVat(req.body),
                     isActive: req.body.isActive ?? true,
                 },
                 include: supplierInclude,
@@ -984,6 +1226,29 @@ router.get(
     }
 );
 
+/**
+ * Sipariş ekranı tedarikçi seçilince yalnızca KDV ayarını ister — tam kayıt
+ * (tüm ürün bağlantıları + görseller) burada gereksiz yüktür.
+ */
+router.get(
+    '/suppliers/:supplierId/vat',
+    requireAuth,
+    requirePermission('inventory.view'),
+    responseCache({ namespaces: ['catalog'], ttlSec: 60 }),
+    async (req, res) => {
+        try {
+            const supplier = await (prisma as any).supplier.findFirst({
+                where: { id: req.params.supplierId, tenantId: req.user!.tenantId },
+                select: { id: true, vatLiable: true, vatCountry: true, vatRate: true },
+            });
+            if (!supplier) return res.status(404).json({ error: 'Tedarikçi bulunamadı.' });
+            res.status(200).json(supplier);
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+);
+
 router.patch(
     '/suppliers/:supplierId',
     requireAuth,
@@ -999,6 +1264,7 @@ router.patch(
                 if (req.body[field] !== undefined) patch[field] = req.body[field] ? String(req.body[field]).trim() : null;
             });
             if (req.body.isActive !== undefined) patch.isActive = Boolean(req.body.isActive);
+            Object.assign(patch, readSupplierVat(req.body));
             if (patch.companyName === '') return res.status(400).json({ error: 'Tedarikçi şirket adı zorunludur.' });
             const supplier = await (prisma as any).supplier.update({
                 where: { id: existing.id },
@@ -1455,18 +1721,37 @@ router.get(
 type SupplierCache = Map<string, { id: string; companyName: string } | null>;
 
 /**
+ * EK TEDARİKÇİLER (23.09.2026) — yeni ürün formunda birden fazla tedarikçi
+ * seçilebilir. İlki satırın `supplierId`/`supplierName` alanında gider (tercih
+ * edilen parti); geri kalanlar `additionalSuppliers` dizisinde, aynı biçimde.
+ */
+const readAdditionalSuppliers = (item: any): Array<{ supplierId?: string; supplierName?: string }> =>
+    (Array.isArray(item?.additionalSuppliers) ? item.additionalSuppliers : [])
+        .filter((ref: any) => ref && (ref.supplierId || String(ref.supplierName ?? '').trim()))
+        .slice(0, 20);
+
+/** Önbellekten tedarikçiyi okur — satırın kendi alanı da ek tedarikçi de. */
+const cachedSupplier = (cache: SupplierCache, ref: { supplierId?: unknown; supplierName?: unknown }) =>
+    cache.get(ref.supplierId
+        ? `id:${String(ref.supplierId)}`
+        : `name:${ref.supplierName ? String(ref.supplierName).trim().toLowerCase() : ''}`) || null;
+
+/**
  * Toplu uçlarda tedarikçiler satırlar işlenmeden ÖNCE, sabit sayıda sorguyla çözülür:
  * tüm ad/kimlikler beraber okunur ve satır döngüsü tamamen bellekte kalır.
  * Çözülemeyen tedarikçi kimlikleri döner; ilgili satır kendi hatasını alır.
  */
 const warmSupplierCache = async (tenantId: string, items: any[], cache: SupplierCache): Promise<Set<string>> => {
+    // Satırın kendi tedarikçisi ve (yeni ürün formundan gelen) ek tedarikçileri
+    // aynı `supplierId` / `supplierName` biçimini taşır — hepsi birlikte çözülür.
+    const refs = items.flatMap((item) => [item, ...readAdditionalSuppliers(item)]);
     const requestedIds = Array.from(new Set(
-        items
+        refs
             .map((item) => item?.supplierId ? String(item.supplierId) : '')
             .filter(Boolean),
     ));
     const requestedNames = new Map<string, string>();
-    items.forEach((item) => {
+    refs.forEach((item) => {
         if (item?.supplierId) return;
         const companyName = item?.supplierName ? String(item.supplierName).trim() : '';
         if (companyName) requestedNames.set(companyName.toLowerCase(), companyName);
@@ -1988,11 +2273,22 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                     if (imageProblem) throw new Error(imageProblem);
                     // Yukarıda depoya yazıldı; sütuna yalnızca verweis girer.
                     const imageUrl: string | null = imageRefByIndex.get(index) ?? null;
-                    if (item.supplierId && invalidSupplierIds.has(String(item.supplierId))) throw new Error('Tedarikçi bulunamadı.');
+                    const additionalRefs = readAdditionalSuppliers(item);
+                    if ([item, ...additionalRefs].some((ref) => ref.supplierId && invalidSupplierIds.has(String(ref.supplierId)))) {
+                        throw new Error('Tedarikçi bulunamadı.');
+                    }
                     // Tedarikçiler yukarıda toplu çözüldü; burada yalnızca okunur.
-                    const supplier = supplierCache.get(item.supplierId
-                        ? `id:${String(item.supplierId)}`
-                        : `name:${item.supplierName ? String(item.supplierName).trim().toLowerCase() : ''}`) || null;
+                    const supplier = cachedSupplier(supplierCache, item);
+                    // Ek tedarikçiler: tekrarlar ve satırın kendi tedarikçisi düşer.
+                    const additionalSuppliers = additionalRefs
+                        .map((ref) => cachedSupplier(supplierCache, ref))
+                        .filter((entry, position, list): entry is { id: string; companyName: string } =>
+                            Boolean(entry) && entry!.id !== supplier?.id && list.findIndex((other) => other?.id === entry!.id) === position);
+                    // Üçlü ürün türü seçildiyse ürün/hizmet ayrımı ondan türer.
+                    const articleKind = parseArticleKind(item.articleKind);
+                    const itemType = articleKind
+                        ? itemTypeForArticleKind(articleKind)
+                        : item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType;
 
                     // ÜZERİNE YAZMA: kodu kayıtlı ürün DOSYADAKİ değerlerle güncellenir
                     // (ad her zaman; birim/fiyat/tedarikçi doluysa), çöpteyse geri
@@ -2043,7 +2339,8 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                         modelNumber,
                         serialNumber,
                         supplierBarcode,
-                        itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType,
+                        itemType,
+                        ...(articleKind ? { articleKind } : {}),
                         status: 'ACTIVE',
                         isActive: true,
                         ...(quantity > 0 ? { lastPurchaseDate: new Date() } : {}),
@@ -2100,7 +2397,26 @@ const runBulkCreateArticles = async (req: any, options: { forceZeroStock?: boole
                         });
                     }
 
-                    existingCodes.set(articleCode, { id: articleId, deleted: false, itemType: item.itemType === 'SERVICE' || item.itemType === 'PRODUCT' ? item.itemType : defaultItemType });
+                    // Ek tedarikçiler: MİKTARSIZ tanım partileri. Ürünün tedarikçi
+                    // listesinde görünürler ama maliyet ortalamasını ve stoğu
+                    // etkilemezler (0 adet); tercih edilen parti yukarıdakidir.
+                    additionalSuppliers.forEach((extra) => {
+                        lotCreates.push({
+                            id: nanoid(10),
+                            tenantId,
+                            articleId,
+                            supplierId: extra.id,
+                            locationId: defaultLocation.id,
+                            purchasePrice,
+                            quantity: 0,
+                            remainingQuantity: 0,
+                            lastPurchaseDate: null,
+                            stockMovementId: null,
+                            isPreferred: false,
+                        });
+                    });
+
+                    existingCodes.set(articleCode, { id: articleId, deleted: false, itemType });
                     created.push({ id: articleId, articleCode, name });
                     // Satırı id'siyle eşle: toplu yazma düşerse tek tek yeniden
                     // denenecek ve hata SATIRINA yazılacak (aşağıya bakınız).
@@ -2374,6 +2690,137 @@ router.post(
                 created,
                 errors,
             });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    },
+);
+
+/* ═══════════════ TEKLİ ÜRÜN — YENİ ÜRÜN FORMU (23.09.2026) ═══════════════
+   Vorgabe Samet: ERP-Code-Feld «şimdilik» weg; Ürün adı Pflicht; Lieferant
+   Pflicht und MEHRFACH wählbar; Typ Pflicht (Üretilecek / Satılacak / Ek
+   Hizmet) — beides aber nur in Projekt- und Verkaufsfirmen. In einer
+   Produktionsfirma (und in einer Firma ohne Typ) ist nur der Name Pflicht.
+
+   Kein Code von Hand, keine Kategorie: der Artikel zieht den VORLÄUFIGEN
+   Code AA-BB-NNNNNN des Wareneingangs (issueTemporaryReceiptCodes); die IT
+   kann ihn später in einen echten ERP-Code ändern. Die Zeile läuft durch
+   DENSELBEN Rumpf wie Tabelle und Schnellerfassung (Artikel + Bewegung +
+   Partie + Bestand in einem Zug); weitere Lieferanten werden als mengenlose
+   Definitionspartien geschrieben. */
+
+/**
+ * @swagger
+ * /inventory/articles/single:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: Ein neuer Artikel aus dem Produktformular — ohne ERP-Code, mit mehreren Lieferanten
+ *     description: >
+ *       Name ist Pflicht. In Firmen vom Typ PROJECT oder SALES sind zusätzlich
+ *       `articleKind` und mindestens ein Lieferant Pflicht (400 KIND_REQUIRED /
+ *       SUPPLIER_REQUIRED). Der Code ist ein vorläufiger AA-BB-Code. Antwortform
+ *       wie `/articles/bulk`, dazu `article` (derselbe Körper wie `/articles/:id/detail`).
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name: { type: string }
+ *               articleKind: { type: string, nullable: true, enum: [MANUFACTURED, RESALE, SERVICE] }
+ *               suppliers:
+ *                 type: array
+ *                 description: "Erster = bevorzugter Lieferant; bekannte mit supplierId, neue mit supplierName"
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     supplierId: { type: string, nullable: true }
+ *                     supplierName: { type: string, nullable: true }
+ *               modelNumber: { type: string, nullable: true }
+ *               serialNumber: { type: string, nullable: true }
+ *               barcode: { type: string, nullable: true }
+ *               quantity: { type: number, description: "Anfangsbestand, Standard 0" }
+ *               unit: { type: string, nullable: true }
+ *               purchasePrice: { type: number, nullable: true }
+ *               salePrice: { type: number, nullable: true }
+ *               description: { type: string, nullable: true }
+ *               imageUrl: { type: string, nullable: true }
+ */
+router.post(
+    '/articles/single',
+    requireAuth,
+    requirePermission('inventory.articles.create'),
+    async (req: any, res: any) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const body = req.body ?? {};
+            const name = String(body.name ?? '').trim();
+            if (!name) return res.status(400).json({ error: 'Ürün adı zorunludur.', code: 'NAME_REQUIRED' });
+
+            const kindGiven = body.articleKind !== undefined && body.articleKind !== null && body.articleKind !== '';
+            const articleKind = kindGiven ? parseArticleKind(body.articleKind) : null;
+            if (kindGiven && !articleKind) return res.status(400).json({ error: 'Ürün türü geçersiz.', code: 'KIND_INVALID' });
+
+            // Kayıtlı tedarikçi kimliğiyle, formda yeni yazılan adıyla gelir.
+            const supplierRefs = readSupplierRefs(body.suppliers);
+
+            // Proje ve satış şirketinde tür ve en az bir tedarikçi şarttır —
+            // form da aynısını ister, ama kural sunucuda da durur.
+            if (companyRequiresArticleKindAndSupplier(await readTenantCompanyType(tenantId))) {
+                if (!articleKind) return res.status(400).json({ error: 'Ürün türü zorunludur.', code: 'KIND_REQUIRED' });
+                if (!supplierRefs.length) return res.status(400).json({ error: 'En az bir tedarikçi seçin.', code: 'SUPPLIER_REQUIRED' });
+            }
+            // Ürünün TEK tedarikçisi olur (24.09.2026).
+            if (supplierRefs.length > 1) {
+                return res.status(400).json({ error: 'Bir ürüne yalnızca bir tedarikçi atanabilir.', code: 'SUPPLIER_SINGLE' });
+            }
+
+            const [primary, ...additional] = supplierRefs;
+            const itemType = articleKind ? itemTypeForArticleKind(articleKind) : 'PRODUCT';
+            const item = {
+                name,
+                // Başlangıç stoğu: boş = 0 (ürün yalnızca tanımlanır).
+                quantity: Math.max(0, Number(body.quantity) || 0),
+                unit: body.unit ? String(body.unit) : null,
+                purchasePrice: Math.max(0, Number(body.purchasePrice) || 0),
+                salePrice: Math.max(0, Number(body.salePrice) || 0),
+                supplierId: primary?.supplierId ?? null,
+                supplierName: primary?.supplierName ?? null,
+                additionalSuppliers: additional,
+                description: typeof body.description === 'string' && body.description ? body.description : null,
+                imageUrl: typeof body.imageUrl === 'string' && body.imageUrl ? body.imageUrl : null,
+                modelNumber: readTag(body.modelNumber),
+                serialNumber: readTag(body.serialNumber),
+                supplierBarcode: readTag(body.barcode ?? body.supplierBarcode),
+                articleKind,
+                itemType,
+                articleCode: '',
+            };
+
+            // Çekilen numara içe aktarılmış eski bir koda denk gelirse taze
+            // numarayla yeniden — Schnellerfassung ile aynı kural, en çok üç kez.
+            let outcome: BulkArticlesOutcome | null = null;
+            for (let attempt = 0; attempt < 4; attempt += 1) {
+                const codes = await issueTemporaryReceiptCodes(tenantId, 1);
+                item.articleCode = codes[0] ?? '';
+                outcome = await runBulkCreateArticles(
+                    { user: req.user, body: { items: [item], itemType } },
+                    { origin: 'MANUAL' },
+                );
+                if (outcome.body?.errors?.[0]?.code !== 'CODE_TAKEN') break;
+            }
+
+            const createdRow = outcome?.body?.created?.[0];
+            if (!outcome || !createdRow) {
+                return res.status(outcome && outcome.status !== 201 ? outcome.status : 400)
+                    .json(outcome?.body ?? { error: 'Ürün kaydedilemedi.' });
+            }
+            // Teklif satırı yeni ürüne bu yanıtla bağlanır: birim, fiyat ve
+            // açıklama sunucunun yazdığı hâliyle döner — ikinci istek gerekmez.
+            res.status(201).json({ ...outcome.body, article: await buildArticleDetail(tenantId, createdRow.id) });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -2988,8 +3435,7 @@ router.post(
                 });
             }
 
-            // Kritik stok önerileri: satır başına değil, çıkış yapılan ürünler için
-            // toplu olarak (üç sorgu, satır sayısından bağımsız).
+          
             if (outArticleIds.size) {
                 const criticalCandidates = articleRows.filter((row: any) => outArticleIds.has(row.id) && (row.criticalStockLevel || 0) > 0);
                 if (criticalCandidates.length) {
@@ -3563,7 +4009,49 @@ const normalizePurchaseOrderExtras = (raw: unknown) => {
     return extras;
 };
 
-const normalizePurchaseOrderItems = (raw: unknown) => {
+/**
+ * Satırın proje kaynağı — `{ projectId, positionId, producerTenantId }`.
+ * Projesiz kaynak kaynak değildir; alanlar kimlik gibi kırpılır.
+ * `manual`: satır «Siparişlerim»de Türsüzler'den işaretlenip ELLE açılan
+ * siparişe girdi (U1, U2 …) — düzenlemelerde kaybolmasın diye taşınır.
+ */
+export const poLineSource = (raw: unknown): { projectId: string; positionId: string | null; producerTenantId: string | null; manual?: true } | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const clean = (value: unknown): string | null =>
+        typeof value === 'string' && value.trim() ? value.trim().slice(0, 64) : null;
+    const projectId = clean((raw as any).projectId);
+    if (!projectId) return null;
+    return {
+        projectId,
+        positionId: clean((raw as any).positionId),
+        producerTenantId: clean((raw as any).producerTenantId),
+        ...((raw as any).manual === true ? { manual: true as const } : {}),
+    };
+};
+
+/**
+ * ÜRETİM EMRİ (24.09.2026): proje şirketinin üretim şirketine verdiği sipariş
+ * onaylanınca (ya da onay geri alınınca / değişince / silinince) üretim
+ * şirketinin projeleri HEMEN yeniden kurulur — cihaz ancak onaylı sipariş
+ * satırıyla projeye girer (bkz. SyncProductionProjectsUseCase). Hangi
+ * siparişin üretime gittiğini shared/producerOrders.ts söyler: satırdaki
+ * `producerTenantId` YA DA tedarikçisi üretim şirketinin kendisi olan
+ * sipariş. Arka planda çalışır: sipariş cevabını bekletmez, hata siparişi
+ * bozmaz.
+ */
+export const refreshProducerProduction = (order: { tenantId: string; supplierName?: string | null; items: unknown }): void => {
+    void producerTenantIdsForOrder(order)
+        .then((producerIds) => {
+            for (const producerId of producerIds) {
+                void productionModule.sync.execute(producerId, { force: true }).catch((error: any) => {
+                    console.warn('[production] producer sync failed', producerId, error?.message);
+                });
+            }
+        })
+        .catch((error: any) => console.warn('[production] producer lookup failed', error?.message));
+};
+
+export const normalizePurchaseOrderItems = (raw: unknown) => {
     if (!Array.isArray(raw) || raw.length === 0) throw new Error('Sipariş için en az bir ürün satırı gereklidir.');
     if (raw.length > 500) throw new Error('Bir siparişe en fazla 500 satır eklenebilir.');
     const items = raw.map((r: any, index: number) => {
@@ -3688,6 +4176,13 @@ const normalizePurchaseOrderItems = (raw: unknown) => {
             ...(displayNetPrice !== null ? { displayNetPrice } : {}),
             ...(receivedQuantity > 0 ? { receivedQuantity, receivedAt } : {}),
             ...(productionItemId ? { productionItemId } : {}),
+            // PROJE KAYNAĞI (24.09.2026): satır bir projenin pozisyonundan
+            // «Siparişe Git» ile geldiyse proje/pozisyon (ve üretimse üretim
+            // şirketi) burada durur — birleştirme ve «Siparişlerim» bunu okur.
+            ...(() => {
+                const source = poLineSource(r?.source);
+                return source ? { source } : {};
+            })(),
             // Eski bayrak geriye uyumluluk için korunur (eski frontend sürümleri
             // ve mevcut snapshot okuyucuları DIRECT kipini bundan tanır).
             ...(calcMode === 'DIRECT' ? { directCopy: true } : {}),
@@ -3735,7 +4230,7 @@ const normalizePurchaseOrderVat = (input: { vatMode?: unknown; orderVatRate?: un
  *   Beide zusammen ändern, sonst zeigt der Bildschirm etwas anderes als das
  *   gespeicherte Dokument.
  */
-const purchaseOrderTotalVat = (
+export const purchaseOrderTotalVat = (
     vat: { vatMode: string; orderVatRate: number },
     totalNet: number,
     _totalFees: number,
@@ -3784,7 +4279,7 @@ const normalizePurchaseOrderFees = (raw: unknown) => {
 };
 
 // DB satırı → API yanıtı: items ve ek ücret JSON'u parse edilir, itemCount eklenir.
-const parsePurchaseOrderRow = (row: any) => {
+export const parsePurchaseOrderRow = (row: any) => {
     let items: any[] = [];
     try { items = JSON.parse(row.items || '[]'); } catch { items = []; }
     let additionalFees: any[] = [];
@@ -3865,7 +4360,7 @@ const PO_MANUAL_MAIL_PREFIX = 'manual:';
  * BE-2026-0001 kayıtları da sayısal taranır (0001 → sıra 1). Üretilen kod yalnızca
  * ÖNERİDİR: kullanıcı elle değiştirebilir, benzersizliği DB indeksi korur.
  */
-const nextPurchaseReference = async (tenantId: string, kind: PurchaseDocKind): Promise<string> => {
+export const nextPurchaseReference = async (tenantId: string, kind: PurchaseDocKind): Promise<string> => {
     const year = new Date().getFullYear();
     const prefixes = purchasePrefixesOf(kind);
     const rows = await (prisma as any).purchaseOrder.findMany({
@@ -4795,6 +5290,13 @@ router.patch(
                 if (productionOn && PO_APPROVED_STATUSES.has(updated.status) && (data.items !== undefined || productionInput !== undefined)) {
                     await productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user!.id);
                 }
+                // Onaylı iç sipariş düzenlendi (miktar, satır): üretim projesi
+                // hemen yeni hâli alır — eski satırların üreticisi de dahil.
+                if (PO_APPROVED_STATUSES.has(updated.status) && data.items !== undefined) {
+                    // Aynı üreticinin ikinci çağrısı süren senkrona katılır.
+                    refreshProducerProduction(existing);
+                    refreshProducerProduction(updated);
+                }
                 res.status(200).json(parsePurchaseOrderRow(updated));
             } catch (err: any) {
                 if (err?.code === 'P2002') {
@@ -4880,6 +5382,9 @@ router.patch(
             // Bestätigt → die Zeilen stehen bei der Produktion; zurück in den
             // Entwurf → sie verschwinden dort wieder.
             if (productionOn) await productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user!.id);
+            // Üretim şirketine giden sipariş: onay (ya da geri alma) üretim emrini
+            // kurar ya da kaldırır.
+            refreshProducerProduction(updated);
             res.status(200).json(parsePurchaseOrderRow(updated));
         } catch (error: any) {
             sendPurchaseOrderError(res, error);
@@ -4929,6 +5434,34 @@ router.post(
                 return res.status(400).json({ error: 'Yalnızca fiyat talebi siparişe dönüştürülebilir.' });
             }
 
+            /* SİPARİŞTEN GELEN TALEP YERİNDE GERİ DÖNER (24.09.2026): «Fiyat
+               talebi almak istiyorum» ile talebe dönmüş bir sipariş kendi
+               sipariş numarasını taşır — dönüştürünce AYNI kayıt, AYNI numarayla
+               yeniden sipariş olur; kopya açılmaz, numara yanmaz. */
+            if (source.orderNumber) {
+                const taken = await (prisma as any).purchaseOrder.findFirst({
+                    where: { tenantId, referenceNumber: source.orderNumber, NOT: { id: source.id } },
+                    select: { id: true },
+                });
+                if (!taken) {
+                    const standard = isStandardColumns(source.tableColumns);
+                    const flipped = await (prisma as any).purchaseOrder.update({
+                        where: { id: source.id },
+                        data: {
+                            status: 'ORDER_DRAFT',
+                            referenceNumber: source.orderNumber,
+                            ...(standard || !source.tableColumns
+                                ? { tableColumns: standardTableColumnsJson('ORDER'), hiddenColumnKeys: standardHiddenKeysJson('ORDER') }
+                                : {}),
+                        },
+                    });
+                    if (await productionModule.purchaseLink.isEnabled(tenantId)) {
+                        await productionModule.purchaseLink.syncConfirmedLines(tenantId, flipped, req.user!.id);
+                    }
+                    return res.status(200).json(parsePurchaseOrderRow(flipped));
+                }
+            }
+
             let items: any[] = [];
             try { items = JSON.parse(source.items || '[]'); } catch { items = []; }
             // Kopyanın satırları TEMİZ gelir: talepte kabul edilmiş bir şey yoktur.
@@ -4956,8 +5489,10 @@ router.post(
                             projectName: source.projectName,
                             recipientName: source.recipientName,
                             coverLetter: source.coverLetter,
-                            hiddenColumnKeys: source.hiddenColumnKeys,
-                            tableColumns: source.tableColumns,
+                            // Standart talep şablonu → standart sipariş şablonu (24.09.2026).
+                            ...(isStandardColumns(source.tableColumns)
+                                ? { tableColumns: standardTableColumnsJson('ORDER'), hiddenColumnKeys: standardHiddenKeysJson('ORDER') }
+                                : { tableColumns: source.tableColumns, hiddenColumnKeys: source.hiddenColumnKeys }),
                             supplierId: source.supplierId,
                             supplierName: source.supplierName,
                             supplierEmail: source.supplierEmail,
@@ -4994,6 +5529,83 @@ router.post(
             }
 
             res.status(201).json(parsePurchaseOrderRow(row));
+        } catch (error: any) {
+            sendPurchaseOrderError(res, error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /inventory/purchase-orders/{id}/convert-to-request:
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Siparişi fiyat talebine geri çevir (Fiyat talebi almak istiyorum)"
+ *     security:
+ *       - bearerAuth: []
+ */
+/* ══ SİPARİŞ → FİYAT TALEBİ (Vorgabe Samet, 24.09.2026) ═════════════════════
+ *
+ * «Sipariş ekranında ‹fiyat talebi almak istiyorum› butonu olsun, tıklayınca
+ *  sipariş geri fiyat talebine dönsün, fiyat talebi açılsın.»
+ *
+ * AYNI kayıt talebe döner (kopya açılmaz): durum DRAFT, görünen kod talebin
+ * kodu (varsa eskisi, yoksa yeni PA-), sipariş numarası kayıtta SAKLI kalır ve
+ * talep yeniden siparişe dönüştürülünce aynı numara geri gelir. Sütunlar
+ * standart fiyat talebi şablonuna geçer (ÜRÜN - MALZEME / MİKTAR). Onaylanmış
+ * (mal kabulde) ya da stoğa işlenmiş sipariş geri dönemez — önce onay geri
+ * alınır. Üretim satırları ve üretim emri düşer.
+ */
+router.post(
+    '/purchase-orders/:id/convert-to-request',
+    requireAuth,
+    requirePermission('inventory.transfer'),
+    async (req, res) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const source = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+            if (!source) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (!['ORDER_DRAFT', 'PENDING', 'ORDERED'].includes(String(source.status))) {
+                return res.status(400).json({
+                    error: 'Yalnızca onaylanmamış sipariş fiyat talebine çevrilebilir.',
+                    code: 'ORDER_LOCKED',
+                });
+            }
+            let referenceNumber: string | null = source.priceRequestNumber || null;
+            if (referenceNumber) {
+                const taken = await (prisma as any).purchaseOrder.findFirst({
+                    where: { tenantId, referenceNumber, NOT: { id: source.id } },
+                    select: { id: true },
+                });
+                if (taken) referenceNumber = null;
+            }
+            let row: any = null;
+            for (let attempt = 0; attempt < 3 && !row; attempt++) {
+                const code = referenceNumber ?? await nextPurchaseReference(tenantId, 'PRICE_REQUEST');
+                try {
+                    row = await (prisma as any).purchaseOrder.update({
+                        where: { id: source.id },
+                        data: {
+                            status: 'DRAFT',
+                            referenceNumber: code,
+                            priceRequestNumber: code,
+                            // Sipariş numarası SAKLI kalır: geri dönüşte aynı kod gelir.
+                            orderNumber: source.orderNumber || source.referenceNumber,
+                            tableColumns: standardTableColumnsJson('PRICE_REQUEST'),
+                            hiddenColumnKeys: standardHiddenKeysJson('PRICE_REQUEST'),
+                        },
+                    });
+                } catch (err: any) {
+                    if (err?.code !== 'P2002') throw err;
+                    referenceNumber = null;
+                }
+            }
+            if (!row) return res.status(400).json({ error: 'Fiyat talebi numarası üretilemedi, lütfen tekrar deneyin.' });
+            if (await productionModule.purchaseLink.isEnabled(tenantId)) {
+                await productionModule.purchaseLink.syncConfirmedLines(tenantId, row, req.user!.id);
+            }
+            refreshProducerProduction(row);
+            res.status(200).json(parsePurchaseOrderRow(row));
         } catch (error: any) {
             sendPurchaseOrderError(res, error);
         }
@@ -6297,6 +6909,8 @@ router.delete(
             await (prisma as any).purchaseOrderMailDraft
                 .deleteMany({ where: { tenantId, orderId: existing.id } })
                 .catch(() => undefined);
+            // Onaylı bir üretim siparişi silindiyse cihazlar üretim projesinden düşer.
+            refreshProducerProduction(existing);
             res.status(204).send();
         } catch (error: any) {
             res.status(400).json({ error: error.message });

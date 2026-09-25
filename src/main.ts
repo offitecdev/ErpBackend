@@ -43,6 +43,7 @@ import moduleProfileRoutes from './presentation/routes/moduleProfile.routes';
 import tenderRoutes from './presentation/routes/tender.routes';
 import articleRoutes from './presentation/routes/article.routes';
 import inventoryRoutes from './presentation/routes/inventory.routes';
+import projectProcurementRoutes from './presentation/routes/projectProcurement.routes';
 import projectRoutes from './presentation/routes/project.routes';
 import bookingRoutes from './presentation/routes/booking.routes';
 import mailRoutes from './presentation/routes/mail.routes';
@@ -278,6 +279,9 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/module-profiles`, moduleProfileRoutes);
     app.use(`${prefix}/tenders`, tenderRoutes);
     app.use(`${prefix}/articles`, articleRoutes);
+    // Proje pozisyonlarından sipariş (24.09.2026) — /inventory altında: yazışlar
+    // envanter önbelleğini tazeler.
+    app.use(`${prefix}/inventory/project-procurement`, projectProcurementRoutes);
     app.use(`${prefix}/inventory`, inventoryRoutes);
     app.use(`${prefix}/projects`, projectRoutes);
     app.use(`${prefix}/booking`, bookingRoutes);

@@ -1,11 +1,12 @@
 import { nanoid } from 'nanoid';
 import type {
+    IProductionDemandReader,
     IProductionProjectRepository,
     IProductionSettingsRepository,
     ISalesSourceReader,
     ITenantDirectory,
 } from '../../../domain/repositories/IProductionRepository';
-import { planProductionSnapshot } from '../../../domain/services/production';
+import { planProductionSnapshot, restrictToOrderedDevices } from '../../../domain/services/production';
 
 /**
  * ── DER ABGLEICH: VERKAUF → PRODUKTION ──────────────────────────────────────
@@ -39,6 +40,12 @@ export class SyncProductionProjectsUseCase {
         private projects: IProductionProjectRepository,
         private reader: ISalesSourceReader,
         private tenants: ITenantDirectory,
+        /**
+         * SİPARİŞ BAZLI (Vorgabe Samet, 24.09.2026): «Projelerim'e cihazlar
+         * otomatik/toplu çekilmemeli» — aktif kalan yalnızca onaylı iç
+         * siparişle gelen cihazdır (bkz. restrictToOrderedDevices).
+         */
+        private demand?: IProductionDemandReader,
     ) {}
 
     /** Die Firmen, aus denen gelesen wird — nur bestehende, aktive. */
@@ -58,12 +65,18 @@ export class SyncProductionProjectsUseCase {
         if (pending) return pending;
 
         const run = (async (): Promise<ProductionSyncResult> => {
-            const sources = await this.sourcesFor(tenantId, settings?.sourceTenantIds ?? []);
+            const demand = this.demand ? await this.demand.read(tenantId) : null;
+            // Sipariş gönderen proje şirketleri kendiliğinden kaynak sayılır.
+            const configured = settings?.sourceTenantIds ?? [];
+            const sources = await this.sourcesFor(tenantId, demand?.sourceTenantIds.length
+                ? [...new Set([...(configured.length ? configured : [tenantId]), ...demand.sourceTenantIds])]
+                : configured);
             const [snapshot, existing] = await Promise.all([
                 this.reader.read(sources),
                 this.projects.existingIds(tenantId),
             ]);
-            const plan = planProductionSnapshot(snapshot, existing, () => nanoid(12));
+            const fullPlan = planProductionSnapshot(snapshot, existing, () => nanoid(12));
+            const plan = demand ? restrictToOrderedDevices(fullPlan, demand) : fullPlan;
             const now = new Date();
             await this.projects.applySnapshot(tenantId, plan, now);
             await this.settings.markSynced(tenantId, now);

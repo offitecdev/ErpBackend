@@ -1,4 +1,5 @@
 import { Invoice, InvoiceCategory, InvoiceLineItem, InvoiceStatus } from "../entities/Invoice";
+import type { DirectInvoiceNumberRequest } from '../../shared/directInvoiceNumber';
 
 /**
  * ── DIE BUCHHALTUNGSLISTE KOMMT SEITENWEISE (22.09.2026) ───────────────────
@@ -105,8 +106,8 @@ export interface BilledSoFar {
 }
 
 export interface IInvoiceRepository {
-    createWithItems(invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice>;
-    updateWithItems(id: string, invoice: Partial<Invoice>, items: InvoiceLineItemInput[]): Promise<Invoice>;
+    createWithItems(invoice: Partial<Invoice>, items: InvoiceLineItemInput[], numbering?: DirectInvoiceNumberRequest): Promise<Invoice>;
+    updateWithItems(id: string, invoice: Partial<Invoice>, items: InvoiceLineItemInput[], numbering?: DirectInvoiceNumberRequest): Promise<Invoice>;
     findById(id: string, tenantId: string): Promise<Invoice | null>;
     findActiveByOrder(salesOrderId: string, tenantId: string): Promise<Invoice | null>;
     findActiveByProject(projectId: string, tenantId: string): Promise<Invoice | null>;

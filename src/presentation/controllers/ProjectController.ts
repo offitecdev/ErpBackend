@@ -67,6 +67,7 @@ import {
 import { nanoid } from 'nanoid';
 import { nextDocumentNumber } from '../../shared/documentNumber';
 import { statusForAppointmentDay, labelRoleForAppointmentDay } from '../../shared/appointmentDay';
+import { emitProjectCreated } from '../../shared/projectEvents';
 
 const smtp = new SmtpMailService();
 
@@ -1961,6 +1962,9 @@ export class ProjectController {
             const employeeId = (req as any).user!.id;
             
             const project = await this.createProjectUseCase.execute(tenderId, employeeId, managerId, req.user!.tenantId, Number(overtimeHourlyRate || 0));
+            // SİPARİŞLERİM (24.09.2026): proje oluşunca eksikler arka planda
+            // otomatik sipariş edilir (bkz. projectProcurement.routes.ts).
+            emitProjectCreated({ tenantId: req.user!.tenantId, projectId: project.id, userId: employeeId });
             
 
             const frontendUrl = process.env.OFFITEC_FRONTEND_URL || 'http://localhost:5173';

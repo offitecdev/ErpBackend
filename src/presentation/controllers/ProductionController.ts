@@ -65,6 +65,13 @@ export class ProductionController {
         } catch (error) { fail(res, next, error); }
     }
 
+    /** Projekttabelle und Geräte — Projektseite und Geräteseite (24.09.2026). */
+    async projectDevices(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionModule.devices.execute(tenantOf(req), String(req.params.id)));
+        } catch (error) { fail(res, next, error); }
+    }
+
     async lines(req: Request, res: Response, next: NextFunction) {
         try {
             res.json(await productionModule.lines.execute(tenantOf(req), {

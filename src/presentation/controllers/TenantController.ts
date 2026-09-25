@@ -6,6 +6,7 @@ import { parseAllowedTenantIds } from "../utils/tenantAccess";
 import { Prisma } from "@prisma/client";
 import { getAuthIdentity } from "../../shared/authIdentityCache";
 import { mayReachWholeCompanyTree } from "../../shared/tenantSwitchAccess";
+import { parseCompanyType } from "../../shared/companyType";
 
 export class TenantController {
     constructor(
@@ -33,6 +34,7 @@ export class TenantController {
                 createdAt: Date;
                 moduleProfileId: string | null;
                 companyNumber: number;
+                companyType: string | null;
                 addressLine1: string | null;
                 addressLine2: string | null;
                 postalCode: string | null;
@@ -57,6 +59,7 @@ export class TenantController {
                     tenant.createdAt,
                     tenant.moduleProfileId,
                     tenant.companyNumber,
+                    tenant.companyType,
                     tenant.addressLine1,
                     tenant.addressLine2,
                     tenant.postalCode,
@@ -92,6 +95,9 @@ export class TenantController {
                     createdAt: row.createdAt,
                     moduleProfileId: row.moduleProfileId,
                     companyNumber: row.companyNumber,
+                    // Şirket türü (A Üretim / B Proje / C Satış) — yeni ürün
+                    // formunun zorunlu alanlarını belirler; null = seçilmedi.
+                    companyType: parseCompanyType(row.companyType),
                     // Eigene Absenderadresse für die PDFs; null = die gemeinsame
                     // aus den PDF-Einstellungen (pdfSettingsStore im Frontend).
                     companyAddress: row.addressLine1 || row.city ? {
