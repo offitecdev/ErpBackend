@@ -61,6 +61,9 @@ import {
 } from '../../shared/standardOrderTemplate';
 import { ProductionPurchaseLinkService, type ProductionSelectionInput } from '../../application/use-cases/production/ProductionPurchaseLinkService';
 import { isProductionError, productionError, productionErrorBody } from '../../application/use-cases/production/productionErrors';
+// BOM der Produktion (27.09.2026): die Regeln ihrer Bestellungen/Preisanfragen.
+import { productionBomGuard } from '../composition/productionBomGuardModule';
+import { bomErrorBody, isBomError } from '../../domain/services/productionBom';
 import { missingApprovalFields } from '../../domain/services/purchaseOrderApproval';
 
 /**
@@ -69,6 +72,7 @@ import { missingApprovalFields } from '../../domain/services/purchaseOrderApprov
  * andere bleibt, wie es war (400 + Satz).
  */
 export const sendPurchaseOrderError = (res: any, error: any) => {
+    if (isBomError(error)) return res.status(error.status).json(bomErrorBody(error));
     if (isProductionError(error)) return res.status(error.status).json(productionErrorBody(error));
     return res.status(400).json({ error: error?.message || 'Error' });
 };
@@ -4150,6 +4154,12 @@ export const normalizePurchaseOrderItems = (raw: unknown) => {
         const productionItemId = typeof r?.productionItemId === 'string' && r.productionItemId.trim()
             ? r.productionItemId.trim().slice(0, 64)
             : null;
+        // BOM-ZEILE (27.09.2026): die Position kam aus «Sipariş oluştur» einer
+        // BOM — die Kennung der BOM-Zeile reist mit, sonst wüsste die BOM nach
+        // dem ersten Speichern nicht mehr, was schon bestellt ist.
+        const bomLineId = typeof r?.bomLineId === 'string' && r.bomLineId.trim()
+            ? r.bomLineId.trim().slice(0, 64)
+            : null;
         return {
             itemType: 'PRODUCT',
             articleId: r?.articleId ? String(r.articleId) : null,
@@ -4176,6 +4186,7 @@ export const normalizePurchaseOrderItems = (raw: unknown) => {
             ...(displayNetPrice !== null ? { displayNetPrice } : {}),
             ...(receivedQuantity > 0 ? { receivedQuantity, receivedAt } : {}),
             ...(productionItemId ? { productionItemId } : {}),
+            ...(bomLineId ? { bomLineId } : {}),
             // PROJE KAYNAĞI (24.09.2026): satır bir projenin pozisyonundan
             // «Siparişe Git» ile geldiyse proje/pozisyon (ve üretimse üretim
             // şirketi) burada durur — birleştirme ve «Siparişlerim» bunu okur.
@@ -4460,7 +4471,8 @@ const normalizeReferenceNumber = (value: unknown): string => {
 
 // supplierId doğrulanır; yalnızca ad verildiyse tedarikçi upsert edilir
 // (movements/bulk davranışıyla tutarlı). E-posta snapshot'ı kayıttan tamamlanır.
-const resolvePurchaseOrderSupplier = async (
+// BOM siparişleri (27.09.2026) de aynı yolu kullanır — bu yüzden dışa açık.
+export const resolvePurchaseOrderSupplier = async (
     tenantId: string,
     input: { supplierId?: unknown; supplierName?: unknown; supplierEmail?: unknown },
 ) => {
@@ -4948,7 +4960,13 @@ router.get(
             const production = await productionModule.purchaseLink.isEnabled(tenantId)
                 ? await productionModule.picker.assignmentFor(tenantId, row.id)
                 : null;
-            res.status(200).json({ ...parsePurchaseOrderRow(row), production });
+            // BOM (27.09.2026): kam der Beleg aus einer BOM, sagt die Maske es —
+            // und hält sich an ihre Regeln (feste Zeilen, Angebotsnummer, Angebots-PDF).
+            const bomOrigin = await productionBomGuard.originOf(tenantId, row.id, row).catch((error: any) => {
+                console.warn('[production-bom] origin unreadable', row.id, error?.message);
+                return null;
+            });
+            res.status(200).json({ ...parsePurchaseOrderRow(row), production, bomOrigin });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -5301,7 +5319,10 @@ router.patch(
                mitgeschickt —, und jede Zeile ihr Gerät. Kopfangaben allein
                (Anschreiben, Empfänger …) prüfen nichts. */
             const productionOn = await productionModule.purchaseLink.isEnabled(tenantId);
-            const productionInput = productionOn ? ProductionPurchaseLinkService.readInput(b) : undefined;
+            /* BOM (27.09.2026): ein Beleg aus einer BOM behält Projekt und Gerät
+               seiner BOM — eine mitgeschickte Auswahl gilt dort nicht. */
+            const bomLink = await productionBomGuard.linkOf(tenantId, existing.id);
+            const productionInput = productionOn && !bomLink ? ProductionPurchaseLinkService.readInput(b) : undefined;
             const currentAssignment = productionOn ? await productionModule.purchaseLink.getAssignment(tenantId, existing.id) : null;
             let productionSelection: ProductionSelectionInput | null = currentAssignment
                 ? { productionProjectId: currentAssignment.productionProjectId, productionItemIds: currentAssignment.productionItemIds }
@@ -5313,6 +5334,13 @@ router.patch(
             }
             if (b.items !== undefined) {
                 const normalized = normalizePurchaseOrderItems(b.items);
+                /* «Sütun ekleyebiliyoruz, ancak satır ekleyemiyoruz» — dieselben
+                   Zeilen wie gespeichert (BOM-Zeile, Code, Name, Menge). */
+                if (bomLink) {
+                    let storedRows: any[] = [];
+                    try { storedRows = JSON.parse(existing.items || '[]'); } catch { storedRows = []; }
+                    productionBomGuard.assertRowsKept(bomLink, storedRows, normalized.items);
+                }
                 let items = normalized.items;
                 // Ohne Projekt bleiben die Zeilen unetikettiert — das ist erlaubt.
                 if (productionOn) {
@@ -5361,8 +5389,11 @@ router.patch(
             if (PO_PRICE_REQUEST_STATUSES.has(existing.status)) {
                 /* FİYAT TALEBİ (25.09.2026): tedarikçi LİSTESİ, yalnızca
                    Administrator + muhasebe. Başka rolün gönderdiği tedarikçi
-                   alanları sessizce yok sayılır — kayıttaki liste kalır. */
-                if ((b.requestSuppliers !== undefined || touchesSupplier) && await poCanPickRequestSuppliers(req.user!.id)) {
+                   alanları sessizce yok sayılır — kayıttaki liste kalır.
+                   BOM'dan gelen talep (27.09.2026) TEK tedarikçinindir: «fiyat
+                   talepleri ayrı ayrı tedarikçiler üzerinden açılsın» — listesi
+                   burada hiç değişmez, başka tedarikçiye BOM'dan yeni talep açılır. */
+                if ((b.requestSuppliers !== undefined || touchesSupplier) && bomLink?.kind !== 'REQUEST' && await poCanPickRequestSuppliers(req.user!.id)) {
                     const rawList = b.requestSuppliers !== undefined
                         ? b.requestSuppliers
                         : (b.supplierId || String(b.supplierName ?? '').trim() ? [b] : []);
@@ -5493,6 +5524,13 @@ router.patch(
                     error: 'Fiyat talebi doğrudan siparişe çevrilemez: önce sipariş taslağına dönüştürün ve fiyatları girin.',
                 });
             }
+            /* BOM (27.09.2026, Samet): «sipariş numarasını eşleştirmeden ve
+               sipariş teklifi tedarikçinin pdf yüklemeden sipariş onaylayamazsınız
+               … fiyat talebi proje siparişine dönüşemez». Nur für BOM-Belege. */
+            const bomLink = await productionBomGuard.linkOf(tenantId, existing.id);
+            productionBomGuard.assertStatusChange(bomLink, existing, status);
+            if (bomLink?.kind === 'REQUEST' && PO_ORDER_STATUSES.has(status)) productionBomGuard.assertConvertToOrder(bomLink);
+            if (bomLink?.kind === 'ORDER' && PO_PRICE_REQUEST_STATUSES.has(status)) productionBomGuard.assertOrderOnlyPath(bomLink);
             let storedItems: any[] = [];
             try { storedItems = JSON.parse(existing.items || '[]'); } catch { storedItems = []; }
             /* ONAY KONTROLÜ KALKTI (22.09.2026, Vorgabe Samet: «onay butonları da
@@ -5578,6 +5616,8 @@ router.post(
             if (!PO_PRICE_REQUEST_STATUSES.has(source.status)) {
                 return res.status(400).json({ error: 'Yalnızca fiyat talebi siparişe dönüştürülebilir.' });
             }
+            // BOM (27.09.2026): «fiyat talebi proje siparişine dönüşemez».
+            productionBomGuard.assertConvertToOrder(await productionBomGuard.linkOf(tenantId, source.id));
             /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): sipariş TEK tedarikçilidir —
                hangisiyle açılacağını `supplierIndex` söyler (yoksa ilki). */
             const requestSuppliers = poReadRequestSuppliers(source);
@@ -5733,7 +5773,9 @@ router.post(
             let items: any[] = [];
             try { items = JSON.parse(source.items || '[]'); } catch { items = []; }
             const copiedItems = (Array.isArray(items) ? items : []).map((item: any) => {
-                const { source: _projectLink, ...rest } = item ?? {};
+                // BOM-Zeile (27.09.2026): eine Kopie ist eine gewöhnliche
+                // Bestellung — sie gehört keiner BOM und darf dort nichts zählen.
+                const { source: _projectLink, bomLineId: _bomLine, ...rest } = item ?? {};
                 return { ...rest, receivedQuantity: 0, receivedAt: null };
             });
 
@@ -5824,6 +5866,9 @@ router.post(
                     code: 'ORDER_LOCKED',
                 });
             }
+            // BOM (27.09.2026): die Preisanfrage einer BOM-Bestellung ist eine KOPIE
+            // (POST /production/bom/purchases/:id/price-request) — die Bestellung bleibt.
+            productionBomGuard.assertOrderOnlyPath(await productionBomGuard.linkOf(tenantId, source.id));
             let referenceNumber: string | null = source.priceRequestNumber || null;
             if (referenceNumber) {
                 const taken = await (prisma as any).purchaseOrder.findFirst({
@@ -5897,6 +5942,12 @@ router.post(
             const tenantId = req.user!.tenantId;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            // BOM (27.09.2026): ihre Ware geht über den BOM-Wareneingang ins Depo, nicht ins Artikellager.
+            try {
+                productionBomGuard.assertOrderOnlyPath(await productionBomGuard.linkOf(tenantId, existing.id));
+            } catch (bomRule) {
+                return sendPurchaseOrderError(res, bomRule);
+            }
 
             let items: any[] = [];
             try { items = JSON.parse(existing.items || '[]'); } catch { items = []; }
@@ -6168,11 +6219,14 @@ router.post(
             const tenantId = req.user!.tenantId;
             const target = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!target) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            // BOM (27.09.2026): Zeilen einer BOM-Bestellung sind fest — nichts wird hinein- oder herausgeführt.
+            if (target) productionBomGuard.assertOrderOnlyPath(await productionBomGuard.linkOf(tenantId, target.id));
             const sourceId = String(req.body?.sourceId || '').trim();
             const source = sourceId
                 ? await (prisma as any).purchaseOrder.findFirst({ where: { id: sourceId, tenantId } })
                 : null;
             if (!source) return res.status(400).json({ error: 'Birleştirilecek kayıt bulunamadı.', code: 'MERGE_SOURCE_NOT_FOUND' });
+            if (source) productionBomGuard.assertOrderOnlyPath(await productionBomGuard.linkOf(tenantId, source.id));
             if (source.id === target.id) return res.status(400).json({ error: 'Bir kayıt kendisiyle birleştirilemez.', code: 'MERGE_SAME_RECORD' });
             if (target.status === 'COMPLETED' || source.status === 'COMPLETED') {
                 return res.status(400).json({ error: 'Tamamlanmış (stoğa eklenmiş) kayıt birleştirilemez.', code: 'MERGE_COMPLETED' });
@@ -6311,13 +6365,15 @@ router.post(
             const tenantId = req.user!.tenantId;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            // BOM (27.09.2026): ihre Ware geht über den BOM-Wareneingang ins Depo.
+            productionBomGuard.assertOrderOnlyPath(await productionBomGuard.linkOf(tenantId, existing.id));
             const updated = await (prisma as any).purchaseOrder.update({
                 where: { id: existing.id },
                 data: { status: 'COMPLETED', stockedAt: new Date() },
             });
             res.status(200).json(parsePurchaseOrderRow(updated));
         } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            sendPurchaseOrderError(res, error);
         }
     }
 );
@@ -6355,6 +6411,12 @@ router.post(
             const employeeId = req.user!.id;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            // BOM (27.09.2026): ihre Ware geht über den BOM-Wareneingang ins Depo, nicht ins Artikellager.
+            try {
+                productionBomGuard.assertOrderOnlyPath(await productionBomGuard.linkOf(tenantId, existing.id));
+            } catch (bomRule) {
+                return sendPurchaseOrderError(res, bomRule);
+            }
             if (existing.status === 'COMPLETED') {
                 return res.status(400).json({ error: 'Sipariş zaten stoğa aktarılmış.' });
             }
@@ -6659,6 +6721,12 @@ router.post(
             const tenantId = req.user!.tenantId;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            // BOM (27.09.2026): ihre Ware geht über den BOM-Wareneingang ins Depo, nicht ins Artikellager.
+            try {
+                productionBomGuard.assertOrderOnlyPath(await productionBomGuard.linkOf(tenantId, existing.id));
+            } catch (bomRule) {
+                return sendPurchaseOrderError(res, bomRule);
+            }
             if (existing.status !== 'TO_BE_STOCKED' && existing.status !== 'COMPLETED') {
                 return res.status(400).json({ error: 'Bu sipariş mal kabul aşamasında değil.' });
             }
@@ -6748,6 +6816,13 @@ router.post(
             const tenantId = req.user!.tenantId;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            /* BOM (27.09.2026, Samet): «tedarikçi sipariş numarasını yazmadan asla
+               ne PDF gönderebiliyoruz ne de siparişi onaylayabiliyoruz». */
+            try {
+                productionBomGuard.assertSendable(await productionBomGuard.linkOf(tenantId, existing.id), existing);
+            } catch (bomRule) {
+                return sendPurchaseOrderError(res, bomRule);
+            }
 
             const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
 
@@ -6948,6 +7023,14 @@ router.post(
             const tenantId = req.user!.tenantId;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            // BOM (27.09.2026): auch «von Hand gesendet» nie ohne die Angebotsnummer des Lieferanten.
+            if (req.body?.sent === true) {
+                try {
+                    productionBomGuard.assertSendable(await productionBomGuard.linkOf(tenantId, existing.id), existing);
+                } catch (bomRule) {
+                    return sendPurchaseOrderError(res, bomRule);
+                }
+            }
             const sent = req.body?.sent === true;
 
             /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): işaret BİR tedarikçinin. Talep
@@ -7203,6 +7286,11 @@ router.delete(
             await (prisma as any).purchaseOrderMailDraft
                 .deleteMany({ where: { tenantId, orderId: existing.id } })
                 .catch(() => undefined);
+            // BOM (27.09.2026): die Verknüpfung zur BOM und das Angebot des Lieferanten
+            // gehen mit — die BOM-Zeilen gelten danach wieder als nicht bestellt.
+            await productionBomGuard.onDeleted(tenantId, existing.id).catch((error: any) => {
+                console.warn('[production-bom] link cleanup failed', existing.id, error?.message);
+            });
             // Onaylı bir üretim siparişi silindiyse cihazlar üretim projesinden düşer.
             refreshProducerProduction(existing);
             res.status(204).send();

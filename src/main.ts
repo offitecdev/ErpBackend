@@ -96,6 +96,9 @@ import serverTimerRoutes from './presentation/routes/serverTimer.routes';
 // Produktion (19.09.2026): Produktionsaufträge — Projekte aus den Firmen der
 // Firmenübertragungen, die bestätigten Lieferantenbestellungen je Gerät.
 import productionRoutes from './presentation/routes/production.routes';
+// Depo (26.09.2026): das eigene Lager der Produktionsfirma — Produktkarten,
+// Seriennummern mit Projekt/Gerät, Scan. Eigene Tabellen (depo_*).
+import warehouseRoutes from './presentation/routes/warehouse.routes';
 import { startTasksReminderEngine } from './infrastructure/services/tasks/tasksReminderEngine';
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { startReminderEngine } from './infrastructure/services/ReminderEngine';
@@ -321,6 +324,7 @@ for (const prefix of apiPrefixes) {
     // Zähler nach Zeitstempeln: GET/POST /timers/:subjectType/:subjectId[/start|pause|resume|stop|reset].
     app.use(`${prefix}/timers`, serverTimerRoutes);
     app.use(`${prefix}/production`, productionRoutes);
+    app.use(`${prefix}/warehouse`, warehouseRoutes);
     app.use(`${prefix}/batch`, batchRoutes);
 }
 

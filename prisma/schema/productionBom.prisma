@@ -1,0 +1,304 @@
+/// ── BOM DER PRODUKTION (27.09.2026, Vorgabe Samet) ──────────────────────────
+///
+/// «Üretimde BOM Liste alanında … bom liste için açılacak max bom belirlenir,
+///  bu da üretim modül ayarlarında olur; her bom için bom şablonları olur —
+///  bom şablon adı, bom şablon kategorisi elektrik, makineden biri … bir
+///  rezerve sistemi de olması lazım … BOM tamamla.»
+///
+/// Eine VORLAGE (Chiller · Kumanda panosu) ist eine Liste von Depo-Karten mit
+/// Mengen, gehört zu einer Kategorie (Makine / Elektrik = Bereich Mekanik /
+/// Elektrik des Geräts), zu einer «Ana kart» (der Gerätefamilie: CHILLER) und
+/// trägt den Vorsatz ihrer BOM-Nummer (ELK-PANO → ELK-PANO-00001).
+///
+/// Auf dem Gerät entsteht daraus eine BOM (KOPIE der Vorlage; spätere
+/// Änderungen an der Vorlage verändern kein Gerät). Höchstens
+/// `uretim_bom_ayarlari.maxPerArea` BOMs je Gerät und Bereich.
+///
+/// RESERVIERUNG (nach Samets Regel): Stücke MIT Seriennummer werden fest
+/// reserviert — die Nummer bekommt Projekt und Gerät (depo_seri_numaralari);
+/// alle anderen gehen «direkt sıradan» an das Projekt mit dem früheren
+/// Liefertermin (gerechnet, nicht gespeichert). Erst beim «Stoktan düş» geht
+/// der Bestand wirklich weg (`consumedQuantity`, `uretim_bom_tuketimleri`).
+///
+/// Die Bestellungen einer BOM sind gewöhnliche Lieferantenbestellungen
+/// (PurchaseOrder); `uretim_bom_siparisleri` sagt, welche BOM sie gebracht hat,
+/// und hält den Angebots-PDF des Lieferanten. Die Positionen tragen
+/// `bomLineId` in `PurchaseOrder.items`.
+///
+///   uretim_bom_ayarlari          je Firma: Höchstzahl BOM je Gerät und Bereich
+///   uretim_bom_sablonlari        die Vorlagen
+///   uretim_bom_sablon_satirlari  ihre Zeilen (Depo-Karte × Menge)
+///   uretim_bomlari               die BOMs der Geräte (Nummer, Stand)
+///   uretim_bom_satirlari         ihre Zeilen (Bedarf, verbraucht)
+///   uretim_bom_siparisleri       Bestellung/Preisanfrage ↔ BOM (+ Angebots-PDF)
+///   uretim_bom_tuketimleri       was «Stoktan düş» abgebucht hat (auch Seriennummern)
+///   uretim_bom_revizyonlari      die Revisionen einer BOM (Rev.0 = erste Freigabe)
+///   uretim_bom_siparis_revizyonlari  eine Bestellung vor ihrer Revision (altes PDF, alte Bestätigung)
+///
+/// Wie `uretim_*` und `depo_*`: keine Fremdschlüssel nach aussen — Karte,
+/// Projekt, Gerät, Bestellung und Personen stehen als blosse Kennung daneben.
+
+model ProductionBomSettings {
+  tenantId    String   @id
+  /// Höchstzahl der Alt-BOMs unter der Haupt-BOM eines Geräts je Bereich.
+  maxPerArea  Int      @default(2)
+  /// Die Alt-BOM-Kodes je Bereich: `{ MECHANICAL: [{ prefix, name }], ELECTRICAL: [...] }`
+  /// (27.09.2026: «alt BOM kodları ayarlardan Mekanik ve Elektrik için ayrı ayrı»).
+  codes       Json?
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("uretim_bom_ayarlari")
+}
+
+model ProductionBomTemplate {
+  id          String    @id
+  tenantId    String
+  name        String    @db.VarChar(160)
+  /// MACHINE | ELECTRICAL («makine» / «elektrik»).
+  category    String    @db.VarChar(16)
+  /// Ana kart — die Gerätefamilie, unter der die Vorlage steht (CHILLER).
+  mainCard    String    @db.VarChar(80)
+  /// Vorsatz der BOM-Nummer: MAK-COOL → MAK-COOL-00001.
+  codePrefix  String    @db.VarChar(24)
+  description String?   @db.Text
+  /// Das Beispiel, das die Firma beim ersten Öffnen bekommt — eindeutig je
+  /// Firma; gelöscht (deletedAt) kommt es nicht wieder.
+  exampleKey  String?   @db.VarChar(40)
+  sortOrder   Int       @default(0)
+  createdById String?
+  updatedById String?
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  lines ProductionBomTemplateLine[]
+
+  @@unique([tenantId, exampleKey])
+  @@index([tenantId, deletedAt])
+  @@map("uretim_bom_sablonlari")
+}
+
+model ProductionBomTemplateLine {
+  id          String  @id
+  tenantId    String
+  templateId  String
+  /// depo_urun_kartlari.id — Code und Namen stehen als Abzug daneben.
+  productId   String
+  erpCode     String? @db.VarChar(64)
+  name        String  @db.VarChar(255)
+  brand       String? @db.VarChar(120)
+  modelNumber String? @db.VarChar(120)
+  quantity    Decimal @db.Decimal(14, 3)
+  /// Adet | m | kg | set | paket
+  unit        String? @db.VarChar(16)
+  note        String? @db.VarChar(255)
+  sortOrder   Int     @default(0)
+
+  template ProductionBomTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@index([tenantId, productId])
+  @@map("uretim_bom_sablon_satirlari")
+}
+
+model ProductionBom {
+  id                  String    @id
+  tenantId            String
+  productionProjectId String
+  /// Das Gerät (uretim_proje_kalemleri.id).
+  productionItemId    String
+  /// MECHANICAL | ELECTRICAL — der Bereich des Geräts.
+  area                String    @db.VarChar(16)
+  /// MAIN = die Haupt-BOM des Geräts im Bereich (BOM-MEK-00001 / BOM-ELK-00001,
+  /// genau eine) · SUB = eine Alt-BOM darunter (Kod aus den Einstellungen).
+  kind                String    @default("SUB") @db.VarChar(8)
+  /// Bei einer Alt-BOM: die Haupt-BOM darüber.
+  parentBomId         String?
+  /// Nur die Haupt-BOM: `<Gerät>:<Bereich>` — hält sie je Gerät und Bereich einmalig.
+  mainKey             String?   @db.VarChar(80)
+  templateId          String?
+  /// Der Name: bei der Alt-BOM der des Kods (Soğutma devresi), bei der Haupt-BOM leer.
+  templateName        String    @default("") @db.VarChar(160)
+  mainCard            String?   @db.VarChar(80)
+  /// ELK-PANO-00001 — eindeutig je Firma, nie zweimal vergeben.
+  bomNumber           String    @db.VarChar(40)
+  /// DRAFT | APPROVED | COMPLETED — eine freigegebene BOM geht nie mehr in den
+  /// Entwurf zurück; sie ändert sich nur über eine Revision (uretim_bom_revizyonlari).
+  status              String    @db.VarChar(16)
+  /// Die GELTENDE Revision: 0 = die erste Freigabe, jede freigegebene Revision +1.
+  revision            Int       @default(0)
+  approvedAt          DateTime?
+  approvedById        String?
+  completedAt         DateTime?
+  completedById       String?
+  /// «Stoktan düş»: der Bestand ist abgebucht (endgültig).
+  consumedAt          DateTime?
+  consumedById        String?
+  sortOrder           Int       @default(0)
+  createdById         String?
+  updatedById         String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  lines ProductionBomLine[]
+
+  @@unique([tenantId, bomNumber])
+  @@unique([tenantId, mainKey])
+  @@index([tenantId, parentBomId])
+  @@index([tenantId, productionItemId])
+  @@index([tenantId, productionProjectId])
+  @@index([tenantId, status])
+  @@map("uretim_bomlari")
+}
+
+model ProductionBomLine {
+  id               String  @id
+  tenantId         String
+  bomId            String
+  productId        String
+  erpCode          String? @db.VarChar(64)
+  name             String  @db.VarChar(255)
+  brand            String? @db.VarChar(120)
+  modelNumber      String? @db.VarChar(120)
+  unit             String? @db.VarChar(16)
+  /// Bedarf dieses Geräts.
+  quantity         Decimal @db.Decimal(14, 3)
+  /// Schon vom Bestand abgebucht («Stoktan düş»).
+  consumedQuantity Decimal @default(0) @db.Decimal(14, 3)
+  note             String? @db.VarChar(255)
+  sortOrder        Int     @default(0)
+
+  bom ProductionBom @relation(fields: [bomId], references: [id], onDelete: Cascade)
+
+  @@index([bomId])
+  @@index([tenantId, productId])
+  @@map("uretim_bom_satirlari")
+}
+
+/// Eine Lieferantenbestellung (oder Preisanfrage) aus einer BOM. Nur solche
+/// Belege tragen die Regeln der Produktion: keine neuen Zeilen, KI nur für
+/// eigene Spalten, ohne Angebotsnummer des Lieferanten kein PDF/Mail, ohne
+/// Angebotsnummer UND Angebots-PDF keine Bestätigung, eine Preisanfrage wird
+/// nie zur Bestellung.
+model ProductionBomPurchase {
+  id                    String    @id
+  tenantId              String
+  purchaseOrderId       String
+  bomId                 String
+  productionProjectId   String
+  productionItemId      String
+  /// ORDER | REQUEST
+  kind                  String    @db.VarChar(12)
+  /// Die Bestellung, aus der diese Preisanfrage kopiert wurde.
+  sourcePurchaseOrderId String?
+  /// JSON [{bomLineId, missing, minimum, ordered, note}] — wie bestellt wurde
+  /// (fehlende Menge, Mindestbestellmenge, Erklärung einer Mehrmenge).
+  lines                 Json?
+  /// Das Angebot des Lieferanten (PDF oder Bild) — Pflicht vor der Bestätigung.
+  quoteFileRef          String?   @db.VarChar(512)
+  quoteFileName         String?   @db.VarChar(255)
+  quoteFileType         String?   @db.VarChar(100)
+  quoteFileSize         Int?
+  quoteUploadedAt       DateTime?
+  quoteUploadedById     String?
+  /// Die BOM-Revision, für die der Beleg gilt (angelegt oder zuletzt nachgezogen).
+  bomRevision           Int       @default(0)
+  /// Wie oft eine BOM-Revision die Bestellung beim Lieferanten geändert hat
+  /// (0 = die Bestellung, wie sie zuerst hinausging).
+  orderRevision         Int       @default(0)
+  createdById           String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([tenantId, purchaseOrderId])
+  @@index([tenantId, bomId])
+  @@map("uretim_bom_siparisleri")
+}
+
+/// ── REVISIONEN EINER BOM (27.09.2026, Vorgabe Samet) ───────────────────────
+///
+/// «Bom onaylandıktan sonra artık sipariş verilirse eski bom artık kayıt
+///  edilmeli ve yeni revizyon oluşturulmalı … bom onaylanırsa geri dönüş yok,
+///  revize olması lazım.»
+///
+/// Rev.0 ist der Abzug der ersten Freigabe, jede weitere Revision ein eigener
+/// Datensatz mit ihren Zeilen, dem Grund und dem Unterschied zur vorigen.
+/// Höchstens EINE Revision je BOM steht im Entwurf (DRAFT): ihre Zeilen sind
+/// die Arbeitskopie — die BOM selbst gilt unverändert weiter (Reservierung,
+/// Bestellungen), bis die Revision freigegeben ist.
+model ProductionBomRevision {
+  id           String    @id
+  tenantId     String
+  bomId        String
+  revision     Int
+  /// DRAFT | APPROVED
+  status       String    @db.VarChar(12)
+  reason       String?   @db.Text
+  /// JSON [{id, productId, erpCode, name, brand, modelNumber, unit, quantity, note}]
+  /// — `id` ist die Kennung der BOM-Zeile (bleibt je Karte über die Revisionen).
+  lines        Json
+  /// JSON — was sich gegenüber der vorigen Revision änderte (bei der Freigabe gerechnet).
+  changes      Json?
+  /// JSON — was bei der Freigabe mit den Bestellungen geschah.
+  orderActions Json?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  approvedById String?
+  approvedAt   DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([tenantId, bomId, revision])
+  @@index([tenantId, bomId])
+  @@map("uretim_bom_revizyonlari")
+}
+
+/// Eine BOM-Bestellung, BEVOR eine Revision sie beim Lieferanten änderte —
+/// der Abzug hält das alte PDF und die alte Bestätigung des Lieferanten
+/// («eski PDF ve teyit arşivde kalır»).
+model ProductionBomPurchaseRevision {
+  id              String    @id
+  tenantId        String
+  purchaseOrderId String
+  bomId           String
+  /// Die Revision der Bestellung, die hier ENTSTAND (1, 2 …); `previousOrder` ist die davor.
+  number          Int
+  /// Die BOM-Revision, die sie auslöste.
+  bomRevision     Int
+  /// JSON [{bomLineId, code, name, unit, before, after, received}]
+  changes         Json
+  /// Die Bestellung davor — Positionen, Summen, Stand, Angebotsnummer (JSON).
+  previousOrder   Json
+  previousStatus  String    @db.VarChar(24)
+  /// Die Bestätigung des Lieferanten zur Bestellung davor (Ablage bleibt).
+  quoteFileRef    String?   @db.VarChar(512)
+  quoteFileName   String?   @db.VarChar(255)
+  quoteFileType   String?   @db.VarChar(100)
+  quoteFileSize   Int?
+  quoteUploadedAt DateTime?
+  createdById     String?
+  createdAt       DateTime  @default(now())
+
+  /// Eigener Name: der vorgegebene wäre länger als die 64 Zeichen von MySQL.
+  @@unique([tenantId, purchaseOrderId, number], map: "uretim_bom_siparis_rev_tenantId_purchaseOrderId_number_key")
+  @@index([tenantId, bomId])
+  @@map("uretim_bom_siparis_revizyonlari")
+}
+
+/// Was «Stoktan düş» einer BOM vom Bestand genommen hat — je Zeile die Menge,
+/// je Seriennummer eine eigene Zeile (die Nummer verlässt dabei die Karte).
+model ProductionBomConsumption {
+  id           String   @id
+  tenantId     String
+  bomId        String
+  lineId       String
+  productId    String
+  quantity     Decimal  @db.Decimal(14, 3)
+  serialNumber String?  @db.VarChar(128)
+  consumedById String?
+  consumedAt   DateTime @default(now())
+
+  @@index([tenantId, bomId])
+  @@index([tenantId, productId])
+  @@map("uretim_bom_tuketimleri")
+}

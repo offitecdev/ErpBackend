@@ -1,0 +1,120 @@
+/// ── GÖREVLENDİRME DER PRODUKTION (26.09.2026, Vorgabe Samet) ────────────────
+///
+/// «Üretimde ilk kısmı yapalım, bu görevlendirme kısmıdır — bunu bir şablon
+///  örneği olarak yapın, şablon adı Chiller; her görevin yüzdesi yanında
+///  yazıyor; sadece kişi atamaları ve bölüm atamaları olması lazım … üretim
+///  bölümlere ayrılıyor (Mekanik, Elektrik) … üretimde yeni sayfa:
+///  görevlendirme şablonları … administrator isek görevleri yükleyebiliyoruz.»
+///
+/// Eine VORLAGE beschreibt die Aufgaben eines Gerätetyps (Chiller): je
+/// Bereich (Mekanik / Elektrik) sein Anteil an der Gesamtfertigstellung
+/// (60 / 40), je Aufgabe Kürzel, Name, Stufe des Geräteprozesses, Gewicht
+/// innerhalb des Bereichs und die voreingestellten Personen.
+///
+/// Lädt die Administratorrolle eine Vorlage auf ein Gerät, entsteht dort eine
+/// KOPIE (Plan + Aufgaben): spätere Änderungen an der Vorlage verändern kein
+/// Gerät, und die Personen werden je Gerät zugewiesen.
+///
+///   uretim_gorev_sablonlari        die Vorlagen der Firma
+///   uretim_gorev_sablon_gorevleri  ihre Aufgaben
+///   uretim_cihaz_gorev_planlari    je Gerät: welche Vorlage, welche Anteile
+///   uretim_cihaz_gorevleri         die Aufgaben des Geräts + ihre Personen
+///
+/// Wie `uretim_*` und `depo_*`: keine Fremdschlüssel nach aussen — Gerät,
+/// Projekt und Personen stehen als blosse Kennung daneben.
+
+model ProductionTaskTemplate {
+  id          String    @id
+  tenantId    String
+  name        String    @db.VarChar(120)
+  /// Anteil der Bereiche an der Gesamtfertigstellung in Prozent —
+  /// {"MECHANICAL": 60, "ELECTRICAL": 40}.
+  areaShares  Json
+  /// Das Beispiel, das die Firma beim ersten Öffnen bekommt («chiller»).
+  /// Eindeutig je Firma: zweimal gleichzeitig geöffnet, legt es trotzdem nur
+  /// EINE Vorlage an; gelöscht (deletedAt) kommt es nicht wieder.
+  exampleKey  String?   @db.VarChar(40)
+  createdById String?
+  updatedById String?
+  /// Gelöscht, aber nicht vergessen: die Geräte behalten ihre Kopie.
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tasks ProductionTaskTemplateTask[]
+
+  @@unique([tenantId, exampleKey])
+  @@index([tenantId, deletedAt])
+  @@map("uretim_gorev_sablonlari")
+}
+
+model ProductionTaskTemplateTask {
+  id          String @id
+  tenantId    String
+  templateId  String
+  /// MECHANICAL | ELECTRICAL — der Bereich («bölüm»).
+  area        String @db.VarChar(16)
+  /// Die Stufe des Geräteprozesses (equipment, circuit, drawing, bom, …).
+  stage       String @db.VarChar(24)
+  /// Kürzel der Aufgabe (M-01, E-12), eindeutig je Vorlage.
+  code        String @db.VarChar(16)
+  name        String @db.VarChar(200)
+  /// Gewicht innerhalb des Bereichs in Prozent (Summe je Bereich = 100).
+  weight      Float
+  /// JSON ["employeeId", …] — die voreingestellten Personen.
+  assigneeIds Json
+  sortOrder   Int    @default(0)
+
+  template ProductionTaskTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@map("uretim_gorev_sablon_gorevleri")
+}
+
+/// Die Aufgaben EINES Geräts — im Augenblick des Ladens aus der Vorlage
+/// kopiert. Höchstens ein Plan je Gerät.
+model ProductionDeviceTaskPlan {
+  id                  String   @id
+  tenantId            String
+  productionProjectId String
+  /// Das Gerät (uretim_proje_kalemleri.id).
+  productionItemId    String
+  /// Die Vorlage, aus der geladen wurde (kann inzwischen gelöscht sein).
+  templateId          String?
+  templateName        String   @db.VarChar(120)
+  /// Die Anteile der Bereiche, wie sie beim Laden galten.
+  areaShares          Json
+  loadedById          String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tasks ProductionDeviceTask[]
+
+  @@unique([tenantId, productionItemId])
+  @@index([tenantId, productionProjectId])
+  @@map("uretim_cihaz_gorev_planlari")
+}
+
+model ProductionDeviceTask {
+  id               String   @id
+  tenantId         String
+  planId           String
+  productionItemId String
+  area             String   @db.VarChar(16)
+  stage            String   @db.VarChar(24)
+  code             String   @db.VarChar(16)
+  name             String   @db.VarChar(200)
+  weight           Float
+  /// JSON ["employeeId", …] — wer die Aufgabe an diesem Gerät macht.
+  assigneeIds      Json
+  sortOrder        Int      @default(0)
+  updatedById      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  plan ProductionDeviceTaskPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+  @@index([tenantId, productionItemId])
+  @@map("uretim_cihaz_gorevleri")
+}

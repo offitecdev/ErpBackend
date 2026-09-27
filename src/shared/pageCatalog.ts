@@ -462,6 +462,67 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 maxLevel: 2,
                 grants: { read: ['panels.view'], write: ['panels.manage'] },
             },
+            /* GÖREVLENDİRME ŞABLONLARI (26.09.2026, Vorgabe Samet): die
+               Aufgabenvorlagen (Beispiel «Chiller»). 1 = ansehen. Anlegen,
+               ändern und auf ein Gerät laden darf allein die Administratorrolle
+               (`requireSystemAdmin` in productionTasks.routes.ts) — das ist
+               keine Stufe der Rollentabelle. */
+            {
+                key: 'production.taskTemplates',
+                path: '/production/task-templates',
+                labelKey: 'nav.productionTaskTemplates',
+                maxLevel: 1,
+                grants: { read: ['production.view'] },
+            },
+            /* BOM (27.09.2026, Vorgabe Samet): die BOM-Vorlagen und die
+               Einstellungen der Produktion (Höchstzahl BOM je Gerät und
+               Bereich). 1 = ansehen; Vorlagen pflegt, wer «Produktion
+               verwalten» hat oder die Administratorrolle, die Einstellung nur
+               die Administratorrolle — das prüft der Anwendungsfall. */
+            {
+                key: 'production.bomTemplates',
+                path: '/production/bom-templates',
+                labelKey: 'nav.productionBomTemplates',
+                maxLevel: 1,
+                grants: { read: ['production.view'] },
+            },
+            {
+                key: 'production.settings',
+                path: '/production/settings',
+                labelKey: 'nav.productionSettings',
+                maxLevel: 1,
+                grants: { read: ['production.view'] },
+            },
+        ],
+    },
+    {
+        // DEPO (26.09.2026, Vorgabe Samet): das eigene Lager der Produktions-
+        // firma — «sadece üretim modülü ile ilişkili», darum hängt es am
+        // Katalogmodul `production` (Firmenkategorie, Rollenpaket) und liest/
+        // schreibt mit dessen Rechten. Erscheint nur in Firmen mit
+        // companyType PRODUCTION (Server: presentation/routes/warehouse.routes.ts).
+        //   1 = ansehen, 2 = Karten, Seriennummern und Bestand bearbeiten.
+        key: 'warehouse',
+        labelKey: 'nav.warehouse',
+        catalogKeys: ['production'],
+        pages: [
+            {
+                key: 'warehouse.products',
+                path: '/warehouse/products',
+                labelKey: 'nav.warehouseProducts',
+                maxLevel: 2,
+                grants: { read: ['production.view'], write: ['production.manage'] },
+            },
+            // Ayarlar (26.09.2026, zweiter Durchgang): Hauptkategorien und
+            // Materialgruppen mit Kürzel, Etikett, Excel-Aktarım. Die Freigabe
+            // eines Aktarım bleibt der Administratorrolle vorbehalten.
+            {
+                key: 'warehouse.settings',
+                path: '/warehouse/settings',
+                labelKey: 'nav.warehouseSettings',
+                maxLevel: 2,
+                grants: { read: ['production.view'], write: ['production.manage'] },
+            },
         ],
     },
     {
@@ -623,6 +684,15 @@ export const PAGE_LEVEL_FALLBACKS: Readonly<Record<string, string>> = {
     'production.orders': 'inventory.orders',
     'production.lines': 'inventory.orders',
     'production.panels': 'inventory.orders',
+    // Das Depo gehört zur Produktion — wer ihre Projekte sieht, sieht auch
+    // die Produktkarten (26.09.2026).
+    'warehouse.products': 'production.orders',
+    'warehouse.settings': 'production.orders',
+    // Die Görevlendirme-Vorlagen gehören zur Produktion (26.09.2026).
+    'production.taskTemplates': 'production.orders',
+    // BOM-Vorlagen und Produktionseinstellungen (27.09.2026) ebenso.
+    'production.bomTemplates': 'production.orders',
+    'production.settings': 'production.orders',
 };
 
 /**

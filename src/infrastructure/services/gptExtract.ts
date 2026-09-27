@@ -345,7 +345,8 @@ const fitBodyToModel = (body: any): any => {
    Beide Wege (Text und Bild) reden mit demselben Endpunkt und scheitern auf
    dieselben Arten. Die Faelle, die NICHT am Beleg liegen, sondern am Konto,
    muessen sich anders anfuehlen als «der Beleg wurde abgelehnt». */
-const callChatCompletion = async (body: unknown, scope: string): Promise<{ parsed: any; usage: GptUsage }> => {
+// Auch die BOM-Bestellung (Spalte per KI füllen, 27.09.2026) ruft hierüber.
+export const callChatCompletion = async (body: unknown, scope: string): Promise<{ parsed: any; usage: GptUsage }> => {
     const key = API_KEY();
     if (!key) throw new GptError('Die KI-Erkennung ist nicht eingerichtet.', 'GPT_NOT_CONFIGURED', 503);
     const model = MODEL();
@@ -539,7 +540,7 @@ const gridField = (index: number, header: string): string => {
     return slug ? `p${index + 1}_${slug}` : `p${index + 1}`;
 };
 
-const imagePart = (image: { data: string; mimeType: string }) => ({
+export const imagePart = (image: { data: string; mimeType: string }) => ({
     type: 'image_url',
     /* `detail: 'high'` ist noetig: bei `low` schrumpft die Seite auf 512px
        und die Rappenstellen sind nicht mehr lesbar. */

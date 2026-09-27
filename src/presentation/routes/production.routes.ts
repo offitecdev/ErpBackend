@@ -7,6 +7,10 @@ import { ProductionController } from '../controllers/ProductionController';
 // Schaltschränke (20.09.2026): Modell-/Seriennummern, Typenschild — ein
 // eigener Router unter /production/panels, damit diese Datei knapp bleibt.
 import panelRouter from './panel.routes';
+// Görevlendirme (26.09.2026): Vorlagen und die Aufgaben der Geräte.
+import productionTaskRouter from './productionTasks.routes';
+// BOM (27.09.2026): Vorlagen, BOMs der Geräte, Reservierung, Bestellungen.
+import productionBomRouter from './productionBom.routes';
 
 /**
  * ── /production — DAS PRODUKTIONSMODUL (19.09.2026) ─────────────────────────
@@ -58,5 +62,11 @@ router.put('/settings', requirePermission('roles.manage'), requireItGate, (req, 
 
 // Die Schaltschrank-Wege erben `requireAuth` von oben.
 router.use('/panels', panelRouter);
+
+// Görevlendirme: /task-templates und /devices/:itemId/tasks (erben `requireAuth`).
+router.use(productionTaskRouter);
+
+// BOM: /bom/* (erbt `requireAuth`).
+router.use(productionBomRouter);
 
 export default router;

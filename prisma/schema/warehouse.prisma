@@ -1,0 +1,225 @@
+/// ── DEPO (26.09.2026, Vorgabe Samet) ────────────────────────────────────────
+///
+/// «Stok modülünü bozmuyoruz. Ek olarak depo modülü yazıyoruz … sadece üretim
+///  modülü ile ilişkili … sadece üretim türündeki şirketlerde çıkmalıdır.»
+///
+/// Ein EIGENES Lager der Produktionsfirma (Tenant.companyType = PRODUCTION),
+/// neben — nicht in — dem Lager der Artikel (Article, StockBalance,
+/// StockMovement, ArticleCodeScheme). Keine dieser Tabellen zeigt auf eine
+/// bestehende Tabelle: Lieferant, Produktionsprojekt und -gerät stehen als
+/// blosse Kennung mit einem Namensabzug daneben (wie `uretim_*`).
+/// Fremdschlüssel nur innerhalb des Moduls.
+///
+///   depo_ana_kategoriler   Hauptkategorien mit Kürzel (Elektrik = ELK)
+///   depo_malzeme_gruplari  Materialgruppen einer Kategorie (PLC) + Zähler
+///   depo_urun_kartlari     die Produktkarten
+///   depo_seri_numaralari   Seriennummern einer Karte + Projekt / Gerät
+///   depo_ayarlar           Barcodezähler (GS1) und Etikett der Firma
+///   depo_aktarimlar        Excel-Aktarımlar, die auf die Freigabe warten
+///
+/// ERP-CODE (Vorgabe 26.09.2026, zweiter Durchgang): «Malzeme grubuna göre
+/// ERP kodu oluşturulması gerekiyor. ELK-PLC-00001 şeklinde.» Der Code wird
+/// vergeben, sobald eine Karte eine Gruppe hat — Kategorie-Kürzel, Gruppen-
+/// Kürzel, Laufnummer der Gruppe (fünfstellig). Mit dem ersten Code bekommt
+/// die Karte ihren Barcode (GS1, «04» = firmeninterne Nummer); er bleibt ihr.
+
+/// Hauptkategorie: «ilk başta ana kategori ekleme ve onun kısaltmasını ekleme —
+/// Elektrik ELK olarak tanımlanmalıdır». Erste Zelle des ERP-Codes.
+model WarehouseCategory {
+  id        String   @id
+  tenantId  String
+  name      String   @db.VarChar(120)
+  /// Kürzel, 2–5 Grossbuchstaben oder Ziffern (ELK). Fest, sobald eine ihrer
+  /// Gruppen einen Code vergeben hat.
+  code      String   @db.VarChar(8)
+  /// Reihenfolge des Anlegens («ekledikçe eklenmesi gerekiyor»).
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  groups WarehouseMaterialGroup[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, name])
+  @@map("depo_ana_kategoriler")
+}
+
+/// Materialgruppe einer Kategorie (Filter der Produktkarten, zweite Zelle des
+/// ERP-Codes). `lastNumber` ist die zuletzt vergebene Laufnummer.
+model WarehouseMaterialGroup {
+  id         String   @id
+  tenantId   String
+  categoryId String
+  name       String   @db.VarChar(120)
+  /// Kürzel (PLC). Leer nur bei Gruppen aus der Zeit vor den Kategorien —
+  /// die vergeben keinen Code, bis ihr Kürzel steht.
+  code       String?  @db.VarChar(8)
+  lastNumber Int      @default(0)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category WarehouseCategory  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  products WarehouseProduct[]
+
+  @@unique([categoryId, name])
+  @@unique([categoryId, code])
+  @@index([tenantId, categoryId])
+  @@map("depo_malzeme_gruplari")
+}
+
+/// Eine Produktkarte. Pflicht ist allein der Name (Vorgabe: «sadece ürün adı
+/// zorunlu»); ERP-Code und Materialgruppe stehen am Anfang leer.
+model WarehouseProduct {
+  id                  String   @id
+  tenantId            String
+  /// Vom System vergeben (ELK-PLC-00001), sobald die Karte eine Gruppe hat;
+  /// eine neue Gruppe gibt einen neuen Code. Eindeutig je Firma.
+  erpCode             String?  @db.VarChar(64)
+  materialGroupId     String?
+  name                String   @db.VarChar(255)
+  brand               String?  @db.VarChar(120)
+  modelNumber         String?  @db.VarChar(120)
+  /// Der ERSTE Lieferant der Karte, abgeschrieben aus `depo_urun_tedarikcileri`
+  /// (Liste, Sortierung, Export lesen ihn ohne zweite Abfrage). Seit dem
+  /// dritten Durchgang (26.09.2026) darf eine Karte mehrere Lieferanten haben;
+  /// die Liste steht in `suppliers`, diese Spalten folgen ihr.
+  supplierId          String?
+  supplierName        String?  @db.VarChar(191)
+  /// Nicht mehr beschrieben (vierter Durchgang): die «Produktnummer des
+  /// Lieferanten» ist der Barcode je Lieferant geworden (`suppliers.barcode`).
+  supplierNumber      String?  @db.VarChar(120)
+  description         String?  @db.Text
+  /// Bestand. Bei Karten mit Seriennummernpflicht = Zahl der Seriennummern
+  /// (der Server zählt nach jeder Änderung neu).
+  quantity            Decimal  @default(0) @db.Decimal(14, 3)
+  purchasePrice       Decimal? @db.Decimal(14, 4)
+  /// Mindestbestellmenge (BOM, 27.09.2026: «ürün detayında minimum alış
+  /// olmalı, bu minimum alışın altında sipariş verilemez»). Leer = keine.
+  minimumOrderQuantity Decimal? @db.Decimal(14, 3)
+  /// CHF | EUR | USD | GBP | TRY
+  currency            String?  @db.VarChar(3)
+  /// Unser Barcode: GS1-EAN-13 mit Präfix 04 (firmenintern), vom System mit
+  /// dem ersten ERP-Code vergeben — zeigt auf genau eine Karte.
+  barcode             String?  @db.VarChar(128)
+  /// Der Barcode des Herstellers OHNE Lieferant (EAN …). Seit dem vierten
+  /// Durchgang trägt jeder Lieferant seinen eigenen (`suppliers.barcode`);
+  /// hier steht nur einer, dessen Lieferant (noch) nicht gewählt ist.
+  manufacturerBarcode String?  @db.VarChar(128)
+  serialRequired      Boolean  @default(false)
+  createdById         String?
+  updatedById         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  materialGroup WarehouseMaterialGroup?    @relation(fields: [materialGroupId], references: [id], onDelete: SetNull)
+  serials       WarehouseSerialNumber[]
+  suppliers     WarehouseProductSupplier[]
+
+  @@unique([tenantId, erpCode])
+  @@unique([tenantId, barcode])
+  @@index([tenantId, name])
+  @@index([tenantId, materialGroupId])
+  @@index([tenantId, manufacturerBarcode])
+  @@map("depo_urun_kartlari")
+}
+
+/// Die Lieferanten einer Karte (dritter Durchgang, 26.09.2026: «bir ürün
+/// kartında birden fazla tedarikçi olabilir») — jeder mit SEINEM Barcode des
+/// Produkts daneben (vierter Durchgang: «bu tedarikçi ürün kodu değil aslında
+/// bu ürün barkodu olması lazım, tedarikçiye göre ürün barkodu»).
+/// `supplierId` = Supplier.id, wenn aus der Lieferantenliste gewählt (nur
+/// Kennung); ein frei geschriebener Name bleibt ohne Kennung. Die erste Zeile
+/// (`sortOrder` 0) steht als Abzug auf der Karte.
+model WarehouseProductSupplier {
+  id             String   @id
+  tenantId       String
+  productId      String
+  supplierId     String?
+  supplierName   String   @db.VarChar(191)
+  /// Der Barcode des Produkts, wie DIESER Lieferant es liefert (EAN …) —
+  /// gehört wie jeder Barcode genau einer Karte.
+  barcode        String?  @db.VarChar(128)
+  /// Nicht mehr beschrieben: die frühere «Tedarikçi ürün kodu» (ihr Wert
+  /// wurde beim vierten Durchgang als Barcode übernommen).
+  supplierNumber String?  @db.VarChar(120)
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  product WarehouseProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, supplierName])
+  @@index([tenantId, supplierName])
+  @@index([tenantId, barcode])
+  @@map("depo_urun_tedarikcileri")
+}
+
+/// Eine Seriennummer einer Karte — mit dem Produktionsprojekt und dem Gerät,
+/// dem das Stück zugeordnet ist (beide freiwillig). Projekt und Gerät sind
+/// Kennungen aus `uretim_projeler` / `uretim_proje_kalemleri` (bleiben über
+/// jeden Abgleich dieselben); Nummer und Namen werden beim Speichern
+/// abgeschrieben, damit die Zeile lesbar bleibt, falls die Quelle wegfällt.
+model WarehouseSerialNumber {
+  id                  String   @id
+  tenantId            String
+  productId           String
+  serialNumber        String   @db.VarChar(128)
+  productionProjectId String?
+  productionItemId    String?
+  projectNumber       String?  @db.VarChar(64)
+  projectName         String?  @db.VarChar(255)
+  deviceName          String?  @db.VarChar(500)
+  createdById         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  product WarehouseProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, serialNumber])
+  @@index([tenantId, serialNumber])
+  @@index([tenantId, productionProjectId])
+  @@map("depo_seri_numaralari")
+}
+
+/// Eine Zeile je Firma: der Zähler der GS1-Barcodes und das Etikett.
+model WarehouseSettings {
+  tenantId          String   @id
+  /// Zuletzt vergebene Barcodenummer: 04 + zehn Stellen + Prüfziffer.
+  barcodeLastNumber BigInt   @default(0)
+  /// Etikett: { widthMm, heightMm, layout: 'roll' | 'a4', showName }.
+  labelSettings     Json?
+  updatedAt         DateTime @updatedAt
+
+  @@map("depo_ayarlar")
+}
+
+/// Ein Excel-Aktarım, der auf die Freigabe der Verwaltung wartet (Vorgabe:
+/// «her aktarımdan önce toplu aktarım administratöre izin gitmesi lazım …
+/// izin verildiğinde olması lazım»). Die Zeilen liegen hier, bis die
+/// Verwaltung sie aktarır oder ablehnt.
+model WarehouseImport {
+  id              String    @id
+  tenantId        String
+  /// PENDING | DONE | REJECTED | CANCELLED
+  status          String    @db.VarChar(16)
+  fileName        String?   @db.VarChar(255)
+  rowCount        Int
+  /// Die eingereichten Zeilen (geprüft, in der Form von `WarehouseImportRow`).
+  rows            Json
+  requestedById   String?
+  requestedByName String?   @db.VarChar(191)
+  decidedById     String?
+  decidedByName   String?   @db.VarChar(191)
+  decidedAt       DateTime?
+  /// Grund einer Ablehnung.
+  note            String?   @db.VarChar(500)
+  /// Ergebnis: { created, skipped, failed: [{ row, code }], firstCode, lastCode }.
+  result          Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, createdAt])
+  @@map("depo_aktarimlar")
+}

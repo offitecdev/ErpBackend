@@ -38,7 +38,12 @@ const WRITE_NAMESPACES: Record<string, string[]> = {
     // Die Lieferantenbestellung trägt die Produktionszuordnung und die
     // bestätigten Zeilen (uretim_*) — jede Änderung dort ändert die Produktion.
     inventory: ['catalog', 'production'],
-    production: ['production'],
+    // BOM (27.09.2026): Wareneingang, Reservierung und «Stoktan düş» schreiben ins Depo;
+    // Bestellungen, Preisanfragen und Revisionen der BOM schreiben Lieferantenbestellungen
+    // (deren Liste liest der Bereich `catalog`).
+    production: ['production', 'warehouse', 'catalog'],
+    // Depo (26.09.2026): eigene Tabellen (depo_*), eigener Bereich.
+    warehouse: ['warehouse'],
     articles: ['catalog'],
     tenders: ['catalog', 'customers', 'tender', 'calendar'],
     'sales-orders': ['catalog', 'customers', 'tender', 'calendar'],
