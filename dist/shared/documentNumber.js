@@ -17,6 +17,7 @@ exports.raiseDocumentCounter = exports.peekDocumentNumber = exports.nextDocument
  *   ORDER   → AB-2026-10001   Auftragsbestätigung / Order confirmation
  *   ADDON   → NT-2026-10001   Nachtrag  / Additional order / Ek sipariş
  *   INVOICE → RE-2026-10001   Rechnung  / Invoice          / Fatura
+ *   DELIVERY_NOTE → LS-2026-10001  Lieferschein / Delivery note / İrsaliye
  *
  * ── Sıranın ilk hanesi ŞİRKETİN NUMARASIDIR ──────────────────────────────────
  * Sıra 1'den değil, şirketin kendi BLOĞUNDAN başlar: blok =
@@ -64,6 +65,11 @@ exports.DOCUMENT_PREFIX = {
     ORDER: 'AB',
     ADDON: 'NT',
     INVOICE: 'RE',
+    /**
+     * LIEFERSCHEIN (28.09.2026). Der Beleg, der mit der Ware geht — eigene
+     * Serie aus demselben Firmenblock wie die übrigen fünf.
+     */
+    DELIVERY_NOTE: 'LS',
 };
 /** Sıra alanı 5 hanedir (blok + sayaç); 99999'dan sonra doğal olarak taşar. */
 exports.DOCUMENT_SEQ_PAD = 5;
@@ -80,6 +86,7 @@ const ISSUED_NUMBER_SOURCE = {
     ORDER: { table: 'SalesOrder', column: 'orderNumber' },
     ADDON: { table: 'SalesOrder', column: 'orderNumber' },
     INVOICE: { table: 'Invoice', column: 'invoiceNumber' },
+    DELIVERY_NOTE: { table: 'DeliveryNote', column: 'noteNumber' },
 };
 /**
  * Hedef blokta o türden dağıtılmış EN YÜKSEK sıra (yoksa 0). Önek REGEXP'i

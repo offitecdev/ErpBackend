@@ -382,22 +382,92 @@ exports.PAGE_MODULES = [
                 maxLevel: 2,
                 grants: { read: ['production.view'], write: ['production.manage'] },
             },
+            /* «Sipariş edilen ürünler» und «Panolar» sind seit dem 28.09.2026
+               (Vorgabe Samet: «üretimde fazlalıklar … sil») keine Seiten mehr. */
+            /* GÖREVLENDİRME ŞABLONLARI (26.09.2026, Vorgabe Samet): die
+               Aufgabenvorlagen (Beispiel «Chiller»). 1 = ansehen. Anlegen,
+               ändern und auf ein Gerät laden darf allein die Administratorrolle
+               (`requireSystemAdmin` in productionTasks.routes.ts) — das ist
+               keine Stufe der Rollentabelle. */
             {
-                key: 'production.lines',
-                path: '/production/lines',
-                labelKey: 'nav.productionLines',
+                key: 'production.taskTemplates',
+                // Seit 28.09.2026 ein Reiter der Seite «Şablonlar».
+                path: '/production/templates/tasks',
+                labelKey: 'nav.productionTaskTemplates',
                 maxLevel: 1,
                 grants: { read: ['production.view'] },
             },
-            /* SCHALTSCHRÄNKE (20.09.2026, Vorgabe Baris): die Seriennummern der
-               gebauten Schränke und der Katalog ihrer Typen. 1 = ansehen,
-               2 = Seriennummern ziehen, ins Lager buchen, Typenschild drucken. */
+            /* BOM (27.09.2026, Vorgabe Samet): die BOM-Vorlagen und die
+               Einstellungen der Produktion (Höchstzahl BOM je Gerät und
+               Bereich). 1 = ansehen; Vorlagen pflegt, wer «Produktion
+               verwalten» hat oder die Administratorrolle, die Einstellung nur
+               die Administratorrolle — das prüft der Anwendungsfall. */
             {
-                key: 'production.panels',
-                path: '/production/panels',
-                labelKey: 'nav.panels',
+                key: 'production.bomTemplates',
+                path: '/production/templates/bom',
+                labelKey: 'nav.productionBomTemplates',
+                maxLevel: 1,
+                grants: { read: ['production.view'] },
+            },
+            {
+                key: 'production.settings',
+                path: '/production/settings',
+                labelKey: 'nav.productionSettings',
+                maxLevel: 1,
+                grants: { read: ['production.view'] },
+            },
+            /* SATIN ALMA (27.09.2026 abends, Vorgabe Samet): «fiyat talepleri ve
+               siparişleri muhasebe ve yöneticiler yapacak ve o ekranları o
+               görmeliler». Die Talepler der BOMs, daraus Preisanfragen und
+               Bestellungen, Lieferanten und Ausgaben. 1 = ansehen, 2 = Belege
+               machen und Ware annehmen. Erbt von «Giden faturalar» (Buchhaltung). */
+            {
+                key: 'production.purchasing',
+                path: '/production/purchasing',
+                labelKey: 'nav.productionPurchasing',
                 maxLevel: 2,
-                grants: { read: ['panels.view'], write: ['panels.manage'] },
+                grants: { read: ['production.purchasing.view'], write: ['production.purchasing.manage'] },
+            },
+            /* KALKÜLASYON (27.09.2026 abends, Vorgabe Samet): aus der BOM Menge ×
+               Alışpreis je Kalem, Summe je Gerät und Projekt, geplant gegen
+               tatsächlich — «başka bir sayfada, temiz». 1 = ansehen. Erbt wie
+               «Satın alma» von «Giden faturalar». */
+            {
+                key: 'production.costing',
+                path: '/production/costing',
+                labelKey: 'nav.productionCosting',
+                maxLevel: 1,
+                grants: { read: ['production.costing.view'] },
+            },
+        ],
+    },
+    {
+        // DEPO (26.09.2026, Vorgabe Samet): das eigene Lager der Produktions-
+        // firma — «sadece üretim modülü ile ilişkili», darum hängt es am
+        // Katalogmodul `production` (Firmenkategorie, Rollenpaket) und liest/
+        // schreibt mit dessen Rechten. Erscheint nur in Firmen mit
+        // companyType PRODUCTION (Server: presentation/routes/warehouse.routes.ts).
+        //   1 = ansehen, 2 = Karten, Seriennummern und Bestand bearbeiten.
+        key: 'warehouse',
+        labelKey: 'nav.warehouse',
+        catalogKeys: ['production'],
+        pages: [
+            {
+                key: 'warehouse.products',
+                path: '/warehouse/products',
+                labelKey: 'nav.warehouseProducts',
+                maxLevel: 2,
+                grants: { read: ['production.view'], write: ['production.manage'] },
+            },
+            // Ayarlar (26.09.2026, zweiter Durchgang): Hauptkategorien und
+            // Materialgruppen mit Kürzel, Etikett, Excel-Aktarım. Die Freigabe
+            // eines Aktarım bleibt der Administratorrolle vorbehalten.
+            {
+                key: 'warehouse.settings',
+                path: '/warehouse/settings',
+                labelKey: 'nav.warehouseSettings',
+                maxLevel: 2,
+                grants: { read: ['production.view'], write: ['production.manage'] },
             },
         ],
     },
@@ -517,8 +587,6 @@ exports.RETIRED_PAGE_KEYS = {
     'personnel.incoming': 'personnel.requestsIncoming',
     // Rechnungsliste: vom Verkauf in die Buchhaltung (16.09.2026).
     'sales.invoices': 'accounting.invoices',
-    // Der Modellkatalog ist seit 20.09.2026 der zweite Reiter der Pano-Zentrale.
-    'production.panelModels': 'production.panels',
 };
 /**
  * ── NEUE SEITEN ERBEN VON EINER BESTEHENDEN (10.09.2026) ────────────────────
@@ -553,8 +621,17 @@ exports.PAGE_LEVEL_FALLBACKS = {
     // Die Produktion liest die Lieferantenbestellungen — wer sie führt,
     // sieht die Produktionsaufträge (19.09.2026).
     'production.orders': 'inventory.orders',
-    'production.lines': 'inventory.orders',
-    'production.panels': 'inventory.orders',
+    // Das Depo gehört zur Produktion — wer ihre Projekte sieht, sieht auch
+    // die Produktkarten (26.09.2026).
+    'warehouse.products': 'production.orders',
+    'warehouse.settings': 'production.orders',
+    // Die Vorlagen (Görevlendirme + BOM) erben seit 28.09.2026 NICHTS mehr:
+    // «makine mühendisi ve elektrik mühendisinde görünsün» — nur Rollen, die
+    // sie ausdrücklich tragen (und die Administratorrolle).
+    'production.settings': 'production.orders',
+    // «Satın alma» (27.09.2026 abends) gehört der Buchhaltung.
+    'production.purchasing': 'accounting.invoices',
+    'production.costing': 'accounting.invoices',
 };
 /**
  * Die Stufe, die eine Seite von anderen übernimmt (0 = keine): von ihren

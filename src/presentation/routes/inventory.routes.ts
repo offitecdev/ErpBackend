@@ -4751,8 +4751,8 @@ const poHiddenColumnKeys = (value: unknown): string | null => {
  * Dieselbe Reinigung wie bei den eigenen Angaben; ungueltige Eintraege fallen
  * weg, gespeichert wird ein JSON-Array oder NULL.
  */
-// Twelve template fields, the BOM code, and the two request price fallbacks.
-const PO_TABLE_COLUMNS_MAX = 15;
+// Twelve template fields, the BOM code and model, and two request price fallbacks.
+const PO_TABLE_COLUMNS_MAX = 16;
 const PO_TABLE_LABELS = new Set(['productName', 'quantity', 'grossPrice', 'netPrice', 'discount', 'discount2', 'total']);
 const poTableColumns = (value: unknown): string | null => {
     if (!Array.isArray(value)) return null;

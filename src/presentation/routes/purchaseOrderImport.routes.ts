@@ -41,7 +41,6 @@ import {
     readImagePages,
     GptError,
     gptConfigured,
-    gptModelName,
     missingTemplateLabels,
     normalizeColumns,
     SOURCE_LINE_FIELD,
@@ -54,6 +53,7 @@ import {
 } from '../../infrastructure/services/gptExtract';
 import { responseCache } from '../middlewares/ResponseCacheMiddleware';
 import { ensureStandardTemplateOnce } from '../../shared/standardOrderTemplate';
+import { purchaseOrderAiModel, purchaseOrderAiOptions } from '../../infrastructure/services/purchaseOrderAiModel';
 
 export const purchaseOrderImportRouter = Router();
 
@@ -236,7 +236,7 @@ purchaseOrderImportRouter.get(
     (_req, res) => {
         res.status(200).json({
             configured: gptConfigured(),
-            model: gptModelName(),
+            model: purchaseOrderAiModel(),
             maxChars: DOCUMENT_MAX_CHARS,
             chunkChars: CHUNK_CHARS,
             maxChunks: MAX_CHUNKS,
@@ -394,6 +394,7 @@ purchaseOrderImportRouter.post(
                 ? String(req.body.language)
                 : 'de';
             const documentType = templateDocumentType(req.body?.documentType);
+            const aiOptions = purchaseOrderAiOptions();
             const maxColumns = TEMPLATE_MAX_COLUMNS + (documentType === 'PRICE_REQUEST' ? 2 : 0);
             const columns = normalizeColumns(req.body?.columns, maxColumns);
             if (columns.length < TEMPLATE_MIN_COLUMNS) {
@@ -480,7 +481,7 @@ purchaseOrderImportRouter.post(
                ihrer Ueberschrift. Die Zuordnung zur Vorlage macht der
                Server. Die Aufnahmen bleiben in ihrer Reihenfolge. */
             if (images.length) {
-                const pages = await readImagePages(images, columns, maxColumns);
+                const pages = await readImagePages(images, columns, maxColumns, aiOptions);
                 pages.forEach((page) => addUsage(page.usage));
                 /* Gezaehlt wird das RASTER, nicht eine Ansage des Modells
                    (am 11.09. zaehlte es 44 Zeilen auf einem Blatt mit 38). */
@@ -501,7 +502,7 @@ purchaseOrderImportRouter.post(
                 return res.status(200).json({
                     source: 'image',
                     engine: 'gpt-vision',
-                    model: gptModelName(),
+                    model: aiOptions.model,
                     language,
                     columns: columns.map((column) => column.key),
                     document,
@@ -551,6 +552,7 @@ purchaseOrderImportRouter.post(
             for (const pass of passes) {
                 const result = await extractWithGpt({
                     ...pass,
+                    ...aiOptions,
                     columns,
                     maxColumns,
                     language,
@@ -615,7 +617,7 @@ purchaseOrderImportRouter.post(
             return res.status(200).json({
                 source: read.source,
                 engine: read.engine,
-                model: gptModelName(),
+                model: aiOptions.model,
                 language,
                 columns: columns.map((column) => column.key),
                 document,

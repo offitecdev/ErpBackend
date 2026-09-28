@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.startImapCaptureService = exports.fetchImapAttachment = exports.isCaptureRunning = exports.captureInbox = exports.buildImapClient = exports.normalizeWindowMonths = exports.DEFAULT_WINDOW_MONTHS = void 0;
+exports.startImapCaptureService = exports.fetchImapAttachment = exports.isMailboxCaptureRunning = exports.isCaptureRunning = exports.captureInbox = exports.buildImapClient = exports.normalizeWindowMonths = exports.DEFAULT_WINDOW_MONTHS = void 0;
 const imapflow_1 = require("imapflow");
 const nanoid_1 = require("nanoid");
 const client_1 = require("@prisma/client");
@@ -16,6 +16,7 @@ const calendarImportService_1 = require("./calendarImportService");
 const cacheStore_1 = require("../cache/cacheStore");
 const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 const mailboxIdentity_1 = require("./mailboxIdentity");
+const employeeMailbox_1 = require("./employeeMailbox");
 /**
  * POSTEINGANG DES EIGENEN MAILSERVERS → ERP (18.08.2026; umgebaut 08.09.2026).
  *
@@ -259,16 +260,35 @@ const captureInbox = async (selectedTenantId, options = {}) => {
     const calendarOnly = Boolean(options.calendarOnly);
     // Fällt die Auflösung aus (Mandantenbaum nicht lesbar), bleibt es bei der
     // übergebenen Firma — der Abruf soll deswegen nicht ausfallen.
-    const tenantId = await (0, serviceTenantScope_1.getMailTenantId)(selectedTenantId).catch(() => selectedTenantId);
+    const mailboxId = String(options.mailboxId || "").trim() || null;
+    /* Ein persönliches Postfach gehört zum Stamm, in dem es angelegt wurde;
+       seine Zeilen tragen seine Id als `mailboxKey`. */
+    const personalRow = mailboxId
+        ? await (0, employeeMailbox_1.employeeMailboxTable)().findUnique({ where: { id: mailboxId } }).catch(() => null)
+        : null;
+    const tenantId = personalRow
+        ? String(personalRow.tenantId)
+        : await (0, serviceTenantScope_1.getMailTenantId)(selectedTenantId).catch(() => selectedTenantId);
+    const mailboxKey = personalRow ? String(personalRow.id) : "";
+    /* Wohin Lesestand und Zustand geschrieben werden: die Zeile des
+       persönlichen Postfachs oder die MailSetting der Firma. Beide tragen
+       dieselben Spaltennamen. */
+    const store = personalRow ? (0, employeeMailbox_1.employeeMailboxTable)() : prisma_client_1.default.mailSetting;
+    const runKey = mailboxKey ? `mbx:${mailboxKey}` : tenantId;
     const summary = { tenantId, examined: 0, stored: 0, replies: 0, byAddress: 0, labelled: 0, calendar: 0, skipped: 0, skippedRepliesOnly: 0, durationMs: 0 };
     if (dryRun)
         summary.preview = [];
-    if (running.has(tenantId)) {
+    if (mailboxId && !personalRow) {
+        summary.error = "Postfach nicht gefunden.";
+        return summary;
+    }
+    if (running.has(runKey)) {
         summary.error = "Abruf läuft bereits.";
         return summary;
     }
-    running.add(tenantId);
+    running.add(runKey);
     let client = null;
+    let cursorWhere = mailboxKey ? { id: mailboxKey } : { tenantId };
     try {
         const select = {
             tenantId: true, imapHost: true, imapPort: true, imapSecure: true, imapUser: true, imapPassword: true,
@@ -282,8 +302,10 @@ const captureInbox = async (selectedTenantId, options = {}) => {
            bleibt in ihrer Zeile (`settingsTenantId`); die NACHRICHTEN gehen
            trotzdem an den Stamm. Sonst stünde der Abruf still, ohne dass
            irgendwo etwas anderes stünde als «Kein IMAP-Server hinterlegt». */
-        let settings = await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId }, select });
-        if (!settings?.imapHost?.trim()) {
+        let settings = personalRow
+            ? (0, employeeMailbox_1.personalMailSettings)(personalRow)
+            : await prisma_client_1.default.mailSetting.findUnique({ where: { tenantId }, select });
+        if (!personalRow && !settings?.imapHost?.trim()) {
             const treeTenantIds = await (0, serviceTenantScope_1.getCompanyTreeTenantIds)(tenantId).catch(() => []);
             settings = await prisma_client_1.default.mailSetting.findFirst({
                 where: { tenantId: { in: treeTenantIds }, NOT: { imapHost: null } },
@@ -295,8 +317,10 @@ const captureInbox = async (selectedTenantId, options = {}) => {
             summary.error = "Kein IMAP-Server hinterlegt.";
             return summary;
         }
-        // Wessen Zeile den Lesestand führt: fast immer der Stamm selbst.
-        const settingsTenantId = settings.tenantId;
+        // Wessen Zeile den Lesestand führt: fast immer der Stamm selbst
+        // (beim persönlichen Postfach: seine eigene Zeile).
+        if (!personalRow)
+            cursorWhere = { tenantId: settings.tenantId };
         // Der Ordner-Umweg gilt NUR im Probelauf: sonst liefe der Lesestand
         // eines fremden Ordners in die Einstellung des Posteingangs.
         const inboxFolder = (dryRun && options.folder?.trim()) || settings.imapInboxFolder?.trim() || "INBOX";
@@ -367,8 +391,8 @@ const captureInbox = async (selectedTenantId, options = {}) => {
                         + ` (${uids[0]} … ${uids[uids.length - 1]})`);
                 }
                 if (!uids.length && !dryRun && !calendarOnly && (resetCursor || job.uidValidity === null)) {
-                    await prisma_client_1.default.mailSetting.update({
-                        where: { tenantId: settingsTenantId },
+                    await store.update({
+                        where: cursorWhere,
                         data: job.cursorFields(uidValidity, 0n),
                     });
                 }
@@ -415,6 +439,9 @@ const captureInbox = async (selectedTenantId, options = {}) => {
                             ? prisma_client_1.default.mailMessage.findMany({
                                 where: {
                                     tenantId,
+                                    // Nur DIESES Postfach: dieselbe Nachricht darf im
+                                    // Firmenpostfach und in einem persönlichen liegen.
+                                    mailboxKey,
                                     OR: [
                                         ...(ownIds.length ? [{ internetMessageId: { in: ownIds } }] : []),
                                         { providerMessageId: { in: providerIds } },
@@ -450,7 +477,9 @@ const captureInbox = async (selectedTenantId, options = {}) => {
                         const calendarPart = findCalendarPart(candidate.bodyStructure);
                         // A reset/backfill must revisit existing calendar mails so
                         // their personal recipient ownership can be repaired.
-                        if (alreadyStored && !calendarPart) {
+                        // Persönliche Postfächer füttern den Kalender nicht (der
+                        // gehört dem Firmenpostfach) — Gespeichertes ist dort erledigt.
+                        if (alreadyStored && (!calendarPart || mailboxKey)) {
                             summary.skipped += 1;
                             continue;
                         }
@@ -594,6 +623,7 @@ const captureInbox = async (selectedTenantId, options = {}) => {
                         inserts.push({
                             id: (0, nanoid_1.nanoid)(12),
                             tenantId,
+                            mailboxKey,
                             // Firmenpostfach: kein persönliches Konto, kein Besitzer —
                             // die Zeile gehört dem Kunden, nicht einer Person.
                             accountId: null,
@@ -651,7 +681,7 @@ const captureInbox = async (selectedTenantId, options = {}) => {
                        Gesendet-Ordner ist die erkannte Person eine Empfängerin und
                        NICHT die Urheberin des Termins. */
                     for (const keeper of keepers) {
-                        if (!keeper.calendarPart)
+                        if (!keeper.calendarPart || mailboxKey)
                             continue;
                         try {
                             // Bei winmail.dat ist die ganze Nachricht drin, samt Bildern —
@@ -755,8 +785,8 @@ const captureInbox = async (selectedTenantId, options = {}) => {
                         }
                     }
                     lastUid = BigInt(highestUid);
-                    await prisma_client_1.default.mailSetting.update({
-                        where: { tenantId: settingsTenantId },
+                    await store.update({
+                        where: cursorWhere,
                         data: job.cursorFields(uidValidity, lastUid),
                     });
                     // Der Schub blieb unvollständig: hier abbrechen, sonst liefe
@@ -784,21 +814,21 @@ const captureInbox = async (selectedTenantId, options = {}) => {
             ? `Termine nachgeholt: ${summary.examined} Nachrichten durchgesehen, ${summary.calendar} Termine übernommen`
             : `${summary.examined} geprüft, ${summary.stored} übernommen (${summary.replies} Antworten, ${summary.byAddress} bekannte Adressen, ${summary.calendar} Termine), ${summary.skipped} übersprungen`
                 + (summary.skippedRepliesOnly > 0 ? ` — davon ${summary.skippedRepliesOnly} nur wegen «nur Antworten»` : "");
-        await prisma_client_1.default.mailSetting.update({
-            where: { tenantId: settingsTenantId },
+        await store.update({
+            where: cursorWhere,
             data: { imapLastSyncAt: new Date(), imapLastSummary: text.slice(0, 255), imapLastError: null },
         });
         if (summary.examined)
-            console.log(`[MAIL-IN] ${tenantId}: ${text} (${summary.durationMs}ms)`);
+            console.log(`[MAIL-IN] ${runKey}: ${text} (${summary.durationMs}ms)`);
     }
     catch (error) {
         summary.durationMs = Date.now() - startedAt;
         summary.error = error?.message || String(error);
-        console.error(`[MAIL-IN] ${tenantId} fehlgeschlagen:`, summary.error);
+        console.error(`[MAIL-IN] ${runKey} fehlgeschlagen:`, summary.error);
         if (dryRun)
             return summary;
-        await prisma_client_1.default.mailSetting.updateMany({
-            where: { tenantId },
+        await store.updateMany({
+            where: mailboxKey ? { id: mailboxKey } : { tenantId },
             data: { imapLastError: String(summary.error).slice(0, 1000), imapLastSyncAt: new Date() },
         }).catch(() => undefined);
     }
@@ -809,18 +839,27 @@ const captureInbox = async (selectedTenantId, options = {}) => {
             }
             catch { /* Verbindung ist ohnehin hin */ }
         }
-        running.delete(tenantId);
+        running.delete(runKey);
     }
     return summary;
 };
 exports.captureInbox = captureInbox;
 const isCaptureRunning = (tenantId) => running.has(tenantId);
 exports.isCaptureRunning = isCaptureRunning;
+/** Läuft gerade der Abruf eines persönlichen Postfachs? */
+const isMailboxCaptureRunning = (mailboxId) => running.has(`mbx:${mailboxId}`);
+exports.isMailboxCaptureRunning = isMailboxCaptureRunning;
 /** Einen einzelnen Anhang vom Mailserver holen — NICHTS wird gespeichert. */
-const fetchImapAttachment = async (selectedTenantId, providerMessageId, part) => {
-    // Der Anhang liegt in dem Postfach, aus dem die Nachricht stammt.
+const fetchImapAttachment = async (selectedTenantId, providerMessageId, part, mailboxKey = "") => {
+    // Der Anhang liegt in dem Postfach, aus dem die Nachricht stammt — beim
+    // persönlichen Postfach auf dessen Konto.
+    const personalRow = mailboxKey
+        ? await (0, employeeMailbox_1.employeeMailboxTable)().findUnique({ where: { id: mailboxKey } }).catch(() => null)
+        : null;
+    if (mailboxKey && !personalRow)
+        return null;
     const tenantId = await (0, serviceTenantScope_1.getMailTenantId)(selectedTenantId).catch(() => selectedTenantId);
-    const settings = await prisma_client_1.default.mailSetting.findUnique({
+    const settings = personalRow ? (0, employeeMailbox_1.personalMailSettings)(personalRow) : await prisma_client_1.default.mailSetting.findUnique({
         where: { tenantId },
         select: {
             tenantId: true, imapHost: true, imapPort: true, imapSecure: true, imapUser: true, imapPassword: true,
@@ -887,6 +926,18 @@ const runPass = async () => {
             continue;
         seen.add(mailTenantId);
         await (0, exports.captureInbox)(mailTenantId);
+    }
+    /* Danach die PERSÖNLICHEN Postfächer, das am längsten nicht gelesene zuerst. */
+    const personal = await (0, employeeMailbox_1.employeeMailboxTable)().findMany({
+        where: { isActive: true, imapCaptureEnabled: true, NOT: { imapHost: null } },
+        select: { id: true },
+        orderBy: { imapLastSyncAt: "asc" },
+        take: 100,
+    }).catch(() => []);
+    for (const { id } of personal) {
+        if (running.has(`mbx:${id}`))
+            continue;
+        await (0, exports.captureInbox)("", { mailboxId: id });
     }
 };
 let started = false;

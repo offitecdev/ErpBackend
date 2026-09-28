@@ -12,6 +12,10 @@ const ProductionController_1 = require("../controllers/ProductionController");
 // Schaltschränke (20.09.2026): Modell-/Seriennummern, Typenschild — ein
 // eigener Router unter /production/panels, damit diese Datei knapp bleibt.
 const panel_routes_1 = __importDefault(require("./panel.routes"));
+// Görevlendirme (26.09.2026): Vorlagen und die Aufgaben der Geräte.
+const productionTasks_routes_1 = __importDefault(require("./productionTasks.routes"));
+// BOM (27.09.2026): Vorlagen, BOMs der Geräte, Reservierung, Bestellungen.
+const productionBom_routes_1 = __importDefault(require("./productionBom.routes"));
 /**
  * ── /production — DAS PRODUKTIONSMODUL (19.09.2026) ─────────────────────────
  *
@@ -54,5 +58,9 @@ router.get('/settings', (0, RbacMiddleware_1.requirePermission)('roles.manage'),
 router.put('/settings', (0, RbacMiddleware_1.requirePermission)('roles.manage'), ItGateMiddleware_1.requireItGate, (req, res, next) => controller.saveSettings(req, res, next));
 // Die Schaltschrank-Wege erben `requireAuth` von oben.
 router.use('/panels', panel_routes_1.default);
+// Görevlendirme: /task-templates und /devices/:itemId/tasks (erben `requireAuth`).
+router.use(productionTasks_routes_1.default);
+// BOM: /bom/* (erbt `requireAuth`).
+router.use(productionBom_routes_1.default);
 exports.default = router;
 //# sourceMappingURL=production.routes.js.map

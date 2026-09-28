@@ -69,6 +69,7 @@ const twoFactorAdmin_routes_1 = __importDefault(require("./presentation/routes/t
 // Personalmodul (Neubau 16.08.2026): ersetzt die früheren Router
 // attendance.routes.ts und leave.routes.ts vollständig.
 const personnel_routes_1 = __importDefault(require("./presentation/routes/personnel.routes"));
+const employeeMailbox_routes_1 = __importDefault(require("./presentation/routes/employeeMailbox.routes"));
 // Personalakte, Feiertage, Urlaubsanspruch und die Arbeitszeiterfassung
 // (26.08.2026) - zweiter Router auf demselben Pfad, siehe dort.
 const personnelHr_routes_1 = __importDefault(require("./presentation/routes/personnelHr.routes"));
@@ -91,6 +92,7 @@ const logistics_routes_1 = __importDefault(require("./presentation/routes/logist
 const regie_routes_1 = __importDefault(require("./presentation/routes/regie.routes"));
 const maintenance_routes_1 = __importDefault(require("./presentation/routes/maintenance.routes"));
 const sales_order_routes_1 = __importDefault(require("./presentation/routes/sales-order.routes"));
+const deliveryNote_routes_1 = __importDefault(require("./presentation/routes/deliveryNote.routes"));
 const addon_order_routes_1 = __importDefault(require("./presentation/routes/addon-order.routes"));
 const documentEvents_routes_1 = __importDefault(require("./presentation/routes/documentEvents.routes"));
 const billing_routes_1 = __importDefault(require("./presentation/routes/billing.routes"));
@@ -132,6 +134,9 @@ const serverTimer_routes_1 = __importDefault(require("./presentation/routes/serv
 // Produktion (19.09.2026): Produktionsaufträge — Projekte aus den Firmen der
 // Firmenübertragungen, die bestätigten Lieferantenbestellungen je Gerät.
 const production_routes_1 = __importDefault(require("./presentation/routes/production.routes"));
+// Depo (26.09.2026): das eigene Lager der Produktionsfirma — Produktkarten,
+// Seriennummern mit Projekt/Gerät, Scan. Eigene Tabellen (depo_*).
+const warehouse_routes_1 = __importDefault(require("./presentation/routes/warehouse.routes"));
 const tasksReminderEngine_1 = require("./infrastructure/services/tasks/tasksReminderEngine");
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const ReminderEngine_1 = require("./infrastructure/services/ReminderEngine");
@@ -277,6 +282,8 @@ for (const prefix of apiPrefixes) {
     // Einstellungen → Zwei-Faktor (Aegis): Stand ansehen, Einrichtung neu starten.
     app.use(`${prefix}/security/two-factor`, twoFactorAdmin_routes_1.default);
     // Personalmodul: Liste, Stempeluhr, Schichtplan, Berichte, Anträge.
+    // Persönliche Postfächer je Person (28.09.2026) — Fenster «Mail» der Personalliste.
+    app.use(`${prefix}/personnel/mailboxes`, employeeMailbox_routes_1.default);
     app.use(`${prefix}/personnel`, personnel_routes_1.default);
     // Personalakte (Profil, Unterlagen, Urlaubskonto), Feiertage und die
     // Arbeitszeiterfassung. Eigener Router, dieselbe Adresse: seine Wege sind
@@ -285,6 +292,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/tenants`, tenant_routes_1.default);
     app.use(`${prefix}/customers`, customer_routes_1.default);
     app.use(`${prefix}/sales-orders`, sales_order_routes_1.default);
+    // Lieferscheine (LS-…) am Auftrag, 28.09.2026.
+    app.use(`${prefix}/delivery-notes`, deliveryNote_routes_1.default);
     // Nachträge (NT-…): Liste, Beleg, freier Nachtrag mit eigenen Positionen.
     app.use(`${prefix}/addon-orders`, addon_order_routes_1.default);
     // Belegverlauf (16.09.2026): Storno, Löschen, Zurücksetzen, Eingriffe — nur lesen.
@@ -340,6 +349,7 @@ for (const prefix of apiPrefixes) {
     // Zähler nach Zeitstempeln: GET/POST /timers/:subjectType/:subjectId[/start|pause|resume|stop|reset].
     app.use(`${prefix}/timers`, serverTimer_routes_1.default);
     app.use(`${prefix}/production`, production_routes_1.default);
+    app.use(`${prefix}/warehouse`, warehouse_routes_1.default);
     app.use(`${prefix}/batch`, batch_routes_1.default);
 }
 app.use(ErrorHandlerMiddleware_1.globalErrorHandler);

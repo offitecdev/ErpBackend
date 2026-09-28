@@ -4,6 +4,7 @@ exports.SmtpMailService = exports.buildMimeMessage = exports.newMessageId = void
 const ImapMailService_1 = require("./ImapMailService");
 const mailSocket_1 = require("./mailSocket");
 const NodemailerTransport_1 = require("./NodemailerTransport");
+const employeeMailbox_1 = require("./employeeMailbox");
 /**
  * Bir gönderimin TOPLAM süre bütçesi. Normal bir gönderim 1-3 saniyede biter;
  * bu bütçe yalnızca patolojik durumlar (paket düşüren güvenlik duvarı, yanıt
@@ -177,8 +178,17 @@ class SmtpMailService {
      *   ekranda bildirir). Normal gönderimlerde kopya arka planda alınır: mail
      *   teslim edildikten sonra IMAP'ı beklemek, kullanıcıyı bitmeyen bir
      *   yükleniyor ekranında tutmaktan başka bir şey yapmaz.
+     * @param options.asEmployeeId Gönderen kişi. Yönetimin ona tanımladığı
+     *   KİŞİSEL posta kutusu varsa (EmployeeMailbox) mail o hesabın SMTP'sinden,
+     *   o hesabın adresiyle çıkar — «kullanıcının maili her yerde sadece o».
+     *   Yoksa firma posta kutusu geçerlidir.
      */
-    async send(settings, mail, options = {}) {
+    async send(companySettings, originalMail, options = {}) {
+        const personal = options.asEmployeeId
+            ? await (0, employeeMailbox_1.applyPersonalSender)(options.asEmployeeId, companySettings, originalMail)
+            : null;
+        const settings = personal ? personal.settings : companySettings;
+        const mail = personal ? personal.mail : originalMail;
         const host = settings.smtpHost?.trim();
         const port = Number(settings.smtpPort || 0);
         const ccList = (mail.cc || []).map((value) => String(value || "").trim()).filter(Boolean);

@@ -85,6 +85,16 @@ export const gptConfigured = (): boolean => API_KEY().length > 0;
 /** Welches Modell gerade arbeitet — die Oberfläche zeigt es an. */
 export const gptModelName = (): string => MODEL();
 
+export interface GptModelOptions {
+    model?: string;
+    reasoningEffort?: string;
+}
+
+const modelSettings = (options: GptModelOptions) => ({
+    model: options.model?.trim() || MODEL(),
+    ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
+});
+
 export class GptError extends Error {
     constructor(message: string, readonly code: string, readonly status: number, readonly detail?: string) {
         super(message);
@@ -370,7 +380,7 @@ const fitBodyToModel = (body: any): any => {
     }
     const { temperature: _temperature, max_tokens: maxTokens, ...rest } = body;
     // Ein Aufrufer darf sein eigenes Denkmass mitgeben (die BOM-Tabelle, 27.09.2026).
-    return { ...rest, max_completion_tokens: maxTokens, reasoning_effort: rest.reasoning_effort ?? REASONING_EFFORT() };
+    return { ...rest, max_completion_tokens: rest.max_completion_tokens ?? maxTokens, reasoning_effort: rest.reasoning_effort ?? REASONING_EFFORT() };
 };
 
 /* ── Ein Aufruf, drei Fehlerbilder ───────────────────────────────────────
@@ -685,6 +695,7 @@ const readGridHead = async (
     image: { data: string; mimeType: string },
     columns: TemplateColumn[],
     previousHeaders: string[] | null,
+    options: GptModelOptions = {},
 ): Promise<GridHead> => {
     const requested = columns
         .map((column) => `${column.key}: "${column.name}"${column.label ? ` (${ROLE_NAMES[column.label]})` : ''}`)
@@ -694,7 +705,7 @@ const readGridHead = async (
             + ' If this page continues that table without printing the header row again, list exactly those columns.'
         : '';
     const body = {
-        model: MODEL(),
+        ...modelSettings(options),
         temperature: 0,
         max_tokens: 4_000,
         response_format: {
@@ -738,13 +749,14 @@ const readGridHead = async (
 const readGridRows = async (
     image: { data: string; mimeType: string },
     grid: GridColumn[],
+    options: GptModelOptions = {},
 ): Promise<{ rows: Array<Array<string | null>>; usage: GptUsage }> => {
     const columnList = grid
         .map((column, index) => `${index + 1}. "${column.header || '(no header)'}" → field "${column.field}"`
             + `${column.firstValue ? `, first value "${column.firstValue}"` : ''}`)
         .join('\n');
     const body = {
-        model: MODEL(),
+        ...modelSettings(options),
         temperature: 0,
         max_tokens: MAX_OUTPUT_TOKENS,
         response_format: {
@@ -884,23 +896,24 @@ export const readImagePages = async (
     images: Array<{ data: string; mimeType: string }>,
     columnsInput: TemplateColumn[],
     maxColumns = TEMPLATE_MAX_COLUMNS,
+    options: GptModelOptions = {},
 ): Promise<GptGridPage[]> => {
     const columns = normalizeColumns(columnsInput, maxColumns);
     if (columns.length < TEMPLATE_MIN_COLUMNS) {
         throw new GptError(`Die Vorlage braucht mindestens ${TEMPLATE_MIN_COLUMNS} Spalten.`, 'GPT_TOO_FEW_COLUMNS', 400);
     }
     if (!images.length) return [];
-    const firstHead = readGridHead(images[0]!, columns, null);
+    const firstHead = readGridHead(images[0]!, columns, null, options);
     const heads = images.map((image, index) => (index === 0
         ? firstHead
-        : firstHead.then((head) => readGridHead(image, columns, head.columns.map((column) => column.header)))));
+        : firstHead.then((head) => readGridHead(image, columns, head.columns.map((column) => column.header), options))));
     return Promise.all(images.map(async (image, index): Promise<GptGridPage> => {
         const head = await heads[index]!;
         const mapping = resolveGridMapping(columns, head.columns, head.suggested);
         if (!head.columns.length) {
             return { rows: [], grid: { headers: [], rows: [] }, mapping, usage: head.usage };
         }
-        const read = await readGridRows(image, head.columns);
+        const read = await readGridRows(image, head.columns, options);
         /* Eine Zeile, die in KEINER Vorlagenspalte etwas traegt, gibt keine
            Bestellzeile her — im Raster bleibt sie trotzdem stehen. */
         const rows = read.rows
@@ -919,7 +932,7 @@ export const readImagePages = async (
    DER TEXTWEG — PDF-Textlage und Excel
    ═══════════════════════════════════════════════════════════════════════ */
 
-export interface GptExtractInput {
+export interface GptExtractInput extends GptModelOptions {
     /** Der Text des Belegs (Tabulator = Spaltengrenze). */
     text: string;
     /** DIE SPALTEN DER VORLAGE — sie werden zum Antwortschema. */
@@ -957,9 +970,10 @@ export const extractWithGpt = async (input: GptExtractInput): Promise<GptExtract
         throw new GptError(`Die Vorlage braucht mindestens ${TEMPLATE_MIN_COLUMNS} Spalten.`, 'GPT_TOO_FEW_COLUMNS', 400);
     }
 
-    const model = MODEL();
+    const settings = modelSettings(input);
+    const model = settings.model;
     const body = {
-        model,
+        ...settings,
         // Ein Beleg ist kein Ort für Einfälle: dieselbe Seite muss zweimal
         // dasselbe ergeben.
         temperature: 0,

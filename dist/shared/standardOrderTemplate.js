@@ -7,9 +7,8 @@ exports.ensureStandardTemplateOnce = exports.ensureStandardTemplate = exports.is
 /**
  * ── STANDART ŞABLON (Vorgabe Samet, 24.09.2026) ─────────────────────────────
  *
- * «Varsayılan sipariş şablonumuz, 3 dilde de: ÜRÜN - MALZEME / MİKTAR /
- *  BİRİM FİYAT / NET FİYAT / TUTAR; fiyat talebi: ÜRÜN - MALZEME / MİKTAR —
- *  otomatik çekecek.»
+ * Sipariş ve fiyat taleplerinde ürün, miktar, birim fiyat ve tutar bulunur.
+ * Fiyatlar talep aşamasında boş kalabilir, tedarikçi yanıtıyla doldurulur.
  *
  * Her şirkette sipariş ve fiyat talebi için BİRER sabit şablon kendiliğinden
  * kurulur. Sütun ANAHTARLARI (`std…`) sabittir ve arayüz + PDF başlığı o
@@ -29,7 +28,7 @@ exports.STANDARD_ORDER_COLUMNS = [
     { key: 'stdNetPrice', name: 'Nettopreis', type: 'number', label: 'netPrice', width: 120 },
     { key: 'stdAmount', name: 'Betrag', type: 'number', label: 'total', width: 130 },
 ];
-exports.STANDARD_REQUEST_COLUMNS = exports.STANDARD_ORDER_COLUMNS.slice(0, 2);
+exports.STANDARD_REQUEST_COLUMNS = exports.STANDARD_ORDER_COLUMNS.filter((column) => column.label !== 'netPrice');
 exports.STANDARD_TEMPLATE_TITLE = 'Standard';
 const standardColumnsOf = (documentType) => documentType === 'PRICE_REQUEST' ? exports.STANDARD_REQUEST_COLUMNS : exports.STANDARD_ORDER_COLUMNS;
 exports.standardColumnsOf = standardColumnsOf;
@@ -38,9 +37,9 @@ const standardTableColumnsJson = (documentType) => JSON.stringify((0, exports.st
 exports.standardTableColumnsJson = standardTableColumnsJson;
 /**
  * Şablonun gizlediği sütunlar: ERP kodu hiçbir zaman PDF'e girmez; standart
- * sipariş şablonunda indirim yoktur, fiyat talebinde fiyat da yoktur.
+ * sipariş ve fiyat talebi standart şablonlarında indirim sütunu yoktur.
  */
-const standardHiddenKeysJson = (documentType) => JSON.stringify(documentType === 'PRICE_REQUEST' ? ['code', 'priceGross', 'discount'] : ['code', 'discount']);
+const standardHiddenKeysJson = (_documentType) => JSON.stringify(['code', 'discount']);
 exports.standardHiddenKeysJson = standardHiddenKeysJson;
 /** Bir sütun listesi standart şablonun mu? (ilk sütunun anahtarından tanınır) */
 const isStandardColumns = (raw) => {
@@ -65,10 +64,26 @@ const ensured = new Set();
 const ensureStandardTemplate = async (tenantId, documentType) => {
     const rows = await prisma_client_1.default.supplierOrderTemplate.findMany({
         where: { tenantId, documentType, config: { contains: '"stdProduct"' } },
-        select: { id: true },
+        select: { id: true, config: true },
         take: 1,
     });
     if (rows.length) {
+        if (documentType === 'PRICE_REQUEST') {
+            // Add the price fields to existing standard templates, preserving custom fields and names.
+            let config = {};
+            try {
+                config = JSON.parse(rows[0].config || '{}');
+            }
+            catch { /* Rebuild an unreadable standard template. */ }
+            const columns = Array.isArray(config.columns) ? config.columns : [];
+            const missing = exports.STANDARD_REQUEST_COLUMNS.filter((column) => !columns.some((entry) => entry.label === column.label));
+            if (missing.length) {
+                await prisma_client_1.default.supplierOrderTemplate.update({
+                    where: { id: rows[0].id },
+                    data: { config: JSON.stringify({ ...config, columns: [...columns, ...missing] }) },
+                });
+            }
+        }
         ensured.add(`${tenantId}:${documentType}`);
         return rows[0].id;
     }

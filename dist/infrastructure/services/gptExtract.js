@@ -44,7 +44,7 @@
  * mit `code: 'GPT_NOT_CONFIGURED'`.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.extractWithGpt = exports.readImagePages = exports.gridRowToTemplate = exports.resolveGridMapping = exports.parsePrintedNumber = exports.SOURCE_LINE_FIELD = exports.missingTemplateLabels = exports.normalizeColumns = exports.TEMPLATE_MAX_COLUMNS = exports.TEMPLATE_MIN_COLUMNS = exports.REQUIRED_TEMPLATE_LABELS = exports.TEMPLATE_LABELS = exports.GptError = exports.gptModelName = exports.gptConfigured = void 0;
+exports.extractWithGpt = exports.readImagePages = exports.gridRowToTemplate = exports.resolveGridMapping = exports.imagePart = exports.parsePrintedNumber = exports.callChatCompletion = exports.isReasoningModel = exports.SOURCE_LINE_FIELD = exports.missingTemplateLabels = exports.normalizeColumns = exports.TEMPLATE_MAX_COLUMNS = exports.TEMPLATE_MIN_COLUMNS = exports.REQUIRED_TEMPLATE_LABELS = exports.TEMPLATE_LABELS = exports.GptError = exports.gptModelName = exports.gptConfigured = void 0;
 const API_KEY = () => String(
 // Der Name, den Samet vorgegeben hat, steht zuerst; die beiden anderen sind
 // nur Ausweichnamen für Umgebungen, die kleingeschriebene Variablen
@@ -79,6 +79,10 @@ exports.gptConfigured = gptConfigured;
 /** Welches Modell gerade arbeitet — die Oberfläche zeigt es an. */
 const gptModelName = () => MODEL();
 exports.gptModelName = gptModelName;
+const modelSettings = (options) => ({
+    model: options.model?.trim() || MODEL(),
+    ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
+});
 class GptError extends Error {
     code;
     status;
@@ -116,11 +120,13 @@ const COLUMN_KEY = /^[a-zA-Z][a-zA-Z0-9]{0,15}$/;
  * nicht an das Modell: fremde Schluessel, leere Namen, Doppelte, eine
  * Zuordnung, die schon vergeben ist, und alles jenseits der zwoelften Spalte.
  */
-const normalizeColumns = (raw) => {
+const normalizeColumns = (raw, maxColumns = exports.TEMPLATE_MAX_COLUMNS) => {
     const list = Array.isArray(raw) ? raw : [];
     const seen = new Set();
     const usedLabels = new Set();
     const columns = [];
+    // RFQ extraction can carry two price fallbacks beyond the editable template.
+    const limit = Math.max(exports.TEMPLATE_MIN_COLUMNS, Math.min(exports.TEMPLATE_MAX_COLUMNS + 2, maxColumns));
     for (const entry of list) {
         const key = String(entry?.key ?? '').trim();
         const name = String(entry?.name ?? '').trim().slice(0, 60);
@@ -132,7 +138,7 @@ const normalizeColumns = (raw) => {
         if (label)
             usedLabels.add(label);
         columns.push({ key, name, type: entry?.type === 'number' ? 'number' : 'text', label });
-        if (columns.length >= exports.TEMPLATE_MAX_COLUMNS)
+        if (columns.length >= limit)
             break;
     }
     return columns;
@@ -267,22 +273,42 @@ const systemPrompt = (language) => {
 /* ── Preisliste je Modell ────────────────────────────────────────────────
    Nur zur ANZEIGE. Ein unbekanntes Modell bekommt keine geschätzten Kosten,
    sondern `null` — lieber keine Zahl als eine falsche. */
+/* Standard-Tarif je 1 Mio. Token — übernommen von
+   https://developers.openai.com/api/docs/pricing (27.09.2026). `cached` gilt
+   für den Teil der Eingabe, den OpenAI aus dem Zwischenspeicher bedient;
+   Denk-Token (reasoning) zählen als Ausgabe. */
 const PRICE_PER_MILLION = {
-    'gpt-4o-mini': { input: 0.15, output: 0.6 },
-    'gpt-4o': { input: 2.5, output: 10 },
-    'gpt-4.1-mini': { input: 0.4, output: 1.6 },
-    'gpt-4.1-nano': { input: 0.1, output: 0.4 },
+    'gpt-4o-mini': { input: 0.15, cached: 0.075, output: 0.6 },
+    'gpt-4o': { input: 2.5, cached: 1.25, output: 10 },
+    'gpt-4.1-mini': { input: 0.4, cached: 0.1, output: 1.6 },
+    'gpt-4.1-nano': { input: 0.1, cached: 0.025, output: 0.4 },
+    'gpt-4.1': { input: 2, cached: 0.5, output: 8 },
+    'gpt-5': { input: 1.25, cached: 0.125, output: 10 },
+    'gpt-5-mini': { input: 0.25, cached: 0.025, output: 2 },
+    'gpt-5-nano': { input: 0.05, cached: 0.005, output: 0.4 },
+    'gpt-5.4': { input: 2.5, cached: 0.25, output: 15 },
+    'gpt-5.4-mini': { input: 0.75, cached: 0.075, output: 4.5 },
+    'gpt-5.4-nano': { input: 0.2, cached: 0.02, output: 1.25 },
+    'gpt-5.5': { input: 5, cached: 0.5, output: 30 },
+    'o4-mini': { input: 1.1, cached: 0.275, output: 4.4 },
+    'o3': { input: 2, cached: 0.5, output: 8 },
 };
+/** «gpt-5.4-mini-2026-03-17» → «gpt-5.4-mini»: ein datierter Stand kostet wie sein Modell. */
+const priceOf = (model) => PRICE_PER_MILLION[model] ?? PRICE_PER_MILLION[model.replace(/-\d{4}-\d{2}-\d{2}$/, '')];
 const usageOf = (raw, model) => {
     const promptTokens = Number(raw?.prompt_tokens) || 0;
     const completionTokens = Number(raw?.completion_tokens) || 0;
-    const price = PRICE_PER_MILLION[model];
+    const cachedTokens = Math.min(promptTokens, Number(raw?.prompt_tokens_details?.cached_tokens) || 0);
+    const reasoningTokens = Number(raw?.completion_tokens_details?.reasoning_tokens) || 0;
+    const price = priceOf(model);
     return {
         promptTokens,
         completionTokens,
         totalTokens: Number(raw?.total_tokens) || promptTokens + completionTokens,
+        cachedTokens,
+        reasoningTokens,
         estimatedUsd: price
-            ? Math.round(((promptTokens * price.input + completionTokens * price.output) / 1e6) * 1e6) / 1e6
+            ? Math.round((((promptTokens - cachedTokens) * price.input + cachedTokens * price.cached + completionTokens * price.output) / 1e6) * 1e6) / 1e6
             : null,
     };
 };
@@ -293,22 +319,29 @@ const usageOf = (raw, model) => {
    denken duerfen, sagt `gptReasoningEffort` (Vorgabe `low`). Ohne diese
    Anpassung lehnt OpenAI jede Anfrage an ein solches Modell mit 400 ab. */
 const isReasoningModel = (model) => /^(o\d|gpt-5|gpt-6)/i.test(model) && !/chat/i.test(model);
+exports.isReasoningModel = isReasoningModel;
 const REASONING_EFFORT = () => String(process.env.gptReasoningEffort ?? 'low').trim();
 const fitBodyToModel = (body) => {
-    if (!isReasoningModel(String(body?.model ?? '')))
-        return body;
+    if (!(0, exports.isReasoningModel)(String(body?.model ?? ''))) {
+        // Ein älteres Modell kennt `reasoning_effort` nicht und lehnte die Anfrage ab.
+        const { reasoning_effort: _effort, ...plain } = body ?? {};
+        return plain;
+    }
     const { temperature: _temperature, max_tokens: maxTokens, ...rest } = body;
-    return { ...rest, max_completion_tokens: maxTokens, reasoning_effort: REASONING_EFFORT() };
+    // Ein Aufrufer darf sein eigenes Denkmass mitgeben (die BOM-Tabelle, 27.09.2026).
+    return { ...rest, max_completion_tokens: rest.max_completion_tokens ?? maxTokens, reasoning_effort: rest.reasoning_effort ?? REASONING_EFFORT() };
 };
 /* ── Ein Aufruf, drei Fehlerbilder ───────────────────────────────────────
    Beide Wege (Text und Bild) reden mit demselben Endpunkt und scheitern auf
    dieselben Arten. Die Faelle, die NICHT am Beleg liegen, sondern am Konto,
    muessen sich anders anfuehlen als «der Beleg wurde abgelehnt». */
+// Auch die BOM-Bestellung (Spalte per KI füllen, 27.09.2026) ruft hierüber.
 const callChatCompletion = async (body, scope) => {
     const key = API_KEY();
     if (!key)
         throw new GptError('Die KI-Erkennung ist nicht eingerichtet.', 'GPT_NOT_CONFIGURED', 503);
-    const model = MODEL();
+    // Das Modell des Aufrufs (die BOM-Tabelle nimmt ein eigenes) — für Kosten und Meldungen.
+    const model = String(body?.model || MODEL());
     let response;
     try {
         response = await fetch(ENDPOINT(), {
@@ -356,6 +389,7 @@ const callChatCompletion = async (body, scope) => {
     }
     return { parsed, usage: usageOf(payload?.usage, model) };
 };
+exports.callChatCompletion = callChatCompletion;
 /* ═══════════════════════════════════════════════════════════════════════
    DER BILDWEG — ERST DIE TABELLE, DANN DIE VORLAGE
    ═══════════════════════════════════════════════════════════════════════
@@ -418,7 +452,9 @@ const parsePrintedNumber = (raw) => {
         // Tausender; «12,5» und «12,50» sind Dezimalzahlen.
         const after = cleaned.length - lastComma - 1;
         const commas = (cleaned.match(/,/g) ?? []).length;
-        normalized = commas === 1 && after !== 3 ? cleaned.replace(',', '.') : cleaned.replace(/,/g, '');
+        // «0,798» kann nie ein Tausender sein (27.09.2026: Preis je 100 → 0,798 wurde 798).
+        const leadingZero = /^[+-]?0,/.test(cleaned);
+        normalized = commas === 1 && (after !== 3 || leadingZero) ? cleaned.replace(',', '.') : cleaned.replace(/,/g, '');
     }
     else if (lastDot >= 0) {
         const dots = (cleaned.match(/\./g) ?? []).length;
@@ -489,6 +525,7 @@ const imagePart = (image) => ({
        und die Rappenstellen sind nicht mehr lesbar. */
     image_url: { url: `data:${image.mimeType};base64,${image.data}`, detail: 'high' },
 });
+exports.imagePart = imagePart;
 const addUsages = (a, b) => ({
     promptTokens: a.promptTokens + b.promptTokens,
     completionTokens: a.completionTokens + b.completionTokens,
@@ -568,7 +605,7 @@ const gridCell = (value) => {
  * Spalte der Vorlage ist. Ab der zweiten Aufnahme kennt er die Spalten der
  * ersten — eine Folgeseite druckt die Kopfzeile oft nicht noch einmal.
  */
-const readGridHead = async (image, columns, previousHeaders) => {
+const readGridHead = async (image, columns, previousHeaders, options = {}) => {
     const requested = columns
         .map((column) => `${column.key}: "${column.name}"${column.label ? ` (${ROLE_NAMES[column.label]})` : ''}`)
         .join('\n');
@@ -577,7 +614,7 @@ const readGridHead = async (image, columns, previousHeaders) => {
             + ' If this page continues that table without printing the header row again, list exactly those columns.'
         : '';
     const body = {
-        model: MODEL(),
+        ...modelSettings(options),
         temperature: 0,
         max_tokens: 4_000,
         response_format: {
@@ -590,12 +627,12 @@ const readGridHead = async (image, columns, previousHeaders) => {
                 role: 'user',
                 content: [
                     { type: 'text', text: `Requested columns:\n${requested}${previous}\n\nDescribe the columns of the table in this image.` },
-                    imagePart(image),
+                    (0, exports.imagePart)(image),
                 ],
             },
         ],
     };
-    const { parsed, usage } = await callChatCompletion(body, 'grid-head');
+    const { parsed, usage } = await (0, exports.callChatCompletion)(body, 'grid-head');
     const printed = Array.isArray(parsed?.columns) ? parsed.columns.slice(0, GRID_MAX_COLUMNS) : [];
     const gridColumns = printed.map((entry, index) => {
         const header = String(entry?.header ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
@@ -617,13 +654,13 @@ const readGridHead = async (image, columns, previousHeaders) => {
  * Ueberschrift. Zurueck kommt das Raster — eine Liste je Zeile, eine Zelle
  * je gedruckte Spalte, null = leer.
  */
-const readGridRows = async (image, grid) => {
+const readGridRows = async (image, grid, options = {}) => {
     const columnList = grid
         .map((column, index) => `${index + 1}. "${column.header || '(no header)'}" → field "${column.field}"`
         + `${column.firstValue ? `, first value "${column.firstValue}"` : ''}`)
         .join('\n');
     const body = {
-        model: MODEL(),
+        ...modelSettings(options),
         temperature: 0,
         max_tokens: MAX_OUTPUT_TOKENS,
         response_format: {
@@ -636,12 +673,12 @@ const readGridRows = async (image, grid) => {
                 role: 'user',
                 content: [
                     { type: 'text', text: `The table has ${grid.length} columns, left to right:\n${columnList}\n\nTranscribe it row by row into the grid.` },
-                    imagePart(image),
+                    (0, exports.imagePart)(image),
                 ],
             },
         ],
     };
-    const { parsed, usage } = await callChatCompletion(body, 'grid-rows');
+    const { parsed, usage } = await (0, exports.callChatCompletion)(body, 'grid-rows');
     const raw = Array.isArray(parsed?.rows) ? parsed.rows : [];
     /* Die Kopfzeile ist keine Position. Schreibt das Modell sie doch ab —
        oder steht sie auf dem Blatt ein zweites Mal —, faellt sie hier weg. */
@@ -735,24 +772,24 @@ exports.gridRowToTemplate = gridRowToTemplate;
  * Aufnahme gibt ihre Spalten an die folgenden weiter; sonst laeuft alles
  * gleichzeitig — jedes Raster wartet nur auf seinen eigenen Kopf.
  */
-const readImagePages = async (images, columnsInput) => {
-    const columns = (0, exports.normalizeColumns)(columnsInput);
+const readImagePages = async (images, columnsInput, maxColumns = exports.TEMPLATE_MAX_COLUMNS, options = {}) => {
+    const columns = (0, exports.normalizeColumns)(columnsInput, maxColumns);
     if (columns.length < exports.TEMPLATE_MIN_COLUMNS) {
         throw new GptError(`Die Vorlage braucht mindestens ${exports.TEMPLATE_MIN_COLUMNS} Spalten.`, 'GPT_TOO_FEW_COLUMNS', 400);
     }
     if (!images.length)
         return [];
-    const firstHead = readGridHead(images[0], columns, null);
+    const firstHead = readGridHead(images[0], columns, null, options);
     const heads = images.map((image, index) => (index === 0
         ? firstHead
-        : firstHead.then((head) => readGridHead(image, columns, head.columns.map((column) => column.header)))));
+        : firstHead.then((head) => readGridHead(image, columns, head.columns.map((column) => column.header), options))));
     return Promise.all(images.map(async (image, index) => {
         const head = await heads[index];
         const mapping = (0, exports.resolveGridMapping)(columns, head.columns, head.suggested);
         if (!head.columns.length) {
             return { rows: [], grid: { headers: [], rows: [] }, mapping, usage: head.usage };
         }
-        const read = await readGridRows(image, head.columns);
+        const read = await readGridRows(image, head.columns, options);
         /* Eine Zeile, die in KEINER Vorlagenspalte etwas traegt, gibt keine
            Bestellzeile her — im Raster bleibt sie trotzdem stehen. */
         const rows = read.rows
@@ -775,13 +812,14 @@ const extractWithGpt = async (input) => {
     if (!String(input.text || '').trim()) {
         throw new GptError('Der Beleg enthält keinen lesbaren Inhalt.', 'GPT_EMPTY_INPUT', 422);
     }
-    const columns = (0, exports.normalizeColumns)(input.columns);
+    const columns = (0, exports.normalizeColumns)(input.columns, input.maxColumns);
     if (columns.length < exports.TEMPLATE_MIN_COLUMNS) {
         throw new GptError(`Die Vorlage braucht mindestens ${exports.TEMPLATE_MIN_COLUMNS} Spalten.`, 'GPT_TOO_FEW_COLUMNS', 400);
     }
-    const model = MODEL();
+    const settings = modelSettings(input);
+    const model = settings.model;
     const body = {
-        model,
+        ...settings,
         // Ein Beleg ist kein Ort für Einfälle: dieselbe Seite muss zweimal
         // dasselbe ergeben.
         temperature: 0,
@@ -799,7 +837,7 @@ const extractWithGpt = async (input) => {
             { role: 'user', content: input.text },
         ],
     };
-    const { parsed, usage } = await callChatCompletion(body, 'text');
+    const { parsed, usage } = await (0, exports.callChatCompletion)(body, 'text');
     const rows = Array.isArray(parsed?.rows) ? parsed.rows : [];
     return {
         model,

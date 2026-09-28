@@ -12,6 +12,7 @@ const mailText_1 = require("./mailText");
 const mailCustomerMatcher_1 = require("./mailCustomerMatcher");
 const mailAutoCategory_1 = require("./mailAutoCategory");
 const serviceTenantScope_1 = require("../../../presentation/controllers/serviceTenantScope");
+const employeeMailbox_1 = require("../employeeMailbox");
 /**
  * EIN Versandweg für alles, was das ERP an Kunden schickt (Angebot, Auftrag,
  * Rechnung, freie Mail): der EIGENE MAILSERVER des Betriebs über SMTP
@@ -66,10 +67,14 @@ const recordMessage = async (ctx, mail, ccList, result, record) => {
        (Angebot, Auftrag, Rechnung, Kalender, Aufgaben) geben weiterhin ihre
        eigene Firma mit — aufgelöst wird hier, an der einen Stelle. */
     const mailTenantId = await (0, serviceTenantScope_1.getMailTenantId)(ctx.tenantId).catch(() => ctx.tenantId);
+    /* Die Zeile liegt in DEM Postfach, über das die Mail ging: dem
+       persönlichen der Person (mailboxKey = seine Id) oder dem der Firma ("").
+       Nur so steht sie dort, wo auch die Antwort ankommt. */
     const row = await prisma_client_1.default.mailMessage.create({
         data: {
             id: (0, nanoid_1.nanoid)(12),
             tenantId: mailTenantId,
+            mailboxKey: result.mailboxKey,
             accountId: result.accountId,
             employeeId: ctx.employeeId,
             direction: "OUT",
@@ -108,7 +113,15 @@ const recordMessage = async (ctx, mail, ccList, result, record) => {
  * Transportfehlern (wie `smtp.send`); ohne konfigurierten SMTP-Server bleibt
  * der bisherige Vorschau-Vertrag erhalten (`preview: true`, kein Protokoll).
  */
-const dispatchMail = async (ctx, settings, mail, options = {}) => {
+const dispatchMail = async (ctx, settings, originalMail, options = {}) => {
+    /* PERSÖNLICHES POSTFACH (28.09.2026): hat die sendende Person ein eigenes
+       Konto, geht die Mail über dessen SMTP und mit dessen Adresse — für alle
+       Aufrufer (Angebot, Auftrag, Rechnung, freie Mail, Kalender, Aufgaben). */
+    const personal = options.companyMailbox
+        ? { settings: settings || {}, mail: originalMail, mailboxKey: "" }
+        : await (0, employeeMailbox_1.applyPersonalSender)(ctx.employeeId, settings, originalMail);
+    const mail = personal.mail;
+    settings = personal.settings;
     const ccList = (mail.cc || []).map((value) => String(value || "").trim()).filter(Boolean);
     // Die Message-ID wird HIER vergeben und mitgeschrieben: an ihr erkennt der
     // IMAP-Abruf die Antwort des Kunden (In-Reply-To/References) wieder.
@@ -126,6 +139,7 @@ const dispatchMail = async (ctx, settings, mail, options = {}) => {
     if (!smtpResult.preview && options.record) {
         result.mailMessageId = await recordMessage(ctx, prepared, ccList, {
             transport: "SMTP", messageId, accountId: null, fromEmail: mail.fromEmail, fromName: mail.fromName || null,
+            mailboxKey: personal.mailboxKey,
         }, options.record).catch((error) => {
             console.error("[MAIL] Protokollzeile konnte nicht geschrieben werden:", error?.message || error);
             return undefined;

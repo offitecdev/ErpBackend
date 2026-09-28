@@ -25,7 +25,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.normalizeTemplateConfig = exports.purchaseOrderImportRouter = void 0;
+exports.validateTemplateConfig = exports.normalizeTemplateConfig = exports.purchaseOrderImportRouter = void 0;
 const express_1 = require("express");
 const nanoid_1 = require("nanoid");
 const AuthMiddleware_1 = require("../middlewares/AuthMiddleware");
@@ -36,6 +36,7 @@ const documentText_1 = require("../../infrastructure/services/documentText");
 const gptExtract_1 = require("../../infrastructure/services/gptExtract");
 const ResponseCacheMiddleware_1 = require("../middlewares/ResponseCacheMiddleware");
 const standardOrderTemplate_1 = require("../../shared/standardOrderTemplate");
+const purchaseOrderAiModel_1 = require("../../infrastructure/services/purchaseOrderAiModel");
 exports.purchaseOrderImportRouter = (0, express_1.Router)();
 /* ── Grenzen ──────────────────────────────────────────────────────────────
    Ein Beleg ist eine Handvoll Seiten. Die Stückgrösse ist bewusst kleiner als
@@ -86,7 +87,7 @@ const columnWidth = (value) => Math.round(Math.min(240, Math.max(80, Number(valu
  * die eigenen Angaben werden freie Spalten und behalten ihren Schluessel,
  * damit die Werte gespeicherter Bestellungen ihre Spalte wiederfinden.
  */
-const legacyColumns = (raw, documentType) => {
+const legacyColumns = (raw, _documentType) => {
     const hidden = new Set(Array.isArray(raw?.hiddenColumnKeys) ? raw.hiddenColumnKeys.map(String) : []);
     const fixed = [
         { key: 'name', name: 'Produktname', type: 'text', label: 'productName' },
@@ -100,8 +101,6 @@ const legacyColumns = (raw, documentType) => {
     const columns = fixed
         // Die Pflichtzuordnungen bleiben auch dann, wenn das Auge sie ausblendete.
         .filter((column) => !hidden.has(column.key) || column.label === 'productName' || column.label === 'quantity')
-        // Eine Preisanfrage kannte nie Preise — sie bekommt auch jetzt keine.
-        .filter((column) => documentType !== 'PRICE_REQUEST' || column.label === 'productName' || column.label === 'quantity')
         .map((column) => ({ ...column, width: 120 }));
     for (const extra of (0, gptExtract_1.normalizeColumns)(raw?.extraColumns)) {
         if (hidden.has(extra.key))
@@ -135,17 +134,9 @@ exports.normalizeTemplateConfig = normalizeTemplateConfig;
 /**
  * Was eine Vorlage erfuellen muss, bevor sie gespeichert wird (Vorgabe
  * Samet: «wird eine Zuordnung nicht gewaehlt, zeigt das System einen
- * Fehler»). Eine Preisanfrage kennt keine Preise — dort werden die
- * Preiszuordnungen still abgelegt statt abgewiesen.
+ * Fehler»). Price fields are available for both orders and price requests.
  */
-const PRICE_REQUEST_LABELS = new Set(['productName', 'quantity']);
-const validateTemplateConfig = (config, documentType) => {
-    if (documentType === 'PRICE_REQUEST') {
-        config.columns.forEach((column) => {
-            if (column.label && !PRICE_REQUEST_LABELS.has(column.label))
-                column.label = null;
-        });
-    }
+const validateTemplateConfig = (config, _documentType) => {
     if (!config.columns.length)
         return 'Die Vorlage braucht mindestens eine Spalte.';
     const missing = (0, gptExtract_1.missingTemplateLabels)(config.columns);
@@ -158,6 +149,7 @@ const validateTemplateConfig = (config, documentType) => {
     }
     return null;
 };
+exports.validateTemplateConfig = validateTemplateConfig;
 /** Zeile der Datenbank → Antwort (die Einstellung reist als Objekt, nicht als Text). */
 const parseTemplateRow = (row) => {
     let config;
@@ -203,7 +195,7 @@ const parseTemplateRow = (row) => {
 exports.purchaseOrderImportRouter.get('/ai-status', AuthMiddleware_1.requireAuth, (0, RbacMiddleware_1.requirePermission)('inventory.view'), (_req, res) => {
     res.status(200).json({
         configured: (0, gptExtract_1.gptConfigured)(),
-        model: (0, gptExtract_1.gptModelName)(),
+        model: (0, purchaseOrderAiModel_1.purchaseOrderAiModel)(),
         maxChars: documentText_1.DOCUMENT_MAX_CHARS,
         chunkChars: CHUNK_CHARS,
         maxChunks: MAX_CHUNKS,
@@ -351,7 +343,10 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
         const language = ['de', 'en', 'tr'].includes(String(req.body?.language))
             ? String(req.body.language)
             : 'de';
-        const columns = (0, gptExtract_1.normalizeColumns)(req.body?.columns);
+        const documentType = templateDocumentType(req.body?.documentType);
+        const aiOptions = (0, purchaseOrderAiModel_1.purchaseOrderAiOptions)();
+        const maxColumns = gptExtract_1.TEMPLATE_MAX_COLUMNS + (documentType === 'PRICE_REQUEST' ? 2 : 0);
+        const columns = (0, gptExtract_1.normalizeColumns)(req.body?.columns, maxColumns);
         if (columns.length < gptExtract_1.TEMPLATE_MIN_COLUMNS) {
             return res.status(400).json({
                 error: `Die Vorlage braucht mindestens ${gptExtract_1.TEMPLATE_MIN_COLUMNS} Spalten.`,
@@ -366,7 +361,6 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
                 code: 'GPT_TEMPLATE_LABELS',
             });
         }
-        const documentType = templateDocumentType(req.body?.documentType);
         const includeDocumentHeader = documentType !== 'GOODS_RECEIPT';
         /* ── Schritt 1: WORAUS gelesen wird ─────────────────────────────
            EIN FOTO GEHT UNGELESEN WEITER. Genau das stand seit dem
@@ -429,7 +423,7 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
            ihrer Ueberschrift. Die Zuordnung zur Vorlage macht der
            Server. Die Aufnahmen bleiben in ihrer Reihenfolge. */
         if (images.length) {
-            const pages = await (0, gptExtract_1.readImagePages)(images, columns);
+            const pages = await (0, gptExtract_1.readImagePages)(images, columns, maxColumns, aiOptions);
             pages.forEach((page) => addUsage(page.usage));
             /* Gezaehlt wird das RASTER, nicht eine Ansage des Modells
                (am 11.09. zaehlte es 44 Zeilen auf einem Blatt mit 38). */
@@ -451,7 +445,7 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
             return res.status(200).json({
                 source: 'image',
                 engine: 'gpt-vision',
-                model: (0, gptExtract_1.gptModelName)(),
+                model: aiOptions.model,
                 language,
                 columns: columns.map((column) => column.key),
                 document,
@@ -499,7 +493,9 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
         for (const pass of passes) {
             const result = await (0, gptExtract_1.extractWithGpt)({
                 ...pass,
+                ...aiOptions,
                 columns,
+                maxColumns,
                 language,
                 includeDocumentHeader,
             });
@@ -567,7 +563,7 @@ exports.purchaseOrderImportRouter.post('/ai-extract', AuthMiddleware_1.requireAu
         return res.status(200).json({
             source: read.source,
             engine: read.engine,
-            model: (0, gptExtract_1.gptModelName)(),
+            model: aiOptions.model,
             language,
             columns: columns.map((column) => column.key),
             document,
@@ -677,7 +673,7 @@ exports.purchaseOrderImportRouter.post('/supplier-templates', AuthMiddleware_1.r
             return res.status(400).json({ error: 'Der Vorlagenname fehlt.' });
         const documentType = templateDocumentType(req.body?.documentType);
         const config = (0, exports.normalizeTemplateConfig)(req.body?.config, documentType);
-        const problem = validateTemplateConfig(config, documentType);
+        const problem = (0, exports.validateTemplateConfig)(config, documentType);
         if (problem)
             return res.status(400).json({ error: problem, code: 'TEMPLATE_INVALID' });
         const isDefault = Boolean(req.body?.isDefault);
@@ -738,7 +734,7 @@ exports.purchaseOrderImportRouter.patch('/supplier-templates/:templateId', AuthM
         }
         if (req.body?.config !== undefined) {
             const config = (0, exports.normalizeTemplateConfig)(req.body.config, templateDocumentType(existing.documentType));
-            const problem = validateTemplateConfig(config, templateDocumentType(existing.documentType));
+            const problem = (0, exports.validateTemplateConfig)(config, templateDocumentType(existing.documentType));
             if (problem)
                 return res.status(400).json({ error: problem, code: 'TEMPLATE_INVALID' });
             data.config = JSON.stringify(config);
