@@ -46,8 +46,8 @@ export interface ProductionTaskFileStore {
     remove(reference: string): Promise<void>;
 }
 
-/** Was an eine Unteraufgabe darf: PDF und Fotos (28.09.2026). */
-const SUBTASK_FILE_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic']);
+/** Was an eine Unteraufgabe darf: nur PDF (28.09.2026: «the users only upload PDF. no image»). */
+const SUBTASK_FILE_TYPES = new Set(['application/pdf']);
 
 /** Alle Verweise in die Ablage, die ein Plan hält. */
 const fileRefsOf = (tasks: ReadonlyArray<{ subtasks: ReadonlyArray<ProductionSubtask> }>): Set<string> =>
@@ -367,7 +367,7 @@ export class ProductionDeviceTasksUseCase {
         if (!file || !file.body?.length) throw productionTaskError('FILE_REQUIRED', 'Keine Datei empfangen.');
         const contentType = String(file.contentType || '').toLowerCase();
         if (!SUBTASK_FILE_TYPES.has(contentType) || !this.files.accepts(contentType)) {
-            throw productionTaskError('FILE_TYPE', 'Erlaubt sind PDF und Fotos.');
+            throw productionTaskError('FILE_TYPE', 'Erlaubt sind nur PDF-Dateien.');
         }
         if (file.body.length > SUBTASK_FILE_LIMITS.bytes) {
             throw productionTaskError('FILE_TOO_LARGE', 'Die Datei ist zu gross.', { status: 413, params: { max: 25 } });

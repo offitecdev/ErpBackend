@@ -24,7 +24,7 @@ import { ProductionTaskController } from '../controllers/ProductionTaskControlle
  *   PATCH  /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status  Stand einer Unteraufgabe { status }
  *                                           [dieselben — die Aufgabe folgt ihren Unteraufgaben]
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/complete  «Complete the task» { note } [Administratorrolle]
- *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files     Datei (PDF/Foto, multipart `file`)
+ *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files     Datei (nur PDF, multipart `file`)
  *                                           [Administratorrolle oder wer in der Aufgabe steht]
  *   GET    /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … lesen
  *   DELETE /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … entfernen
