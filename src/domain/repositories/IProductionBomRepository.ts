@@ -20,6 +20,11 @@ import type {
     BomTemplate,
     BomTemplateInput,
     BomTemplateSummary,
+    BomGoodsIn,
+    BomProcurementKind,
+    BomProcurementLine,
+    BomProcurementRequest,
+    BomProcurementStatus,
 } from '../entities/ProductionBom';
 
 /**
@@ -74,6 +79,8 @@ export interface BomConsumePlan {
 
 export interface IBomRepository {
     listForDevice(tenantId: string, productionItemId: string): Promise<Bom[]>;
+    /** Die BOMs der Projekte (null = aller Projekte der Firma) — für die Kalkulation. */
+    listForProjects(tenantId: string, productionProjectIds: string[] | null): Promise<Bom[]>;
     get(tenantId: string, id: string): Promise<Bom | null>;
     getMany(tenantId: string, ids: string[]): Promise<Bom[]>;
     /** Neue BOM mit frischer Nummer (Vorsatz + Zähler, nie doppelt) in EINEM Vorgang. */
@@ -149,6 +156,8 @@ export interface BomPurchaseOrderRow {
     totalNet: number;
     emailSentAt: Date | null;
     createdAt: Date;
+    /** Letzte Änderung am Beleg — der Einkauf sortiert danach (28.09.2026). */
+    updatedAt?: Date;
     items: Array<Record<string, unknown>>;
 }
 
@@ -232,6 +241,8 @@ export interface IBomSettingsRepository {
 export interface IBomRevisionRepository {
     /** Alle Revisionen dieser BOMs (älteste zuerst). */
     listForBoms(tenantId: string, bomIds: string[]): Promise<BomRevision[]>;
+    /** Die freigegebenen Revisionen (ab Rev.1) der Firma, neueste zuerst — für den Einkauf. */
+    listApproved(tenantId: string, limit: number): Promise<BomRevision[]>;
     get(tenantId: string, bomId: string, revision: number): Promise<BomRevision | null>;
     draftOf(tenantId: string, bomId: string): Promise<BomRevision | null>;
     /** Rev.0 als Abzug der geltenden Zeilen — nur, wenn es sie noch nicht gibt. */
@@ -292,4 +303,42 @@ export interface IBomRevisionWriter {
      * Vorgang. `null` = die BOM hat sich inzwischen geändert (Revision, Stand).
      */
     apply(input: BomRevisionApplyInput): Promise<BomRevisionApplyResult | null>;
+}
+
+/* ── Satın alma talebi & gelen mallar (27.09.2026 abends) ─────────────────── */
+
+export interface BomProcurementCreateInput {
+    bomId: string;
+    productionProjectId: string;
+    productionItemId: string;
+    area: BomArea;
+    kind: BomProcurementKind;
+    bomRevision: number;
+    lines: BomProcurementLine[];
+    note: string | null;
+}
+
+export interface IBomProcurementRepository {
+    /** Legt den Talep an und vergibt seine Nummer (TLP-2026-00001) in einem Zug. */
+    create(tenantId: string, input: BomProcurementCreateInput, userId: string): Promise<BomProcurementRequest>;
+    get(tenantId: string, id: string): Promise<BomProcurementRequest | null>;
+    list(tenantId: string, filter?: { statuses?: string[]; bomIds?: string[] }): Promise<Array<BomProcurementRequest>>;
+    update(
+        tenantId: string,
+        id: string,
+        patch: {
+            status?: BomProcurementStatus;
+            purchaseOrderIds?: string[];
+            closedById?: string | null;
+            closedAt?: Date | null;
+        },
+    ): Promise<BomProcurementRequest | null>;
+    /** ALLE BOM-Belege der Firma (Preisanfragen und Bestellungen) — für «Satın alma» und die Ausgaben. */
+    purchaseLinks(tenantId: string): Promise<Array<{ purchaseOrderId: string; bomId: string; kind: BomPurchaseKind; productionProjectId: string; productionItemId: string }>>;
+}
+
+export interface IBomGoodsInRepository {
+    add(tenantId: string, rows: Array<Omit<BomGoodsIn, 'id' | 'tenantId'>>): Promise<void>;
+    forBoms(tenantId: string, bomIds: string[]): Promise<Array<BomGoodsIn>>;
+    recent(tenantId: string, limit: number): Promise<Array<BomGoodsIn>>;
 }

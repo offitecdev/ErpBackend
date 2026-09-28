@@ -26,6 +26,12 @@ import {
 import { codeVariants } from '../../../domain/services/warehouseCodes';
 import { emitWarehouseStockChanged } from '../../../shared/warehouseStockEvents';
 import {
+    isGoodsInUndoInvalid,
+    warehouseGoodsInHandler,
+    type WarehouseGoodsInResult,
+    type WarehouseGoodsInSupplier,
+} from '../../../shared/warehouseGoodsIn';
+import {
     productDto,
     serialDto,
     targetIdsOf,
@@ -56,6 +62,58 @@ const sameCode = (a: string | null, code: string): boolean =>
 
 /** Ein Code in allen Schreibweisen, die als derselbe gelten (UPC-A = EAN-13 mit 0). */
 const codeKeys = (code: string): string[] => codeVariants(code).map((variant) => variant.toLocaleLowerCase('de-CH'));
+
+/* ── «Ürün ekle» = Wareneingang (28.09.2026) ───────────────────────────── */
+
+/**
+ * Der Lieferant, den ein gelesener Code nennt: der Barcode GENAU eines
+ * Lieferanten der Karte (vierter Durchgang). Unser Barcode, der ERP-Code, ein
+ * Herstellerbarcode ohne Lieferant — oder derselbe Barcode bei zwei
+ * Lieferanten — nennen keinen.
+ */
+export const supplierOfCode = (product: WarehouseProduct, rawCode: unknown): WarehouseGoodsInSupplier | null => {
+    const code = typeof rawCode === 'string' ? rawCode.trim().slice(0, WAREHOUSE_LIMITS.barcode) : '';
+    if (!code) return null;
+    const hits = product.suppliers.filter((entry) => sameCode(entry.barcode, code));
+    return hits.length === 1 && hits[0] ? { supplierId: hits[0].supplierId, name: hits[0].name } : null;
+};
+
+/** Die Buchungen, die eine Rücknahme nennt — zusammen nie mehr, als zurückgeht. */
+const undoEntriesFrom = (raw: unknown, amount: number): Array<{ receiptId: string; quantity: number; serials: string[] }> => {
+    const entries: Array<{ receiptId: string; quantity: number; serials: string[] }> = [];
+    let left = amount;
+    for (const value of Array.isArray(raw) ? raw.slice(0, 50) : []) {
+        const entry = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+        const receiptId = typeof entry.receiptId === 'string' ? entry.receiptId.trim().slice(0, 32) : '';
+        const quantity = Math.min(left, Math.round((Number(entry.quantity) || 0) * 1000) / 1000);
+        if (!receiptId || !(quantity > 0)) continue;
+        entries.push({ receiptId, quantity, serials: [] });
+        left = Math.round((left - quantity) * 1000) / 1000;
+    }
+    return entries;
+};
+
+/** Gutschreiben ist Beiwerk: die Stücke sind im Depo — ein Fehler dort bricht die Buchung nie ab. */
+export const bookGoodsIn = async (work: () => Promise<WarehouseGoodsInResult | null>): Promise<WarehouseGoodsInResult | null> => {
+    try {
+        return await work();
+    } catch (error) {
+        console.warn('[warehouse] goods-in booking failed', (error as Error)?.message);
+        return null;
+    }
+};
+
+/** Eine Rücknahme, die nicht zur Buchung passt, wird ein Fehler des Depos (409). */
+export const undoGoodsIn = async (work: () => Promise<void>): Promise<void> => {
+    try {
+        await work();
+    } catch (error) {
+        if (isGoodsInUndoInvalid(error)) {
+            throw warehouseError('RECEIPT_UNDO_INVALID', (error as Error).message || 'Diese Buchung lässt sich nicht zurücknehmen.', { status: 409 });
+        }
+        throw error;
+    }
+};
 
 /**
  * ── DIE PRODUKTKARTEN (26.09.2026) ──────────────────────────────────────────
@@ -189,9 +247,22 @@ export class WarehouseProductsUseCase {
      * «Ürün ekle» für Karten OHNE Seriennummernpflicht: jeder Scan bucht sofort
      * ein (Vorgabe 1). Eine negative Zahl nimmt einen Scan zurück — nie unter 0.
      * Eine Karte mit Pflicht bekommt ihre Stücke über die Seriennummern.
+     *
+     * `goodsIn: true` (28.09.2026, das Fenster «Ürün ekle»): die Stücke sind
+     * der Wareneingang der Bestellungen, die auf die Karte warten — die BOM
+     * schreibt sie gut und meldet, wohin sie gingen (`goodsIn` der Antwort).
+     * `code` = der gelesene Barcode: nennt er einen Lieferanten, zählt nur
+     * dessen Bestellung. Eine Rücknahme nennt in `undo` die Buchungen, die sie
+     * zurücknimmt.
      */
-    async receive(tenantId: string, userId: string, id: string, body: unknown): Promise<WarehouseProductDto> {
-        const raw = (body as { quantity?: unknown } | null)?.quantity;
+    async receive(
+        tenantId: string,
+        userId: string,
+        id: string,
+        body: unknown,
+    ): Promise<WarehouseProductDto & { goodsIn: WarehouseGoodsInResult | null }> {
+        const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+        const raw = input.quantity;
         const numeric = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim().replace(',', '.'));
         const negative = raw !== undefined && raw !== null && raw !== '' && Number.isFinite(numeric) && numeric < 0;
         const amount = raw === undefined || raw === null || raw === '' ? 1 : parseQuantity(negative ? Math.abs(numeric) : raw);
@@ -203,14 +274,35 @@ export class WarehouseProductsUseCase {
         if (product.serialRequired) {
             throw warehouseError('QUANTITY_SERIAL_MANAGED', 'Diese Karte zählt ihre Stücke über Seriennummern.', { status: 409 });
         }
-        const outcome = await this.products.adjustQuantity(tenantId, id, delta, userId);
-        if (outcome === 'missing') throw warehouseError('NOT_FOUND', 'Produktkarte nicht gefunden.', { status: 404 });
-        if (outcome === 'below-zero') {
-            throw warehouseError('QUANTITY_BELOW_ZERO', 'Der Bestand kann nicht unter 0 fallen.', { status: 409 });
+        const adjust = async () => {
+            const outcome = await this.products.adjustQuantity(tenantId, id, delta, userId);
+            if (outcome === 'missing') throw warehouseError('NOT_FOUND', 'Produktkarte nicht gefunden.', { status: 404 });
+            if (outcome === 'below-zero') {
+                throw warehouseError('QUANTITY_BELOW_ZERO', 'Der Bestand kann nicht unter 0 fallen.', { status: 409 });
+            }
+        };
+
+        const handler = input.goodsIn === true ? warehouseGoodsInHandler() : null;
+        let goodsIn: WarehouseGoodsInResult | null = null;
+        const undo = negative && handler ? undoEntriesFrom(input.undo, amount) : [];
+        if (handler && undo.length) {
+            await undoGoodsIn(() => handler.undo({ tenantId, userId, productId: id, entries: undo }, adjust));
+        } else {
+            await adjust();
+            if (handler && !negative) {
+                goodsIn = await bookGoodsIn(() => handler.book({
+                    tenantId,
+                    userId,
+                    productId: id,
+                    quantity: amount,
+                    serials: [],
+                    supplier: supplierOfCode(product, input.code),
+                }));
+            }
         }
         const updated = await this.products.get(tenantId, id);
         if (!updated) throw warehouseError('NOT_FOUND', 'Produktkarte nicht gefunden.', { status: 404 });
-        return productDto(updated);
+        return { ...productDto(updated), goodsIn };
     }
 
     /**

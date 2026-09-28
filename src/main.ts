@@ -55,6 +55,7 @@ import logisticsRoutes from './presentation/routes/logistics.routes';
 import regieRoutes from './presentation/routes/regie.routes';
 import maintenanceRoutes from './presentation/routes/maintenance.routes';
 import salesOrderRoutes from './presentation/routes/sales-order.routes';
+import deliveryNoteRoutes from './presentation/routes/deliveryNote.routes';
 import addonOrderRoutes from './presentation/routes/addon-order.routes';
 import documentEventRoutes from './presentation/routes/documentEvents.routes';
 import billingRoutes from './presentation/routes/billing.routes';
@@ -269,6 +270,8 @@ for (const prefix of apiPrefixes) {
     app.use(`${prefix}/tenants`, tenantRoutes);
     app.use(`${prefix}/customers`, customerRoutes);
     app.use(`${prefix}/sales-orders`, salesOrderRoutes);
+    // Lieferscheine (LS-…) am Auftrag, 28.09.2026.
+    app.use(`${prefix}/delivery-notes`, deliveryNoteRoutes);
     // Nachträge (NT-…): Liste, Beleg, freier Nachtrag mit eigenen Positionen.
     app.use(`${prefix}/addon-orders`, addonOrderRoutes);
     // Belegverlauf (16.09.2026): Storno, Löschen, Zurücksetzen, Eingriffe — nur lesen.

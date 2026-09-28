@@ -191,6 +191,15 @@ export class PrismaBomRevisionRepository implements IBomRevisionRepository {
         return rows.map(toRevision);
     }
 
+    async listApproved(tenantId: string, limit: number): Promise<BomRevision[]> {
+        const rows = await prisma.productionBomRevision.findMany({
+            where: { tenantId, status: 'APPROVED', revision: { gt: 0 } },
+            orderBy: [{ approvedAt: 'desc' }, { createdAt: 'desc' }],
+            take: Math.max(1, Math.min(500, limit)),
+        });
+        return rows.map(toRevision);
+    }
+
     async get(tenantId: string, bomId: string, revision: number): Promise<BomRevision | null> {
         const row = await prisma.productionBomRevision.findFirst({ where: { tenantId, bomId, revision } });
         return row ? toRevision(row) : null;

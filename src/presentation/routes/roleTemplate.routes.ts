@@ -46,6 +46,7 @@ const router = Router();
 const ADMIN_ROLE_NAME = 'Administrator';
 const PURSER_ROLE_NAME = 'Purser';
 const ELECTRICAL_ENGINEER_ROLE_NAME = 'Elektrik Mühendisi';
+const MECHANICAL_ENGINEER_ROLE_NAME = 'Makine Mühendisi';
 
 /**
  * Startstufen der festen Purser-Rolle: das Antragspostfach zum Entscheiden,
@@ -58,11 +59,14 @@ const PURSER_DEFAULT_PAGE_LEVELS: Record<string, PageLevel> = {
     'personnel.requestsAll': 1,
 };
 
-/** Pano Merkezi için hazır rol: başka üretim sayfalarını açmadan model ve
- * fiziksel pano kayıtlarını okuyup yönetir. Yönetici isterse seviyesini daha
- * sonra normal rol düzenleyicisinden değiştirebilir. */
-const ELECTRICAL_ENGINEER_PAGE_LEVELS: Record<string, PageLevel> = {
-    'production.panels': 2,
+/** Üretimin hazır mühendis rolleri (28.09.2026, Samet: «makine mühendisi ve
+ * elektrik mühendisinde görevlendirme şablonları ve bom şablonları görünsün»):
+ * üretim projeleri + iki şablon sekmesi. Yönetici seviyeleri sonra Üretim ›
+ * Ayarlar › Yetkilendirme'den ya da rol düzenleyicisinden değiştirebilir. */
+const ENGINEER_PAGE_LEVELS: Record<string, PageLevel> = {
+    'production.orders': 1,
+    'production.taskTemplates': 1,
+    'production.bomTemplates': 1,
 };
 
 const setsEqual = (a: Set<string>, b: Set<string>): boolean =>
@@ -262,9 +266,9 @@ export const ensurePurserRole = async (rootTenantId: string, treeTenantIds: stri
     return role;
 };
 
-export const ensureElectricalEngineerRole = async (rootTenantId: string, treeTenantIds: string[]) => {
+const ensureEngineerRole = async (roleName: string, rootTenantId: string, treeTenantIds: string[]) => {
     let role = await prisma.role.findFirst({
-        where: { tenantId: { in: treeTenantIds }, roleName: ELECTRICAL_ENGINEER_ROLE_NAME },
+        where: { tenantId: { in: treeTenantIds }, roleName },
         select: { id: true, roleName: true, pageLevels: true },
     });
     if (!role) {
@@ -272,17 +276,29 @@ export const ensureElectricalEngineerRole = async (rootTenantId: string, treeTen
             data: {
                 id: nanoid(8),
                 tenantId: rootTenantId,
-                roleName: ELECTRICAL_ENGINEER_ROLE_NAME,
-                pageLevels: ELECTRICAL_ENGINEER_PAGE_LEVELS,
+                roleName,
+                pageLevels: ENGINEER_PAGE_LEVELS,
             } as any,
             select: { id: true, roleName: true, pageLevels: true },
         });
     }
-    const levels = sanitizePageLevels(role.pageLevels || ELECTRICAL_ENGINEER_PAGE_LEVELS);
+    let levels = sanitizePageLevels(role.pageLevels || ENGINEER_PAGE_LEVELS);
+    /* Die alte Vorgabe war NUR «Panolar» — die Seite gibt es seit 28.09.2026
+       nicht mehr. Eine leere Karte hiesse im Browser «keine Regeln = alles»;
+       darum bekommt die Rolle dann die neue Vorgabe. */
+    if (!Object.keys(levels).length) {
+        levels = { ...ENGINEER_PAGE_LEVELS };
+        await prisma.role.update({ where: { id: role.id }, data: { pageLevels: levels } as any });
+    }
     const changed = await syncRolePermissions(role.id, permissionsForPageLevels(levels));
     await syncRoleModuleConfigs(role.id, treeTenantIds, moduleKeysForPageLevels(levels));
     if (changed) await clearPermissionCacheForRole(role.id);
     return role;
+};
+
+export const ensureElectricalEngineerRole = async (rootTenantId: string, treeTenantIds: string[]) => {
+    await ensureEngineerRole(MECHANICAL_ENGINEER_ROLE_NAME, rootTenantId, treeTenantIds);
+    return ensureEngineerRole(ELECTRICAL_ENGINEER_ROLE_NAME, rootTenantId, treeTenantIds);
 };
 
 /**

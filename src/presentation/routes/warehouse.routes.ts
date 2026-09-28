@@ -16,10 +16,10 @@ import { WarehouseController } from '../controllers/WarehouseController';
  *   GET    /products/:id                      Karte + Seriennummern
  *   PATCH  /products/:id                      Karte ändern (neue Gruppe → neuer ERP-Code)
  *   DELETE /products/:id                      Karte löschen (samt Seriennummern)
- *   POST   /products/:id/receive              «Ürün ekle»: Bestand ± n (ohne Seriennummern)
+ *   POST   /products/:id/receive              «Ürün ekle»: Bestand ± n (ohne Seriennummern); goodsIn = Wareneingang der BOM-Bestellungen
  *   POST   /products/:id/serials              Seriennummer anlegen (Bestand zählt mit)
  *   PATCH  /serials/:id                       Nummer / Projekt / Gerät ändern
- *   DELETE /serials/:id                       Seriennummer löschen
+ *   DELETE /serials/:id                       Seriennummer löschen (?receipt= nimmt auch den Wareneingang zurück)
  *   GET    /lookup?code=                      Scan: Seriennummer, Barcode, Herstellerbarcode, ERP-Code
  *   GET    /material-groups                   Hauptkategorien mit ihren Gruppen (+ Zahl der Karten)
  *   POST   /categories                        Hauptkategorie anlegen (Name + Kürzel)
@@ -142,7 +142,7 @@ router.delete('/products/:id', MANAGE, GATE, (req, res, next) => controller.remo
  * /warehouse/products/{id}/receive:
  *   post:
  *     tags: [Warehouse]
- *     summary: "Depo: Bestand einer Karte ohne Seriennummern ändern (Ürün ekle; negativ = Scan zurücknehmen)"
+ *     summary: "Depo: Bestand einer Karte ohne Seriennummern ändern (Ürün ekle; negativ = Scan zurücknehmen; goodsIn = Wareneingang wartender BOM-Bestellungen, undo = Rücknahme)"
  *     security:
  *       - bearerAuth: []
  * /warehouse/products/{id}/serials:

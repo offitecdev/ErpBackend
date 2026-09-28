@@ -11,6 +11,7 @@
  *   ORDER   → AB-2026-10001   Auftragsbestätigung / Order confirmation
  *   ADDON   → NT-2026-10001   Nachtrag  / Additional order / Ek sipariş
  *   INVOICE → RE-2026-10001   Rechnung  / Invoice          / Fatura
+ *   DELIVERY_NOTE → LS-2026-10001  Lieferschein / Delivery note / İrsaliye
  *
  * ── Sıranın ilk hanesi ŞİRKETİN NUMARASIDIR ──────────────────────────────────
  * Sıra 1'den değil, şirketin kendi BLOĞUNDAN başlar: blok =
@@ -59,6 +60,11 @@ export const DOCUMENT_PREFIX = {
     ORDER: 'AB',
     ADDON: 'NT',
     INVOICE: 'RE',
+    /**
+     * LIEFERSCHEIN (28.09.2026). Der Beleg, der mit der Ware geht — eigene
+     * Serie aus demselben Firmenblock wie die übrigen fünf.
+     */
+    DELIVERY_NOTE: 'LS',
 } as const;
 
 export type DocumentType = keyof typeof DOCUMENT_PREFIX;
@@ -89,6 +95,7 @@ const ISSUED_NUMBER_SOURCE: Record<DocumentType, { table: string; column: string
     ORDER: { table: 'SalesOrder', column: 'orderNumber' },
     ADDON: { table: 'SalesOrder', column: 'orderNumber' },
     INVOICE: { table: 'Invoice', column: 'invoiceNumber' },
+    DELIVERY_NOTE: { table: 'DeliveryNote', column: 'noteNumber' },
 };
 
 /**

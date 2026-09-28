@@ -435,3 +435,72 @@ export interface BomSettings {
     /** Die Alt-BOM-Kodes je Bereich («ayarlardan Mekanik ve Elektrik için ayrı ayrı»). */
     codes: Record<BomArea, BomCode[]>;
 }
+
+/* ── Satın alma talebi & gelen mallar (27.09.2026 abends, Vorgabe Samet) ────
+   «Fiyat talepleri ve siparişleri muhasebe ve yöneticiler yapacak … bom'da
+    sadece sipariş ve fiyat talep istekleri oluşsun … tedarikçi ve fiyatlar
+    gözükmesin, başka bir sayfada talep olarak gelsin.» Die BOM stellt einen
+    Talep ohne Lieferant und Preis; der Einkauf macht daraus die Belege. */
+
+/** PRICE = «Fiyat talebi iste» (Entwurf) · ORDER = «Sipariş talebi» (freigegeben, was fehlt). */
+export type BomProcurementKind = 'PRICE' | 'ORDER';
+export const BOM_PROCUREMENT_KINDS: readonly BomProcurementKind[] = ['PRICE', 'ORDER'];
+
+/**
+ * OPEN         gestellt, der Einkauf hat noch nichts daraus gemacht
+ * IN_PROGRESS  es gibt Belege, aber noch nicht für jede Zeile
+ * DONE         jede Zeile steht in einem Beleg (oder der Einkauf hat ihn geschlossen)
+ * CANCELLED    zurückgezogen (BOM) oder verworfen (Einkauf)
+ */
+export type BomProcurementStatus = 'OPEN' | 'IN_PROGRESS' | 'DONE' | 'CANCELLED';
+
+export interface BomProcurementLine extends BomProductRef {
+    bomLineId: string;
+    unit: BomUnit;
+    quantity: number;
+    note: string | null;
+}
+
+export interface BomProcurementRequest {
+    id: string;
+    tenantId: string;
+    requestNumber: string;
+    bomId: string;
+    productionProjectId: string;
+    productionItemId: string;
+    area: BomArea;
+    kind: BomProcurementKind;
+    status: BomProcurementStatus;
+    bomRevision: number;
+    lines: BomProcurementLine[];
+    note: string | null;
+    /** Die Belege, die der Einkauf daraus machte (Preisanfragen / Bestellungen). */
+    purchaseOrderIds: string[];
+    createdById: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+    closedById: string | null;
+    closedAt: Date | null;
+}
+
+/** Wohin eingegangene Ware bei der Buchung ging (uretim_bom_gelen_mallar). */
+export interface BomGoodsIn {
+    id: string;
+    tenantId: string;
+    receiptId: string;
+    source: 'ORDER' | 'STOCK';
+    purchaseOrderId: string | null;
+    referenceNumber: string | null;
+    productId: string;
+    erpCode: string | null;
+    name: string;
+    /** null = kein wartender Bedarf, die Ware ging in den freien Bestand. */
+    bomId: string | null;
+    lineId: string | null;
+    productionProjectId: string | null;
+    productionItemId: string | null;
+    quantity: number;
+    serials: string[];
+    receivedById: string | null;
+    receivedAt: Date;
+}

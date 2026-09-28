@@ -44,6 +44,12 @@ export interface BomActor {
     canManage: boolean;
     /** `inventory.transfer` — Lieferantenbestellungen bearbeiten. */
     canPurchase: boolean;
+    /** Seite «Satın alma» Stufe ≥ 1 — den Einkauf (Lieferanten, Preise, Ausgaben) sehen. */
+    canSeeProcurement: boolean;
+    /** Seite «Satın alma» Stufe 2 — Preisanfragen und Bestellungen machen, Ware annehmen. */
+    canProcure: boolean;
+    /** Seite «Kalkülasyon» — geplante und tatsächliche Materialkosten sehen. */
+    canSeeCosting: boolean;
 }
 
 /**

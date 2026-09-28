@@ -115,7 +115,13 @@ export type BomErrorCode =
     | 'REVISION_NOT_FOUND'
     | 'REASON_REQUIRED'
     | 'REVISION_NO_CHANGES'
-    | 'REVISION_CONFLICT';
+    | 'REVISION_CONFLICT'
+    // Satın alma talebi (27.09.2026 abends)
+    | 'KIND_INVALID'
+    | 'NOT_FOUND'
+    | 'REQUEST_NOT_FOUND'
+    | 'REQUEST_IN_PROGRESS'
+    | 'REQUEST_MISMATCH';
 
 export type BomError = Error & {
     code: BomErrorCode;

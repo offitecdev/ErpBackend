@@ -74,7 +74,9 @@ export type WarehouseErrorCode =
     | 'SUPPLIER_NAME_REQUIRED'
     | 'SUPPLIER_DUPLICATE'
     | 'TOO_MANY_SUPPLIERS'
-    | 'MANUFACTURER_BARCODE_TAKEN';
+    | 'MANUFACTURER_BARCODE_TAKEN'
+    // 28.09.2026: «Ürün ekle» bucht den Wareneingang — die Rücknahme passt nicht zur Buchung.
+    | 'RECEIPT_UNDO_INVALID';
 
 export type WarehouseError = Error & {
     code: WarehouseErrorCode;

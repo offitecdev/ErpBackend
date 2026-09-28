@@ -1,5 +1,7 @@
-import type { BomPurchaseLink } from '../../../../domain/entities/ProductionBom';
+import type { BomDemand, BomGoodsIn, BomPurchaseLink } from '../../../../domain/entities/ProductionBom';
 import type {
+    IBomGoodsInRepository,
+    IBomProductionDirectory,
     IBomPurchaseRepository,
     IBomRepository,
     IBomRevisionRepository,
@@ -11,6 +13,7 @@ import {
     CONFIRMED_ORDER_STATUSES,
     round3,
 } from '../../../../domain/services/productionBom';
+import { receiptAllocation } from '../../../../domain/services/productionBomProcurement';
 import type { BomPurchaseOrderWriter } from '../../../../infrastructure/services/productionBomPurchaseWriter';
 import type { TableAiColumn, TableAiInput, TableAiLabel, TableAiResult } from '../../../../infrastructure/services/bomTableAi';
 import type { BomReservationService } from './BomReservationService';
@@ -27,6 +30,22 @@ export interface BomDocumentStore {
 }
 
 export type TableAiPort = (input: TableAiInput) => Promise<TableAiResult>;
+
+/** Wohin eine Buchung Ware gab — für die Meldung nach dem Wareneingang. */
+export interface BomReceiptAllocationDto {
+    productId: string;
+    erpCode: string | null;
+    name: string;
+    quantity: number;
+    serials: string[];
+    /** null = kein wartender Bedarf: freier Bestand. */
+    bomId: string | null;
+    bomNumber: string | null;
+    projectNumber: string | null;
+    projectName: string | null;
+    deviceName: string | null;
+    deliveryDate: string | null;
+}
 
 const QUOTE_MAX_BYTES = 12 * 1024 * 1024;
 const QUOTE_TYPES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp']);
@@ -89,6 +108,8 @@ export class BomPurchasesUseCase {
         private documents: BomDocumentStore,
         private tableAi: TableAiPort,
         private revisions: IBomRevisionRepository,
+        private goodsIn: IBomGoodsInRepository | null = null,
+        private directory: IBomProductionDirectory | null = null,
     ) {}
 
     private async requireLink(tenantId: string, purchaseOrderId: string): Promise<BomPurchaseLink> {
@@ -97,12 +118,13 @@ export class BomPurchasesUseCase {
         return link;
     }
 
-    /** Einkauf (inventory.transfer), Verwaltung oder wer die BOM bearbeitet. */
-    private async assertCanPurchase(tenantId: string, actor: BomActor, link: BomPurchaseLink): Promise<void> {
-        if (actor.isAdmin || actor.canManage || actor.canPurchase) return;
-        const bom = await this.boms.get(tenantId, link.bomId);
-        if (!bom) throw bomError('BOM_NOT_FOUND', 'BOM nicht gefunden.', { status: 404 });
-        await this.devices.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
+    /**
+     * Seit dem 27.09.2026 abends NUR der Einkauf (Seite «Satın alma» Stufe 2
+     * oder Administratorrolle): «fiyat talepleri ve siparişleri muhasebe ve
+     * yöneticiler yapacak». Die BOM stellt nur noch den Talep.
+     */
+    private async assertCanPurchase(_tenantId: string, actor: BomActor, _link: BomPurchaseLink): Promise<void> {
+        this.devices.assertCanProcure(actor);
     }
 
     private async bomDtoOf(tenantId: string, bomId: string): Promise<BomDto | null> {
@@ -183,7 +205,11 @@ export class BomPurchasesUseCase {
      * Nummern wie Stück; jede Nummer steht danach an der Karte und geht (frei)
      * an die wartende Zeile mit dem frühesten Liefertermin.
      */
-    async receive(tenantId: string, actor: BomActor, purchaseOrderId: string, body: unknown): Promise<{ bom: BomDto | null; status: string }> {
+    async receive(tenantId: string, actor: BomActor, purchaseOrderId: string, body: unknown): Promise<{
+        bom: BomDto | null;
+        status: string;
+        allocations: BomReceiptAllocationDto[];
+    }> {
         const link = await this.requireLink(tenantId, purchaseOrderId);
         await this.assertCanPurchase(tenantId, actor, link);
         if (link.kind !== 'ORDER') throw bomError('ORDER_ONLY', 'Ware kommt über eine Bestellung, nicht über eine Anfrage.', { status: 409 });
@@ -245,6 +271,9 @@ export class BomPurchasesUseCase {
             }
         }
 
+        // Wie die Reservierung VOR der Buchung stand — der Zuwachs danach zeigt, wohin die Ware ging.
+        const before = await this.reservations.facts(tenantId, [...productIds]);
+
         // Erst ins Depo, dann in die Bestellung: fällt das Depo aus, bleibt die Bestellung offen.
         const booked: Array<{ index: number; quantity: number }> = [];
         for (const entry of plan) {
@@ -266,8 +295,109 @@ export class BomPurchasesUseCase {
             booked.push({ index: entry.index, quantity: entry.quantity });
         }
         const receipt = await this.writer.applyReceipt({ tenantId, userId: actor.id, purchaseOrderId, received: booked });
-        await this.reservations.assignFreeSerials(tenantId, [...productIds]);
-        return { bom: await this.bomDtoOf(tenantId, link.bomId), status: receipt.status };
+        const serialResult = await this.reservations.assignFreeSerialsDetailed(tenantId, [...productIds]);
+        // Das Protokoll darf den Wareneingang nie scheitern lassen — die Ware ist gebucht.
+        const allocations = await this.recordGoodsIn(tenantId, actor, order.id, order.referenceNumber, plan, products, before, serialResult.assigned)
+            .catch((error: unknown) => {
+                console.warn('[production-bom] goods-in log failed', (error as Error)?.message);
+                return [] as BomReceiptAllocationDto[];
+            });
+        return { bom: await this.bomDtoOf(tenantId, link.bomId), status: receipt.status, allocations };
+    }
+
+    /**
+     * «Mal kabulde projeler arasında en erken teslim tarihli projeye»: die
+     * Reservierung rechnet ohnehin frühester Liefertermin zuerst. Hier wird
+     * festgehalten, wohin DIESE Buchung die Ware gab — Menge je Zeile aus dem
+     * Zuwachs an Reserviertem, Seriennummern aus ihrer Zuordnung; der Rest ist
+     * freier Bestand. Das ist «Gelen mallar» an der BOM.
+     */
+    private async recordGoodsIn(
+        tenantId: string,
+        actor: BomActor,
+        purchaseOrderId: string,
+        referenceNumber: string,
+        plan: Array<{ quantity: number; serials: string[]; productId: string; serialRequired: boolean }>,
+        products: Map<string, { erpCode: string | null; name: string }>,
+        before: Awaited<ReturnType<BomReservationService['facts']>>,
+        assigned: Array<{ serialNumber: string; productId: string; demand: BomDemand }>,
+    ): Promise<BomReceiptAllocationDto[]> {
+        const productIds = [...new Set(plan.map((entry) => entry.productId))];
+        const after = await this.reservations.facts(tenantId, productIds);
+        const receiptId = `R${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 32);
+        const receivedAt = new Date();
+        const rows: Array<Omit<BomGoodsIn, 'id' | 'tenantId'>> = [];
+        const push = (productId: string, demand: BomDemand | null, quantity: number, serials: string[]) => {
+            const product = products.get(productId);
+            rows.push({
+                receiptId,
+                source: 'ORDER',
+                purchaseOrderId,
+                referenceNumber,
+                productId,
+                erpCode: product?.erpCode ?? null,
+                name: product?.name ?? '—',
+                bomId: demand?.bomId ?? null,
+                lineId: demand?.lineId ?? null,
+                productionProjectId: demand?.productionProjectId ?? null,
+                productionItemId: demand?.productionItemId ?? null,
+                quantity: round3(quantity),
+                serials,
+                receivedById: actor.id,
+                receivedAt,
+            });
+        };
+        for (const productId of productIds) {
+            const entries = plan.filter((entry) => entry.productId === productId);
+            if (entries.some((entry) => entry.serialRequired)) {
+                const received = new Set(entries.flatMap((entry) => entry.serials));
+                const byLine = new Map<string, { demand: BomDemand; serials: string[] }>();
+                for (const entry of assigned) {
+                    if (entry.productId !== productId || !received.has(entry.serialNumber)) continue;
+                    const group = byLine.get(entry.demand.lineId) ?? { demand: entry.demand, serials: [] };
+                    group.serials.push(entry.serialNumber);
+                    byLine.set(entry.demand.lineId, group);
+                    received.delete(entry.serialNumber);
+                }
+                for (const group of byLine.values()) push(productId, group.demand, group.serials.length, group.serials);
+                if (received.size) push(productId, null, received.size, [...received]);
+                continue;
+            }
+            const quantity = round3(entries.reduce((sum, entry) => sum + entry.quantity, 0));
+            const demands = after.demands.filter((demand) => demand.productId === productId);
+            for (const part of receiptAllocation(quantity, demands, before.coverage.lines, after.coverage.lines)) {
+                push(productId, part.demand, part.quantity, []);
+            }
+        }
+        if (this.goodsIn) await this.goodsIn.add(tenantId, rows);
+
+        const bomIds = [...new Set(rows.map((row) => row.bomId).filter((id): id is string => Boolean(id)))];
+        const projectIds = rows.map((row) => row.productionProjectId).filter((id): id is string => Boolean(id));
+        const itemIds = rows.map((row) => row.productionItemId).filter((id): id is string => Boolean(id));
+        const [boms, projects, devices] = await Promise.all([
+            bomIds.length ? this.boms.getMany(tenantId, bomIds) : Promise.resolve([]),
+            this.directory && projectIds.length ? this.directory.projects(tenantId, projectIds) : Promise.resolve(new Map()),
+            this.directory && itemIds.length ? this.directory.devices(tenantId, itemIds) : Promise.resolve(new Map()),
+        ]);
+        const bomNumber = new Map(boms.map((bom) => [bom.id, bom.bomNumber]));
+        return rows.map((row) => {
+            const project = row.productionProjectId ? projects.get(row.productionProjectId) : undefined;
+            const device = row.productionItemId ? devices.get(row.productionItemId) : undefined;
+            const delivery = row.productionProjectId ? after.deliveryDates.get(row.productionProjectId) ?? null : null;
+            return {
+                productId: row.productId,
+                erpCode: row.erpCode,
+                name: row.name,
+                quantity: row.quantity,
+                serials: row.serials,
+                bomId: row.bomId,
+                bomNumber: row.bomId ? bomNumber.get(row.bomId) ?? null : null,
+                projectNumber: project?.projectNumber ?? null,
+                projectName: project?.projectName ?? null,
+                deviceName: device?.name ?? null,
+                deliveryDate: delivery ? delivery.toISOString() : null,
+            };
+        });
     }
 
     /* ── Die Tabelle per KI ──────────────────────────────────────────────── */

@@ -373,6 +373,18 @@ export class PrismaBomRepository implements IBomRepository {
         return rows.map(toBom);
     }
 
+    async listForProjects(tenantId: string, productionProjectIds: string[] | null): Promise<Bom[]> {
+        const ids = productionProjectIds ? [...new Set(productionProjectIds.filter(Boolean))] : null;
+        if (ids && !ids.length) return [];
+        const rows = await prisma.productionBom.findMany({
+            where: { tenantId, ...(ids ? { productionProjectId: { in: ids } } : {}) },
+            include: { lines: true },
+            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            take: 3000,
+        });
+        return rows.map(toBom);
+    }
+
     async get(tenantId: string, id: string): Promise<Bom | null> {
         const row = await prisma.productionBom.findFirst({ where: { id, tenantId }, include: { lines: true } });
         return row ? toBom(row) : null;
@@ -852,6 +864,7 @@ export class PrismaBomPurchaseRepository implements IBomPurchaseRepository {
                 totalNet: true,
                 emailSentAt: true,
                 createdAt: true,
+                updatedAt: true,
                 items: true,
             },
         });
@@ -866,6 +879,7 @@ export class PrismaBomPurchaseRepository implements IBomPurchaseRepository {
             totalNet: num(row.totalNet),
             emailSentAt: row.emailSentAt,
             createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
             items: parseItems(row.items),
         }));
     }

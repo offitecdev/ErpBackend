@@ -22,6 +22,8 @@ import {
     type BomCompletion,
 } from '../../../../domain/services/productionBom';
 
+import type { BomGoodsInDto, BomProcurementSummaryDto } from './BomProcurementUseCase';
+
 /**
  * ── WAS DIE OBERFLÄCHE SIEHT (27.09.2026) ────────────────────────────────────
  * Spiegel: ErpFront/offitec-frontend/src/types/productionBom.ts.
@@ -292,6 +294,10 @@ export interface BomDto {
     revisionDraft: BomRevisionDraftDto | null;
     /** Die freigegebenen Revisionen, älteste zuerst (Rev.0 = die erste Freigabe). */
     revisions: BomRevisionSummaryDto[];
+    /** Die Talepler an den Einkauf (27.09.2026 abends) — ohne Lieferant, ohne Preis. */
+    procurement: BomProcurementSummaryDto[];
+    /** Eingegangene Ware, die bei der Buchung an diese BOM ging (Gelen mallar). */
+    goodsIn: BomGoodsInDto[];
 }
 
 const itemNumber = (value: unknown): number => {
@@ -405,6 +411,10 @@ export const bomDto = (
         purchaseRevisions?: Array<Omit<BomPurchaseRevision, 'previousOrder'>>;
         /** Namen der Personen (Kennung → Name). */
         names?: Map<string, string>;
+        /** Die Talepler dieser BOM an den Einkauf. */
+        procurement?: BomProcurementSummaryDto[];
+        /** Die eingegangene Ware, die an diese BOM ging. */
+        goodsIn?: BomGoodsInDto[];
     },
 ): BomDto => {
     const revisions = (context.revisions ?? []).filter((entry) => entry.bomId === bom.id);
@@ -520,6 +530,8 @@ export const bomDto = (
             }
             : null,
         revisions: revisionHistory(bom, revisions, nameOf),
+        procurement: context.procurement ?? [],
+        goodsIn: context.goodsIn ?? [],
     };
 };
 

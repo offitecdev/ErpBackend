@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 
 import { productionBomModule } from '../composition/productionBomModule';
 import { bomError, bomErrorBody, isBomError } from '../../domain/services/productionBom';
+import { withoutSupplierFacts } from '../../domain/services/productionBomProcurement';
 import type { BomActor } from '../../application/use-cases/production/bom/BomTemplatesUseCase';
 import { RoleRepository } from '../../infrastructure/repositories/RoleRepository';
 import { userHasPermission } from '../middlewares/RbacMiddleware';
@@ -35,14 +36,33 @@ const actorOf = async (req: Request): Promise<BomActor> => {
         userHasPermission(user.id, 'inventory.transfer'),
     ]);
     const fromToken = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim();
+    // «Satın alma» (27.09.2026 abends): Buchhaltung / Administratorrolle — die Seitenstufe
+    // (mit der Vererbung von «Giden faturalar», siehe PAGE_LEVEL_FALLBACKS).
+    const procurementLevel = Number(roleInfo?.pageAccess?.[PROCUREMENT_PAGE] ?? 0);
     return {
         id: user.id,
         name: fromToken || null,
         isAdmin: Boolean(roleInfo?.isSystemAdmin),
         canManage,
         canPurchase,
+        canSeeProcurement: procurementLevel >= 1,
+        canProcure: procurementLevel >= 2,
+        canSeeCosting: Number(roleInfo?.pageAccess?.[COSTING_PAGE] ?? 0) >= 1,
     };
 };
+
+/** Die Seite «Kalkülasyon» im Seitenkatalog. */
+const COSTING_PAGE = 'production.costing';
+
+/** Die Seite «Satın alma» im Seitenkatalog. */
+const PROCUREMENT_PAGE = 'production.purchasing';
+
+/**
+ * «Tedarikçi ve fiyatlar gözükmesin» (27.09.2026 abends): wer den Einkauf
+ * nicht sieht, bekommt jede BOM-Antwort ohne Lieferant und Preis.
+ */
+const shaped = <T>(actor: BomActor, payload: T): T =>
+    (actor.isAdmin || actor.canSeeProcurement ? payload : withoutSupplierFacts(payload));
 
 export class ProductionBomController {
     /** Die Schranke: nur in einer Produktionsfirma mit Produktionsmodul (wie das Depo). */
@@ -79,25 +99,28 @@ export class ProductionBomController {
     async listTemplates(req: Request, res: Response, next: NextFunction) {
         try {
             const [list, actor] = await Promise.all([productionBomModule.templates.list(tenantOf(req)), actorOf(req)]);
-            res.json({ ...list, canEdit: actor.isAdmin || actor.canManage });
+            res.json(shaped(actor, { ...list, canEdit: actor.isAdmin || actor.canManage }));
         } catch (error) { fail(res, next, error); }
     }
 
     async getTemplate(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.templates.get(tenantOf(req), param(req, 'id')));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.templates.get(tenantOf(req), param(req, 'id'))));
         } catch (error) { fail(res, next, error); }
     }
 
     async createTemplate(req: Request, res: Response, next: NextFunction) {
         try {
-            res.status(201).json(await productionBomModule.templates.create(tenantOf(req), await actorOf(req), req.body));
+            const actor = await actorOf(req);
+            res.status(201).json(shaped(actor, await productionBomModule.templates.create(tenantOf(req), actor, req.body)));
         } catch (error) { fail(res, next, error); }
     }
 
     async updateTemplate(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.templates.update(tenantOf(req), await actorOf(req), param(req, 'id'), req.body));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.templates.update(tenantOf(req), actor, param(req, 'id'), req.body)));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -115,7 +138,8 @@ export class ProductionBomController {
 
     async searchProducts(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.templates.searchProducts(tenantOf(req), req.query.q));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.templates.searchProducts(tenantOf(req), req.query.q)));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -123,26 +147,30 @@ export class ProductionBomController {
 
     async deviceView(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.devices.view(tenantOf(req), await actorOf(req), param(req, 'itemId'), req.query.area));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.devices.view(tenantOf(req), actor, param(req, 'itemId'), req.query.area)));
         } catch (error) { fail(res, next, error); }
     }
 
     async addBom(req: Request, res: Response, next: NextFunction) {
         try {
             // Eine leere Alt-BOM unter der Haupt-BOM (Kod aus den Einstellungen).
-            res.status(201).json(await productionBomModule.devices.addSub(tenantOf(req), await actorOf(req), param(req, 'itemId'), req.body));
+            const actor = await actorOf(req);
+            res.status(201).json(shaped(actor, await productionBomModule.devices.addSub(tenantOf(req), actor, param(req, 'itemId'), req.body)));
         } catch (error) { fail(res, next, error); }
     }
 
     async getBom(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json({ bom: await productionBomModule.devices.get(tenantOf(req), param(req, 'bomId')) });
+            const actor = await actorOf(req);
+            res.json(shaped(actor, { bom: await productionBomModule.devices.get(tenantOf(req), param(req, 'bomId')) }));
         } catch (error) { fail(res, next, error); }
     }
 
     async saveLines(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.devices.saveLines(tenantOf(req), await actorOf(req), param(req, 'bomId'), req.body));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.devices.saveLines(tenantOf(req), actor, param(req, 'bomId'), req.body)));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -169,7 +197,7 @@ export class ProductionBomController {
                 res.status(404).json({ error: 'Unbekannte Handlung.', code: 'NOT_FOUND' });
                 return;
             }
-            res.json(result);
+            res.json(shaped(actor, result));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -177,37 +205,43 @@ export class ProductionBomController {
 
     async startRevision(req: Request, res: Response, next: NextFunction) {
         try {
-            res.status(201).json(await productionBomModule.revisions.start(tenantOf(req), await actorOf(req), param(req, 'bomId'), req.body));
+            const actor = await actorOf(req);
+            res.status(201).json(shaped(actor, await productionBomModule.revisions.start(tenantOf(req), actor, param(req, 'bomId'), req.body)));
         } catch (error) { fail(res, next, error); }
     }
 
     async discardRevision(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.revisions.discard(tenantOf(req), await actorOf(req), param(req, 'bomId')));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.revisions.discard(tenantOf(req), actor, param(req, 'bomId'))));
         } catch (error) { fail(res, next, error); }
     }
 
     async revisionPreview(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.revisions.preview(tenantOf(req), await actorOf(req), param(req, 'bomId'), req.query.keep));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.revisions.preview(tenantOf(req), actor, param(req, 'bomId'), req.query.keep)));
         } catch (error) { fail(res, next, error); }
     }
 
     async approveRevision(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.revisions.approve(tenantOf(req), await actorOf(req), param(req, 'bomId'), req.body));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.revisions.approve(tenantOf(req), actor, param(req, 'bomId'), req.body)));
         } catch (error) { fail(res, next, error); }
     }
 
     async revisionDetail(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.revisions.detail(tenantOf(req), param(req, 'bomId'), param(req, 'number')));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.revisions.detail(tenantOf(req), param(req, 'bomId'), param(req, 'number'))));
         } catch (error) { fail(res, next, error); }
     }
 
     async purchaseRevision(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.revisions.purchaseRevision(tenantOf(req), param(req, 'purchaseOrderId'), param(req, 'number')));
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.revisions.purchaseRevision(tenantOf(req), param(req, 'purchaseOrderId'), param(req, 'number'))));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -235,7 +269,9 @@ export class ProductionBomController {
 
     async requestProposal(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.devices.requestProposal(tenantOf(req), await actorOf(req), param(req, 'bomId')));
+            const raw = req.query.procurementRequestId;
+            const procurementRequestId = typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 64) : null;
+            res.json(await productionBomModule.devices.requestProposal(tenantOf(req), await actorOf(req), param(req, 'bomId'), procurementRequestId));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -243,6 +279,97 @@ export class ProductionBomController {
         try {
             res.status(201).json(await productionBomModule.devices.createRequests(tenantOf(req), await actorOf(req), param(req, 'bomId'), req.body));
         } catch (error) { fail(res, next, error); }
+    }
+
+    /* ── Satın alma talebi (27.09.2026 abends) ───────────────────────────── */
+
+    /** Die BOM stellt einen Talep: { kind: PRICE|ORDER, lines: [{ lineId, quantity, note }], note }. */
+    async createProcurementRequest(req: Request, res: Response, next: NextFunction) {
+        try {
+            const actor = await actorOf(req);
+            res.status(201).json(shaped(actor, await productionBomModule.procurement.createFromBom(tenantOf(req), actor, param(req, 'bomId'), req.body)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /** Die BOM zieht einen unberührten Talep zurück. */
+    async withdrawProcurementRequest(req: Request, res: Response, next: NextFunction) {
+        try {
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.procurement.cancelFromBom(tenantOf(req), actor, param(req, 'requestId'))));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async listProcurement(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.procurement.list(tenantOf(req), await actorOf(req), req.query as Record<string, unknown>));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async getProcurement(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.procurement.get(tenantOf(req), await actorOf(req), param(req, 'requestId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async procurementAction(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.procurement.setStatus(tenantOf(req), await actorOf(req), param(req, 'requestId'), param(req, 'action')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async procurementRevisions(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.procurement.revisions(tenantOf(req), await actorOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async procurementBom(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.procurement.bomFor(tenantOf(req), await actorOf(req), param(req, 'bomId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /* ── Kalkülasyon (27.09.2026 abends) ─────────────────────────────────── */
+
+    async costingProjects(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.costing.projects(tenantOf(req), await actorOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async costingProject(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.costing.project(tenantOf(req), await actorOf(req), param(req, 'projectId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async procurementSpending(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.procurement.spending(tenantOf(req), await actorOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /**
+     * Die Wege der Assistenten und Belege erreicht auch der Einkauf ohne
+     * Produktionsrechte: Stufe der Seite «Satın alma», Administratorrolle,
+     * `production.view` oder `inventory.view`. Was er dort DARF, prüft der
+     * Anwendungsfall (`canProcure`).
+     */
+    static async requireBomOrProcurement(req: Request, res: Response, next: NextFunction) {
+        try {
+            const user = req.user!;
+            const [roleInfo, view, inventory] = await Promise.all([
+                roles.getEmployeeRoleInfo(user.id),
+                userHasPermission(user.id, 'production.view'),
+                userHasPermission(user.id, 'inventory.view'),
+            ]);
+            const pages = roleInfo?.pageAccess ?? {};
+            if (roleInfo?.isSystemAdmin || view || inventory
+                || Number(pages[PROCUREMENT_PAGE] ?? 0) >= 1 || Number(pages[COSTING_PAGE] ?? 0) >= 1) return next();
+            res.status(403).json(bomErrorBody(bomError('FORBIDDEN', 'Kein Zugriff.', { status: 403 })));
+        } catch (error) {
+            next(error);
+        }
     }
 
     /* ── Bestellungen einer BOM ─────────────────────────────────────────── */

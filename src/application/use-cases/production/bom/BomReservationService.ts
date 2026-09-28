@@ -78,8 +78,20 @@ export class BomReservationService {
      * gidecek»). Liefert, wie viele Nummern eine Zuordnung bekamen.
      */
     async assignFreeSerials(tenantId: string, productIds: string[]): Promise<number> {
+        return (await this.assignFreeSerialsDetailed(tenantId, productIds)).count;
+    }
+
+    /**
+     * Wie `assignFreeSerials`, liefert aber jede Zuordnung mit Nummer und
+     * wartender Zeile — daraus entsteht «Gelen mallar» (27.09.2026 abends).
+     */
+    async assignFreeSerialsDetailed(tenantId: string, productIds: string[]): Promise<{
+        count: number;
+        assigned: Array<{ serialId: string; serialNumber: string; productId: string; demand: BomDemand }>;
+        products: Map<string, BomStockProduct>;
+    }> {
         const unique = [...new Set(productIds.filter(Boolean))];
-        if (!unique.length) return 0;
+        if (!unique.length) return { count: 0, assigned: [], products: new Map() };
         const facts = await this.facts(tenantId, unique);
         const assignments: Array<{ serialId: string; demand: BomDemand }> = [];
         for (const productId of unique) {
@@ -91,12 +103,13 @@ export class BomReservationService {
             if (!free.length) continue;
             assignments.push(...serialAssignments(demands, facts.coverage.lines, free));
         }
-        if (!assignments.length) return 0;
+        if (!assignments.length) return { count: 0, assigned: [], products: facts.products };
+        const serialById = new Map(facts.serials.map((serial) => [serial.id, serial]));
         const [projects, devices] = await Promise.all([
             this.directory.projects(tenantId, assignments.map((entry) => entry.demand.productionProjectId)),
             this.directory.devices(tenantId, assignments.map((entry) => entry.demand.productionItemId)),
         ]);
-        return this.stock.assignSerials(tenantId, assignments.map(({ serialId, demand }) => {
+        const count = await this.stock.assignSerials(tenantId, assignments.map(({ serialId, demand }) => {
             const project = projects.get(demand.productionProjectId);
             const device = devices.get(demand.productionItemId);
             return {
@@ -108,6 +121,14 @@ export class BomReservationService {
                 deviceName: device?.name ?? null,
             };
         }));
+        return {
+            count,
+            products: facts.products,
+            assigned: assignments.flatMap(({ serialId, demand }) => {
+                const serial = serialById.get(serialId);
+                return serial ? [{ serialId, serialNumber: serial.serialNumber, productId: serial.productId, demand }] : [];
+            }),
+        };
     }
 
     /**

@@ -170,7 +170,8 @@ export class WarehouseController {
 
     async removeSerial(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await warehouseModule.serials.delete(tenantOf(req), idParam(req)));
+            // `?receipt=` — «Geri al» einer Nummer, die eben als Wareneingang kam (28.09.2026).
+            res.json(await warehouseModule.serials.delete(tenantOf(req), userOf(req), idParam(req), req.query.receipt));
         } catch (error) { fail(res, next, error); }
     }
 

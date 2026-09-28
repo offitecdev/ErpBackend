@@ -1,0 +1,58 @@
+// ── LIEFERSCHEIN (28.09.2026, Vorgabe Samet) ────────────────────────────────
+// Der Beleg, der mit der Ware zum Kunden geht: WELCHE Positionen eines
+// Auftrags (AB) geliefert wurden, WIE VIELE und WOHIN. Ein Auftrag kann
+// mehrere Lieferscheine haben (Teillieferungen) — «Offen» ist die bestellte
+// Menge minus alles, was bis und mit diesem Lieferschein geliefert wurde.
+//
+// Nummer LS-YYYY-NNNNN aus dem Firmenblock (shared/documentNumber.ts,
+// DELIVERY_NOTE). Keine Preise: der Lieferschein zeigt Mengen, verrechnet
+// wird über die Rechnung.
+//
+// Die Anschriften sind ein SCHNAPPSCHUSS beim Erstellen: ändert sich die
+// Offerte später, bleibt der gedruckte Lieferschein, was er war.
+model DeliveryNote {
+  id                  String   @id
+  tenantId            String
+  salesOrderId        String
+  projectId           String?
+  noteNumber          String   @db.VarChar(32)
+  deliveryDate        DateTime
+  customerName        String?
+  customerAddress     String?  @db.Text
+  // Genau EINE zusätzliche Anschrift, die auf der Offerte gewählte:
+  // INSTALLATION (Projektadresse) | DELIVERY (Lieferadresse) | NULL (keine).
+  siteAddressKind     String?  @db.VarChar(16)
+  siteAddress         String?  @db.Text
+  customerReference   String?
+  note                String?  @db.Text
+  createdByEmployeeId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  lines DeliveryNoteLine[]
+
+  @@unique([tenantId, noteNumber])
+  @@index([tenantId, salesOrderId])
+  @@index([projectId])
+}
+
+model DeliveryNoteLine {
+  id               String  @id
+  deliveryNoteId   String
+  // Offertposition, aus der die Zeile stammt — NULL bei einer von Hand
+  // ergänzten Zeile. Über sie wird die schon gelieferte Menge summiert.
+  sourcePositionId String?
+  articleId        String?
+  positionNumber   String? @db.VarChar(32)
+  articleCode      String?
+  description      String  @db.Text
+  unit             String?
+  orderedQty       Float   @default(0)
+  deliveredQty     Float   @default(0)
+  sortOrder        Int     @default(0)
+
+  deliveryNote DeliveryNote @relation(fields: [deliveryNoteId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryNoteId])
+  @@index([sourcePositionId])
+}

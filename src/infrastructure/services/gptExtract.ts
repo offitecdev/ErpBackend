@@ -296,31 +296,56 @@ const systemPrompt = (language: string): string => {
 /* ── Preisliste je Modell ────────────────────────────────────────────────
    Nur zur ANZEIGE. Ein unbekanntes Modell bekommt keine geschätzten Kosten,
    sondern `null` — lieber keine Zahl als eine falsche. */
-const PRICE_PER_MILLION: Record<string, { input: number; output: number }> = {
-    'gpt-4o-mini': { input: 0.15, output: 0.6 },
-    'gpt-4o': { input: 2.5, output: 10 },
-    'gpt-4.1-mini': { input: 0.4, output: 1.6 },
-    'gpt-4.1-nano': { input: 0.1, output: 0.4 },
+/* Standard-Tarif je 1 Mio. Token — übernommen von
+   https://developers.openai.com/api/docs/pricing (27.09.2026). `cached` gilt
+   für den Teil der Eingabe, den OpenAI aus dem Zwischenspeicher bedient;
+   Denk-Token (reasoning) zählen als Ausgabe. */
+const PRICE_PER_MILLION: Record<string, { input: number; cached: number; output: number }> = {
+    'gpt-4o-mini': { input: 0.15, cached: 0.075, output: 0.6 },
+    'gpt-4o': { input: 2.5, cached: 1.25, output: 10 },
+    'gpt-4.1-mini': { input: 0.4, cached: 0.1, output: 1.6 },
+    'gpt-4.1-nano': { input: 0.1, cached: 0.025, output: 0.4 },
+    'gpt-4.1': { input: 2, cached: 0.5, output: 8 },
+    'gpt-5': { input: 1.25, cached: 0.125, output: 10 },
+    'gpt-5-mini': { input: 0.25, cached: 0.025, output: 2 },
+    'gpt-5-nano': { input: 0.05, cached: 0.005, output: 0.4 },
+    'gpt-5.4': { input: 2.5, cached: 0.25, output: 15 },
+    'gpt-5.4-mini': { input: 0.75, cached: 0.075, output: 4.5 },
+    'gpt-5.4-nano': { input: 0.2, cached: 0.02, output: 1.25 },
+    'gpt-5.5': { input: 5, cached: 0.5, output: 30 },
+    'o4-mini': { input: 1.1, cached: 0.275, output: 4.4 },
+    'o3': { input: 2, cached: 0.5, output: 8 },
 };
 
 export interface GptUsage {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    /** Davon aus dem Zwischenspeicher (günstiger) — 0, wenn die Antwort es nicht sagt. */
+    cachedTokens?: number;
+    /** Davon Denk-Token eines denkenden Modells (als Ausgabe berechnet). */
+    reasoningTokens?: number;
     /** Geschätzte Kosten in US-Dollar — `null`, wenn das Modell unbekannt ist. */
     estimatedUsd: number | null;
 }
 
+/** «gpt-5.4-mini-2026-03-17» → «gpt-5.4-mini»: ein datierter Stand kostet wie sein Modell. */
+const priceOf = (model: string) => PRICE_PER_MILLION[model] ?? PRICE_PER_MILLION[model.replace(/-\d{4}-\d{2}-\d{2}$/, '')];
+
 const usageOf = (raw: any, model: string): GptUsage => {
     const promptTokens = Number(raw?.prompt_tokens) || 0;
     const completionTokens = Number(raw?.completion_tokens) || 0;
-    const price = PRICE_PER_MILLION[model];
+    const cachedTokens = Math.min(promptTokens, Number(raw?.prompt_tokens_details?.cached_tokens) || 0);
+    const reasoningTokens = Number(raw?.completion_tokens_details?.reasoning_tokens) || 0;
+    const price = priceOf(model);
     return {
         promptTokens,
         completionTokens,
         totalTokens: Number(raw?.total_tokens) || promptTokens + completionTokens,
+        cachedTokens,
+        reasoningTokens,
         estimatedUsd: price
-            ? Math.round(((promptTokens * price.input + completionTokens * price.output) / 1e6) * 1e6) / 1e6
+            ? Math.round((((promptTokens - cachedTokens) * price.input + cachedTokens * price.cached + completionTokens * price.output) / 1e6) * 1e6) / 1e6
             : null,
     };
 };
@@ -331,14 +356,19 @@ const usageOf = (raw: any, model: string): GptUsage => {
    dort `max_completion_tokens` und schliesst das Denken ein. Wie viel sie
    denken duerfen, sagt `gptReasoningEffort` (Vorgabe `low`). Ohne diese
    Anpassung lehnt OpenAI jede Anfrage an ein solches Modell mit 400 ab. */
-const isReasoningModel = (model: string): boolean => /^(o\d|gpt-5|gpt-6)/i.test(model) && !/chat/i.test(model);
+export const isReasoningModel = (model: string): boolean => /^(o\d|gpt-5|gpt-6)/i.test(model) && !/chat/i.test(model);
 
 const REASONING_EFFORT = (): string => String(process.env.gptReasoningEffort ?? 'low').trim();
 
 const fitBodyToModel = (body: any): any => {
-    if (!isReasoningModel(String(body?.model ?? ''))) return body;
+    if (!isReasoningModel(String(body?.model ?? ''))) {
+        // Ein älteres Modell kennt `reasoning_effort` nicht und lehnte die Anfrage ab.
+        const { reasoning_effort: _effort, ...plain } = body ?? {};
+        return plain;
+    }
     const { temperature: _temperature, max_tokens: maxTokens, ...rest } = body;
-    return { ...rest, max_completion_tokens: maxTokens, reasoning_effort: REASONING_EFFORT() };
+    // Ein Aufrufer darf sein eigenes Denkmass mitgeben (die BOM-Tabelle, 27.09.2026).
+    return { ...rest, max_completion_tokens: maxTokens, reasoning_effort: rest.reasoning_effort ?? REASONING_EFFORT() };
 };
 
 /* ── Ein Aufruf, drei Fehlerbilder ───────────────────────────────────────
@@ -349,7 +379,8 @@ const fitBodyToModel = (body: any): any => {
 export const callChatCompletion = async (body: unknown, scope: string): Promise<{ parsed: any; usage: GptUsage }> => {
     const key = API_KEY();
     if (!key) throw new GptError('Die KI-Erkennung ist nicht eingerichtet.', 'GPT_NOT_CONFIGURED', 503);
-    const model = MODEL();
+    // Das Modell des Aufrufs (die BOM-Tabelle nimmt ein eigenes) — für Kosten und Meldungen.
+    const model = String((body as { model?: unknown } | null)?.model || MODEL());
 
     let response: Response;
     try {
@@ -471,7 +502,9 @@ export const parsePrintedNumber = (raw: string): number | null => {
         // Tausender; «12,5» und «12,50» sind Dezimalzahlen.
         const after = cleaned.length - lastComma - 1;
         const commas = (cleaned.match(/,/g) ?? []).length;
-        normalized = commas === 1 && after !== 3 ? cleaned.replace(',', '.') : cleaned.replace(/,/g, '');
+        // «0,798» kann nie ein Tausender sein (27.09.2026: Preis je 100 → 0,798 wurde 798).
+        const leadingZero = /^[+-]?0,/.test(cleaned);
+        normalized = commas === 1 && (after !== 3 || leadingZero) ? cleaned.replace(',', '.') : cleaned.replace(/,/g, '');
     } else if (lastDot >= 0) {
         const dots = (cleaned.match(/\./g) ?? []).length;
         // «1.234.567» sind Tausender; «1.234» allein bleibt eine Dezimalzahl,

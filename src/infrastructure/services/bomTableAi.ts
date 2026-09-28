@@ -1,8 +1,8 @@
 import {
     callChatCompletion,
     gptConfigured,
-    gptModelName,
     GptError,
+    isReasoningModel,
     imagePart,
     parsePrintedNumber,
     readImagePages,
@@ -105,6 +105,22 @@ export class TableAiError extends Error {
     }
 }
 
+/**
+ * ── DAS MODELL DER BOM-TABELLE (27.09.2026 abends, Vorgabe Samet) ─────────────
+ * «Yapay zekâda bir tık üst model kullanılabilir … almanca olan ya da farklı
+ *  dilde olan pdf'lerinden satır olan akıllı bir karar vermesi gerekmekte …
+ *  daha üst bir ChatGPT API kullanalım.» Die BOM-Tabelle bekommt ein EIGENES,
+ * stärkeres Modell (`gptBomModel`, Vorgabe unten) — die übrigen Belegwege
+ * (Beleg-Import, Wareneingang) behalten `gptModel`. Ein denkendes Modell
+ * überlegt mit `gptBomReasoningEffort` (Vorgabe medium), bevor es zuordnet.
+ * Gewählt nach einem Vergleich auf einem deutschen Angebot (Namen in anderer
+ * Sprache, Preis je 100, Blöcke über mehrere Zeilen, fremde und fehlende Zeilen).
+ */
+const DEFAULT_BOM_MODEL = 'gpt-5.4-mini';
+export const bomTableModel = (): string =>
+    String(process.env.gptBomModel ?? process.env.GPT_BOM_MODEL ?? DEFAULT_BOM_MODEL).trim() || DEFAULT_BOM_MODEL;
+const BOM_REASONING_EFFORT = (): string => String(process.env.gptBomReasoningEffort ?? 'medium').trim() || 'medium';
+
 const MAX_VALUE = 240;
 const MAX_EVIDENCE = 300;
 /** So viel Text der Quelle geht höchstens an das Modell (~25'000 Token). */
@@ -154,6 +170,20 @@ const SYSTEM_PROMPT = [
     'The line-total column takes the printed amount of the whole line - never multiply yourself.',
     'A discount is a percentage, written as a positive number even when it is printed with a minus sign.',
     'When a price is printed both with and without VAT, take the one without VAT.',
+    'LANGUAGES. The supplier information may be written in any language (German, English, Turkish, French, Italian ...) and use trade terms,',
+    'while our rows may be in another language. Compare the MEANING across languages, for example: "Schütz" = contactor = kontaktör;',
+    '"Leitungsschutzschalter", "LS-Schalter", "MCB" = miniature circuit breaker = otomatik sigorta; "Reihenklemme", "Durchgangsklemme" = terminal block = klemens;',
+    '"Mantelleitung", "Leitung", "Kabel" = cable = kablo; "Schaltschrank", "Kompaktgehäuse", "Gehäuse" = enclosure = pano; "Stk.", "St.", "Stück" = pcs = adet.',
+    'ARTICLE NUMBERS. Supplier article / order numbers ("Art.-Nr.", "Bestell-Nr.", "Artikelnummer", "Typ", "Order no.", "Ürün kodu") usually equal',
+    'our manufacturer part/model number or contain it; such a number match beats any name similarity.',
+    'BLOCKS. In a PDF one article often spans several lines: a position number, an article number, a description over two or three lines,',
+    'then quantity, unit and prices. Treat such a block as ONE supplier line and read its values from the whole block.',
+    'Lines that are not articles - freight, packaging, "Versand", "Fracht", "Porto", "Verpackung", "Mindermengenzuschlag", sums, VAT - never match an order row.',
+    'When two supplier lines could fit, prefer the one whose part number matches, then the one whose quantity and unit match ours.',
+    'PRICE UNIT - the only computation you may do: when the supplier prints a price for a price unit other than one',
+    '("PE 100", "Preiseinheit 100", "je 100 Stk", "per 100 m", "/100", "pro 1000"), the unit-price and net-price columns must hold the price of ONE unit',
+    'of our row: divide the printed price by that price unit and write the result as a plain number with a dot and up to 4 decimals,',
+    'and name the price unit in "evidence". Tiered prices ("Staffelpreise", "ab 10 Stk"): take the tier that fits the quantity of our row.',
     'In "evidence" copy the supplier line you matched, verbatim and complete (for two paired lists: the name and its value); "" when the row is unmatched.',
     'Text tables: a TAB separates two columns and two TABs in a row mean an empty cell - read every value under its own header.',
     'Return exactly one entry per order row, in the given order, with that row\'s index.',
@@ -331,11 +361,16 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
     }
 
     let parsed: { rows?: Array<{ index?: unknown; evidence?: unknown; values?: Record<string, unknown> }> };
+    const model = bomTableModel();
+    const thinking = isReasoningModel(model);
+    // Ein denkendes Modell braucht Raum für sein Überlegen — die Grenze schliesst es ein.
+    const answerBudget = Math.min(16_384, 400 + input.rows.length * (140 + input.columns.length * 20));
     try {
         const response = await callChatCompletion({
-            model: gptModelName(),
+            model,
             temperature: 0,
-            max_tokens: Math.min(16_384, 400 + input.rows.length * (140 + input.columns.length * 20)),
+            max_tokens: thinking ? answerBudget + 24_000 : answerBudget,
+            ...(thinking ? { reasoning_effort: BOM_REASONING_EFFORT() } : {}),
             response_format: { type: 'json_schema', json_schema: { name: 'order_table_fill', strict: true, schema: buildSchema(input.columns) } },
             messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
@@ -361,6 +396,35 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
             values: Object.fromEntries(input.columns.map((column) => [column.key, cleanValue(column, raw[column.key])])),
         });
     }
+    /* EINE LIEFERANTENZEILE GEHÖRT HÖCHSTENS EINER BESTELLZEILE (27.09.2026 abends):
+       gemessen ordnete das Modell in einem von fünf Läufen eine fehlende Position
+       (SM 1223) derselben Angebotszeile zu wie ihre Nachbarin (SM 1231). Teilen
+       sich Zeilen einen Beleg, behält ihn die, deren Typennummer in ihm steht —
+       sonst die mit den meisten gemeinsamen Wörtern; die anderen bleiben leer. */
+    const squash = (value: unknown): string => String(value ?? '').toLowerCase().replace(/[^a-z0-9äöüß]+/g, '');
+    const words = (value: unknown): string[] => String(value ?? '').toLowerCase().split(/[^a-z0-9äöüß]+/).filter((word) => word.length >= 3);
+    const rowByIndex = new Map(input.rows.map((row) => [row.index, row]));
+    const byEvidence = new Map<string, number[]>();
+    for (const [index, entry] of byIndex) {
+        const key = squash(entry.evidence);
+        if (key.length < 4) continue;
+        byEvidence.set(key, [...(byEvidence.get(key) ?? []), index]);
+    }
+    for (const [key, indexes] of byEvidence) {
+        if (indexes.length < 2) continue;
+        const score = (index: number): number => {
+            const row = rowByIndex.get(index);
+            const model = squash(row?.modelNumber);
+            if (model.length >= 4 && key.includes(model)) return 1000;
+            const evidence = String(byIndex.get(index)?.evidence ?? '').toLowerCase();
+            return words(`${row?.name ?? ''} ${row?.brand ?? ''} ${row?.modelNumber ?? ''}`).filter((word) => evidence.includes(word)).length;
+        };
+        const keep = [...indexes].sort((a, b) => score(b) - score(a) || a - b)[0];
+        for (const index of indexes) {
+            if (index === keep) continue;
+            byIndex.set(index, { index, evidence: '', values: Object.fromEntries(input.columns.map((column) => [column.key, ''])) });
+        }
+    }
     // Jede Zeile der Bestellung bekommt genau einen Eintrag — keine mehr, keine weniger.
     const empty = (): Record<string, string> => Object.fromEntries(input.columns.map((column) => [column.key, '']));
     const rows = input.rows.map((row) => byIndex.get(row.index) ?? { index: row.index, evidence: '', values: empty() });
@@ -370,7 +434,7 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
         matched: rows.filter((row) => row.evidence || valuesOf(row) > 0).length,
         filled: rows.reduce((sum, row) => sum + valuesOf(row), 0),
         usage: sumUsage(usages),
-        model: gptModelName(),
+        model,
         sources,
     };
 };

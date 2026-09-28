@@ -445,23 +445,8 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 maxLevel: 2,
                 grants: { read: ['production.view'], write: ['production.manage'] },
             },
-            {
-                key: 'production.lines',
-                path: '/production/lines',
-                labelKey: 'nav.productionLines',
-                maxLevel: 1,
-                grants: { read: ['production.view'] },
-            },
-            /* SCHALTSCHRÄNKE (20.09.2026, Vorgabe Baris): die Seriennummern der
-               gebauten Schränke und der Katalog ihrer Typen. 1 = ansehen,
-               2 = Seriennummern ziehen, ins Lager buchen, Typenschild drucken. */
-            {
-                key: 'production.panels',
-                path: '/production/panels',
-                labelKey: 'nav.panels',
-                maxLevel: 2,
-                grants: { read: ['panels.view'], write: ['panels.manage'] },
-            },
+            /* «Sipariş edilen ürünler» und «Panolar» sind seit dem 28.09.2026
+               (Vorgabe Samet: «üretimde fazlalıklar … sil») keine Seiten mehr. */
             /* GÖREVLENDİRME ŞABLONLARI (26.09.2026, Vorgabe Samet): die
                Aufgabenvorlagen (Beispiel «Chiller»). 1 = ansehen. Anlegen,
                ändern und auf ein Gerät laden darf allein die Administratorrolle
@@ -469,7 +454,8 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                keine Stufe der Rollentabelle. */
             {
                 key: 'production.taskTemplates',
-                path: '/production/task-templates',
+                // Seit 28.09.2026 ein Reiter der Seite «Şablonlar».
+                path: '/production/templates/tasks',
                 labelKey: 'nav.productionTaskTemplates',
                 maxLevel: 1,
                 grants: { read: ['production.view'] },
@@ -481,7 +467,7 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                die Administratorrolle — das prüft der Anwendungsfall. */
             {
                 key: 'production.bomTemplates',
-                path: '/production/bom-templates',
+                path: '/production/templates/bom',
                 labelKey: 'nav.productionBomTemplates',
                 maxLevel: 1,
                 grants: { read: ['production.view'] },
@@ -492,6 +478,29 @@ export const PAGE_MODULES: ReadonlyArray<PageModuleDefinition> = [
                 labelKey: 'nav.productionSettings',
                 maxLevel: 1,
                 grants: { read: ['production.view'] },
+            },
+            /* SATIN ALMA (27.09.2026 abends, Vorgabe Samet): «fiyat talepleri ve
+               siparişleri muhasebe ve yöneticiler yapacak ve o ekranları o
+               görmeliler». Die Talepler der BOMs, daraus Preisanfragen und
+               Bestellungen, Lieferanten und Ausgaben. 1 = ansehen, 2 = Belege
+               machen und Ware annehmen. Erbt von «Giden faturalar» (Buchhaltung). */
+            {
+                key: 'production.purchasing',
+                path: '/production/purchasing',
+                labelKey: 'nav.productionPurchasing',
+                maxLevel: 2,
+                grants: { read: ['production.purchasing.view'], write: ['production.purchasing.manage'] },
+            },
+            /* KALKÜLASYON (27.09.2026 abends, Vorgabe Samet): aus der BOM Menge ×
+               Alışpreis je Kalem, Summe je Gerät und Projekt, geplant gegen
+               tatsächlich — «başka bir sayfada, temiz». 1 = ansehen. Erbt wie
+               «Satın alma» von «Giden faturalar». */
+            {
+                key: 'production.costing',
+                path: '/production/costing',
+                labelKey: 'nav.productionCosting',
+                maxLevel: 1,
+                grants: { read: ['production.costing.view'] },
             },
         ],
     },
@@ -645,8 +654,6 @@ export const RETIRED_PAGE_KEYS: Readonly<Record<string, string>> = {
     'personnel.incoming': 'personnel.requestsIncoming',
     // Rechnungsliste: vom Verkauf in die Buchhaltung (16.09.2026).
     'sales.invoices': 'accounting.invoices',
-    // Der Modellkatalog ist seit 20.09.2026 der zweite Reiter der Pano-Zentrale.
-    'production.panelModels': 'production.panels',
 };
 
 /**
@@ -682,17 +689,17 @@ export const PAGE_LEVEL_FALLBACKS: Readonly<Record<string, string>> = {
     // Die Produktion liest die Lieferantenbestellungen — wer sie führt,
     // sieht die Produktionsaufträge (19.09.2026).
     'production.orders': 'inventory.orders',
-    'production.lines': 'inventory.orders',
-    'production.panels': 'inventory.orders',
     // Das Depo gehört zur Produktion — wer ihre Projekte sieht, sieht auch
     // die Produktkarten (26.09.2026).
     'warehouse.products': 'production.orders',
     'warehouse.settings': 'production.orders',
-    // Die Görevlendirme-Vorlagen gehören zur Produktion (26.09.2026).
-    'production.taskTemplates': 'production.orders',
-    // BOM-Vorlagen und Produktionseinstellungen (27.09.2026) ebenso.
-    'production.bomTemplates': 'production.orders',
+    // Die Vorlagen (Görevlendirme + BOM) erben seit 28.09.2026 NICHTS mehr:
+    // «makine mühendisi ve elektrik mühendisinde görünsün» — nur Rollen, die
+    // sie ausdrücklich tragen (und die Administratorrolle).
     'production.settings': 'production.orders',
+    // «Satın alma» (27.09.2026 abends) gehört der Buchhaltung.
+    'production.purchasing': 'accounting.invoices',
+    'production.costing': 'accounting.invoices',
 };
 
 /**

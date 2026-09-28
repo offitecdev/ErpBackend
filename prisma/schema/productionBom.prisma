@@ -302,3 +302,84 @@ model ProductionBomConsumption {
   @@index([tenantId, productId])
   @@map("uretim_bom_tuketimleri")
 }
+
+/// ── SATIN ALMA TALEBİ DER BOM (27.09.2026 abends, Vorgabe Samet) ───────────
+///
+/// «Fiyat talepleri ve siparişleri muhasebe ve yöneticiler yapacak … bom'da
+///  sadece sipariş ve fiyat talep istekleri oluşsun, revizyonlar yapılsın ama
+///  tedarikçi ve fiyatlar gözükmesin, başka bir sayfada talep olarak gelsin.»
+///
+/// Die BOM stellt nur noch einen TALEP (PRICE = Preis anfragen, ORDER =
+/// bestellen) — ohne Lieferant, ohne Preis. Der Einkauf (Buchhaltung /
+/// Administratorrolle) macht daraus auf der Seite «Satın alma» die
+/// Preisanfragen und Bestellungen (uretim_bom_siparisleri); welche Belege aus
+/// einem Talep entstanden, hält `purchaseOrderIds`.
+model ProductionBomProcurementRequest {
+  id                  String    @id
+  tenantId            String
+  /// TLP-2026-00001 (DocumentCounter «BOM_TALEP»).
+  requestNumber       String    @db.VarChar(32)
+  bomId               String
+  productionProjectId String
+  productionItemId    String
+  area                String    @db.VarChar(16)
+  /// PRICE | ORDER
+  kind                String    @db.VarChar(12)
+  /// OPEN | IN_PROGRESS | DONE | CANCELLED
+  status              String    @db.VarChar(16)
+  /// Die BOM-Revision, aus der der Talep kam (bei PRICE auch die im Entwurf).
+  bomRevision         Int       @default(0)
+  /// JSON [{bomLineId, productId, erpCode, name, brand, modelNumber, unit, quantity, note}]
+  lines               Json
+  note                String?   @db.Text
+  /// JSON [purchaseOrderId] — die Belege, die der Einkauf daraus machte.
+  purchaseOrderIds    Json?
+  createdById         String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  closedById          String?
+  closedAt            DateTime?
+
+  @@unique([tenantId, requestNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, bomId])
+  @@map("uretim_bom_talepleri")
+}
+
+/// ── GELEN MALLAR (27.09.2026 abends, Vorgabe Samet) ────────────────────────
+///
+/// «Mal kabulde projeler arasında en erken teslim tarihli projeye aktarılması
+///  gerekmektedir … o proje özel rezerve olunca da yanında gelen mallara
+///  eklenmesi lazım; seri numarası varsa … gelen mallar yanında bir i olacak.»
+///
+/// Jede Zeile sagt, wohin eingegangene Ware bei der Buchung ging: an welche
+/// BOM-Zeile (Projekt, Gerät — der früheste Liefertermin zuerst) oder, ohne
+/// wartenden Bedarf, in den freien Bestand (bomId null). Mehrere Zeilen eines
+/// Eingangs teilen `receiptId`. Die Reservierung selbst bleibt gerechnet —
+/// dies ist ihr Protokoll im Augenblick des Eingangs.
+model ProductionBomGoodsIn {
+  id                  String   @id
+  tenantId            String
+  receiptId           String   @db.VarChar(32)
+  /// ORDER (Wareneingang einer BOM-Bestellung) | STOCK (im Depo dazugekommen)
+  source              String   @db.VarChar(12)
+  purchaseOrderId     String?
+  referenceNumber     String?  @db.VarChar(40)
+  productId           String
+  erpCode             String?  @db.VarChar(64)
+  name                String   @db.VarChar(255)
+  bomId               String?
+  lineId              String?
+  productionProjectId String?
+  productionItemId    String?
+  quantity            Decimal  @db.Decimal(14, 3)
+  /// JSON [serialNumber] — nur Karten mit Seriennummer.
+  serials             Json?
+  receivedById        String?
+  receivedAt          DateTime @default(now())
+
+  @@index([tenantId, bomId])
+  @@index([tenantId, receivedAt])
+  @@index([tenantId, productId])
+  @@map("uretim_bom_gelen_mallar")
+}

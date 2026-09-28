@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 
-import { requireAnyPermission, requirePermission } from '../middlewares/RbacMiddleware';
+import { requirePermission } from '../middlewares/RbacMiddleware';
 import { rateLimit } from '../middlewares/RateLimitMiddleware';
 import { ProductionController } from '../controllers/ProductionController';
 import { ProductionBomController } from '../controllers/ProductionBomController';
@@ -35,6 +35,16 @@ import { ProductionBomController } from '../controllers/ProductionBomController'
  *   POST   /bom/boms/:bomId/orders                … Bestellungen je Lieferant anlegen
  *   GET    /bom/boms/:bomId/request-proposal      «Fiyat talebi» (nur Entwurf): Zeilen, Lieferanten
  *   POST   /bom/boms/:bomId/price-requests        … Preisanfragen je Lieferant anlegen (Name, Modell, Menge)
+ *   POST   /bom/boms/:bomId/procurement-requests  Talep an den Einkauf { kind: PRICE|ORDER, lines, note } (ohne Lieferant/Preis)
+ *   POST   /bom/procurement/requests/:id/withdraw  … unberührten Talep zurückziehen (BOM)
+ *   GET    /bom/procurement/requests               «Satın alma»: alle Talepler (?status=OPEN,IN_PROGRESS)  [Buchhaltung/Admin]
+ *   GET    /bom/procurement/requests/:id           … einer mit seiner BOM (voll)
+ *   POST   /bom/procurement/requests/:id/{close|reopen|cancel}
+ *   GET    /bom/procurement/spending               Ausgaben je Lieferant und Projekt, alle BOM-Belege
+ *   GET    /bom/procurement/boms/:bomId            eine BOM voll (Belege des Einkaufs) mit Projekt und Gerät
+ *   GET    /bom/procurement/revisions              freigegebene BOM-Revisionen mit den betroffenen Bestellungen (Lieferant)
+ *   GET    /bom/costing                            «Kalkülasyon»: Projekte mit geplanten/tatsächlichen Materialkosten
+ *   GET    /bom/costing/:projectId                 … ein Projekt: je Gerät die Kalemler (Menge, Alışpreis, Summe)
  *   PUT    /bom/purchases/:id/quote-number        Angebotsnummer des Lieferanten
  *   POST   /bom/purchases/:id/quote-file          Angebot des Lieferanten (PDF/Bild, multipart `file`)
  *   GET    /bom/purchases/:id/quote-file          … lesen
@@ -51,8 +61,9 @@ const router = Router();
 const controller = new ProductionBomController();
 
 const VIEW = requirePermission('production.view');
-// Die Bestellwege erreicht auch der Einkauf aus der Auftragsseite heraus.
-const PURCHASE_VIEW = requireAnyPermission(['production.view', 'inventory.view']);
+// Die Bestellwege erreicht der Einkauf — seit 27.09.2026 abends auch die Buchhaltung
+// ohne Produktionsrechte (Seite «Satın alma»); was er darf, prüft der Anwendungsfall.
+const PURCHASE_VIEW = ProductionBomController.requireBomOrProcurement;
 const MODULE = ProductionController.requireModule;
 const AVAILABLE = ProductionBomController.requireAvailable;
 
@@ -199,7 +210,7 @@ router.put('/bom/boms/:bomId/lines', VIEW, MODULE, AVAILABLE, (req, res, next) =
  *     security:
  *       - bearerAuth: []
  */
-router.get('/bom/boms/:bomId/order-proposal', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.proposal(req, res, next));
+router.get('/bom/boms/:bomId/order-proposal', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.proposal(req, res, next));
 
 /**
  * @swagger
@@ -210,7 +221,7 @@ router.get('/bom/boms/:bomId/order-proposal', VIEW, MODULE, AVAILABLE, (req, res
  *     security:
  *       - bearerAuth: []
  */
-router.post('/bom/boms/:bomId/orders', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.createOrders(req, res, next));
+router.post('/bom/boms/:bomId/orders', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.createOrders(req, res, next));
 
 /**
  * @swagger
@@ -221,7 +232,7 @@ router.post('/bom/boms/:bomId/orders', VIEW, MODULE, AVAILABLE, (req, res, next)
  *     security:
  *       - bearerAuth: []
  */
-router.get('/bom/boms/:bomId/request-proposal', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.requestProposal(req, res, next));
+router.get('/bom/boms/:bomId/request-proposal', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.requestProposal(req, res, next));
 
 /**
  * @swagger
@@ -233,7 +244,118 @@ router.get('/bom/boms/:bomId/request-proposal', VIEW, MODULE, AVAILABLE, (req, r
  *       - bearerAuth: []
  */
 // Vor `/:action` — sonst hielte der Handlungsweg «price-requests» für eine Handlung.
-router.post('/bom/boms/:bomId/price-requests', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.createRequests(req, res, next));
+router.post('/bom/boms/:bomId/price-requests', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.createRequests(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/boms/{bomId}/procurement-requests:
+ *   post:
+ *     tags: [Production]
+ *     summary: "BOM: Talep an den Einkauf (Preis anfragen oder bestellen) ohne Lieferant und Preis"
+ *     security:
+ *       - bearerAuth: []
+ */
+// Ebenfalls vor `/:action`.
+router.post('/bom/boms/:bomId/procurement-requests', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.createProcurementRequest(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/requests:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: alle Talepler der BOMs (Buchhaltung, Administratorrolle)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/procurement/requests', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.listProcurement(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/spending:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: Ausgaben je Lieferant und Projekt"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/procurement/spending', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementSpending(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/boms/{bomId}:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: eine BOM mit Belegen, Projekt und Gerät"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/procurement/boms/:bomId', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementBom(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/revisions:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: freigegebene BOM-Revisionen und ihre Bestellungen"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/procurement/revisions', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementRevisions(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/costing:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Kalkülasyon: Projekte mit geplanten und tatsächlichen Materialkosten"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/costing', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.costingProjects(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/costing/{projectId}:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Kalkülasyon: ein Projekt, je Gerät Menge, Alışpreis und Summe"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/costing/:projectId', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.costingProject(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/requests/{requestId}:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: ein Talep mit seiner BOM"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/procurement/requests/:requestId', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.getProcurement(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/requests/{requestId}/withdraw:
+ *   post:
+ *     tags: [Production]
+ *     summary: "BOM: einen unberührten Talep zurückziehen"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/bom/procurement/requests/:requestId/withdraw', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.withdrawProcurementRequest(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/requests/{requestId}/{action}:
+ *   post:
+ *     tags: [Production]
+ *     summary: "Satın alma: Talep schliessen, wieder öffnen oder verwerfen (close, reopen, cancel)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/bom/procurement/requests/:requestId/:action', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementAction(req, res, next));
 
 /**
  * @swagger
@@ -284,7 +406,7 @@ router.post('/bom/boms/:bomId/revision/approve', VIEW, MODULE, AVAILABLE, (req, 
  *     security:
  *       - bearerAuth: []
  */
-router.get('/bom/boms/:bomId/revisions/:number', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.revisionDetail(req, res, next));
+router.get('/bom/boms/:bomId/revisions/:number', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.revisionDetail(req, res, next));
 
 /**
  * @swagger

@@ -475,6 +475,45 @@ export class BomPurchaseOrderWriter {
         return { status: updated.status, items };
     }
 
+    /**
+     * «Geri al» einer Depo-Buchung (28.09.2026): die Stücke kommen aus den
+     * Positionen wieder heraus. Eine Bestellung, die dadurch nicht mehr ganz
+     * geliefert ist, wartet wieder (MAL KABULDE) — nie unter 0.
+     */
+    async revertReceipt(input: {
+        tenantId: string;
+        userId: string;
+        purchaseOrderId: string;
+        reverted: Array<{ index: number; quantity: number }>;
+    }): Promise<{ status: string }> {
+        const { tenantId } = input;
+        const order = await prisma.purchaseOrder.findFirst({ where: { id: input.purchaseOrderId, tenantId } });
+        if (!order) throw new Error('Bestellung nicht gefunden.');
+        let items: Array<Record<string, unknown>> = [];
+        try { items = JSON.parse(order.items || '[]'); } catch { items = []; }
+        for (const entry of input.reverted) {
+            const item = items[entry.index];
+            if (!item) continue;
+            const left = round3(Math.max(0, (Number(item.receivedQuantity) || 0) - entry.quantity));
+            item.receivedQuantity = left;
+            if (left <= 0) delete item.receivedAt;
+        }
+        const complete = items.length > 0 && items.every((item) => (Number(item.receivedQuantity) || 0) + 1e-9 >= (Number(item.quantity) || 0));
+        const reopened = String(order.status).toUpperCase() === 'COMPLETED' && !complete;
+        const updated = await prisma.purchaseOrder.update({
+            where: { id: order.id },
+            data: {
+                items: JSON.stringify(items),
+                ...(reopened ? { status: 'TO_BE_STOCKED', stockedAt: null } : {}),
+            },
+            select: { id: true, referenceNumber: true, status: true, supplierName: true, currency: true, items: true },
+        });
+        if (await productionModule.purchaseLink.isEnabled(tenantId)) {
+            await productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, input.userId).catch(() => undefined);
+        }
+        return { status: updated.status };
+    }
+
     /** Die Bestellung steht beim Produktionsprojekt und Gerät (wie jede zugeordnete). */
     private async assignProduction(
         tenantId: string,

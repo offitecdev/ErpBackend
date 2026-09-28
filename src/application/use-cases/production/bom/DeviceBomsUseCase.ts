@@ -50,6 +50,7 @@ import {
     type BomTemplateSummaryDto,
 } from './bomReadModel';
 import type { BomActor, BomTemplatesUseCase } from './BomTemplatesUseCase';
+import type { BomProcurementUseCase } from './BomProcurementUseCase';
 
 export interface BomAreaViewDto {
     settings: { maxPerArea: number };
@@ -134,6 +135,13 @@ export interface BomRequestProposalDto {
 }
 
 const EPS = 1e-9;
+
+/** `procurementRequestId` im Körper — der Talep, aus dem der Einkauf gerade Belege macht. */
+const procurementRequestIdOf = (body: unknown): string | null => {
+    const raw = (body && typeof body === 'object' ? (body as Record<string, unknown>).procurementRequestId : null);
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    return value ? value.slice(0, 64) : null;
+};
 
 /**
  * «Sipariş oluştur» einer BOM läuft nacheinander (Sperre im Prozess): zwei
@@ -291,7 +299,12 @@ export class DeviceBomsUseCase {
         ]);
         const products = extra ? new Map([...facts.products, ...extra.products]) : facts.products;
         const free = extra ? new Map([...facts.coverage.free, ...extra.coverage.free]) : facts.coverage.free;
+        const procurement = this.procurement
+            ? await this.procurement.forBoms(tenantId, bomIds, purchases.map(({ link, order }) => ({ kind: link.kind, order })))
+            : null;
         return boms.map((bom) => bomDto(bom, {
+            procurement: procurement?.requests.get(bom.id) ?? [],
+            goodsIn: procurement?.goodsIn.get(bom.id) ?? [],
             coverage: facts.coverage.lines,
             products,
             free,
@@ -623,7 +636,7 @@ export class DeviceBomsUseCase {
 
     async proposal(tenantId: string, actor: BomActor, bomId: string): Promise<BomProposalDto> {
         const bom = await this.requireBom(tenantId, bomId);
-        await this.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
+        this.assertCanProcure(actor);
         const { facts: _facts, openLines: _openLines, ...proposal } = await this.buildProposal(tenantId, bom);
         return proposal;
     }
@@ -715,7 +728,9 @@ export class DeviceBomsUseCase {
     }> {
         return withOrderLock(`${tenantId}:${bomId}`, async () => {
             const bom = await this.requireBom(tenantId, bomId);
-            await this.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
+            this.assertCanProcure(actor);
+            const procurementRequestId = procurementRequestIdOf(body);
+            if (procurementRequestId) await this.procurementOrFail().assertUsable(tenantId, procurementRequestId, bom.id, 'ORDER');
             const proposal = await this.buildProposal(tenantId, bom);
             const lines = orderLinesFrom((body as Record<string, unknown> | null)?.lines, proposal.lines.map((line) => ({
                 lineId: line.lineId,
@@ -823,6 +838,9 @@ export class DeviceBomsUseCase {
                     failed.push({ supplierName: group.supplier.supplierName, error: (error as Error)?.message || 'Error' });
                 }
             }
+            if (procurementRequestId && created.length) {
+                await this.procurementOrFail().attachDocuments(tenantId, procurementRequestId, bom.id, created.map((entry) => entry.purchaseOrderId));
+            }
             return { created, failed, bom: await this.get(tenantId, bomId) };
         });
     }
@@ -834,20 +852,22 @@ export class DeviceBomsUseCase {
      * onaylandıktan sonra fiyat talebi alınamaz» (Samet, 27.09.2026): gefragt
      * wird nur aus dem ENTWURF — danach wird bestellt.
      */
-    private assertRequestable(bom: Bom, working: { lines: BomLine[]; draft: boolean }): void {
+    private assertRequestable(bom: Bom, working: { lines: BomLine[]; draft: boolean }, fromRequest = false): void {
         // Auch während einer Revision (27.09.2026): neue Karten brauchen einen Preis, bevor sie freigegeben werden.
-        if (!working.draft || bom.consumedAt) {
+        // Ein Talep «Fiyat talebi» der BOM (Satın alma) bleibt bearbeitbar, auch wenn die BOM inzwischen freigegeben ist.
+        if ((!working.draft && !fromRequest) || bom.consumedAt) {
             throw bomError('REQUEST_DRAFT_ONLY', 'Preisanfragen gibt es nur im Entwurf — oder in einer Revision im Entwurf.', { status: 409 });
         }
         if (!working.lines.length) throw bomError('REQUEST_EMPTY', 'Die BOM hat keine Zeilen.');
     }
 
     /** Was die Anfrage vorschlägt: jede gespeicherte Zeile mit ihrer Menge und den Lieferanten ihrer Karte. */
-    async requestProposal(tenantId: string, actor: BomActor, bomId: string): Promise<BomRequestProposalDto> {
+    async requestProposal(tenantId: string, actor: BomActor, bomId: string, procurementRequestId: string | null = null): Promise<BomRequestProposalDto> {
         const bom = await this.requireBom(tenantId, bomId);
-        await this.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
+        this.assertCanProcure(actor);
+        if (procurementRequestId) await this.procurementOrFail().assertUsable(tenantId, procurementRequestId, bom.id, 'PRICE');
         const working = await this.workingLinesOf(tenantId, bom);
-        this.assertRequestable(bom, working);
+        this.assertRequestable(bom, working, Boolean(procurementRequestId));
         const [products, purchases, nextNumber] = await Promise.all([
             this.stock.products(tenantId, working.lines.map((line) => line.productId)),
             this.purchasesOf(tenantId, [bom.id]),
@@ -903,9 +923,11 @@ export class DeviceBomsUseCase {
         bom: BomDto;
     }> {
         const bom = await this.requireBom(tenantId, bomId);
-        await this.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
+        this.assertCanProcure(actor);
+        const procurementRequestId = procurementRequestIdOf(body);
+        if (procurementRequestId) await this.procurementOrFail().assertUsable(tenantId, procurementRequestId, bom.id, 'PRICE');
         const working = await this.workingLinesOf(tenantId, bom);
-        this.assertRequestable(bom, working);
+        this.assertRequestable(bom, working, Boolean(procurementRequestId));
         const lines = requestLinesFrom((body as Record<string, unknown> | null)?.lines, new Set(working.lines.map((line) => line.id)));
         const byLine = new Map(working.lines.map((line) => [line.id, line]));
         const [products, projectLabel] = await Promise.all([
@@ -974,6 +996,9 @@ export class DeviceBomsUseCase {
                 failed.push({ supplierName: group.supplier.supplierName, error: (error as Error)?.message || 'Error' });
             }
         }
+        if (procurementRequestId && created.length) {
+            await this.procurementOrFail().attachDocuments(tenantId, procurementRequestId, bom.id, created.map((entry) => entry.purchaseOrderId));
+        }
         return { created, failed, bom: await this.get(tenantId, bomId) };
     }
 
@@ -989,6 +1014,28 @@ export class DeviceBomsUseCase {
             project ? [project.projectNumber, project.projectName].filter(Boolean).join(' · ') : null,
             device?.name ?? null,
         ].filter(Boolean).join(' — ') + ` (${bom.bomNumber})`;
+    }
+
+    /** Preisanfragen und Bestellungen macht der Einkauf (Buchhaltung, Administratorrolle — Seite «Satın alma»). */
+    assertCanProcure(actor: BomActor): void {
+        if (actor.isAdmin || actor.canProcure) return;
+        throw bomError('FORBIDDEN', 'Preisanfragen und Bestellungen macht die Buchhaltung.', { status: 403 });
+    }
+
+    /** Der Einkauf (Talepler, Gelen mallar) — nach dem Bau angeschlossen, er liest selbst BOMs. */
+    private procurement: BomProcurementUseCase | null = null;
+
+    attachProcurement(procurement: BomProcurementUseCase): void {
+        this.procurement = procurement;
+    }
+
+    private procurementOrFail(): BomProcurementUseCase {
+        if (!this.procurement) throw bomError('NOT_AVAILABLE', 'Der Einkauf ist nicht angeschlossen.', { status: 503 });
+        return this.procurement;
+    }
+
+    async bomsByIds(tenantId: string, ids: string[]): Promise<Bom[]> {
+        return this.boms.getMany(tenantId, ids);
     }
 
     canEdit(actor: BomActor, assignees: string[]): boolean {
