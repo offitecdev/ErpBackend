@@ -450,7 +450,7 @@ export class BomPurchasesUseCase {
         });
         const language = input.language === 'de' || input.language === 'en' ? input.language : 'tr';
         try {
-            return await this.tableAi({ columns, rows, prompt, images, text, document, language });
+            return await this.tableAi({ columns, rows, prompt, images, text, document, language, header: input.header === true });
         } catch (error) {
             const code = (error as { code?: string })?.code;
             if (code === 'AI_NOT_CONFIGURED' || code === 'GPT_NOT_CONFIGURED') {

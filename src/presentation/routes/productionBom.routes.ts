@@ -37,15 +37,15 @@ import { ProductionBomController } from '../controllers/ProductionBomController'
  *   POST   /bom/boms/:bomId/price-requests        … Preisanfragen je Lieferant anlegen (Name, Modell, Menge)
  *   POST   /bom/boms/:bomId/procurement-requests  Talep an den Einkauf { kind: PRICE|ORDER, lines, note } (ohne Lieferant/Preis)
  *   POST   /bom/procurement/requests/:id/withdraw  … unberührten Talep zurückziehen (BOM)
- *   GET    /bom/procurement/requests               «Satın alma»: alle Talepler (?status=OPEN,IN_PROGRESS)  [Buchhaltung/Admin]
- *   GET    /bom/procurement/requests/:id           … einer mit seiner BOM (voll)
+ *   GET    /bom/procurement/feed                   «Satın alma»: Talepler seitenweise (20), Stand, nächster Schritt, letzter Handgriff  [Buchhaltung/Admin]
+ *   GET    /bom/procurement/requests/:id           … einer mit BOM (voll), Stand, Belegen und Verlauf
+ *   POST   /bom/procurement/requests/:id/report    … bestätigte Bestellung / verschickte Anfragen im Verlauf festhalten
+ *   POST   /bom/procurement/requests/:id/selection … Auswahl des Preisvergleichs an die Depo-Karten
  *   POST   /bom/procurement/requests/:id/{close|reopen|cancel}
- *   GET    /bom/procurement/spending               Ausgaben je Lieferant und Projekt, alle BOM-Belege
- *   GET    /bom/procurement/boms/:bomId            eine BOM voll (Belege des Einkaufs) mit Projekt und Gerät
- *   GET    /bom/procurement/revisions              freigegebene BOM-Revisionen mit den betroffenen Bestellungen (Lieferant)
  *   GET    /bom/costing                            «Kalkülasyon»: Projekte mit geplanten/tatsächlichen Materialkosten
  *   GET    /bom/costing/:projectId                 … ein Projekt: je Gerät die Kalemler (Menge, Alışpreis, Summe)
  *   PUT    /bom/purchases/:id/quote-number        Angebotsnummer des Lieferanten
+ *   PUT    /bom/purchases/:id/prices              Stückpreise aus Angebot / Antwort des Lieferanten
  *   POST   /bom/purchases/:id/quote-file          Angebot des Lieferanten (PDF/Bild, multipart `file`)
  *   GET    /bom/purchases/:id/quote-file          … lesen
  *   DELETE /bom/purchases/:id/quote-file          … entfernen (nur unbestätigt)
@@ -260,50 +260,6 @@ router.post('/bom/boms/:bomId/procurement-requests', VIEW, MODULE, AVAILABLE, (r
 
 /**
  * @swagger
- * /production/bom/procurement/requests:
- *   get:
- *     tags: [Production]
- *     summary: "Satın alma: alle Talepler der BOMs (Buchhaltung, Administratorrolle)"
- *     security:
- *       - bearerAuth: []
- */
-router.get('/bom/procurement/requests', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.listProcurement(req, res, next));
-
-/**
- * @swagger
- * /production/bom/procurement/spending:
- *   get:
- *     tags: [Production]
- *     summary: "Satın alma: Ausgaben je Lieferant und Projekt"
- *     security:
- *       - bearerAuth: []
- */
-router.get('/bom/procurement/spending', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementSpending(req, res, next));
-
-/**
- * @swagger
- * /production/bom/procurement/boms/{bomId}:
- *   get:
- *     tags: [Production]
- *     summary: "Satın alma: eine BOM mit Belegen, Projekt und Gerät"
- *     security:
- *       - bearerAuth: []
- */
-router.get('/bom/procurement/boms/:bomId', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementBom(req, res, next));
-
-/**
- * @swagger
- * /production/bom/procurement/revisions:
- *   get:
- *     tags: [Production]
- *     summary: "Satın alma: freigegebene BOM-Revisionen und ihre Bestellungen"
- *     security:
- *       - bearerAuth: []
- */
-router.get('/bom/procurement/revisions', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementRevisions(req, res, next));
-
-/**
- * @swagger
  * /production/bom/costing:
  *   get:
  *     tags: [Production]
@@ -345,6 +301,40 @@ router.get('/bom/procurement/requests/:requestId', PURCHASE_VIEW, MODULE, AVAILA
  *       - bearerAuth: []
  */
 router.post('/bom/procurement/requests/:requestId/withdraw', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.withdrawProcurementRequest(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/feed:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: Talepler seitenweise (20), mit Stand, nächstem Schritt und letztem Handgriff (?page=&search=)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/procurement/feed', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.procurementFeed(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/requests/{requestId}/report:
+ *   post:
+ *     tags: [Production]
+ *     summary: "Satın alma: bestätigte Bestellungen oder verschickte Preisanfragen im Verlauf festhalten"
+ *     security:
+ *       - bearerAuth: []
+ */
+// Vor `/:action`.
+router.post('/bom/procurement/requests/:requestId/report', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.reportProcurement(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/requests/{requestId}/selection:
+ *   post:
+ *     tags: [Production]
+ *     summary: "Satın alma: Auswahl eines Preisvergleichs an die Depo-Karten geben (Lieferant, Alışpreis)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/bom/procurement/requests/:requestId/selection', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.saveProcurementSelection(req, res, next));
 
 /**
  * @swagger
@@ -430,6 +420,17 @@ router.post('/bom/boms/:bomId/:action', VIEW, MODULE, AVAILABLE, (req, res, next
  *       - bearerAuth: []
  */
 router.put('/bom/purchases/:purchaseOrderId/quote-number', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.setQuoteNumber(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/purchases/{purchaseOrderId}/prices:
+ *   put:
+ *     tags: [Production]
+ *     summary: "Satın alma: Stückpreise aus dem Angebot bzw. der Antwort des Lieferanten ({ prices: [{ index, unitPrice }] })"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put('/bom/purchases/:purchaseOrderId/prices', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.setPurchasePrices(req, res, next));
 
 /**
  * @swagger

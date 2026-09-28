@@ -839,7 +839,7 @@ export class DeviceBomsUseCase {
                 }
             }
             if (procurementRequestId && created.length) {
-                await this.procurementOrFail().attachDocuments(tenantId, procurementRequestId, bom.id, created.map((entry) => entry.purchaseOrderId));
+                await this.procurementOrFail().attachDocuments(tenantId, procurementRequestId, bom.id, created.map((entry) => entry.purchaseOrderId), actor);
             }
             return { created, failed, bom: await this.get(tenantId, bomId) };
         });
@@ -865,17 +865,22 @@ export class DeviceBomsUseCase {
     async requestProposal(tenantId: string, actor: BomActor, bomId: string, procurementRequestId: string | null = null): Promise<BomRequestProposalDto> {
         const bom = await this.requireBom(tenantId, bomId);
         this.assertCanProcure(actor);
-        if (procurementRequestId) await this.procurementOrFail().assertUsable(tenantId, procurementRequestId, bom.id, 'PRICE');
+        const procurementRequest = procurementRequestId
+            ? await this.procurementOrFail().assertUsable(tenantId, procurementRequestId, bom.id, 'PRICE') : null;
         const working = await this.workingLinesOf(tenantId, bom);
         this.assertRequestable(bom, working, Boolean(procurementRequestId));
+        const requested = procurementRequest ? new Map(procurementRequest.lines.map((line) => [line.bomLineId, line.quantity])) : null;
+        const proposalLines = working.lines.filter((line) => !requested || requested.has(line.id));
         const [products, purchases, nextNumber] = await Promise.all([
-            this.stock.products(tenantId, working.lines.map((line) => line.productId)),
+            this.stock.products(tenantId, proposalLines.map((line) => line.productId)),
             this.purchasesOf(tenantId, [bom.id]),
             this.nextRequestNumber(tenantId).catch(() => null),
         ]);
         const requestsByLine = new Map<string, BomRequestProposalDto['lines'][number]['requests']>();
         for (const { link, order } of purchases) {
             if (link.kind !== 'REQUEST') continue;
+            // Earlier partial requests must not disable this request's suppliers.
+            if (procurementRequest && !procurementRequest.purchaseOrderIds.includes(order.id)) continue;
             for (const item of order.items) {
                 const lineId = typeof item.bomLineId === 'string' ? item.bomLineId : null;
                 if (!lineId) continue;
@@ -891,7 +896,7 @@ export class DeviceBomsUseCase {
             bomId: bom.id,
             bomNumber: bom.bomNumber,
             nextRequestNumber: nextNumber,
-            lines: working.lines.map((line) => {
+            lines: proposalLines.map((line) => {
                 const product = products.get(line.productId) ?? null;
                 return {
                     lineId: line.id,
@@ -900,7 +905,7 @@ export class DeviceBomsUseCase {
                     brand: product?.brand ?? line.brand,
                     modelNumber: product?.modelNumber ?? line.modelNumber,
                     unit: line.unit,
-                    quantity: line.quantity,
+                    quantity: requested?.get(line.id) ?? line.quantity,
                     serialRequired: Boolean(product?.serialRequired),
                     missingProduct: !product,
                     suppliers: product ? product.suppliers.map((supplier) => ({ id: supplier.supplierId, name: supplier.name })) : [],
@@ -925,10 +930,13 @@ export class DeviceBomsUseCase {
         const bom = await this.requireBom(tenantId, bomId);
         this.assertCanProcure(actor);
         const procurementRequestId = procurementRequestIdOf(body);
-        if (procurementRequestId) await this.procurementOrFail().assertUsable(tenantId, procurementRequestId, bom.id, 'PRICE');
+        const procurementRequest = procurementRequestId
+            ? await this.procurementOrFail().assertUsable(tenantId, procurementRequestId, bom.id, 'PRICE') : null;
         const working = await this.workingLinesOf(tenantId, bom);
         this.assertRequestable(bom, working, Boolean(procurementRequestId));
-        const lines = requestLinesFrom((body as Record<string, unknown> | null)?.lines, new Set(working.lines.map((line) => line.id)));
+        const requested = procurementRequest ? new Set(procurementRequest.lines.map((line) => line.bomLineId)) : null;
+        const lines = requestLinesFrom((body as Record<string, unknown> | null)?.lines,
+            new Set(working.lines.filter((line) => !requested || requested.has(line.id)).map((line) => line.id)));
         const byLine = new Map(working.lines.map((line) => [line.id, line]));
         const [products, projectLabel] = await Promise.all([
             this.stock.products(tenantId, lines.map((entry) => byLine.get(entry.lineId)!.productId)),
@@ -997,7 +1005,7 @@ export class DeviceBomsUseCase {
             }
         }
         if (procurementRequestId && created.length) {
-            await this.procurementOrFail().attachDocuments(tenantId, procurementRequestId, bom.id, created.map((entry) => entry.purchaseOrderId));
+            await this.procurementOrFail().attachDocuments(tenantId, procurementRequestId, bom.id, created.map((entry) => entry.purchaseOrderId), actor);
         }
         return { created, failed, bom: await this.get(tenantId, bomId) };
     }

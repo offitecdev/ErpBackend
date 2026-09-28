@@ -773,6 +773,47 @@ export class PrismaBomStockReader implements IBomStockReader {
             });
         }
     }
+
+    /**
+     * «Seçimi kaydet» (28.09.2026): der gewählte Lieferant wird der ERSTE der
+     * Karte — so schlägt ihn die nächste Bestellung vor — und sein Preis der
+     * Alışpreis der Karte.
+     */
+    async preferSupplier(
+        tenantId: string,
+        productId: string,
+        supplier: { supplierId: string | null; name: string },
+        price: number | null,
+        currency: string | null,
+    ): Promise<void> {
+        const name = supplier.name.trim().slice(0, 191);
+        const product = await prisma.warehouseProduct.findFirst({ where: { id: productId, tenantId }, select: { id: true } });
+        if (!name || !product) return;
+        const rows = await prisma.warehouseProductSupplier.findMany({
+            where: { tenantId, productId },
+            select: { id: true, supplierId: true, supplierName: true },
+            orderBy: { sortOrder: 'asc' },
+        });
+        const fold = (value: string) => value.trim().toLocaleLowerCase('tr-TR');
+        const mine = rows.find((row) => (supplier.supplierId && row.supplierId === supplier.supplierId) || fold(row.supplierName) === fold(name));
+        const others = rows.filter((row) => row !== mine);
+        await prisma.$transaction([
+            mine
+                ? prisma.warehouseProductSupplier.update({ where: { id: mine.id }, data: { sortOrder: 0, supplierId: supplier.supplierId ?? mine.supplierId } })
+                : prisma.warehouseProductSupplier.create({
+                    data: { id: newId(), tenantId, productId, supplierId: supplier.supplierId, supplierName: name, barcode: null, sortOrder: 0 },
+                }),
+            ...others.map((row, index) => prisma.warehouseProductSupplier.update({ where: { id: row.id }, data: { sortOrder: index + 1 } })),
+            prisma.warehouseProduct.updateMany({
+                where: { id: productId, tenantId },
+                data: {
+                    supplierId: supplier.supplierId ?? mine?.supplierId ?? null,
+                    supplierName: mine?.supplierName ?? name,
+                    ...(price !== null && price > 0 ? { purchasePrice: price, ...(currency ? { currency: currency.slice(0, 3) } : {}) } : {}),
+                },
+            }),
+        ]);
+    }
 }
 
 /* ═══════════════════════════ BESTELLUNGEN ═════════════════════════════════ */

@@ -154,7 +154,7 @@ export class SignatureRequestController {
                             text: `${message}\n\n${link}`,
                             html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#1f2937"><p>${message}</p><p><a href="${link}" style="display:inline-block;padding:10px 18px;background:#272f67;color:#fff;border-radius:8px;text-decoration:none">Raporu Görüntüle ve İmzala</a></p><p style="color:#6b7280;font-size:12px">${link}</p></div>`,
                             replyTo: body.replyTo || settings?.replyTo || null,
-                        });
+                        }, { asEmployeeId: req.user!.id });
                         emailed = true;
                     }
                 } catch (mailErr: any) {

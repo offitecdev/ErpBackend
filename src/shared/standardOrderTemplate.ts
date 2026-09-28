@@ -1,9 +1,8 @@
 /**
  * ── STANDART ŞABLON (Vorgabe Samet, 24.09.2026) ─────────────────────────────
  *
- * «Varsayılan sipariş şablonumuz, 3 dilde de: ÜRÜN - MALZEME / MİKTAR /
- *  BİRİM FİYAT / NET FİYAT / TUTAR; fiyat talebi: ÜRÜN - MALZEME / MİKTAR —
- *  otomatik çekecek.»
+ * Sipariş ve fiyat taleplerinde ürün, miktar, birim fiyat ve tutar bulunur.
+ * Fiyatlar talep aşamasında boş kalabilir, tedarikçi yanıtıyla doldurulur.
  *
  * Her şirkette sipariş ve fiyat talebi için BİRER sabit şablon kendiliğinden
  * kurulur. Sütun ANAHTARLARI (`std…`) sabittir ve arayüz + PDF başlığı o
@@ -35,7 +34,7 @@ export const STANDARD_ORDER_COLUMNS: StandardColumn[] = [
     { key: 'stdAmount', name: 'Betrag', type: 'number', label: 'total', width: 130 },
 ];
 
-export const STANDARD_REQUEST_COLUMNS: StandardColumn[] = STANDARD_ORDER_COLUMNS.slice(0, 2);
+export const STANDARD_REQUEST_COLUMNS: StandardColumn[] = STANDARD_ORDER_COLUMNS.filter((column) => column.label !== 'netPrice');
 
 export const STANDARD_TEMPLATE_TITLE = 'Standard';
 
@@ -48,10 +47,10 @@ export const standardTableColumnsJson = (documentType: StandardDocumentType): st
 
 /**
  * Şablonun gizlediği sütunlar: ERP kodu hiçbir zaman PDF'e girmez; standart
- * sipariş şablonunda indirim yoktur, fiyat talebinde fiyat da yoktur.
+ * sipariş ve fiyat talebi standart şablonlarında indirim sütunu yoktur.
  */
-export const standardHiddenKeysJson = (documentType: StandardDocumentType): string =>
-    JSON.stringify(documentType === 'PRICE_REQUEST' ? ['code', 'priceGross', 'discount'] : ['code', 'discount']);
+export const standardHiddenKeysJson = (_documentType: StandardDocumentType): string =>
+    JSON.stringify(['code', 'discount']);
 
 /** Bir sütun listesi standart şablonun mu? (ilk sütunun anahtarından tanınır) */
 export const isStandardColumns = (raw: unknown): boolean => {
@@ -72,10 +71,23 @@ const ensured = new Set<string>();
 export const ensureStandardTemplate = async (tenantId: string, documentType: StandardDocumentType): Promise<string> => {
     const rows = await (prisma as any).supplierOrderTemplate.findMany({
         where: { tenantId, documentType, config: { contains: '"stdProduct"' } },
-        select: { id: true },
+        select: { id: true, config: true },
         take: 1,
     });
     if (rows.length) {
+        if (documentType === 'PRICE_REQUEST') {
+            // Add the price fields to existing standard templates, preserving custom fields and names.
+            let config: { columns?: StandardColumn[] } = {};
+            try { config = JSON.parse(rows[0].config || '{}'); } catch { /* Rebuild an unreadable standard template. */ }
+            const columns = Array.isArray(config.columns) ? config.columns : [];
+            const missing = STANDARD_REQUEST_COLUMNS.filter((column) => !columns.some((entry) => entry.label === column.label));
+            if (missing.length) {
+                await (prisma as any).supplierOrderTemplate.update({
+                    where: { id: rows[0].id },
+                    data: { config: JSON.stringify({ ...config, columns: [...columns, ...missing] }) },
+                });
+            }
+        }
         ensured.add(`${tenantId}:${documentType}`);
         return rows[0].id as string;
     }

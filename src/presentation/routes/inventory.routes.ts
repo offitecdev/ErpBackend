@@ -3789,7 +3789,7 @@ router.post(
                     html: bodyText ? `<pre style="font-family:inherit;white-space:pre-wrap">${bodyText.replace(/</g, '&lt;')}</pre>` : null,
                     replyTo: settings?.replyTo || null,
                     attachments: [],
-                });
+                }, { asEmployeeId: req.user!.id });
                 emailSent = !result.preview;
             }
 
@@ -4111,10 +4111,8 @@ export const normalizePurchaseOrderItems = (raw: unknown) => {
             // gönderilmişse o fiyat zaten indirimlidir: indirim İKİNCİ KEZ
             // uygulanmaz, değer aynen saklanır.
             // ⚠ Frontend eşi: `utils/orderRowMode.ts` → `draftRowFigures` DIRECT dalı.
-            netPrice = sentNet || Math.round(grossPrice * discountFactor * 100) / 100;
-            lineTotal = Number.isFinite(Number(r?.lineTotal))
-                ? Number(r?.lineTotal)
-                : Math.round(quantity * netPrice * 100) / 100;
+            netPrice = decimalOrNull(r?.netPrice) ?? Math.round(grossPrice * discountFactor * 100) / 100;
+            lineTotal = decimalOrNull(r?.lineTotal) ?? Math.round(quantity * netPrice * 100) / 100;
         } else if (calcMode === 'SUPPLIER') {
             // Sabit net birim fiyat; miktar değişince tutar orantılı ölçeklenir.
             // ⚠ Birim fiyat YUVARLANMAZ (2026-08-02): 3 ondalıklı tedarikçi fiyatı
@@ -4753,7 +4751,8 @@ const poHiddenColumnKeys = (value: unknown): string | null => {
  * Dieselbe Reinigung wie bei den eigenen Angaben; ungueltige Eintraege fallen
  * weg, gespeichert wird ein JSON-Array oder NULL.
  */
-const PO_TABLE_COLUMNS_MAX = 13;
+// Twelve template fields, the BOM code, and the two request price fallbacks.
+const PO_TABLE_COLUMNS_MAX = 15;
 const PO_TABLE_LABELS = new Set(['productName', 'quantity', 'grossPrice', 'netPrice', 'discount', 'discount2', 'total']);
 const poTableColumns = (value: unknown): string | null => {
     if (!Array.isArray(value)) return null;
@@ -6949,7 +6948,7 @@ router.post(
                 replyTo: settings?.replyTo || null,
                 attachments,
                 inlineImages: signature.inlineImages,
-            });
+            }, { asEmployeeId: req.user!.id });
 
             // preview = SMTP yapılandırılmamış, gerçek gönderim yok → emailSentAt
             // damgalanmaz; revizyon mantığı gerçek gönderime bağlıdır.

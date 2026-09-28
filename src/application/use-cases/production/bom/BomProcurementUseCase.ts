@@ -9,15 +9,17 @@ import type {
     BomPurchaseOrderRow,
     IBomGoodsInRepository,
     IBomProcurementRepository,
-    IBomRevisionRepository,
     IBomProductionDirectory,
     IBomPurchaseRepository,
     IBomStockReader,
 } from '../../../../domain/repositories/IProductionBomRepository';
-import { bomError, CONFIRMED_ORDER_STATUSES, PRICE_REQUEST_STATUSES, round3 } from '../../../../domain/services/productionBom';
+import type { IProcurementJournal } from '../../../../domain/repositories/IProcurementJournal';
+import { bomError, CONFIRMED_ORDER_STATUSES, round3 } from '../../../../domain/services/productionBom';
+import type { ProcurementEventAction } from '../../../../domain/services/procurementFlow';
 import {
     procurementKindFrom,
     procurementLinesFrom,
+    remainingPriceRequestQuantities,
     procurementProgress,
     procurementStatusAfter,
     type ProcurementDocFact,
@@ -74,29 +76,6 @@ export interface ProcurementRequestDto {
     documents: ProcurementDocumentDto[];
 }
 
-/** Eine freigegebene BOM-Revision, wie der Einkauf sie sieht — MIT Lieferant der betroffenen Bestellungen. */
-export interface ProcurementRevisionDto {
-    bomId: string;
-    bomNumber: string;
-    revision: number;
-    reason: string | null;
-    approvedAt: string | null;
-    approvedByName: string | null;
-    project: { id: string; projectNumber: string; projectName: string } | null;
-    device: { id: string; name: string } | null;
-    changes: { added: number; removed: number; increased: number; decreased: number; edited: number };
-    orderActions: Array<{
-        purchaseOrderId: string;
-        referenceNumber: string;
-        supplierName: string;
-        action: string;
-        orderRevision: number | null;
-        atSupplier: boolean;
-        statusAfter: string;
-        lines: number;
-    }>;
-}
-
 /** Der Talep, wie die BOM ihn sieht — OHNE Lieferant und Preis (nur der Weg). */
 export interface BomProcurementSummaryDto {
     id: string;
@@ -127,35 +106,6 @@ export interface BomGoodsInDto {
     receivedByName: string | null;
 }
 
-interface SpendingTotal { currency: string; ordered: number; confirmed: number; received: number }
-
-export interface ProcurementSpendingDto {
-    totals: SpendingTotal[];
-    suppliers: Array<{
-        key: string;
-        supplierName: string;
-        orders: number;
-        confirmedOrders: number;
-        requests: number;
-        totals: SpendingTotal[];
-        lastAt: string | null;
-    }>;
-    projects: Array<{
-        productionProjectId: string;
-        projectNumber: string;
-        projectName: string;
-        orders: number;
-        totals: SpendingTotal[];
-    }>;
-    documents: Array<ProcurementDocumentDto & {
-        bomId: string;
-        bomNumber: string | null;
-        projectNumber: string | null;
-        projectName: string | null;
-        deviceName: string | null;
-    }>;
-}
-
 const OPEN_STATUSES = new Set<BomProcurementStatus>(['OPEN', 'IN_PROGRESS']);
 
 const lineIdsOf = (order: BomPurchaseOrderRow): Set<string> =>
@@ -170,30 +120,6 @@ const receivedShare = (order: BomPurchaseOrderRow): number => {
         received += Math.max(0, Number(item.receivedQuantity) || 0);
     }
     return ordered > EPS ? Math.min(1, round3(received / ordered)) : 0;
-};
-
-/** Was an einer Bestellung schon da ist, in Geld (Positionssumme × gelieferter Anteil). */
-const receivedValue = (order: BomPurchaseOrderRow): number => {
-    let sum = 0;
-    for (const item of order.items) {
-        const quantity = Number(item.quantity) || 0;
-        const received = Number(item.receivedQuantity) || 0;
-        const total = Number(item.lineTotal) || 0;
-        if (quantity > EPS) sum += total * Math.min(1, received / quantity);
-    }
-    return round3(sum);
-};
-
-const addTotal = (list: SpendingTotal[], currency: string, patch: Partial<Omit<SpendingTotal, 'currency'>>): void => {
-    const key = (currency || 'CHF').toUpperCase();
-    let entry = list.find((total) => total.currency === key);
-    if (!entry) {
-        entry = { currency: key, ordered: 0, confirmed: 0, received: 0 };
-        list.push(entry);
-    }
-    entry.ordered = round3(entry.ordered + (patch.ordered ?? 0));
-    entry.confirmed = round3(entry.confirmed + (patch.confirmed ?? 0));
-    entry.received = round3(entry.received + (patch.received ?? 0));
 };
 
 const docDto = (kind: 'ORDER' | 'REQUEST', order: BomPurchaseOrderRow): ProcurementDocumentDto => {
@@ -227,9 +153,9 @@ const docDto = (kind: 'ORDER' | 'REQUEST', order: BomPurchaseOrderRow): Procurem
  *     (oder in einer Revision im Entwurf), ORDER aus der freigegebenen BOM
  *     für das, was fehlt — und kann einen noch unberührten zurückziehen;
  *   · der Einkauf (Buchhaltung, Administratorrolle: Seite «Satın alma»)
- *     sieht alle Talepler, macht mit den bekannten Assistenten Preisanfragen
- *     und Bestellungen daraus (DeviceBomsUseCase, `procurementRequestId`),
- *     schliesst sie und verfolgt Lieferanten und Ausgaben.
+ *     macht Preisanfragen und Bestellungen daraus (DeviceBomsUseCase,
+ *     `procurementRequestId`) und schliesst sie. Die Liste, der Stand und
+ *     der Verlauf stehen seit dem 28.09.2026 im ProcurementDeskUseCase.
  */
 export class BomProcurementUseCase {
     constructor(
@@ -240,8 +166,27 @@ export class BomProcurementUseCase {
         private directory: IBomProductionDirectory,
         private reservations: BomReservationService,
         private devices: DeviceBomsUseCase,
-        private revisionRepository: IBomRevisionRepository | null = null,
+        private journal: IProcurementJournal | null = null,
     ) {}
+
+    /** Eine Spur im Verlauf («son işlem») — sie hält die Handlung nie auf. */
+    private async note(
+        tenantId: string,
+        actor: BomActor | null,
+        request: BomProcurementRequest,
+        action: ProcurementEventAction,
+        data: Record<string, unknown> = {},
+    ): Promise<void> {
+        if (!this.journal) return;
+        await this.journal.record(tenantId, {
+            requestId: request.id,
+            requestNumber: request.requestNumber,
+            action,
+            actorId: actor?.id ?? null,
+            actorName: actor?.name ?? null,
+            data,
+        }).catch((error: unknown) => console.warn('[satın alma] Verlauf nicht geschrieben:', (error as Error)?.message));
+    }
 
     /** Den Einkauf sehen: Administratorrolle oder Seite «Satın alma» (Stufe 1). */
     assertCanSee(actor: BomActor): void {
@@ -286,7 +231,8 @@ export class BomProcurementUseCase {
             }
             lines = working.lines;
             revision = working.revision;
-            for (const line of lines) if (!pending.has(line.id)) allowed.set(line.id, 0);
+            const remaining = remainingPriceRequestQuantities(lines, revision, open);
+            for (const line of lines) if ((remaining.get(line.id) ?? 0) > EPS) allowed.set(line.id, 0);
         } else {
             if (bom.status !== 'APPROVED') {
                 throw bomError('STATUS_INVALID', 'Bestellt wird aus einer freigegebenen BOM.', { status: 409 });
@@ -340,6 +286,7 @@ export class BomProcurementUseCase {
             throw bomError('REQUEST_IN_PROGRESS', 'Der Einkauf arbeitet schon daran — zurückziehen geht nicht mehr.', { status: 409 });
         }
         await this.requests.update(tenantId, request.id, { status: 'CANCELLED', closedById: actor.id, closedAt: new Date() });
+        await this.note(tenantId, actor, request, 'REQUEST_WITHDRAWN');
         return { bom: await this.devices.get(tenantId, bom.id) };
     }
 
@@ -423,20 +370,6 @@ export class BomProcurementUseCase {
 
     /* ── Der Einkauf: «Satın alma» ─────────────────────────────────────── */
 
-    async list(tenantId: string, actor: BomActor, query: Record<string, unknown> = {}): Promise<{
-        requests: ProcurementRequestDto[];
-        counts: Record<BomProcurementStatus, number>;
-        canProcure: boolean;
-    }> {
-        this.assertCanSee(actor);
-        const all = await this.requests.list(tenantId);
-        const counts: Record<BomProcurementStatus, number> = { OPEN: 0, IN_PROGRESS: 0, DONE: 0, CANCELLED: 0 };
-        for (const entry of all) counts[entry.status] += 1;
-        const wanted = String(query.status ?? '').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean);
-        const shown = wanted.length ? all.filter((entry) => wanted.includes(entry.status)) : all;
-        return { requests: await this.dtos(tenantId, shown), counts, canProcure: actor.isAdmin || actor.canProcure };
-    }
-
     /** Ein Talep mit seiner BOM (VOLL — mit Lieferanten und Preisen, für die Assistenten). */
     async get(tenantId: string, actor: BomActor, requestId: string): Promise<{
         request: ProcurementRequestDto;
@@ -452,37 +385,6 @@ export class BomProcurementUseCase {
         return { request: dto!, bom, canProcure: actor.isAdmin || actor.canProcure };
     }
 
-    /** Eine BOM VOLL (mit Lieferanten und Preisen) für die Belege des Einkaufs — mit Projekt und Gerät. */
-    async bomFor(tenantId: string, actor: BomActor, bomId: string): Promise<{
-        bom: BomDto;
-        project: ProcurementRequestDto['project'];
-        device: ProcurementRequestDto['device'];
-        canProcure: boolean;
-    }> {
-        this.assertCanSee(actor);
-        const raw = await this.devices.requireBom(tenantId, bomId);
-        const [bom, project, device, dates] = await Promise.all([
-            this.devices.get(tenantId, raw.id),
-            this.directory.project(tenantId, raw.productionProjectId),
-            this.directory.device(tenantId, raw.productionItemId),
-            this.directory.deliveryDates(tenantId, [raw.productionProjectId]),
-        ]);
-        return {
-            bom,
-            project: project
-                ? {
-                    id: project.id,
-                    projectNumber: project.projectNumber,
-                    projectName: project.projectName,
-                    customerName: project.customerName,
-                    deliveryDate: iso(dates.get(project.id) ?? null),
-                }
-                : null,
-            device: device ? { id: device.id, name: device.name, positionNumber: device.positionNumber } : null,
-            canProcure: actor.isAdmin || actor.canProcure,
-        };
-    }
-
     /** `close` (erledigt) · `reopen` · `cancel` (verwerfen) — nur der Einkauf. */
     async setStatus(tenantId: string, actor: BomActor, requestId: string, action: string): Promise<{ request: ProcurementRequestDto }> {
         this.assertCanProcure(actor);
@@ -490,13 +392,16 @@ export class BomProcurementUseCase {
         if (action === 'close') {
             if (request.status === 'CANCELLED') throw bomError('STATUS_INVALID', 'Ein verworfener Talep bleibt verworfen.', { status: 409 });
             await this.requests.update(tenantId, request.id, { status: 'DONE', closedById: actor.id, closedAt: new Date() });
+            await this.note(tenantId, actor, request, 'REQUEST_CLOSED');
         } else if (action === 'cancel') {
             if (request.status === 'DONE') throw bomError('STATUS_INVALID', 'Ein erledigter Talep wird nicht verworfen.', { status: 409 });
             await this.requests.update(tenantId, request.id, { status: 'CANCELLED', closedById: actor.id, closedAt: new Date() });
+            await this.note(tenantId, actor, request, 'REQUEST_CANCELLED');
         } else if (action === 'reopen') {
             const docs = await this.docFacts(tenantId, [request.bomId]);
             const status = procurementStatusAfter('OPEN', procurementProgress(request, docs));
             await this.requests.update(tenantId, request.id, { status: status === 'DONE' ? 'IN_PROGRESS' : status, closedById: null, closedAt: null });
+            await this.note(tenantId, actor, request, 'REQUEST_REOPENED');
         } else {
             throw bomError('NOT_FOUND', 'Unbekannte Handlung.', { status: 404 });
         }
@@ -509,13 +414,17 @@ export class BomProcurementUseCase {
      * / «Fiyat talebi» mit `procurementRequestId`): an den Talep hängen und
      * seinen Stand nachziehen — alle Zeilen in einem Beleg = erledigt.
      */
-    async attachDocuments(tenantId: string, requestId: string, bomId: string, purchaseOrderIds: string[]): Promise<void> {
+    async attachDocuments(tenantId: string, requestId: string, bomId: string, purchaseOrderIds: string[], actor: BomActor | null = null): Promise<void> {
         const request = await this.requests.get(tenantId, requestId);
         if (!request || request.bomId !== bomId || !purchaseOrderIds.length) return;
         const ids = [...new Set([...request.purchaseOrderIds, ...purchaseOrderIds])];
         const docs = await this.docFacts(tenantId, [bomId]);
         const status = procurementStatusAfter(request.status, procurementProgress({ ...request, purchaseOrderIds: ids }, docs));
         await this.requests.update(tenantId, request.id, { purchaseOrderIds: ids, status });
+        const orders = await this.purchases.orders(tenantId, purchaseOrderIds);
+        await this.note(tenantId, actor, request, request.kind === 'PRICE' ? 'PRICE_REQUESTS_CREATED' : 'ORDERS_CREATED', {
+            codes: orders.map((order) => order.referenceNumber),
+        });
     }
 
     /** Ein Talep, aus dem der Einkauf gerade Belege macht: er muss zur BOM gehören und offen sein. */
@@ -528,141 +437,12 @@ export class BomProcurementUseCase {
         return request;
     }
 
-    /* ── Revisionen: was BOM-Änderungen mit den Bestellungen machten ───── */
-
-    /**
-     * «Revizyonlarda … satın alma kısmında üretimde orada görebilelim» (27.09.2026):
-     * die BOM zeigt bei einer Revision keinen Lieferanten — hier sieht der
-     * Einkauf jede freigegebene Revision mit den betroffenen Bestellungen.
-     */
-    async revisions(tenantId: string, actor: BomActor): Promise<{ revisions: ProcurementRevisionDto[] }> {
-        this.assertCanSee(actor);
-        if (!this.revisionRepository) return { revisions: [] };
-        const list = await this.revisionRepository.listApproved(tenantId, 200);
-        if (!list.length) return { revisions: [] };
-        const boms = await this.devices.bomsByIds(tenantId, list.map((entry) => entry.bomId));
-        const bomById = new Map(boms.map((bom) => [bom.id, bom]));
-        const personIds = [...new Set(list.map((entry) => entry.approvedById).filter((id): id is string => Boolean(id)))];
-        const [projects, devices, names] = await Promise.all([
-            this.directory.projects(tenantId, boms.map((bom) => bom.productionProjectId)),
-            this.directory.devices(tenantId, boms.map((bom) => bom.productionItemId)),
-            personIds.length ? this.directory.personNames(personIds) : Promise.resolve(new Map<string, string>()),
-        ]);
-        const revisions = list.flatMap((entry): ProcurementRevisionDto[] => {
-            const bom = bomById.get(entry.bomId);
-            if (!bom) return [];
-            const project = projects.get(bom.productionProjectId);
-            const device = devices.get(bom.productionItemId);
-            const count = (kind: string) => entry.changes.filter((change) => change.kind === kind).length;
-            return [{
-                bomId: bom.id,
-                bomNumber: bom.bomNumber,
-                revision: entry.revision,
-                reason: entry.reason,
-                approvedAt: iso(entry.approvedAt),
-                approvedByName: entry.approvedById ? names.get(entry.approvedById) ?? null : null,
-                project: project ? { id: project.id, projectNumber: project.projectNumber, projectName: project.projectName } : null,
-                device: device ? { id: device.id, name: device.name } : null,
-                changes: { added: count('ADDED'), removed: count('REMOVED'), increased: count('INCREASED'), decreased: count('DECREASED'), edited: count('EDITED') },
-                orderActions: entry.orderActions.map((action) => ({
-                    purchaseOrderId: action.purchaseOrderId,
-                    referenceNumber: action.referenceNumber,
-                    supplierName: action.supplierName,
-                    action: action.action,
-                    orderRevision: action.orderRevision,
-                    atSupplier: action.atSupplier,
-                    statusAfter: action.statusAfter,
-                    lines: action.lines.length,
-                })),
-            }];
-        });
-        return { revisions };
-    }
-
-    /* ── Ausgaben und Lieferanten ──────────────────────────────────────── */
-
-    async spending(tenantId: string, actor: BomActor): Promise<ProcurementSpendingDto> {
-        this.assertCanSee(actor);
-        const links = await this.requests.purchaseLinks(tenantId);
-        const orders = await this.purchases.orders(tenantId, links.map((link) => link.purchaseOrderId));
-        const byId = new Map(orders.map((order) => [order.id, order]));
-        const live = links.filter((link) => byId.has(link.purchaseOrderId));
-        const [projects, devices, boms] = await Promise.all([
-            this.directory.projects(tenantId, live.map((link) => link.productionProjectId)),
-            this.directory.devices(tenantId, live.map((link) => link.productionItemId)),
-            this.bomNumbers(tenantId, live.map((link) => link.bomId)),
-        ]);
-        const totals: SpendingTotal[] = [];
-        const suppliers = new Map<string, ProcurementSpendingDto['suppliers'][number]>();
-        const projectRows = new Map<string, ProcurementSpendingDto['projects'][number]>();
-        const documents: ProcurementSpendingDto['documents'] = [];
-        for (const link of live) {
-            const order = byId.get(link.purchaseOrderId)!;
-            const doc = docDto(link.kind, order);
-            const project = projects.get(link.productionProjectId) ?? null;
-            documents.push({
-                ...doc,
-                bomId: link.bomId,
-                bomNumber: boms.get(link.bomId) ?? null,
-                projectNumber: project?.projectNumber ?? null,
-                projectName: project?.projectName ?? null,
-                deviceName: devices.get(link.productionItemId)?.name ?? null,
-            });
-            const key = order.supplierId ? `id:${order.supplierId}` : `name:${(order.supplierName || '').trim().toLocaleLowerCase('tr-TR')}`;
-            const supplier = suppliers.get(key) ?? {
-                key,
-                supplierName: order.supplierName || '—',
-                orders: 0,
-                confirmedOrders: 0,
-                requests: 0,
-                totals: [],
-                lastAt: null,
-            };
-            if (!supplier.lastAt || supplier.lastAt < doc.createdAt) supplier.lastAt = doc.createdAt;
-            suppliers.set(key, supplier);
-            // Preisanfragen und nie bestellte Entwürfe sind keine Ausgabe.
-            if (link.kind === 'REQUEST' || PRICE_REQUEST_STATUSES.has(doc.status) || doc.status === 'CANCELLED') {
-                if (link.kind === 'REQUEST') supplier.requests += 1;
-                continue;
-            }
-            const value = { ordered: order.totalNet, confirmed: doc.confirmed ? order.totalNet : 0, received: receivedValue(order) };
-            supplier.orders += 1;
-            if (doc.confirmed) supplier.confirmedOrders += 1;
-            addTotal(supplier.totals, order.currency, value);
-            addTotal(totals, order.currency, value);
-            const projectRow = projectRows.get(link.productionProjectId) ?? {
-                productionProjectId: link.productionProjectId,
-                projectNumber: project?.projectNumber ?? '—',
-                projectName: project?.projectName ?? '',
-                orders: 0,
-                totals: [],
-            };
-            projectRow.orders += 1;
-            addTotal(projectRow.totals, order.currency, value);
-            projectRows.set(link.productionProjectId, projectRow);
-        }
-        const firstTotal = (list: SpendingTotal[]) => list.reduce((sum, entry) => sum + entry.ordered, 0);
-        return {
-            totals,
-            suppliers: [...suppliers.values()].sort((a, b) => firstTotal(b.totals) - firstTotal(a.totals) || a.supplierName.localeCompare(b.supplierName)),
-            projects: [...projectRows.values()].sort((a, b) => firstTotal(b.totals) - firstTotal(a.totals)),
-            documents: documents.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-        };
-    }
-
     /* ── Hilfen ────────────────────────────────────────────────────────── */
 
     private async requireRequest(tenantId: string, id: string): Promise<BomProcurementRequest> {
         const request = await this.requests.get(tenantId, id);
         if (!request) throw bomError('REQUEST_NOT_FOUND', 'Talep nicht gefunden.', { status: 404 });
         return request;
-    }
-
-    private async bomNumbers(tenantId: string, bomIds: string[]): Promise<Map<string, string>> {
-        const unique = [...new Set(bomIds.filter(Boolean))];
-        if (!unique.length) return new Map();
-        const boms = await this.devices.bomsByIds(tenantId, unique);
-        return new Map(boms.map((bom) => [bom.id, bom.bomNumber]));
     }
 
     private async docFacts(tenantId: string, bomIds: string[]): Promise<ProcurementDocFact[]> {

@@ -143,6 +143,11 @@ model MailMessage {
   // endgültig gelöscht wird nur aus dem Papierkorb heraus. Der Abruf erkennt
   // die Zeile weiterhin an der Message-ID — Gelöschtes kommt nicht wieder.
   deletedAt         DateTime?
+  // WELCHES POSTFACH (28.09.2026): "" = das Firmenpostfach (MailSetting am
+  // Stamm), sonst die Id des persönlichen Postfachs (EmployeeMailbox). Nicht
+  // null, damit die eindeutigen Schlüssel (tenantId, mailboxKey, …) in MySQL
+  // tatsächlich greifen.
+  mailboxKey        String    @default("") @db.VarChar(32)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
@@ -154,6 +159,7 @@ model MailMessage {
   enquiries Enquiry[]        @relation("MailMessageEnquiries")
 
   @@unique([accountId, providerMessageId])
+  @@index([tenantId, mailboxKey, sentAt])
   @@index([tenantId, sentAt])
   @@index([tenantId, customerId, sentAt])
   @@index([tenantId, direction, sentAt])
@@ -163,4 +169,57 @@ model MailMessage {
   @@index([entityType, entityId])
   @@index([activityId])
   @@index([contactId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PERSÖNLICHES POSTFACH JE PERSON (28.09.2026, Vorgabe Samet: «her personel
+// için mail ayarları … artık kullanıcının maili sadece o olsun her yerde»).
+//
+// Die Verwaltung richtet es in der Personalliste ein (Fenster «Mail»). Ist es
+// da, gilt für DIESE Person überall nur noch dieses Konto:
+//   • was sie aus dem ERP verschickt (Angebot, Auftrag, freie Mail, Einladung),
+//     geht über SEIN SMTP mit SEINER Absenderadresse;
+//   • ihr Postfach im ERP (/crm/mail) zeigt nur dessen Post — gelesen per IMAP
+//     von demselben Konto, eigener Lesestand, Zeilen mit `mailboxKey` = id.
+// Ohne eigenes Postfach bleibt alles beim Firmenpostfach (MailSetting).
+//
+// Die Spaltennamen sind ABSICHTLICH die von MailSetting: der Abruf
+// (ImapCaptureService) und der Versand (SmtpMailService) lesen beide Zeilen
+// mit demselben Code. Passwörter ruhen verschlüsselt (mailCrypto, enc:v1:).
+// `tenantId` = der Stamm des Firmenbaums, wie beim Firmenpostfach.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model EmployeeMailbox {
+  id                  String    @id @db.VarChar(32)
+  tenantId            String
+  employeeId          String    @unique
+  isActive            Boolean   @default(true)
+  fromName            String?   @db.VarChar(255)
+  fromEmail           String    @db.VarChar(255)
+  smtpHost            String?   @db.VarChar(255)
+  smtpPort            Int       @default(465)
+  smtpSecure          Boolean   @default(true)
+  smtpUser            String?   @db.VarChar(255)
+  smtpPassword        String?   @db.Text
+  imapHost            String?   @db.VarChar(255)
+  imapPort            Int       @default(993)
+  imapSecure          Boolean   @default(true)
+  imapUser            String?   @db.VarChar(255)
+  imapPassword        String?   @db.Text
+  sentFolder          String?   @db.VarChar(255)
+  saveToSent          Boolean   @default(true)
+  imapInboxFolder     String?   @db.VarChar(255)
+  imapCaptureEnabled  Boolean   @default(true)
+  imapWindowMonths    Int       @default(2)
+  imapUidValidity     BigInt?
+  imapLastUid         BigInt?
+  imapSentUidValidity BigInt?
+  imapSentLastUid     BigInt?
+  imapLastSyncAt      DateTime?
+  imapLastError       String?   @db.Text
+  imapLastSummary     String?   @db.VarChar(255)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([tenantId])
 }

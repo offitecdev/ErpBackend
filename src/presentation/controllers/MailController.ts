@@ -464,6 +464,9 @@ export class MailController {
                 // ve yalnızca burada — kopya beklenir.
                 waitForSentCopy: true,
                 record,
+                // Das ist der Test des FIRMENpostfachs — auch wer selbst ein
+                // persönliches Postfach hat, prüft hier die Einstellung der Firma.
+                companyMailbox: true,
             });
 
             res.status(200).json({

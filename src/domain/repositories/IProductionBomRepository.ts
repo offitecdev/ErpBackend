@@ -143,6 +143,14 @@ export interface IBomStockReader {
     releaseSerials(tenantId: string, serialIds: string[]): Promise<number>;
     /** Lieferant an die Karte hängen (aus «Yeni tedarikçi» der Bestellung), falls er fehlt. */
     addSupplierToProduct(tenantId: string, productId: string, supplier: { supplierId: string | null; name: string }): Promise<void>;
+    /** «Seçimi kaydet»: dieser Lieferant wird der erste der Karte, sein Preis ihr Alışpreis. */
+    preferSupplier(
+        tenantId: string,
+        productId: string,
+        supplier: { supplierId: string | null; name: string },
+        price: number | null,
+        currency: string | null,
+    ): Promise<void>;
 }
 
 export interface BomPurchaseOrderRow {
@@ -334,7 +342,6 @@ export interface IBomProcurementRepository {
         },
     ): Promise<BomProcurementRequest | null>;
     /** ALLE BOM-Belege der Firma (Preisanfragen und Bestellungen) — für «Satın alma» und die Ausgaben. */
-    purchaseLinks(tenantId: string): Promise<Array<{ purchaseOrderId: string; bomId: string; kind: BomPurchaseKind; productionProjectId: string; productionItemId: string }>>;
 }
 
 export interface IBomGoodsInRepository {

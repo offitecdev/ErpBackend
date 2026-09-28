@@ -18,6 +18,8 @@ import { BomPurchasesUseCase } from '../../application/use-cases/production/bom/
 import { BomSettingsUseCase } from '../../application/use-cases/production/bom/BomSettingsUseCase';
 import { BomProcurementUseCase } from '../../application/use-cases/production/bom/BomProcurementUseCase';
 import { BomCostingUseCase } from '../../application/use-cases/production/bom/BomCostingUseCase';
+import { ProcurementDeskUseCase } from '../../application/use-cases/production/bom/ProcurementDeskUseCase';
+import { PrismaProcurementJournal } from '../../infrastructure/repositories/ProcurementJournalRepository';
 import { PrismaBomGoodsInRepository, PrismaBomProcurementRepository } from '../../infrastructure/repositories/ProductionBomProcurementRepository';
 import type { BomDemand, BomGoodsIn } from '../../domain/entities/ProductionBom';
 import { nextPurchaseReference } from '../routes/inventory.routes';
@@ -45,6 +47,7 @@ const warehouseProducts = new PrismaWarehouseProductRepository();
 const revisions = new PrismaBomRevisionRepository();
 const procurementRequests = new PrismaBomProcurementRepository();
 const goodsIn = new PrismaBomGoodsInRepository();
+const journal = new PrismaProcurementJournal();
 
 const reservations = new BomReservationService(boms, stock, purchases, directory);
 const templateUseCase = new BomTemplatesUseCase(templates, boms, stock, reservations, {
@@ -68,7 +71,7 @@ const devices = new DeviceBomsUseCase(
 );
 
 /* «Satın alma» (27.09.2026 abends): der Einkauf macht aus den Taleplern der BOM die Belege. */
-const procurement = new BomProcurementUseCase(procurementRequests, goodsIn, purchases, stock, directory, reservations, devices, revisions);
+const procurement = new BomProcurementUseCase(procurementRequests, goodsIn, purchases, stock, directory, reservations, devices, journal);
 devices.attachProcurement(procurement);
 
 export const productionBomModule = {
@@ -89,6 +92,8 @@ export const productionBomModule = {
         directory,
     ),
     procurement,
+    /* «Satın alma» (28.09.2026): Liste seitenweise, Stand + nächster Schritt, Verlauf, Handgriffe. */
+    desk: new ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer),
     /* «Kalkülasyon» (27.09.2026 abends): geplante gegen tatsächliche Materialkosten. */
     costing: new BomCostingUseCase(boms, stock, directory, devices),
     /* «Bom onaylanırsa geri dönüş yok, revize olması lazım» (27.09.2026). */

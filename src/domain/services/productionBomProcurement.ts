@@ -29,6 +29,24 @@ export const procurementKindFrom = (value: unknown): BomProcurementKind | null =
     return raw === 'PRICE' || raw === 'ORDER' ? raw : null;
 };
 
+/** Only the requested quantity is pending; another request can cover the remainder. */
+export const remainingPriceRequestQuantities = (
+    lines: Array<{ id: string; quantity: number }>,
+    revision: number,
+    requests: Array<Pick<BomProcurementRequest, 'kind' | 'status' | 'bomRevision' | 'lines'>>,
+): Map<string, number> => {
+    const remaining = new Map(lines.map((line) => [line.id, round3(line.quantity)]));
+    for (const request of requests) {
+        if (request.kind !== 'PRICE' || request.bomRevision !== revision
+            || (request.status !== 'OPEN' && request.status !== 'IN_PROGRESS')) continue;
+        for (const line of request.lines) {
+            if (!remaining.has(line.bomLineId)) continue;
+            remaining.set(line.bomLineId, round3(Math.max(0, remaining.get(line.bomLineId)! - Math.max(0, line.quantity))));
+        }
+    }
+    return remaining;
+};
+
 /**
  * `lines: [{ lineId, quantity, note }]` gegen die erlaubten Zeilen der BOM
  * (`allowed`: Kennung → kleinste Menge, 0 = frei). Jede Zeile höchstens

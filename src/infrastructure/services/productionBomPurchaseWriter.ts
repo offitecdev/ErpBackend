@@ -434,6 +434,62 @@ export class BomPurchaseOrderWriter {
     }
 
     /**
+     * «Teklif PDF'ini bırak» (28.09.2026): die Preise aus dem Angebot oder der
+     * Antwort des Lieferanten — je Position EIN Stückpreis ohne Rabatt, der
+     * Betrag ist Menge × Preis. Geschrieben nur auf den gelesenen Stand.
+     */
+    async setPrices(tenantId: string, userId: string, purchaseOrderId: string, prices: Array<{ index: number; unitPrice: number }>): Promise<boolean> {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const order = await prisma.purchaseOrder.findFirst({ where: { id: purchaseOrderId, tenantId } });
+            if (!order) return false;
+            const items = parseItems(order.items);
+            for (const { index, unitPrice } of prices) {
+                const item = items[index];
+                if (!item) continue;
+                const price = Math.round(unitPrice * 10_000) / 10_000;
+                Object.assign(item, {
+                    grossPrice: price,
+                    netPrice: price,
+                    discount: 0,
+                    discount2: 0,
+                    calcMode: 'DIRECT',
+                    lineTotal: Math.round((Number(item.quantity) || 0) * price * 100) / 100,
+                });
+            }
+            const normalized = normalizePurchaseOrderItems(items);
+            const vat = { vatMode: String(order.vatMode || 'LINE'), orderVatRate: Number(order.orderVatRate) || 0 };
+            const written = await prisma.purchaseOrder.updateMany({
+                where: { id: order.id, tenantId, updatedAt: order.updatedAt },
+                data: {
+                    items: JSON.stringify(normalized.items),
+                    totalNet: normalized.totalNet,
+                    totalGross: normalized.totalGross,
+                    totalVat: purchaseOrderTotalVat(
+                        vat,
+                        normalized.totalNet,
+                        Number(order.totalFees) || 0,
+                        normalized.totalVat,
+                        normalized.items.map((item: { lineTotal: number }) => item.lineTotal),
+                    ),
+                },
+            });
+            if (!written.count) continue;
+            if (await productionModule.purchaseLink.isEnabled(tenantId).catch(() => false)) {
+                await productionModule.purchaseLink.syncConfirmedLines(tenantId, {
+                    id: order.id,
+                    referenceNumber: order.referenceNumber,
+                    status: order.status,
+                    supplierName: order.supplierName,
+                    currency: order.currency,
+                    items: JSON.stringify(normalized.items),
+                }, userId).catch(() => undefined);
+            }
+            return true;
+        }
+        throw new Error('Die Bestellung wird gerade von jemand anderem bearbeitet — bitte noch einmal versuchen.');
+    }
+
+    /**
      * Wareneingang in die Positionen schreiben (`receivedQuantity`/`receivedAt`)
      * und den Stand nachziehen: alles da → COMPLETED. Der Bestand selbst geht
      * ins Depo (der Anwendungsfall), nicht ins Artikellager.

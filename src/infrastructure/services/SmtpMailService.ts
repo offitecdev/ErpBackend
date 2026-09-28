@@ -1,6 +1,7 @@
 import { ImapMailService, ImapSettings, SentCopyResult, sentCopyBudgetMs } from "./ImapMailService";
 import { budgetForMessage } from "./mailSocket";
 import { sendRawMessage } from "./NodemailerTransport";
+import { applyPersonalSender } from "./employeeMailbox";
 
 /**
  * Bir gönderimin TOPLAM süre bütçesi. Normal bir gönderim 1-3 saniyede biter;
@@ -248,12 +249,21 @@ export class SmtpMailService {
      *   ekranda bildirir). Normal gönderimlerde kopya arka planda alınır: mail
      *   teslim edildikten sonra IMAP'ı beklemek, kullanıcıyı bitmeyen bir
      *   yükleniyor ekranında tutmaktan başka bir şey yapmaz.
+     * @param options.asEmployeeId Gönderen kişi. Yönetimin ona tanımladığı
+     *   KİŞİSEL posta kutusu varsa (EmployeeMailbox) mail o hesabın SMTP'sinden,
+     *   o hesabın adresiyle çıkar — «kullanıcının maili her yerde sadece o».
+     *   Yoksa firma posta kutusu geçerlidir.
      */
     async send(
-        settings: MailSettings,
-        mail: SendMailInput,
-        options: { waitForSentCopy?: boolean } = {},
+        companySettings: MailSettings,
+        originalMail: SendMailInput,
+        options: { waitForSentCopy?: boolean; asEmployeeId?: string | null } = {},
     ): Promise<{ accepted: string[]; preview: boolean; sentCopy?: SentCopyResult }> {
+        const personal = options.asEmployeeId
+            ? await applyPersonalSender(options.asEmployeeId, companySettings, originalMail)
+            : null;
+        const settings = personal ? personal.settings : companySettings;
+        const mail = personal ? personal.mail : originalMail;
         const host = settings.smtpHost?.trim();
         const port = Number(settings.smtpPort || 0);
         const ccList = (mail.cc || []).map((value) => String(value || "").trim()).filter(Boolean);

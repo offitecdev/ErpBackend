@@ -76,6 +76,8 @@ export interface TableAiInput {
     /** Ein PDF (Base64) — gelesen über seine Textlage. */
     document: { data: string; fileName: string | null; mimeType: string | null } | null;
     language: 'tr' | 'de' | 'en';
+    /** Auch den Kopf des Angebots lesen: Angebotsnummer und Datum (Satın alma, 28.09.2026). */
+    header?: boolean;
 }
 
 export type TableAiSource = 'prompt' | 'sheet' | 'pdf' | 'image';
@@ -97,6 +99,8 @@ export interface TableAiResult {
     usage: GptUsage;
     model: string;
     sources: TableAiSource[];
+    /** Nur mit `header`: Angebotsnummer und Datum (ISO) des Lieferanten, '' = nicht gedruckt. */
+    document?: { number: string; date: string } | null;
 }
 
 export class TableAiError extends Error {
@@ -189,10 +193,21 @@ const SYSTEM_PROMPT = [
     'Return exactly one entry per order row, in the given order, with that row\'s index.',
 ].join(' ');
 
-const buildSchema = (columns: TableAiColumn[]) => ({
+const HEADER_SCHEMA = {
     type: 'object',
     additionalProperties: false,
     properties: {
+        number: { type: 'string', description: 'The supplier\'s quotation / offer / order-confirmation number printed in the header ("Angebot Nr.", "Angebotsnummer", "Teklif No", "Quote no.", "Offer no."); "" when none is printed' },
+        date: { type: 'string', description: 'The date of that document as yyyy-mm-dd; "" when none is printed' },
+    },
+    required: ['number', 'date'],
+};
+
+const buildSchema = (columns: TableAiColumn[], header = false) => ({
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+        ...(header ? { document: HEADER_SCHEMA } : {}),
         rows: {
             type: 'array',
             description: 'Exactly one entry per order row, in the given order',
@@ -216,7 +231,7 @@ const buildSchema = (columns: TableAiColumn[]) => ({
             },
         },
     },
-    required: ['rows'],
+    required: header ? ['document', 'rows'] : ['rows'],
 });
 
 const oneLine = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -316,7 +331,7 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
         ];
         let pages: Awaited<ReturnType<typeof readImagePages>> = [];
         try {
-            pages = await readImagePages(input.images, gridColumns);
+            pages = await readImagePages(input.images, gridColumns, gridColumns.length);
         } catch (error) {
             if (!(error instanceof GptError)) throw error;
             throw new TableAiError(error.message, error.code, error.status);
@@ -350,6 +365,7 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
         'Order rows (fixed) - # | our ERP code | name | manufacturer | manufacturer part/model number | quantity and unit:',
         rowsText(input.rows),
         '',
+        ...(input.header ? ['Also read the document header: the supplier\'s quotation / offer number and its date (in "document").', ''] : []),
         'Supplier information:',
     ].join('\n');
 
@@ -360,7 +376,7 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
         content.push(imagePart({ data: stripDataUrl(image.data), mimeType: image.mimeType || 'image/png' }));
     }
 
-    let parsed: { rows?: Array<{ index?: unknown; evidence?: unknown; values?: Record<string, unknown> }> };
+    let parsed: { rows?: Array<{ index?: unknown; evidence?: unknown; values?: Record<string, unknown> }>; document?: { number?: unknown; date?: unknown } };
     const model = bomTableModel();
     const thinking = isReasoningModel(model);
     // Ein denkendes Modell braucht Raum für sein Überlegen — die Grenze schliesst es ein.
@@ -371,7 +387,7 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
             temperature: 0,
             max_tokens: thinking ? answerBudget + 24_000 : answerBudget,
             ...(thinking ? { reasoning_effort: BOM_REASONING_EFFORT() } : {}),
-            response_format: { type: 'json_schema', json_schema: { name: 'order_table_fill', strict: true, schema: buildSchema(input.columns) } },
+            response_format: { type: 'json_schema', json_schema: { name: 'order_table_fill', strict: true, schema: buildSchema(input.columns, input.header === true) } },
             messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
                 { role: 'user', content },
@@ -436,5 +452,13 @@ export const fillTableWithAi = async (input: TableAiInput): Promise<TableAiResul
         usage: sumUsage(usages),
         model,
         sources,
+        ...(input.header
+            ? {
+                document: {
+                    number: oneLine(parsed.document?.number).slice(0, 120),
+                    date: /^\d{4}-\d{2}-\d{2}$/.test(oneLine(parsed.document?.date)) ? oneLine(parsed.document?.date) : '',
+                },
+            }
+            : {}),
     };
 };

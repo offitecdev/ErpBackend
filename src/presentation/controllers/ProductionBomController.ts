@@ -299,33 +299,40 @@ export class ProductionBomController {
         } catch (error) { fail(res, next, error); }
     }
 
-    async listProcurement(req: Request, res: Response, next: NextFunction) {
+    /** «Satın alma» (28.09.2026): die Liste, 20 je Seite, mit Stand, nächstem Schritt und letztem Handgriff. */
+    async procurementFeed(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.procurement.list(tenantOf(req), await actorOf(req), req.query as Record<string, unknown>));
+            res.json(await productionBomModule.desk.feed(tenantOf(req), await actorOf(req), req.query as Record<string, unknown>));
         } catch (error) { fail(res, next, error); }
     }
 
     async getProcurement(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionBomModule.procurement.get(tenantOf(req), await actorOf(req), param(req, 'requestId')));
+            res.json(await productionBomModule.desk.detail(tenantOf(req), await actorOf(req), param(req, 'requestId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async reportProcurement(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.desk.report(tenantOf(req), await actorOf(req), param(req, 'requestId'), req.body));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async saveProcurementSelection(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.desk.saveSelection(tenantOf(req), await actorOf(req), param(req, 'requestId'), req.body));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async setPurchasePrices(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.desk.setPrices(tenantOf(req), await actorOf(req), param(req, 'purchaseOrderId'), req.body));
         } catch (error) { fail(res, next, error); }
     }
 
     async procurementAction(req: Request, res: Response, next: NextFunction) {
         try {
             res.json(await productionBomModule.procurement.setStatus(tenantOf(req), await actorOf(req), param(req, 'requestId'), param(req, 'action')));
-        } catch (error) { fail(res, next, error); }
-    }
-
-    async procurementRevisions(req: Request, res: Response, next: NextFunction) {
-        try {
-            res.json(await productionBomModule.procurement.revisions(tenantOf(req), await actorOf(req)));
-        } catch (error) { fail(res, next, error); }
-    }
-
-    async procurementBom(req: Request, res: Response, next: NextFunction) {
-        try {
-            res.json(await productionBomModule.procurement.bomFor(tenantOf(req), await actorOf(req), param(req, 'bomId')));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -340,12 +347,6 @@ export class ProductionBomController {
     async costingProject(req: Request, res: Response, next: NextFunction) {
         try {
             res.json(await productionBomModule.costing.project(tenantOf(req), await actorOf(req), param(req, 'projectId')));
-        } catch (error) { fail(res, next, error); }
-    }
-
-    async procurementSpending(req: Request, res: Response, next: NextFunction) {
-        try {
-            res.json(await productionBomModule.procurement.spending(tenantOf(req), await actorOf(req)));
         } catch (error) { fail(res, next, error); }
     }
 

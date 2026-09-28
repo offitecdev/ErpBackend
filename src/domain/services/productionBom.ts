@@ -121,7 +121,10 @@ export type BomErrorCode =
     | 'NOT_FOUND'
     | 'REQUEST_NOT_FOUND'
     | 'REQUEST_IN_PROGRESS'
-    | 'REQUEST_MISMATCH';
+    | 'REQUEST_MISMATCH'
+    // Satın alma, der Schreibtisch (28.09.2026)
+    | 'PRICES_REQUIRED'
+    | 'PRICE_MISSING';
 
 export type BomError = Error & {
     code: BomErrorCode;

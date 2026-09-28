@@ -123,7 +123,7 @@ const columnWidth = (value: unknown): number => Math.round(Math.min(240, Math.ma
  * die eigenen Angaben werden freie Spalten und behalten ihren Schluessel,
  * damit die Werte gespeicherter Bestellungen ihre Spalte wiederfinden.
  */
-const legacyColumns = (raw: any, documentType: TemplateDocumentType): StoredTemplateColumn[] => {
+const legacyColumns = (raw: any, _documentType: TemplateDocumentType): StoredTemplateColumn[] => {
     const hidden = new Set<string>(Array.isArray(raw?.hiddenColumnKeys) ? raw.hiddenColumnKeys.map(String) : []);
     const fixed: Array<{ key: string; name: string; type: 'text' | 'number'; label: TemplateLabel }> = [
         { key: 'name', name: 'Produktname', type: 'text', label: 'productName' },
@@ -137,8 +137,6 @@ const legacyColumns = (raw: any, documentType: TemplateDocumentType): StoredTemp
     const columns: StoredTemplateColumn[] = fixed
         // Die Pflichtzuordnungen bleiben auch dann, wenn das Auge sie ausblendete.
         .filter((column) => !hidden.has(column.key) || column.label === 'productName' || column.label === 'quantity')
-        // Eine Preisanfrage kannte nie Preise — sie bekommt auch jetzt keine.
-        .filter((column) => documentType !== 'PRICE_REQUEST' || column.label === 'productName' || column.label === 'quantity')
         .map((column) => ({ ...column, width: 120 }));
     for (const extra of normalizeColumns(raw?.extraColumns)) {
         if (hidden.has(extra.key)) continue;
@@ -173,17 +171,9 @@ export const normalizeTemplateConfig = (raw: any, documentType: TemplateDocument
 /**
  * Was eine Vorlage erfuellen muss, bevor sie gespeichert wird (Vorgabe
  * Samet: «wird eine Zuordnung nicht gewaehlt, zeigt das System einen
- * Fehler»). Eine Preisanfrage kennt keine Preise — dort werden die
- * Preiszuordnungen still abgelegt statt abgewiesen.
+ * Fehler»). Price fields are available for both orders and price requests.
  */
-const PRICE_REQUEST_LABELS = new Set<TemplateLabel>(['productName', 'quantity']);
-
-const validateTemplateConfig = (config: SupplierCalcConfig, documentType: TemplateDocumentType): string | null => {
-    if (documentType === 'PRICE_REQUEST') {
-        config.columns.forEach((column) => {
-            if (column.label && !PRICE_REQUEST_LABELS.has(column.label)) column.label = null;
-        });
-    }
+export const validateTemplateConfig = (config: SupplierCalcConfig, _documentType: TemplateDocumentType): string | null => {
     if (!config.columns.length) return 'Die Vorlage braucht mindestens eine Spalte.';
     const missing = missingTemplateLabels(config.columns);
     if (missing.length) {
@@ -403,7 +393,9 @@ purchaseOrderImportRouter.post(
             const language = ['de', 'en', 'tr'].includes(String(req.body?.language))
                 ? String(req.body.language)
                 : 'de';
-            const columns = normalizeColumns(req.body?.columns);
+            const documentType = templateDocumentType(req.body?.documentType);
+            const maxColumns = TEMPLATE_MAX_COLUMNS + (documentType === 'PRICE_REQUEST' ? 2 : 0);
+            const columns = normalizeColumns(req.body?.columns, maxColumns);
             if (columns.length < TEMPLATE_MIN_COLUMNS) {
                 return res.status(400).json({
                     error: `Die Vorlage braucht mindestens ${TEMPLATE_MIN_COLUMNS} Spalten.`,
@@ -418,7 +410,6 @@ purchaseOrderImportRouter.post(
                     code: 'GPT_TEMPLATE_LABELS',
                 });
             }
-            const documentType = templateDocumentType(req.body?.documentType);
             const includeDocumentHeader = documentType !== 'GOODS_RECEIPT';
 
             /* ── Schritt 1: WORAUS gelesen wird ─────────────────────────────
@@ -489,7 +480,7 @@ purchaseOrderImportRouter.post(
                ihrer Ueberschrift. Die Zuordnung zur Vorlage macht der
                Server. Die Aufnahmen bleiben in ihrer Reihenfolge. */
             if (images.length) {
-                const pages = await readImagePages(images, columns);
+                const pages = await readImagePages(images, columns, maxColumns);
                 pages.forEach((page) => addUsage(page.usage));
                 /* Gezaehlt wird das RASTER, nicht eine Ansage des Modells
                    (am 11.09. zaehlte es 44 Zeilen auf einem Blatt mit 38). */
@@ -561,6 +552,7 @@ purchaseOrderImportRouter.post(
                 const result = await extractWithGpt({
                     ...pass,
                     columns,
+                    maxColumns,
                     language,
                     includeDocumentHeader,
                 });

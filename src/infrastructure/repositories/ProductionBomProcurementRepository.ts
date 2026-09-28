@@ -9,7 +9,6 @@ import type {
     BomProcurementLine,
     BomProcurementRequest,
     BomProcurementStatus,
-    BomPurchaseKind,
 } from '../../domain/entities/ProductionBom';
 import type {
     BomProcurementCreateInput,
@@ -167,16 +166,6 @@ export class PrismaBomProcurementRepository implements IBomProcurementRepository
         if (patch.closedAt !== undefined) data.closedAt = patch.closedAt;
         const result = await prisma.productionBomProcurementRequest.updateMany({ where: { tenantId, id }, data });
         return result.count ? this.get(tenantId, id) : null;
-    }
-
-    async purchaseLinks(tenantId: string) {
-        const rows = await prisma.productionBomPurchase.findMany({
-            where: { tenantId },
-            select: { purchaseOrderId: true, bomId: true, kind: true, productionProjectId: true, productionItemId: true },
-            orderBy: { createdAt: 'desc' },
-            take: 2000,
-        });
-        return rows.map((row) => ({ ...row, kind: (row.kind === 'REQUEST' ? 'REQUEST' : 'ORDER') as BomPurchaseKind }));
     }
 }
 

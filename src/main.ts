@@ -33,6 +33,7 @@ import twoFactorAdminRoutes from './presentation/routes/twoFactorAdmin.routes';
 // Personalmodul (Neubau 16.08.2026): ersetzt die früheren Router
 // attendance.routes.ts und leave.routes.ts vollständig.
 import personnelRoutes from './presentation/routes/personnel.routes';
+import employeeMailboxRoutes from './presentation/routes/employeeMailbox.routes';
 // Personalakte, Feiertage, Urlaubsanspruch und die Arbeitszeiterfassung
 // (26.08.2026) - zweiter Router auf demselben Pfad, siehe dort.
 import personnelHrRoutes from './presentation/routes/personnelHr.routes';
@@ -262,6 +263,8 @@ for (const prefix of apiPrefixes) {
     // Einstellungen → Zwei-Faktor (Aegis): Stand ansehen, Einrichtung neu starten.
     app.use(`${prefix}/security/two-factor`, twoFactorAdminRoutes);
     // Personalmodul: Liste, Stempeluhr, Schichtplan, Berichte, Anträge.
+    // Persönliche Postfächer je Person (28.09.2026) — Fenster «Mail» der Personalliste.
+    app.use(`${prefix}/personnel/mailboxes`, employeeMailboxRoutes);
     app.use(`${prefix}/personnel`, personnelRoutes);
     // Personalakte (Profil, Unterlagen, Urlaubskonto), Feiertage und die
     // Arbeitszeiterfassung. Eigener Router, dieselbe Adresse: seine Wege sind

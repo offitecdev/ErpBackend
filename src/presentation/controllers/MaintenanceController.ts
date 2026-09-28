@@ -728,7 +728,7 @@ export class MaintenanceController {
                 text: `${message}\n\n${bookingLink}`,
                 html,
                 replyTo: req.body.replyTo || settings?.replyTo || null,
-            });
+            }, { asEmployeeId: (req as any).user?.id });
 
             await this.notify({
                 tenantId: (task as any).contract.tenantId,
@@ -1024,7 +1024,7 @@ export class MaintenanceController {
                     text: `${message}\n\n${reportLink}`,
                     html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6"><p>${message}</p><p><a href="${reportLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Raporu goruntule</a></p><p style="font-size:12px;color:#64748b">${reportLink}</p></div>`,
                     replyTo: req.body.replyTo || settings?.replyTo || null,
-                });
+                }, { asEmployeeId: (req as any).user?.id });
                 sent.push("mail");
             }
 

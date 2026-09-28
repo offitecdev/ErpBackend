@@ -140,11 +140,13 @@ const COLUMN_KEY = /^[a-zA-Z][a-zA-Z0-9]{0,15}$/;
  * nicht an das Modell: fremde Schluessel, leere Namen, Doppelte, eine
  * Zuordnung, die schon vergeben ist, und alles jenseits der zwoelften Spalte.
  */
-export const normalizeColumns = (raw: unknown): TemplateColumn[] => {
+export const normalizeColumns = (raw: unknown, maxColumns = TEMPLATE_MAX_COLUMNS): TemplateColumn[] => {
     const list = Array.isArray(raw) ? raw : [];
     const seen = new Set<string>();
     const usedLabels = new Set<string>();
     const columns: TemplateColumn[] = [];
+    // RFQ extraction can carry two price fallbacks beyond the editable template.
+    const limit = Math.max(TEMPLATE_MIN_COLUMNS, Math.min(TEMPLATE_MAX_COLUMNS + 2, maxColumns));
     for (const entry of list) {
         const key = String((entry as any)?.key ?? '').trim();
         const name = String((entry as any)?.name ?? '').trim().slice(0, 60);
@@ -154,7 +156,7 @@ export const normalizeColumns = (raw: unknown): TemplateColumn[] => {
         const label = LABEL_SET.has(rawLabel) && !usedLabels.has(rawLabel) ? rawLabel as TemplateLabel : null;
         if (label) usedLabels.add(label);
         columns.push({ key, name, type: (entry as any)?.type === 'number' ? 'number' : 'text', label });
-        if (columns.length >= TEMPLATE_MAX_COLUMNS) break;
+        if (columns.length >= limit) break;
     }
     return columns;
 };
@@ -881,8 +883,9 @@ export interface GptGridPage {
 export const readImagePages = async (
     images: Array<{ data: string; mimeType: string }>,
     columnsInput: TemplateColumn[],
+    maxColumns = TEMPLATE_MAX_COLUMNS,
 ): Promise<GptGridPage[]> => {
-    const columns = normalizeColumns(columnsInput);
+    const columns = normalizeColumns(columnsInput, maxColumns);
     if (columns.length < TEMPLATE_MIN_COLUMNS) {
         throw new GptError(`Die Vorlage braucht mindestens ${TEMPLATE_MIN_COLUMNS} Spalten.`, 'GPT_TOO_FEW_COLUMNS', 400);
     }
@@ -921,6 +924,8 @@ export interface GptExtractInput {
     text: string;
     /** DIE SPALTEN DER VORLAGE — sie werden zum Antwortschema. */
     columns: TemplateColumn[];
+    /** Effective RFQ templates include up to two additional price fields. */
+    maxColumns?: number;
     /** Zielsprache der Textwerte: 'de' | 'en' | 'tr'. */
     language: string;
     /** False for goods receipt: supplier/order identity is already known. */
@@ -947,7 +952,7 @@ export const extractWithGpt = async (input: GptExtractInput): Promise<GptExtract
     if (!String(input.text || '').trim()) {
         throw new GptError('Der Beleg enthält keinen lesbaren Inhalt.', 'GPT_EMPTY_INPUT', 422);
     }
-    const columns = normalizeColumns(input.columns);
+    const columns = normalizeColumns(input.columns, input.maxColumns);
     if (columns.length < TEMPLATE_MIN_COLUMNS) {
         throw new GptError(`Die Vorlage braucht mindestens ${TEMPLATE_MIN_COLUMNS} Spalten.`, 'GPT_TOO_FEW_COLUMNS', 400);
     }

@@ -12,6 +12,7 @@ import { clampBody, clampHtml, htmlToText, previewOf, sanitizeMailHtml } from ".
 import { normalizeAddress } from "./mailCustomerMatcher";
 import { autoCategoryId, getCategoryIndex } from "./mailAutoCategory";
 import { getMailTenantId } from "../../../presentation/controllers/serviceTenantScope";
+import { applyPersonalSender } from "../employeeMailbox";
 
 /**
  * EIN Versandweg für alles, was das ERP an Kunden schickt (Angebot, Auftrag,
@@ -60,6 +61,11 @@ export interface DispatchOptions {
     record?: DispatchRecord | null;
     /** Historisch: es gibt nur noch den SMTP-Weg. Wird ignoriert. */
     smtpOnly?: boolean;
+    /**
+     * Ausdrücklich über das FIRMENPOSTFACH senden, auch wenn die Person ein
+     * persönliches hat — nur der Test in den Mail-Einstellungen der Firma.
+     */
+    companyMailbox?: boolean;
 }
 
 export type MailTransport = "SMTP" | "PREVIEW";
@@ -86,7 +92,7 @@ const recordMessage = async (
     ctx: DispatchContext,
     mail: SendMailInput,
     ccList: string[],
-    result: { transport: MailTransport; messageId: string; accountId: string | null; fromEmail: string; fromName: string | null },
+    result: { transport: MailTransport; messageId: string; accountId: string | null; fromEmail: string; fromName: string | null; mailboxKey: string },
     record: DispatchRecord,
 ): Promise<string> => {
     // Die Mandantensignatur (buildSignatureParts hängt sie als "\n\n-- \n…" an)
@@ -119,10 +125,14 @@ const recordMessage = async (
        (Angebot, Auftrag, Rechnung, Kalender, Aufgaben) geben weiterhin ihre
        eigene Firma mit — aufgelöst wird hier, an der einen Stelle. */
     const mailTenantId = await getMailTenantId(ctx.tenantId).catch(() => ctx.tenantId);
-    const row = await prisma.mailMessage.create({
+    /* Die Zeile liegt in DEM Postfach, über das die Mail ging: dem
+       persönlichen der Person (mailboxKey = seine Id) oder dem der Firma ("").
+       Nur so steht sie dort, wo auch die Antwort ankommt. */
+    const row = await (prisma.mailMessage as any).create({
         data: {
             id: nanoid(12),
             tenantId: mailTenantId,
+            mailboxKey: result.mailboxKey,
             accountId: result.accountId,
             employeeId: ctx.employeeId,
             direction: "OUT",
@@ -165,9 +175,17 @@ const recordMessage = async (
 export const dispatchMail = async (
     ctx: DispatchContext,
     settings: MailSettings | null | undefined,
-    mail: SendMailInput,
+    originalMail: SendMailInput,
     options: DispatchOptions = {},
 ): Promise<DispatchResult> => {
+    /* PERSÖNLICHES POSTFACH (28.09.2026): hat die sendende Person ein eigenes
+       Konto, geht die Mail über dessen SMTP und mit dessen Adresse — für alle
+       Aufrufer (Angebot, Auftrag, Rechnung, freie Mail, Kalender, Aufgaben). */
+    const personal = options.companyMailbox
+        ? { settings: settings || {}, mail: originalMail, mailboxKey: "" }
+        : await applyPersonalSender(ctx.employeeId, settings, originalMail);
+    const mail = personal.mail;
+    settings = personal.settings;
     const ccList = (mail.cc || []).map((value) => String(value || "").trim()).filter(Boolean);
     // Die Message-ID wird HIER vergeben und mitgeschrieben: an ihr erkennt der
     // IMAP-Abruf die Antwort des Kunden (In-Reply-To/References) wieder.
@@ -186,6 +204,7 @@ export const dispatchMail = async (
     if (!smtpResult.preview && options.record) {
         result.mailMessageId = await recordMessage(ctx, prepared, ccList, {
             transport: "SMTP", messageId, accountId: null, fromEmail: mail.fromEmail, fromName: mail.fromName || null,
+            mailboxKey: personal.mailboxKey,
         }, options.record).catch((error) => {
             console.error("[MAIL] Protokollzeile konnte nicht geschrieben werden:", error?.message || error);
             return undefined;
