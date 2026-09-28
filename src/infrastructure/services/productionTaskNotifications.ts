@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import prisma from '../database/prisma.client';
 import type { ProductionTaskArea } from '../../domain/entities/ProductionTask';
 import type { IProductionTaskNotifier } from '../../domain/repositories/IProductionTaskRepository';
+import { isBuiltInArea } from '../../domain/services/productionTasks';
 
 /**
  * ── DIE GLOCKE DER GÖREVLENDİRME (26.09.2026, Vorgabe Samet) ────────────────
@@ -22,7 +23,8 @@ import type { IProductionTaskNotifier } from '../../domain/repositories/IProduct
  * Wirft nie: eine Zuweisung darf an einer Nachricht nicht scheitern.
  */
 
-const areaParam = (area: ProductionTaskArea): string => (area === 'ELECTRICAL' ? 'electrical' : 'mechanical');
+/** Die Adresse schreibt die festen Bereiche klein (`?area=electrical`), eigene mit ihrer Kennung. */
+const areaParam = (area: ProductionTaskArea): string => (isBuiltInArea(area) ? area.toLowerCase() : area);
 
 export class ProductionTaskNotifier implements IProductionTaskNotifier {
     async assigned(input: Parameters<IProductionTaskNotifier['assigned']>[0]): Promise<void> {

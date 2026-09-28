@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 
 import { requirePermission } from '../middlewares/RbacMiddleware';
 import { responseCache } from '../middlewares/ResponseCacheMiddleware';
@@ -16,7 +17,17 @@ import { ProductionTaskController } from '../controllers/ProductionTaskControlle
  *   DELETE /task-templates/:id              Vorlage löschen (Geräte behalten ihre Kopie) [Administratorrolle]
  *   GET    /devices/:itemId/tasks           Aufgaben eines Geräts (Plan + Personen)
  *   POST   /devices/:itemId/tasks           Vorlage auf das Gerät laden { templateId, replace } [Administratorrolle]
+ *   PUT    /devices/:itemId/tasks           Aufgaben des Geräts anpassen { tasks } — nur die Kopie, nie die Vorlage [Administratorrolle]
  *   PATCH  /devices/:itemId/tasks/:taskId   Personen einer Aufgabe { assigneeIds } [Administratorrolle]
+ *   PATCH  /devices/:itemId/tasks/:taskId/status  Stand { status: TODO|IN_PROGRESS|DONE }
+ *                                           [Administratorrolle oder wer in der Aufgabe steht]
+ *   PATCH  /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status  Stand einer Unteraufgabe { status }
+ *                                           [dieselben — die Aufgabe folgt ihren Unteraufgaben]
+ *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/complete  «Complete the task» { note } [Administratorrolle]
+ *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files     Datei (PDF/Foto, multipart `file`)
+ *                                           [Administratorrolle oder wer in der Aufgabe steht]
+ *   GET    /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … lesen
+ *   DELETE /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … entfernen
  *   DELETE /devices/:itemId/tasks           Aufgaben vom Gerät nehmen           [Administratorrolle]
  *
  * «Üretimde görevlere eğer administrator isek görevleri yükleyebiliyoruz» —
@@ -31,6 +42,8 @@ const VIEW = requirePermission('production.view');
 const MODULE = ProductionController.requireModule;
 const ADMIN = requireSystemAdmin;
 const cache = responseCache({ namespaces: ['production'], ttlSec: 20 });
+/** Dateien an Unteraufgaben: eine je Anfrage, höchstens 25 MB. */
+const subtaskUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 
 /**
  * @swagger
@@ -86,6 +99,11 @@ router.delete('/task-templates/:id', VIEW, MODULE, ADMIN, (req, res, next) => co
  *     summary: "Görevlendirme: Vorlage auf das Gerät laden (nur Administratorrolle)"
  *     security:
  *       - bearerAuth: []
+ *   put:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Aufgaben des Geräts anpassen — die Vorlage bleibt unverändert (nur Administratorrolle)"
+ *     security:
+ *       - bearerAuth: []
  *   delete:
  *     tags: [Production]
  *     summary: "Görevlendirme: Aufgaben vom Gerät nehmen (nur Administratorrolle)"
@@ -94,6 +112,7 @@ router.delete('/task-templates/:id', VIEW, MODULE, ADMIN, (req, res, next) => co
  */
 router.get('/devices/:itemId/tasks', VIEW, MODULE, cache, (req, res, next) => controller.deviceTasks(req, res, next));
 router.post('/devices/:itemId/tasks', VIEW, MODULE, ADMIN, (req, res, next) => controller.loadDeviceTasks(req, res, next));
+router.put('/devices/:itemId/tasks', VIEW, MODULE, ADMIN, (req, res, next) => controller.updateDeviceTasks(req, res, next));
 router.delete('/devices/:itemId/tasks', VIEW, MODULE, ADMIN, (req, res, next) => controller.unloadDeviceTasks(req, res, next));
 
 /**
@@ -106,5 +125,68 @@ router.delete('/devices/:itemId/tasks', VIEW, MODULE, ADMIN, (req, res, next) =>
  *       - bearerAuth: []
  */
 router.patch('/devices/:itemId/tasks/:taskId', VIEW, MODULE, ADMIN, (req, res, next) => controller.assignDeviceTask(req, res, next));
+
+/**
+ * @swagger
+ * /production/devices/{itemId}/tasks/{taskId}/status:
+ *   patch:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Stand einer Aufgabe setzen (Administratorrolle oder wer in der Aufgabe steht)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch('/devices/:itemId/tasks/:taskId/status', VIEW, MODULE, (req, res, next) => controller.setDeviceTaskStatus(req, res, next));
+
+/**
+ * @swagger
+ * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}/status:
+ *   patch:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Stand einer Unteraufgabe setzen (Administratorrolle oder wer in der Aufgabe steht)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status', VIEW, MODULE, (req, res, next) => controller.setDeviceSubtaskStatus(req, res, next));
+
+/**
+ * @swagger
+ * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}/complete:
+ *   post:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Unteraufgabe mit Freigabe abschliessen (nur Administratorrolle)"
+ *     security:
+ *       - bearerAuth: []
+ * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}/files:
+ *   post:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Datei an eine Unteraufgabe (Administratorrolle oder wer in der Aufgabe steht)"
+ *     security:
+ *       - bearerAuth: []
+ * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}/files/{fileId}:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Datei einer Unteraufgabe lesen"
+ *     security:
+ *       - bearerAuth: []
+ *   delete:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Datei einer Unteraufgabe entfernen"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/complete', VIEW, MODULE, (req, res, next) => controller.completeDeviceSubtask(req, res, next));
+router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files', VIEW, MODULE, (req, res, next) => {
+    // Zu gross oder mehr als eine Datei: dieselbe Fehlerform wie die übrigen Wege.
+    subtaskUpload.single('file')(req, res, (error: unknown) => {
+        if (!error) { controller.uploadDeviceSubtaskFile(req, res, next); return; }
+        if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+            res.status(413).json({ error: 'Die Datei ist zu gross.', code: 'FILE_TOO_LARGE', params: { max: 25 } });
+            return;
+        }
+        res.status(400).json({ error: 'Keine Datei empfangen.', code: 'FILE_REQUIRED' });
+    });
+});
+router.get('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId', VIEW, MODULE, (req, res, next) => controller.readDeviceSubtaskFile(req, res, next));
+router.delete('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId', VIEW, MODULE, (req, res, next) => controller.removeDeviceSubtaskFile(req, res, next));
 
 export default router;

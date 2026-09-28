@@ -22,14 +22,26 @@
 ///
 /// Wie `uretim_*` und `depo_*`: keine Fremdschlüssel nach aussen — Gerät,
 /// Projekt und Personen stehen als blosse Kennung daneben.
+///
+/// EIGENE BEREICHE UND STUFEN (28.09.2026): «when the user creates new template
+/// they should create the sections manually … also stages should be created
+/// dynamically … each task can have multiple subtasks.» Eine Vorlage trägt ihre
+/// Bereiche samt Stufen selbst (`sections`); die Vorlagen von vorher (NULL)
+/// behalten Mekanik / Elektrik mit den festen Stufen. Jede Aufgabe kann
+/// Unteraufgaben haben (`subtasks`), je mit «Document» und «Approval» als Pflicht.
 
 model ProductionTaskTemplate {
   id          String    @id
   tenantId    String
   name        String    @db.VarChar(120)
   /// Anteil der Bereiche an der Gesamtfertigstellung in Prozent —
-  /// {"MECHANICAL": 60, "ELECTRICAL": 40}.
+  /// {"MECHANICAL": 60, "ELECTRICAL": 40}; seit dem 28.09.2026 aus `sections`
+  /// abgeleitet (Kennung → Anteil) und nur noch für ältere Browserstände da.
   areaShares  Json
+  /// Die Bereiche mit ihren Stufen (28.09.2026):
+  /// [{ key, name, share, stages: [{ key, name }] }] in der Reihenfolge des Weges.
+  /// NULL = eine Vorlage von vorher: Mekanik / Elektrik mit den festen Stufen.
+  sections    Json?
   /// Das Beispiel, das die Firma beim ersten Öffnen bekommt («chiller»).
   /// Eindeutig je Firma: zweimal gleichzeitig geöffnet, legt es trotzdem nur
   /// EINE Vorlage an; gelöscht (deletedAt) kommt es nicht wieder.
@@ -52,17 +64,30 @@ model ProductionTaskTemplateTask {
   id          String @id
   tenantId    String
   templateId  String
-  /// MECHANICAL | ELECTRICAL — der Bereich («bölüm»).
+  /// Der Bereich («bölüm»): MECHANICAL | ELECTRICAL oder die Kennung eines
+  /// eigenen Bereichs der Vorlage («s-…»).
   area        String @db.VarChar(16)
-  /// Die Stufe des Geräteprozesses (equipment, circuit, drawing, bom, …).
+  /// Die Stufe im Bereich: eine feste (equipment, circuit, drawing, bom, …)
+  /// oder die Kennung einer eigenen («g-…»).
   stage       String @db.VarChar(24)
-  /// Kürzel der Aufgabe (M-01, E-12), eindeutig je Vorlage.
+  /// Kürzel der Aufgabe (M-01, E-12), eindeutig je Vorlage — seit dem
+  /// 28.09.2026 vergibt die Oberfläche es selbst.
   code        String @db.VarChar(16)
   name        String @db.VarChar(200)
   /// Gewicht innerhalb des Bereichs in Prozent (Summe je Bereich = 100).
   weight      Float
   /// JSON ["employeeId", …] — die voreingestellten Personen.
   assigneeIds Json
+  /// JSON [{ id, name, startDate, dueDate, requiresDocument, requiresApproval }]
+  /// — die Unteraufgaben (28.09.2026); NULL = keine. Ihre Tage liegen
+  /// innerhalb der Tage der Aufgabe.
+  subtasks    Json?
+  /// Beginn und Termin der Aufgabe (28.09.2026) — ein Kalendertag, frei lassbar.
+  startDate   DateTime? @db.Date
+  dueDate     DateTime? @db.Date
+  /// Der Tag, an dem die Aufgabe angelegt wurde (28.09.2026). Speichern
+  /// schreibt die Zeilen neu — der Tag reist darum mit dem Entwurf mit.
+  createdAt   DateTime? @db.Date
   sortOrder   Int    @default(0)
 
   template ProductionTaskTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
@@ -84,6 +109,9 @@ model ProductionDeviceTaskPlan {
   templateName        String   @db.VarChar(120)
   /// Die Anteile der Bereiche, wie sie beim Laden galten.
   areaShares          Json
+  /// Die Bereiche und Stufen der Vorlage, wie sie beim Laden galten — der Weg
+  /// des Geräts. NULL = ein Plan von vorher (Mekanik / Elektrik, feste Stufen).
+  sections            Json?
   loadedById          String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -107,6 +135,15 @@ model ProductionDeviceTask {
   weight           Float
   /// JSON ["employeeId", …] — wer die Aufgabe an diesem Gerät macht.
   assigneeIds      Json
+  /// JSON — die Unteraufgaben, aus der Vorlage kopiert; NULL = keine.
+  subtasks         Json?
+  /// Beginn und Termin, aus der Vorlage kopiert.
+  startDate        DateTime? @db.Date
+  dueDate          DateTime? @db.Date
+  /// TODO | IN_PROGRESS | PENDING | DONE (28.09.2026) — setzen darf die
+  /// Administratorrolle und wer in der Aufgabe steht; PENDING = wartet auf
+  /// die Freigabe (aus den Unteraufgaben).
+  status           String   @default("TODO") @db.VarChar(12)
   sortOrder        Int      @default(0)
   updatedById      String?
   createdAt        DateTime @default(now())

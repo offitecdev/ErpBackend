@@ -3,13 +3,15 @@ import { Prisma } from '@prisma/client';
 
 import prisma from '../database/prisma.client';
 import type {
+    ProductionSubtask,
+    ProductionAreaTotals,
     ProductionDeviceTask,
     ProductionDeviceTaskPlan,
-    ProductionTaskArea,
     ProductionTaskDevice,
     ProductionTaskDraft,
     ProductionTaskPerson,
-    ProductionTaskStage,
+    ProductionTaskSection,
+    ProductionTaskStatus,
     ProductionTaskTemplate,
     ProductionTaskTemplateInput,
     ProductionTaskTemplateSummary,
@@ -22,13 +24,16 @@ import type {
     ProductionDevicePlanWrite,
 } from '../../domain/repositories/IProductionTaskRepository';
 import {
-    areaSharesFrom,
+    areaSharesOf,
+    areaTotals,
     assigneeIdsFrom,
-    isProductionTaskArea,
-    PRODUCTION_TASK_AREAS,
-    PRODUCTION_TASK_STAGES,
+    placeTask,
     roundPercent,
-    stageOfArea,
+    sectionsFrom,
+    statusFrom,
+    statusOfSubtasks,
+    subtasksFrom,
+    withoutDeviceRecord,
 } from '../../domain/services/productionTasks';
 import {
     employeeScopeWhere,
@@ -47,8 +52,6 @@ import {
 
 const newId = (): string => nanoid(12);
 
-const areaOf = (value: string): ProductionTaskArea => (isProductionTaskArea(value) ? value : 'MECHANICAL');
-
 type TaskRow = {
     id: string;
     area: string;
@@ -57,22 +60,32 @@ type TaskRow = {
     name: string;
     weight: number;
     assigneeIds: Prisma.JsonValue;
+    subtasks: Prisma.JsonValue;
+    startDate: Date | null;
+    dueDate: Date | null;
+    createdAt: Date | null;
     sortOrder: number;
 };
 
-/* Eine Stufe aus der Zeit vor den zwei Wegen (27.09.2026) liegt am passenden
-   Platz des Weges — sonst am Anfang, damit keine Aufgabe unsichtbar wird. */
-const stageOf = (area: ProductionTaskArea, value: string): ProductionTaskStage =>
-    stageOfArea(area, value) ?? PRODUCTION_TASK_STAGES[area][0] ?? 'final';
+/* Beginn und Termin sind DATE-Spalten: Prisma liefert Mitternacht UTC —
+   der Tag ist der Anfang der ISO-Zeit, geschrieben wird er genauso. */
+const dayOf = (value: Date | null): string | null => (value ? value.toISOString().slice(0, 10) : null);
+const dateOf = (day: string | null): Date | null => (day ? new Date(`${day}T00:00:00.000Z`) : null);
 
-const draftOf = (row: TaskRow): ProductionTaskDraft & { id: string; sortOrder: number } => ({
+/* Eine Aufgabe liegt immer in einem Bereich und einer Stufe ihrer Vorlage —
+   eine Stufe aus der Zeit vor den zwei Wegen (27.09.2026) am passenden Platz
+   des Weges, sonst am Anfang, damit keine Aufgabe unsichtbar wird. */
+const draftOf = (row: TaskRow, sections: readonly ProductionTaskSection[]): ProductionTaskDraft & { id: string; sortOrder: number } => ({
     id: row.id,
-    area: areaOf(row.area),
-    stage: stageOf(areaOf(row.area), row.stage),
+    ...placeTask(sections, row.area, row.stage),
     code: row.code,
     name: row.name,
     weight: roundPercent(Number(row.weight) || 0),
     assigneeIds: assigneeIdsFrom(row.assigneeIds),
+    startDate: dayOf(row.startDate),
+    dueDate: dayOf(row.dueDate),
+    createdAt: dayOf(row.createdAt),
+    subtasks: subtasksFrom(row.subtasks),
     sortOrder: row.sortOrder,
 });
 
@@ -81,6 +94,7 @@ type TemplateRow = {
     tenantId: string;
     name: string;
     areaShares: Prisma.JsonValue;
+    sections: Prisma.JsonValue;
     exampleKey: string | null;
     createdById: string | null;
     updatedById: string | null;
@@ -88,17 +102,28 @@ type TemplateRow = {
     updatedAt: Date;
 };
 
-const templateOf = (row: TemplateRow, tasks: ProductionTemplateTask[]): ProductionTaskTemplate => ({
-    id: row.id,
-    tenantId: row.tenantId,
-    name: row.name,
-    areaShares: areaSharesFrom(row.areaShares),
-    exampleKey: row.exampleKey,
-    createdById: row.createdById,
-    updatedById: row.updatedById,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    tasks: [...tasks].sort((left, right) => left.sortOrder - right.sortOrder),
+const templateOf = (row: TemplateRow, taskRows: readonly TaskRow[]): ProductionTaskTemplate => {
+    const sections = sectionsFrom(row.sections, row.areaShares);
+    return {
+        id: row.id,
+        tenantId: row.tenantId,
+        name: row.name,
+        sections,
+        exampleKey: row.exampleKey,
+        createdById: row.createdById,
+        updatedById: row.updatedById,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        tasks: taskRows
+            .map((task): ProductionTemplateTask => draftOf(task, sections))
+            .sort((left, right) => left.sortOrder - right.sortOrder),
+    };
+};
+
+/** Bereiche und Anteile, wie sie in die Zeile einer Vorlage oder eines Plans gehen. */
+const sectionColumns = (sections: readonly ProductionTaskSection[]) => ({
+    areaShares: areaSharesOf(sections) as Prisma.InputJsonValue,
+    sections: sections as unknown as Prisma.InputJsonValue,
 });
 
 /** Die Aufgaben einer Vorlage als Zeilen — die Reihenfolge der Eingabe bleibt. */
@@ -113,11 +138,17 @@ const templateTaskRows = (tenantId: string, templateId: string, tasks: Productio
         name: task.name,
         weight: task.weight,
         assigneeIds: task.assigneeIds as Prisma.InputJsonValue,
+        subtasks: task.subtasks as unknown as Prisma.InputJsonValue,
+        startDate: dateOf(task.startDate),
+        dueDate: dateOf(task.dueDate),
+        // Das Beispiel kommt ohne Tag: es entsteht heute.
+        createdAt: dateOf(task.createdAt ?? new Date().toISOString().slice(0, 10)),
         sortOrder: index,
     }));
 
-const templateTasksFromRows = (rows: ReturnType<typeof templateTaskRows>): ProductionTemplateTask[] =>
-    rows.map((row) => draftOf({ ...row, assigneeIds: row.assigneeIds as Prisma.JsonValue }));
+/** Die eben geschriebenen Zeilen wieder als Aufgaben — ohne neuen Rundgang. */
+const writtenRows = <T extends { assigneeIds: Prisma.InputJsonValue; subtasks: Prisma.InputJsonValue }>(rows: T[]) =>
+    rows.map((row) => ({ ...row, assigneeIds: row.assigneeIds as Prisma.JsonValue, subtasks: row.subtasks as Prisma.JsonValue }));
 
 export class PrismaProductionTaskTemplateRepository implements IProductionTaskTemplateRepository {
     async countEver(tenantId: string): Promise<number> {
@@ -125,17 +156,15 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
     }
 
     async list(tenantId: string): Promise<ProductionTaskTemplateSummary[]> {
-        const [templates, taskGroups, planGroups] = await Promise.all([
+        const [templates, taskRows, planGroups] = await Promise.all([
             prisma.productionTaskTemplate.findMany({
                 where: { tenantId, deletedAt: null },
-                select: { id: true, name: true, areaShares: true, exampleKey: true, updatedAt: true },
+                select: { id: true, name: true, areaShares: true, sections: true, exampleKey: true, updatedAt: true },
                 orderBy: [{ name: 'asc' }, { createdAt: 'asc' }],
             }),
-            prisma.productionTaskTemplateTask.groupBy({
-                by: ['templateId', 'area'],
+            prisma.productionTaskTemplateTask.findMany({
                 where: { tenantId },
-                _count: { _all: true },
-                _sum: { weight: true },
+                select: { templateId: true, area: true, weight: true },
             }),
             prisma.productionDeviceTaskPlan.groupBy({
                 by: ['templateId'],
@@ -146,21 +175,18 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
 
         const usage = new Map(planGroups.map((group) => [group.templateId ?? '', group._count._all]));
         return templates.map((template) => {
-            const areas = {} as ProductionTaskTemplateSummary['areas'];
-            for (const area of PRODUCTION_TASK_AREAS) areas[area] = { taskCount: 0, weightSum: 0 };
-            let taskCount = 0;
-            for (const group of taskGroups) {
-                if (group.templateId !== template.id || !isProductionTaskArea(group.area)) continue;
-                areas[group.area] = {
-                    taskCount: group._count._all,
-                    weightSum: roundPercent(Number(group._sum.weight) || 0),
-                };
-                taskCount += group._count._all;
-            }
+            const sections = sectionsFrom(template.sections, template.areaShares);
+            const own = taskRows.filter((row) => row.templateId === template.id);
+            // Wie beim Lesen der Vorlage: eine Aufgabe in einem unbekannten Bereich zählt zum ersten.
+            const areas: ProductionAreaTotals = areaTotals(sections, own.map((row) => ({
+                area: placeTask(sections, row.area, '').area,
+                weight: roundPercent(Number(row.weight) || 0),
+            })));
+            const taskCount = own.length;
             return {
                 id: template.id,
                 name: template.name,
-                areaShares: areaSharesFrom(template.areaShares),
+                sections,
                 taskCount,
                 areas,
                 usedBy: usage.get(template.id) ?? 0,
@@ -175,7 +201,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
             prisma.productionTaskTemplate.findFirst({ where: { id, tenantId, deletedAt: null } }),
             prisma.productionTaskTemplateTask.findMany({ where: { templateId: id, tenantId }, orderBy: { sortOrder: 'asc' } }),
         ]);
-        return template ? templateOf(template, tasks.map(draftOf)) : null;
+        return template ? templateOf(template, tasks) : null;
     }
 
     async nameTaken(tenantId: string, name: string, excludeId?: string): Promise<boolean> {
@@ -202,7 +228,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
                     id,
                     tenantId,
                     name: input.name,
-                    areaShares: input.areaShares as unknown as Prisma.InputJsonValue,
+                    ...sectionColumns(input.sections),
                     exampleKey: exampleKey ?? null,
                     createdById: actorId,
                     updatedById: actorId,
@@ -211,7 +237,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
             if (rows.length) await tx.productionTaskTemplateTask.createMany({ data: rows });
             return template;
         });
-        return templateOf(created, templateTasksFromRows(rows));
+        return templateOf(created, writtenRows(rows));
     }
 
     async replace(
@@ -226,7 +252,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
                 where: { id, tenantId, deletedAt: null },
                 data: {
                     name: input.name,
-                    areaShares: input.areaShares as unknown as Prisma.InputJsonValue,
+                    ...sectionColumns(input.sections),
                     updatedById: actorId,
                 },
             });
@@ -235,7 +261,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
             if (rows.length) await tx.productionTaskTemplateTask.createMany({ data: rows });
             return tx.productionTaskTemplate.findUnique({ where: { id } });
         });
-        return saved ? templateOf(saved, templateTasksFromRows(rows)) : null;
+        return saved ? templateOf(saved, writtenRows(rows)) : null;
     }
 
     async softDelete(tenantId: string, id: string, actorId: string): Promise<boolean> {
@@ -247,14 +273,46 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
     }
 }
 
-type DeviceTaskRow = TaskRow & { planId: string; updatedById: string | null; updatedAt: Date };
+type DeviceTaskRow = TaskRow & { planId: string; status: string; updatedById: string | null; updatedAt: Date };
 
-const deviceTaskOf = (row: DeviceTaskRow): ProductionDeviceTask => ({
-    ...draftOf(row),
+const deviceTaskOf = (row: DeviceTaskRow, sections: readonly ProductionTaskSection[]): ProductionDeviceTask => ({
+    ...draftOf(row, sections),
     planId: row.planId,
+    status: statusFrom(row.status),
     updatedById: row.updatedById,
     updatedAt: row.updatedAt,
 });
+
+type PlanRow = {
+    id: string;
+    tenantId: string;
+    productionProjectId: string;
+    productionItemId: string;
+    templateId: string | null;
+    templateName: string;
+    areaShares: Prisma.JsonValue;
+    sections: Prisma.JsonValue;
+    loadedById: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
+const planOf = (plan: PlanRow, taskRows: readonly DeviceTaskRow[]): ProductionDeviceTaskPlan => {
+    const sections = sectionsFrom(plan.sections, plan.areaShares);
+    return {
+        id: plan.id,
+        tenantId: plan.tenantId,
+        productionProjectId: plan.productionProjectId,
+        productionItemId: plan.productionItemId,
+        templateId: plan.templateId,
+        templateName: plan.templateName,
+        sections,
+        loadedById: plan.loadedById,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+        tasks: taskRows.map((task) => deviceTaskOf(task, sections)),
+    };
+};
 
 export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTaskRepository {
     async getPlan(tenantId: string, itemId: string): Promise<ProductionDeviceTaskPlan | null> {
@@ -269,20 +327,8 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             }),
         ]);
         if (!plan) return null;
-        return {
-            id: plan.id,
-            tenantId: plan.tenantId,
-            productionProjectId: plan.productionProjectId,
-            productionItemId: plan.productionItemId,
-            templateId: plan.templateId,
-            templateName: plan.templateName,
-            areaShares: areaSharesFrom(plan.areaShares),
-            loadedById: plan.loadedById,
-            createdAt: plan.createdAt,
-            updatedAt: plan.updatedAt,
-            // Ein gleichzeitiges Ersetzen könnte Aufgaben des alten Plans zeigen.
-            tasks: tasks.filter((task) => task.planId === plan.id).map(deviceTaskOf),
-        };
+        // Ein gleichzeitiges Ersetzen könnte Aufgaben des alten Plans zeigen.
+        return planOf(plan, tasks.filter((task) => task.planId === plan.id));
     }
 
     async replacePlan(tenantId: string, write: ProductionDevicePlanWrite): Promise<ProductionDeviceTaskPlan> {
@@ -299,6 +345,10 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             name: task.name,
             weight: task.weight,
             assigneeIds: task.assigneeIds as Prisma.InputJsonValue,
+            subtasks: task.subtasks as unknown as Prisma.InputJsonValue,
+            startDate: dateOf(task.startDate),
+            dueDate: dateOf(task.dueDate),
+            status: 'TODO',
             sortOrder: index,
             updatedById: write.actorId,
         }));
@@ -313,26 +363,14 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
                     productionItemId: write.device.id,
                     templateId: write.templateId,
                     templateName: write.templateName,
-                    areaShares: write.areaShares as unknown as Prisma.InputJsonValue,
+                    ...sectionColumns(write.sections),
                     loadedById: write.actorId,
                 },
             });
             if (rows.length) await tx.productionDeviceTask.createMany({ data: rows });
             return created;
         });
-        return {
-            id: plan.id,
-            tenantId,
-            productionProjectId: plan.productionProjectId,
-            productionItemId: plan.productionItemId,
-            templateId: plan.templateId,
-            templateName: plan.templateName,
-            areaShares: areaSharesFrom(plan.areaShares),
-            loadedById: plan.loadedById,
-            createdAt: plan.createdAt,
-            updatedAt: plan.updatedAt,
-            tasks: rows.map((row) => deviceTaskOf({ ...row, assigneeIds: row.assigneeIds as Prisma.JsonValue, updatedAt: now })),
-        };
+        return planOf(plan, writtenRows(rows).map((row) => ({ ...row, createdAt: now, updatedAt: now })));
     }
 
     async setAssignees(
@@ -342,13 +380,150 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
         assigneeIds: string[],
         actorId: string,
     ): Promise<{ task: ProductionDeviceTask; previous: string[] } | null> {
-        const current = await prisma.productionDeviceTask.findFirst({ where: { id: taskId, tenantId, productionItemId: itemId } });
+        const [current, plan] = await Promise.all([
+            prisma.productionDeviceTask.findFirst({ where: { id: taskId, tenantId, productionItemId: itemId } }),
+            prisma.productionDeviceTaskPlan.findUnique({
+                where: { tenantId_productionItemId: { tenantId, productionItemId: itemId } },
+                select: { areaShares: true, sections: true },
+            }),
+        ]);
         if (!current) return null;
         const updated = await prisma.productionDeviceTask.update({
             where: { id: current.id },
             data: { assigneeIds: assigneeIds as Prisma.InputJsonValue, updatedById: actorId },
         });
-        return { task: deviceTaskOf(updated), previous: assigneeIdsFrom(current.assigneeIds) };
+        const sections = plan ? sectionsFrom(plan.sections, plan.areaShares) : [];
+        return { task: deviceTaskOf(updated, sections), previous: assigneeIdsFrom(current.assigneeIds) };
+    }
+
+    async replaceTasks(
+        tenantId: string,
+        itemId: string,
+        tasks: Array<ProductionTaskDraft & { id: string | null }>,
+        actorId: string,
+    ): Promise<ProductionDeviceTaskPlan | null> {
+        const saved = await prisma.$transaction(async (tx) => {
+            const plan = await tx.productionDeviceTaskPlan.findUnique({
+                where: { tenantId_productionItemId: { tenantId, productionItemId: itemId } },
+            });
+            if (!plan) return null;
+            const before = await tx.productionDeviceTask.findMany({ where: { planId: plan.id } });
+            const known = new Map(before.map((row) => [row.id, row]));
+            const now = new Date();
+            const used = new Set<string>();
+            const rows = tasks.map((task, index) => {
+                // Eine bekannte Aufgabe behält Kennung, Stand und Zeitpunkt des Anlegens.
+                const previous = task.id && !used.has(task.id) ? known.get(task.id) : undefined;
+                const id = previous ? previous.id : newId();
+                used.add(id);
+                // Stand, Dateien und Abschluss einer Unteraufgabe gehören dem Server:
+                // die Anpassung ändert Name, Gewicht und Tage, nie diese (28.09.2026).
+                const earlier = new Map(previous ? subtasksFrom(previous.subtasks).map((entry) => [entry.id, entry]) : []);
+                const subtasks = task.subtasks.map((subtask) => {
+                    const kept = earlier.get(subtask.id);
+                    return kept
+                        ? {
+                            ...subtask,
+                            status: kept.status,
+                            files: kept.files,
+                            completedById: kept.completedById,
+                            completedByName: kept.completedByName,
+                            completedAt: kept.completedAt,
+                            completionNote: kept.completionNote,
+                        }
+                        : withoutDeviceRecord(subtask);
+                });
+                return {
+                    id,
+                    tenantId,
+                    planId: plan.id,
+                    productionItemId: itemId,
+                    area: task.area,
+                    stage: task.stage,
+                    code: task.code,
+                    name: task.name,
+                    weight: task.weight,
+                    assigneeIds: task.assigneeIds as Prisma.InputJsonValue,
+                    subtasks: subtasks as unknown as Prisma.InputJsonValue,
+                    startDate: dateOf(task.startDate),
+                    dueDate: dateOf(task.dueDate),
+                    // Mit Unteraufgaben folgt der Stand ihnen; sonst bleibt er, wie er war.
+                    status: statusOfSubtasks(subtasks) ?? previous?.status ?? 'TODO',
+                    createdAt: previous?.createdAt ?? now,
+                    sortOrder: index,
+                    updatedById: actorId,
+                };
+            });
+            await tx.productionDeviceTask.deleteMany({ where: { planId: plan.id } });
+            if (rows.length) await tx.productionDeviceTask.createMany({ data: rows });
+            await tx.productionDeviceTaskPlan.update({ where: { id: plan.id }, data: { updatedAt: now } });
+            return { plan, rows: writtenRows(rows).map((row) => ({ ...row, updatedAt: now })) };
+        });
+        return saved ? planOf(saved.plan, saved.rows) : null;
+    }
+
+    private async sectionsOfPlan(tenantId: string, itemId: string): Promise<ProductionTaskSection[]> {
+        const plan = await prisma.productionDeviceTaskPlan.findUnique({
+            where: { tenantId_productionItemId: { tenantId, productionItemId: itemId } },
+            select: { areaShares: true, sections: true },
+        });
+        return plan ? sectionsFrom(plan.sections, plan.areaShares) : [];
+    }
+
+    async getTask(tenantId: string, itemId: string, taskId: string): Promise<ProductionDeviceTask | null> {
+        const [row, sections] = await Promise.all([
+            prisma.productionDeviceTask.findFirst({ where: { id: taskId, tenantId, productionItemId: itemId } }),
+            this.sectionsOfPlan(tenantId, itemId),
+        ]);
+        return row ? deviceTaskOf(row, sections) : null;
+    }
+
+    async setStatus(
+        tenantId: string,
+        itemId: string,
+        taskId: string,
+        status: ProductionTaskStatus,
+        actorId: string,
+    ): Promise<ProductionDeviceTask | null> {
+        const result = await prisma.productionDeviceTask.updateMany({
+            where: { id: taskId, tenantId, productionItemId: itemId },
+            data: { status, updatedById: actorId },
+        });
+        return result.count ? this.getTask(tenantId, itemId, taskId) : null;
+    }
+
+    async changeSubtask(
+        tenantId: string,
+        itemId: string,
+        taskId: string,
+        subtaskId: string,
+        change: (subtask: ProductionSubtask, task: ProductionDeviceTask) => ProductionSubtask,
+        actorId: string,
+    ): Promise<ProductionDeviceTask | null | 'no-subtask'> {
+        const sections = await this.sectionsOfPlan(tenantId, itemId);
+        const outcome = await prisma.$transaction(async (tx) => {
+            // Die Zeile sperren: zwei gleichzeitige Änderungen (Datei, Stand) überschreiben einander nicht.
+            await tx.$queryRaw`SELECT id FROM uretim_cihaz_gorevleri WHERE id = ${taskId} FOR UPDATE`;
+            const row = await tx.productionDeviceTask.findFirst({ where: { id: taskId, tenantId, productionItemId: itemId } });
+            if (!row) return null;
+            const subtasks = subtasksFrom(row.subtasks);
+            const current = subtasks.find((subtask) => subtask.id === subtaskId);
+            if (!current) return 'no-subtask' as const;
+            const changed = change(current, deviceTaskOf(row, sections));
+            const next = subtasks.map((subtask) => (subtask.id === subtaskId ? changed : subtask));
+            await tx.productionDeviceTask.update({
+                where: { id: row.id },
+                data: {
+                    subtasks: next as unknown as Prisma.InputJsonValue,
+                    // Die Aufgabe folgt ihren Unteraufgaben.
+                    status: statusOfSubtasks(next) ?? row.status,
+                    updatedById: actorId,
+                },
+            });
+            return 'ok' as const;
+        });
+        if (outcome !== 'ok') return outcome;
+        return this.getTask(tenantId, itemId, taskId);
     }
 
     async deletePlan(tenantId: string, itemId: string): Promise<boolean> {

@@ -115,7 +115,7 @@ export class ProductionTaskTemplatesUseCase {
 
     private async inputFrom(tenantId: string, body: unknown): Promise<ProductionTaskTemplateInput> {
         const input = templateInputFrom(body);
-        return { ...input, tasks: orderTasks(await this.keepActivePeople(tenantId, input.tasks)) };
+        return { ...input, tasks: orderTasks(await this.keepActivePeople(tenantId, input.tasks), input.sections) };
     }
 
     private async keepActivePeople(tenantId: string, tasks: ProductionTaskDraft[]): Promise<ProductionTaskDraft[]> {

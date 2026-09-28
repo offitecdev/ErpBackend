@@ -1,20 +1,31 @@
 import type {
     ProductionAreaShares,
     ProductionDeviceTaskPlan,
+    ProductionSubtask,
+    ProductionSubtaskFile,
     ProductionTaskArea,
     ProductionTaskDevice,
     ProductionTaskDraft,
     ProductionTaskPerson,
+    ProductionTaskSection,
     ProductionTaskStage,
+    ProductionTaskStatus,
     ProductionTaskTemplate,
     ProductionTaskTemplateSummary,
 } from '../../../domain/entities/ProductionTask';
-import { areaTotals, templateCheck, type ProductionTaskTemplateCheck } from '../../../domain/services/productionTasks';
+import { areaSharesOf, areaTotals, templateCheck, type ProductionTaskTemplateCheck } from '../../../domain/services/productionTasks';
 
 /**
  * ── GÖREVLENDİRME · WAS DIE OBERFLÄCHE BEKOMMT ──────────────────────────────
  * Spiegel in offitec-frontend/src/types/productionTasks.ts.
+ *
+ * `sections` (28.09.2026) sind die Bereiche mit ihren Stufen; `areaShares`
+ * (Kennung → Anteil) steht nur noch für Browser mit älterem Stand daneben.
  */
+
+/** Eine Datei, wie die Oberfläche sie sieht — ohne Verweis in die Ablage. */
+export type ProductionSubtaskFileDto = Omit<ProductionSubtaskFile, 'ref'>;
+export type ProductionSubtaskDto = Omit<ProductionSubtask, 'files'> & { files: ProductionSubtaskFileDto[] };
 
 export interface ProductionTaskDto {
     id: string;
@@ -24,11 +35,19 @@ export interface ProductionTaskDto {
     name: string;
     weight: number;
     assigneeIds: string[];
+    startDate: string | null;
+    dueDate: string | null;
+    /** Der Tag des Anlegens (am Gerät: des Ladens). */
+    createdAt: string | null;
+    /** Der Stand am Gerät; in der Vorlage immer TODO (der Anfang). */
+    status: ProductionTaskStatus;
+    subtasks: ProductionSubtaskDto[];
 }
 
 export interface ProductionTaskTemplateSummaryDto {
     id: string;
     name: string;
+    sections: ProductionTaskSection[];
     areaShares: ProductionAreaShares;
     taskCount: number;
     check: ProductionTaskTemplateCheck;
@@ -40,6 +59,7 @@ export interface ProductionTaskTemplateSummaryDto {
 export interface ProductionTaskTemplateDto {
     id: string;
     name: string;
+    sections: ProductionTaskSection[];
     areaShares: ProductionAreaShares;
     tasks: ProductionTaskDto[];
     people: ProductionTaskPerson[];
@@ -63,6 +83,7 @@ export interface ProductionDeviceTasksDto {
         id: string;
         templateId: string | null;
         templateName: string;
+        sections: ProductionTaskSection[];
         areaShares: ProductionAreaShares;
         loadedAt: string;
         loadedByName: string | null;
@@ -71,7 +92,7 @@ export interface ProductionDeviceTasksDto {
     people: ProductionTaskPerson[];
 }
 
-export const taskDto = (task: ProductionTaskDraft & { id: string }): ProductionTaskDto => ({
+export const taskDto = (task: ProductionTaskDraft & { id: string; status?: ProductionTaskStatus }): ProductionTaskDto => ({
     id: task.id,
     area: task.area,
     stage: task.stage,
@@ -79,14 +100,23 @@ export const taskDto = (task: ProductionTaskDraft & { id: string }): ProductionT
     name: task.name,
     weight: task.weight,
     assigneeIds: [...task.assigneeIds],
+    startDate: task.startDate,
+    dueDate: task.dueDate,
+    createdAt: task.createdAt,
+    status: task.status ?? 'TODO',
+    subtasks: task.subtasks.map((subtask) => ({
+        ...subtask,
+        files: subtask.files.map(({ ref: _ref, ...file }) => file),
+    })),
 });
 
 export const summaryDto = (row: ProductionTaskTemplateSummary): ProductionTaskTemplateSummaryDto => ({
     id: row.id,
     name: row.name,
-    areaShares: row.areaShares,
+    sections: row.sections,
+    areaShares: areaSharesOf(row.sections),
     taskCount: row.taskCount,
-    check: templateCheck(row.areaShares, row.areas),
+    check: templateCheck(row.sections, row.areas),
     usedBy: row.usedBy,
     isExample: Boolean(row.exampleKey),
     updatedAt: row.updatedAt.toISOString(),
@@ -99,10 +129,11 @@ export const templateDto = (
 ): ProductionTaskTemplateDto => ({
     id: template.id,
     name: template.name,
-    areaShares: template.areaShares,
+    sections: template.sections,
+    areaShares: areaSharesOf(template.sections),
     tasks: template.tasks.map(taskDto),
     people,
-    check: templateCheck(template.areaShares, areaTotals(template.tasks)),
+    check: templateCheck(template.sections, areaTotals(template.sections, template.tasks)),
     isExample: Boolean(template.exampleKey),
     createdAt: template.createdAt.toISOString(),
     updatedAt: template.updatedAt.toISOString(),
@@ -127,7 +158,8 @@ export const deviceTasksDto = (
         id: plan.id,
         templateId: plan.templateId,
         templateName: plan.templateName,
-        areaShares: plan.areaShares,
+        sections: plan.sections,
+        areaShares: areaSharesOf(plan.sections),
         loadedAt: plan.createdAt.toISOString(),
         loadedByName,
     } : null,

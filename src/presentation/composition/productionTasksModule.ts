@@ -6,6 +6,15 @@ import {
 import { ProductionTaskNotifier } from '../../infrastructure/services/productionTaskNotifications';
 import { ProductionTaskTemplatesUseCase } from '../../application/use-cases/production/ProductionTaskTemplatesUseCase';
 import { ProductionDeviceTasksUseCase } from '../../application/use-cases/production/ProductionDeviceTasksUseCase';
+import path from 'path';
+import { DocumentStorage } from '../../infrastructure/services/LocalFileStorage';
+
+/** Dateien an Unteraufgaben (28.09.2026): Platte, sobald eingerichtet R2 — wie die BOM. */
+const taskFiles = new DocumentStorage({
+    prefix: 'local:production-task-file/',
+    directory: process.env.OFFITEC_PRODUCTION_TASK_UPLOAD_DIR
+        || path.join(process.cwd(), 'storage', 'production-task-files'),
+});
 
 /**
  * ── GÖREVLENDİRME, ZUSAMMENGESTECKT (26.09.2026) ─────────────────────────────
@@ -22,6 +31,7 @@ export const productionTasksModule = {
         templates,
         directory,
         new ProductionTaskNotifier(),
+        taskFiles,
     ),
     directory,
 };
