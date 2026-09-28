@@ -33,6 +33,7 @@ import {
     statusFrom,
     statusOfSubtasks,
     subtasksFrom,
+    mergeDeviceRecord,
     withoutDeviceRecord,
 } from '../../domain/services/productionTasks';
 import {
@@ -396,6 +397,15 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
         return { task: deviceTaskOf(updated, sections), previous: assigneeIdsFrom(current.assigneeIds) };
     }
 
+    async setSections(tenantId: string, itemId: string, sections: ProductionTaskSection[]): Promise<ProductionDeviceTaskPlan | null> {
+        const updated = await prisma.productionDeviceTaskPlan.updateMany({
+            where: { tenantId, productionItemId: itemId },
+            // Nur Bereiche und Stufen — die Aufgaben (Stand, Dateien) fasst das nicht an.
+            data: { ...sectionColumns(sections), updatedAt: new Date() },
+        });
+        return updated.count ? this.getPlan(tenantId, itemId) : null;
+    }
+
     async replaceTasks(
         tenantId: string,
         itemId: string,
@@ -417,21 +427,12 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
                 const id = previous ? previous.id : newId();
                 used.add(id);
                 // Stand, Dateien und Abschluss einer Unteraufgabe gehören dem Server:
-                // die Anpassung ändert Name, Gewicht und Tage, nie diese (28.09.2026).
+                // die Anpassung ändert Name, Gewicht und Tage, nie diese (28.09.2026) —
+                // ausser eine Pflicht kommt dazu: dann beginnt sie offen von vorn (mergeDeviceRecord).
                 const earlier = new Map(previous ? subtasksFrom(previous.subtasks).map((entry) => [entry.id, entry]) : []);
                 const subtasks = task.subtasks.map((subtask) => {
                     const kept = earlier.get(subtask.id);
-                    return kept
-                        ? {
-                            ...subtask,
-                            status: kept.status,
-                            files: kept.files,
-                            completedById: kept.completedById,
-                            completedByName: kept.completedByName,
-                            completedAt: kept.completedAt,
-                            completionNote: kept.completionNote,
-                        }
-                        : withoutDeviceRecord(subtask);
+                    return kept ? mergeDeviceRecord(subtask, kept) : withoutDeviceRecord(subtask);
                 });
                 return {
                     id,

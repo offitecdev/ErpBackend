@@ -24,11 +24,16 @@ import { ProductionTaskController } from '../controllers/ProductionTaskControlle
  *   PATCH  /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status  Stand einer Unteraufgabe { status }
  *                                           [dieselben — die Aufgabe folgt ihren Unteraufgaben]
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/complete  «Complete the task» { note } [Administratorrolle]
+ *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/revision  «Request revision» { note } — zurück in Arbeit [Administratorrolle]
+ *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/unlock    Sperre aufheben — wartet wieder auf Freigabe [Administratorrolle]
+ *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/checklist Punkt der Freigabe-Checkliste { text } — aus der Prüfansicht [Administratorrolle]
+ *                                           (gesperrt: Dateien und Stand ändert niemand, auch nicht die Verwaltung)
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files     Datei (nur PDF, multipart `file`)
  *                                           [Administratorrolle oder wer in der Aufgabe steht]
  *   GET    /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … lesen
  *   DELETE /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … entfernen
  *   DELETE /devices/:itemId/tasks           Aufgaben vom Gerät nehmen           [Administratorrolle]
+ *   POST   /devices/:itemId/stages          neue Stufe { area, name } — nur unter 100 % im Bereich [Administratorrolle]
  *
  * «Üretimde görevlere eğer administrator isek görevleri yükleyebiliyoruz» —
  * lesen darf, wer die Produktion sieht; schreiben nur die Administratorrolle
@@ -114,6 +119,8 @@ router.get('/devices/:itemId/tasks', VIEW, MODULE, cache, (req, res, next) => co
 router.post('/devices/:itemId/tasks', VIEW, MODULE, ADMIN, (req, res, next) => controller.loadDeviceTasks(req, res, next));
 router.put('/devices/:itemId/tasks', VIEW, MODULE, ADMIN, (req, res, next) => controller.updateDeviceTasks(req, res, next));
 router.delete('/devices/:itemId/tasks', VIEW, MODULE, ADMIN, (req, res, next) => controller.unloadDeviceTasks(req, res, next));
+// Neue Stufe in der Kopie am Gerät — nur solange der Bereich unter 100 % wiegt (28.09.2026).
+router.post('/devices/:itemId/stages', VIEW, MODULE, ADMIN, (req, res, next) => controller.addDeviceStage(req, res, next));
 
 /**
  * @swagger
@@ -175,6 +182,9 @@ router.patch('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status', VIEW, 
  *       - bearerAuth: []
  */
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/complete', VIEW, MODULE, (req, res, next) => controller.completeDeviceSubtask(req, res, next));
+router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/revision', VIEW, MODULE, (req, res, next) => controller.requestDeviceSubtaskRevision(req, res, next));
+router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/unlock', VIEW, MODULE, (req, res, next) => controller.unlockDeviceSubtask(req, res, next));
+router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/checklist', VIEW, MODULE, (req, res, next) => controller.addDeviceSubtaskChecklistItem(req, res, next));
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files', VIEW, MODULE, (req, res, next) => {
     // Zu gross oder mehr als eine Datei: dieselbe Fehlerform wie die übrigen Wege.
     subtaskUpload.single('file')(req, res, (error: unknown) => {

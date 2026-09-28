@@ -82,6 +82,15 @@ export type ProductionTaskDay = string;
 export interface ProductionSubtaskFile {
     id: string;
     ref: string;
+    /**
+     * Fassungen derselben Datei (28.09.2026: «each file … can have revised versions»): alle
+     * Fassungen tragen dieselbe `groupId` — die Kennung der ersten Fassung. `version` zählt
+     * 1, 2, 3 …; die höchste ist die aktuelle.
+     */
+    groupId: string;
+    version: number;
+    /** Was sich in dieser Fassung geändert hat (Pflicht ab Fassung 2, 28.09.2026); null bei der ersten. */
+    revisionNote: string | null;
     name: string;
     type: string;
     size: number;
@@ -89,6 +98,12 @@ export interface ProductionSubtaskFile {
     uploadedByName: string | null;
     /** Zeitpunkt (ISO). */
     uploadedAt: string;
+}
+
+/** Ein Punkt der Freigabe-Checkliste einer Unteraufgabe (28.09.2026). */
+export interface ProductionSubtaskChecklistItem {
+    id: string;
+    text: string;
 }
 
 export interface ProductionSubtask {
@@ -110,6 +125,8 @@ export interface ProductionSubtask {
     requiresDocument: boolean;
     /** Die Unteraufgabe braucht eine Freigabe. */
     requiresApproval: boolean;
+    /** Was die Verwaltung bei der Freigabe prüft (nur mit «Approval», sonst leer). */
+    approvalChecklist: ProductionSubtaskChecklistItem[];
     /**
      * Der Stand der Unteraufgabe am Gerät (28.09.2026: «assign the statuses to
      * the subtasks»). In der Vorlage immer TODO — der Anfang.
@@ -126,6 +143,27 @@ export interface ProductionSubtask {
     completedByName: string | null;
     completedAt: string | null;
     completionNote: string | null;
+    /**
+     * Zurück zur Überarbeitung (28.09.2026, «Request revision» beim Prüfen der
+     * Dateien): wer, wann (ISO) und was zu ändern ist. Der Abschluss leert es.
+     */
+    revisionById: string | null;
+    revisionByName: string | null;
+    revisionAt: string | null;
+    revisionNote: string | null;
+    /**
+     * Jede Rückgabe zur Überarbeitung (28.09.2026) — älteste zuerst. Anders als die Felder
+     * oben bleibt sie auch nach der Freigabe stehen: die Prüfansicht zeigt den Verlauf.
+     */
+    revisionHistory: ProductionSubtaskRevisionRequest[];
+}
+
+/** Eine Rückgabe zur Überarbeitung (28.09.2026): wer, wann (ISO), was zu ändern war. */
+export interface ProductionSubtaskRevisionRequest {
+    byId: string | null;
+    byName: string | null;
+    at: string;
+    note: string | null;
 }
 
 /** Eine Aufgabe, wie sie gespeichert wird — in der Vorlage wie am Gerät. */
@@ -193,7 +231,8 @@ export interface ProductionTaskTemplateInput {
  * ist fertig und wartet auf «Complete the task» der Verwaltung. Kurz, damit
  * es in die Spalte `status` (VARCHAR(12)) passt.
  */
-export type ProductionTaskStatus = 'TODO' | 'IN_PROGRESS' | 'PENDING' | 'DONE';
+/** REVISION (28.09.2026): von der Verwaltung zur Überarbeitung zurückgegeben — nur an Unteraufgaben. */
+export type ProductionTaskStatus = 'TODO' | 'IN_PROGRESS' | 'REVISION' | 'PENDING' | 'DONE';
 
 /** Die Aufgaben eines Geräts: der Plan (welche Vorlage, welche Bereiche) und seine Aufgaben. */
 export interface ProductionDeviceTask extends ProductionTaskDraft {

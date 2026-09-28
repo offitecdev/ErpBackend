@@ -74,6 +74,11 @@ export interface IProductionDeviceTaskRepository {
         tasks: Array<ProductionTaskDraft & { id: string | null }>,
         actorId: string,
     ): Promise<ProductionDeviceTaskPlan | null>;
+    /**
+     * Die Bereiche und Stufen der Kopie am Gerät (28.09.2026: neue Stufe in den Zuweisungen).
+     * Aufgaben, Stände und Dateien bleiben unberührt; null ohne Plan.
+     */
+    setSections(tenantId: string, itemId: string, sections: ProductionTaskSection[]): Promise<ProductionDeviceTaskPlan | null>;
     /** Eine Aufgabe des Geräts (für die Prüfung, wer ihren Stand setzen darf). */
     getTask(tenantId: string, itemId: string, taskId: string): Promise<ProductionDeviceTask | null>;
     /** Der neue Stand einer Aufgabe; null, wenn es sie nicht gibt. */
@@ -122,5 +127,13 @@ export interface IProductionTaskNotifier {
         actorId: string;
         actorName: string | null;
         news: ProductionAssignmentNews;
+    }): Promise<void>;
+    /** Neue Pflichten haben begonnene Unteraufgaben wieder geöffnet — die Leute der Aufgabe prüfen und schliessen neu ab. */
+    reopened(input: {
+        tenantId: string;
+        device: ProductionTaskDevice;
+        actorId: string;
+        actorName: string | null;
+        subtasks: ReadonlyArray<{ code: string; name: string; area: string; stage: string; recipients: string[] }>;
     }): Promise<void>;
 }

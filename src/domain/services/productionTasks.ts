@@ -4,6 +4,7 @@ import type {
     ProductionBuiltInArea,
     ProductionBuiltInStage,
     ProductionSubtask,
+    ProductionSubtaskChecklistItem,
     ProductionSubtaskFile,
     ProductionTaskDraft,
     ProductionTaskSection,
@@ -98,6 +99,8 @@ export const PRODUCTION_TASK_LIMITS = {
     stageName: 60,
     subtasks: 30,
     subtaskName: 200,
+    checklistItems: 30,
+    checklistItemText: 200,
 } as const;
 
 /**
@@ -143,6 +146,16 @@ export type ProductionTaskErrorCode =
     | 'SUBTASK_NOT_FOUND'
     | 'APPROVAL_REQUIRED'
     | 'SUBTASK_LOCKED'
+    | 'NOT_LOCKED'
+    | 'SUBTASK_AWAITING'
+    | 'NOT_IN_PROGRESS'
+    | 'STATUS_FLOW'
+    | 'CHECKLIST_INCOMPLETE'
+    | 'CHECKLIST_ITEM_REQUIRED'
+    | 'SECTION_FULL'
+    | 'REVISION_NOTE_REQUIRED'
+    | 'CHECKLIST_TOO_MANY'
+    | 'NOT_PENDING'
     | 'NOT_APPROVABLE'
     | 'ALREADY_COMPLETED'
     | 'DOCUMENT_REQUIRED'
@@ -329,9 +342,15 @@ const filesFrom = (value: unknown): ProductionSubtaskFile[] => {
         const id = typeof row.id === 'string' ? row.id : '';
         const ref = typeof row.ref === 'string' ? row.ref : '';
         if (!SUBTASK_ID.test(id) || !ref || list.some((entry) => entry.id === id)) continue;
+        // Ältere Dateien (ohne Fassung) sind Fassung 1 ihrer eigenen Gruppe.
+        const groupId = typeof row.groupId === 'string' && SUBTASK_ID.test(row.groupId) ? row.groupId : id;
+        const version = typeof row.version === 'number' && Number.isInteger(row.version) && row.version > 0 ? row.version : 1;
         list.push({
             id,
             ref,
+            groupId,
+            version,
+            revisionNote: text(row.revisionNote, 500) || null,
             name: text(row.name, 200) || 'file',
             type: typeof row.type === 'string' ? row.type : 'application/octet-stream',
             size: typeof row.size === 'number' && Number.isFinite(row.size) ? row.size : 0,
@@ -341,6 +360,58 @@ const filesFrom = (value: unknown): ProductionSubtaskFile[] => {
         });
     }
     return list;
+};
+
+/**
+ * Die Freigabe-Checkliste einer Unteraufgabe (28.09.2026: «add Approval
+ * Checklist after they select approval checkbox»). Nur mit «Approval» —
+ * ohne fällt sie weg; leere Punkte fallen heraus.
+ */
+const approvalChecklistFrom = (value: unknown, requiresApproval: boolean): ProductionSubtaskChecklistItem[] => {
+    if (!requiresApproval || !Array.isArray(value)) return [];
+    const list: ProductionSubtaskChecklistItem[] = [];
+    for (const raw of value) {
+        if (list.length >= PRODUCTION_TASK_LIMITS.checklistItems) break;
+        const row = objectOf(raw);
+        const itemText = text(row.text, PRODUCTION_TASK_LIMITS.checklistItemText);
+        if (!itemText) continue;
+        const given = typeof row.id === 'string' ? row.id.trim() : '';
+        const id = SUBTASK_ID.test(given) && !list.some((entry) => entry.id === given) ? given : randomKey('c');
+        list.push({ id, text: itemText });
+    }
+    return list;
+};
+
+/**
+ * Ein Punkt mehr in der Freigabe-Checkliste (28.09.2026: «admins should be
+ * able to add items to the checklist through the approve files modal»).
+ * Leer oder zu viele → Fehler. Öffnet die Unteraufgabe NICHT wieder: wer
+ * prüft, ergänzt, was er gerade selbst prüft.
+ */
+export const withChecklistItem = (subtask: ProductionSubtask, rawText: unknown): ProductionSubtask => {
+    const itemText = text(rawText, PRODUCTION_TASK_LIMITS.checklistItemText);
+    if (!itemText) throw productionTaskError('CHECKLIST_ITEM_REQUIRED', 'Bitte einen Text für den Punkt eingeben.');
+    if (subtask.approvalChecklist.length >= PRODUCTION_TASK_LIMITS.checklistItems) {
+        throw productionTaskError('CHECKLIST_TOO_MANY', 'Zu viele Punkte.', { status: 409, params: { max: PRODUCTION_TASK_LIMITS.checklistItems } });
+    }
+    return { ...subtask, approvalChecklist: [...subtask.approvalChecklist, { id: randomKey('c'), text: itemText }] };
+};
+
+/**
+ * Gruppe und Nummer einer neuen Datei (28.09.2026): ohne `revisionOf` eine neue Datei
+ * (eigene Gruppe, Fassung 1); mit `revisionOf` die nächste Fassung derselben Datei —
+ * die Kennung muss eine Datei DIESER Unteraufgabe sein.
+ */
+export const fileVersionFor = (
+    files: ReadonlyArray<Pick<ProductionSubtaskFile, 'id' | 'groupId' | 'version'>>,
+    newId: string,
+    revisionOf: string | null,
+): { groupId: string; version: number } => {
+    if (!revisionOf) return { groupId: newId, version: 1 };
+    const base = files.find((file) => file.id === revisionOf);
+    if (!base) throw productionTaskError('FILE_NOT_FOUND', 'Die Datei für die neue Fassung gibt es hier nicht.', { status: 404 });
+    const newest = files.filter((file) => file.groupId === base.groupId).reduce((max, file) => Math.max(max, file.version), 0);
+    return { groupId: base.groupId, version: newest + 1 };
 };
 
 /** Neue Kennung einer Datei an einer Unteraufgabe. */
@@ -370,13 +441,34 @@ const subtaskOf = (
     dueDate,
     requiresDocument: row.requiresDocument === true,
     requiresApproval: row.requiresApproval === true,
+    approvalChecklist: approvalChecklistFrom(row.approvalChecklist, row.requiresApproval === true),
     status: statusFrom(row.status),
     files: filesFrom(row.files),
     completedById: typeof row.completedById === 'string' ? row.completedById : null,
     completedByName: text(row.completedByName, 120) || null,
     completedAt: typeof row.completedAt === 'string' ? row.completedAt : null,
     completionNote: text(row.completionNote, 500) || null,
+    revisionById: typeof row.revisionById === 'string' ? row.revisionById : null,
+    revisionByName: text(row.revisionByName, 120) || null,
+    revisionAt: typeof row.revisionAt === 'string' ? row.revisionAt : null,
+    revisionNote: text(row.revisionNote, 500) || null,
+    revisionHistory: revisionHistoryFrom(row.revisionHistory),
 });
+
+/** Der Verlauf der Rückgaben aus der Datenbank (höchstens 50, älteste zuerst); Unlesbares fällt heraus. */
+const revisionHistoryFrom = (value: unknown): ProductionSubtask['revisionHistory'] => {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((raw) => objectOf(raw))
+        .filter((row) => typeof row.at === 'string' && row.at)
+        .slice(-50)
+        .map((row) => ({
+            byId: typeof row.byId === 'string' ? row.byId : null,
+            byName: text(row.byName, 120) || null,
+            at: row.at as string,
+            note: text(row.note, 500) || null,
+        }));
+};
 
 /**
  * Was am Gerät dem Server gehört (Stand, Dateien, Abschluss) — eine Anfrage
@@ -390,7 +482,77 @@ export const withoutDeviceRecord = (subtask: ProductionSubtask): ProductionSubta
     completedByName: null,
     completedAt: null,
     completionNote: null,
+    revisionById: null,
+    revisionByName: null,
+    revisionAt: null,
+    revisionNote: null,
+    revisionHistory: [],
 });
+
+/**
+ * Kommt durch die Anpassung am Gerät eine Pflicht DAZU (28.09.2026: «it
+ * didn't require a document but admin adds it, or adds a new checklist
+ * item»)? «Document» oder «Approval» neu angehakt, oder ein Punkt der
+ * Checkliste neu bzw. anders formuliert. Weniger Pflichten zählen nicht.
+ */
+export const requirementsAdded = (before: ProductionSubtask, after: ProductionSubtask): boolean => {
+    if (after.requiresDocument && !before.requiresDocument) return true;
+    if (after.requiresApproval && !before.requiresApproval) return true;
+    const earlier = new Map(before.approvalChecklist.map((item) => [item.id, item.text]));
+    return after.approvalChecklist.some((item) => earlier.get(item.id) !== item.text);
+};
+
+/**
+ * Eine angepasste Unteraufgabe mit dem, was dem Server gehört: Stand,
+ * Dateien, Freigabe und Rückgabe bleiben aus der Datenbank — die Anfrage
+ * setzt sie nie. Kommt eine Pflicht dazu, beginnt sie von vorn: offen (▶
+ * wieder da), ohne Freigabe/Sperre und ohne alte Rückgabe; die Dateien bleiben.
+ */
+export const mergeDeviceRecord = (edited: ProductionSubtask, kept: ProductionSubtask): ProductionSubtask => {
+    const merged: ProductionSubtask = {
+        ...edited,
+        status: kept.status,
+        files: kept.files,
+        completedById: kept.completedById,
+        completedByName: kept.completedByName,
+        completedAt: kept.completedAt,
+        completionNote: kept.completionNote,
+        revisionById: kept.revisionById,
+        revisionByName: kept.revisionByName,
+        revisionAt: kept.revisionAt,
+        revisionNote: kept.revisionNote,
+        revisionHistory: kept.revisionHistory,
+    };
+    // Auch beim Neubeginn bleiben Dateien und der Verlauf der Rückgaben (er ist Geschichte, kein Stand).
+    return requirementsAdded(kept, edited)
+        ? { ...withoutDeviceRecord(merged), files: kept.files, revisionHistory: kept.revisionHistory }
+        : merged;
+};
+
+/** Eine durch neue Pflichten wieder geöffnete Unteraufgabe — für die Nachricht an die Leute der Aufgabe. */
+export interface ReopenedSubtask {
+    code: string;
+    name: string;
+    area: string;
+    stage: string;
+    recipients: string[];
+}
+
+type TaskWithSubtasks = { id: string; code: string; area: string; stage: string; assigneeIds: string[]; subtasks: ProductionSubtask[] };
+
+/**
+ * Welche schon begonnenen Unteraufgaben hat die Anpassung wieder geöffnet
+ * (28.09.2026: «the assignee should check the subtask and complete it
+ * again»)? Nur was vorher nicht mehr offen war — eine offene bleibt offen.
+ */
+export const reopenedSubtasks = (before: readonly TaskWithSubtasks[], after: readonly TaskWithSubtasks[]): ReopenedSubtask[] => {
+    const earlier = new Map(before.map((task) => [task.id, new Map(task.subtasks.map((subtask) => [subtask.id, subtask]))]));
+    return after.flatMap((task) => task.subtasks.flatMap((subtask, index) => {
+        const previous = earlier.get(task.id)?.get(subtask.id);
+        if (!previous || previous.status === 'TODO' || !requirementsAdded(previous, subtask)) return [];
+        return [{ code: `${task.code}.${index + 1}`, name: subtask.name, area: task.area, stage: task.stage, recipients: task.assigneeIds }];
+    }));
+};
 
 /** Unteraufgaben aus der Datenbank; leere fallen heraus. */
 export const subtasksFrom = (value: unknown): ProductionSubtask[] => {
@@ -439,7 +601,10 @@ const subtasksInputFrom = (value: unknown, withDates: boolean): ProductionSubtas
 
 /* ── Stand ──────────────────────────────────────────────────────────────── */
 
-export const PRODUCTION_TASK_STATUSES: readonly ProductionTaskStatus[] = ['TODO', 'IN_PROGRESS', 'PENDING', 'DONE'];
+export const PRODUCTION_TASK_STATUSES: readonly ProductionTaskStatus[] = ['TODO', 'IN_PROGRESS', 'REVISION', 'PENDING', 'DONE'];
+
+/** In Arbeit — auch zur Überarbeitung zurückgegeben (REVISION): von hier aus wird abgeschlossen. */
+export const isWorkingStatus = (status: ProductionTaskStatus): boolean => status === 'IN_PROGRESS' || status === 'REVISION';
 
 export const isProductionTaskStatus = (value: unknown): value is ProductionTaskStatus =>
     typeof value === 'string' && (PRODUCTION_TASK_STATUSES as readonly string[]).includes(value);
@@ -595,6 +760,48 @@ const sectionsInputFrom = (value: unknown[]): ProductionTaskSection[] => {
         sections.push({ key, name, share, stages });
     });
     return sections;
+};
+
+/**
+ * Eine neue Stufe in einem Bereich der Kopie am Gerät (28.09.2026: «admins should be able to
+ * add new stage if the section's weight is not 100%»). Nur solange die Aufgaben des Bereichs
+ * zusammen unter 100 % wiegen — die neue Stufe nimmt den Rest auf. Name Pflicht und eindeutig;
+ * in einem festen Bereich kommt sie vor die Fahne («final»), sonst ans Ende.
+ */
+export const withAddedStage = (
+    sections: readonly ProductionTaskSection[],
+    area: unknown,
+    rawName: unknown,
+    tasks: ReadonlyArray<{ area: string; weight: number }>,
+): ProductionTaskSection[] => {
+    const section = sections.find((entry) => entry.key === area);
+    if (!section) throw productionTaskError('SECTION_INVALID', 'Bereich nicht gefunden.', { status: 404, params: { row: 0 } });
+    const label = section.name || section.key;
+    const name = text(rawName, PRODUCTION_TASK_LIMITS.stageName);
+    if (!name) throw productionTaskError('STAGE_NAME_REQUIRED', 'Jede Stufe braucht einen Namen.', { params: { section: label } });
+    if (section.stages.length >= PRODUCTION_TASK_LIMITS.stages) {
+        throw productionTaskError('STAGES_TOO_MANY', `Höchstens ${PRODUCTION_TASK_LIMITS.stages} Stufen je Bereich.`, {
+            params: { max: PRODUCTION_TASK_LIMITS.stages, section: label },
+        });
+    }
+    if (section.stages.some((entry) => sameName(entry.name || entry.key, name))) {
+        throw productionTaskError('STAGE_NAME_TAKEN', `Im Bereich «${label}» gibt es die Stufe «${name}» schon.`, {
+            status: 409,
+            params: { section: label, name },
+        });
+    }
+    const used = roundPercent(tasks.filter((task) => task.area === section.key).reduce((sum, task) => sum + task.weight, 0));
+    if (used >= 100 - SUM_TOLERANCE) {
+        throw productionTaskError('SECTION_FULL', `Die Aufgaben von «${label}» wiegen schon 100 % — keine neue Stufe.`, {
+            status: 409,
+            params: { section: label },
+        });
+    }
+    const stage: ProductionTaskSectionStage = { key: randomKey('g'), name };
+    const last = section.stages[section.stages.length - 1];
+    const beforeFlag = isBuiltInArea(section.key) && last?.key === 'final';
+    const stages = beforeFlag ? [...section.stages.slice(0, -1), stage, last] : [...section.stages, stage];
+    return sections.map((entry) => (entry.key === section.key ? { ...entry, stages } : entry));
 };
 
 /** Ein älterer Browserstand schickt nur die Anteile von Mekanik und Elektrik. */

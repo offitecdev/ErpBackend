@@ -97,6 +97,12 @@ export class ProductionTaskController {
         } catch (error) { fail(res, next, error); }
     }
 
+    async addDeviceStage(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.addStage(tenantOf(req), param(req, 'itemId'), req.body));
+        } catch (error) { fail(res, next, error); }
+    }
+
     async setDeviceTaskStatus(req: Request, res: Response, next: NextFunction) {
         try {
             // Derselbe zwischengespeicherte Rolleneintrag wie requireSystemAdmin.
@@ -142,6 +148,50 @@ export class ProductionTaskController {
         } catch (error) { fail(res, next, error); }
     }
 
+    async addDeviceSubtaskChecklistItem(req: Request, res: Response, next: NextFunction) {
+        try {
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            res.json(await productionTasksModule.devices.addSubtaskChecklistItem(
+                tenantOf(req),
+                await actorOf(req),
+                Boolean(isSystemAdmin),
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                req.body,
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async unlockDeviceSubtask(req: Request, res: Response, next: NextFunction) {
+        try {
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            res.json(await productionTasksModule.devices.unlockSubtask(
+                tenantOf(req),
+                await actorOf(req),
+                Boolean(isSystemAdmin),
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async requestDeviceSubtaskRevision(req: Request, res: Response, next: NextFunction) {
+        try {
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            res.json(await productionTasksModule.devices.requestSubtaskRevision(
+                tenantOf(req),
+                await actorOf(req),
+                Boolean(isSystemAdmin),
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                req.body,
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
     async uploadDeviceSubtaskFile(req: Request, res: Response, next: NextFunction) {
         try {
             const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
@@ -155,6 +205,10 @@ export class ProductionTaskController {
                 param(req, 'subtaskId'),
                 // multer liefert den Namen als latin1 — zurück nach UTF-8 (wie beim Angebot der BOM).
                 file ? { body: file.buffer, contentType: file.mimetype, fileName: Buffer.from(file.originalname, 'latin1').toString('utf8') } : null,
+                // Neue Fassung einer vorhandenen Datei (Feld `revisionOf` im Formular, 28.09.2026).
+                typeof req.body?.revisionOf === 'string' && req.body.revisionOf.trim() ? req.body.revisionOf.trim() : null,
+                // … und was sich geändert hat (Feld `revisionNote`, Pflicht für eine neue Fassung).
+                req.body?.revisionNote,
             ));
         } catch (error) { fail(res, next, error); }
     }

@@ -78,7 +78,7 @@ model ProductionTaskTemplateTask {
   weight      Float
   /// JSON ["employeeId", …] — die voreingestellten Personen.
   assigneeIds Json
-  /// JSON [{ id, name, startDate, dueDate, requiresDocument, requiresApproval }]
+  /// JSON [{ id, name, startDate, dueDate, requiresDocument, requiresApproval, approvalChecklist: [{ id, text }] }]
   /// — die Unteraufgaben (28.09.2026); NULL = keine. Ihre Tage liegen
   /// innerhalb der Tage der Aufgabe.
   subtasks    Json?

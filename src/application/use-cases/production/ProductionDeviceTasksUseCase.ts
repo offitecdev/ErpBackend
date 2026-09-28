@@ -15,13 +15,18 @@ import {
     areaTotals,
     assigneeIdsFrom,
     assignmentNews,
+    fileVersionFor,
     hasSubtaskDocument,
     isProductionTaskStatus,
+    isWorkingStatus,
     newSubtaskFileId,
     SUBTASK_FILE_LIMITS,
     withoutDeviceRecord,
     orderTasks,
+    reopenedSubtasks,
     tasksInputFrom,
+    withAddedStage,
+    withChecklistItem,
     today,
     productionTaskError,
     templateCheck,
@@ -61,6 +66,20 @@ const fileRefsOf = (tasks: ReadonlyArray<{ subtasks: ReadonlyArray<ProductionSub
 const isCompleted = (subtask: ProductionSubtask): boolean => subtask.completedById !== null;
 
 /**
+ * Die Dateien sind zu: freigegeben (gesperrt) oder «wartet auf Freigabe»
+ * (28.09.2026: «on pending approval, the subtask should be locked») — bis
+ * die Verwaltung freigibt oder zur Überarbeitung zurückgibt. Für ALLE.
+ */
+const assertFilesOpen = (subtask: ProductionSubtask): void => {
+    if (isCompleted(subtask)) {
+        throw productionTaskError('SUBTASK_LOCKED', 'Freigegeben und gesperrt — erst die Sperre aufheben.', { status: 409 });
+    }
+    if (subtask.status === 'PENDING') {
+        throw productionTaskError('SUBTASK_AWAITING', 'Wartet auf die Freigabe — gesperrt, bis die Verwaltung freigibt oder zurückgibt.', { status: 409 });
+    }
+};
+
+/**
  * Der neue Stand einer Unteraufgabe — oder ein Fehler (28.09.2026):
  *   · abgeschlossen → niemand ändert ihn mehr
  *   · «Approval» → fertig heisst «wartet auf Freigabe» (PENDING); erledigt
@@ -77,6 +96,23 @@ const subtaskStatusChange = (subtask: ProductionSubtask, status: ProductionSubta
     }
     if (status === 'PENDING' && !subtask.requiresApproval) {
         throw productionTaskError('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
+    }
+    // «To make it pending approval it should be in progress» (28.09.2026) — oder zur Überarbeitung zurück.
+    if (status === 'PENDING' && !isWorkingStatus(subtask.status) && subtask.status !== 'PENDING') {
+        throw productionTaskError('NOT_IN_PROGRESS', 'Erst in Arbeit, dann zur Freigabe.', { status: 409 });
+    }
+    /* «No one can change statuses manually» (28.09.2026) — nur noch der Weg:
+       ▶ offen → in Arbeit; ■ in Arbeit → offen; «Complete the task» in Arbeit
+       (oder zur Überarbeitung zurück) → wartet (mit «Approval») bzw. erledigt.
+       Sonst zurück nur über «Request revision» (→ REVISION) und das Aufheben
+       der Sperre (eigene Wege). Derselbe Stand noch einmal ändert nichts. */
+    if (status !== subtask.status) {
+        const allowed = (status === 'IN_PROGRESS' && subtask.status === 'TODO')
+            || (status === 'TODO' && subtask.status === 'IN_PROGRESS')
+            || ((status === 'PENDING' || status === 'DONE') && isWorkingStatus(subtask.status));
+        if (!allowed) {
+            throw productionTaskError('STATUS_FLOW', 'Diesen Schritt gibt es nicht — ▶ startet, «Complete the task» schliesst ab.', { status: 409 });
+        }
     }
     if ((status === 'DONE' || status === 'PENDING') && subtask.requiresDocument && !hasSubtaskDocument(subtask)) {
         throw productionTaskError('DOCUMENT_REQUIRED', 'Ohne PDF wird sie nicht erledigt.', { status: 409 });
@@ -253,6 +289,30 @@ export class ProductionDeviceTasksUseCase {
             actorName: actor.name,
             news: assignmentNews(existing.tasks, plan.tasks),
         });
+        // Neue Pflichten öffnen begonnene Unteraufgaben wieder — die Leute der Aufgabe erfahren es.
+        const reopened = reopenedSubtasks(existing.tasks, plan.tasks);
+        if (reopened.length) {
+            void this.notifier.reopened({ tenantId, device, actorId: actor.id, actorName: actor.name, subtasks: reopened });
+        }
+        return this.dto(tenantId, device, plan);
+    }
+
+    /**
+     * Eine neue Stufe in einem Bereich der Kopie am Gerät (28.09.2026, nur Administratorrolle —
+     * der Weg sichert es mit ADMIN): nur solange die Aufgaben des Bereichs unter 100 % wiegen.
+     * Die Vorlage bleibt, wie sie ist; Aufgaben, Stände und Dateien bleiben unberührt.
+     */
+    async addStage(tenantId: string, itemId: string, body: unknown): Promise<ProductionDeviceTasksDto> {
+        const input = objectOf(body);
+        const [device, existing] = await Promise.all([
+            this.directory.device(tenantId, itemId),
+            this.plans.getPlan(tenantId, itemId),
+        ]);
+        if (!device) throw this.deviceNotFound();
+        if (!existing) throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
+        const sections = withAddedStage(existing.sections, input.area, input.name, existing.tasks);
+        const plan = await this.plans.setSections(tenantId, itemId, sections);
+        if (!plan) throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
         return this.dto(tenantId, device, plan);
     }
 
@@ -270,13 +330,18 @@ export class ProductionDeviceTasksUseCase {
     ): Promise<{ task: ProductionTaskDto }> {
         const status = objectOf(body).status;
         // «Wartet auf Freigabe» gibt es nur an Unteraufgaben mit «Approval».
-        if (!isProductionTaskStatus(status) || status === 'PENDING') {
+        // «Wartet auf Freigabe» und «zur Überarbeitung» gibt es nur an Unteraufgaben.
+        if (!isProductionTaskStatus(status) || status === 'PENDING' || status === 'REVISION') {
             throw productionTaskError('STATUS_INVALID', 'Unbekannter Stand.');
         }
         const current = await this.plans.getTask(tenantId, itemId, taskId);
         if (!current) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
         if (!isAdmin && !current.assigneeIds.includes(actor.id)) {
             throw productionTaskError('STATUS_FORBIDDEN', 'Den Stand setzen nur die Verwaltung und wer in der Aufgabe steht.', { status: 403 });
+        }
+        // Mit Unteraufgaben folgt die Aufgabe ihnen — ihren Stand setzt niemand direkt (28.09.2026).
+        if (current.subtasks.length > 0) {
+            throw productionTaskError('STATUS_FLOW', 'Der Stand dieser Aufgabe folgt ihren Unteraufgaben.', { status: 409 });
         }
         const task = await this.plans.setStatus(tenantId, itemId, taskId, status, actor.id);
         if (!task) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
@@ -328,15 +393,26 @@ export class ProductionDeviceTasksUseCase {
         body: unknown,
     ): Promise<{ task: ProductionTaskDto }> {
         if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Abschliessen darf nur die Verwaltung.', { status: 403 });
-        const rawNote = objectOf(body).note;
+        const input = objectOf(body);
+        const rawNote = input.note;
         const note = typeof rawNote === 'string' ? rawNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
+        // Die abgehakten Punkte der Freigabe-Checkliste — geprüft wird hier, nicht nur im Browser.
+        const checked = new Set(Array.isArray(input.checked) ? input.checked.filter((id): id is string => typeof id === 'string') : []);
         const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!subtask.requiresApproval) {
                 throw productionTaskError('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
             }
             if (isCompleted(subtask)) throw productionTaskError('ALREADY_COMPLETED', 'Schon abgeschlossen.', { status: 409 });
+            // Freigeben nur, was auf die Freigabe wartet (28.09.2026).
+            if (subtask.status !== 'PENDING') {
+                throw productionTaskError('NOT_PENDING', 'Erst «Complete the task» — dann wartet sie auf die Freigabe.', { status: 409 });
+            }
             if (subtask.requiresDocument && !hasSubtaskDocument(subtask)) {
                 throw productionTaskError('DOCUMENT_REQUIRED', 'Ohne PDF schliesst sie nicht ab.', { status: 409 });
+            }
+            // Jeder Punkt der Checkliste muss abgehakt sein (28.09.2026) — sonst keine Freigabe.
+            if (subtask.approvalChecklist.some((item) => !checked.has(item.id))) {
+                throw productionTaskError('CHECKLIST_INCOMPLETE', 'Erst alle Punkte der Freigabe-Checkliste abhaken.', { status: 409 });
             }
             return {
                 ...subtask,
@@ -345,6 +421,113 @@ export class ProductionDeviceTasksUseCase {
                 completedByName: actor.name,
                 completedAt: new Date().toISOString(),
                 completionNote: note || null,
+                revisionById: null,
+                revisionByName: null,
+                revisionAt: null,
+                revisionNote: null,
+            };
+        }, actor.id);
+        return { task: taskDto(this.found(task)) };
+    }
+
+    /**
+     * Ein Punkt mehr in der Freigabe-Checkliste — aus «Approve the files»
+     * (28.09.2026), nur die Verwaltung, nur an einer offenen Unteraufgabe mit
+     * «Approval». Der Stand bleibt; der neue Punkt muss vor der Freigabe
+     * abgehakt werden (das prüft `completeSubtask`).
+     */
+    async addSubtaskChecklistItem(
+        tenantId: string,
+        actor: ProductionTaskActor,
+        isAdmin: boolean,
+        itemId: string,
+        taskId: string,
+        subtaskId: string,
+        body: unknown,
+    ): Promise<{ task: ProductionTaskDto }> {
+        if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Die Checkliste ergänzt nur die Verwaltung.', { status: 403 });
+        const rawText = objectOf(body).text;
+        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+            if (!subtask.requiresApproval) {
+                throw productionTaskError('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
+            }
+            if (isCompleted(subtask)) {
+                throw productionTaskError('SUBTASK_LOCKED', 'Freigegeben und gesperrt — erst die Sperre aufheben.', { status: 409 });
+            }
+            return withChecklistItem(subtask, rawText);
+        }, actor.id);
+        return { task: taskDto(this.found(task)) };
+    }
+
+    /**
+     * Die Sperre aufheben (28.09.2026) — nur die Verwaltung, ein Klick auf das
+     * Schloss einer freigegebenen ODER wartenden Unteraufgabe: sie ist wieder
+     * in Arbeit («when the admin removes the lock the status should be in
+     * progress»); Dateien lassen sich wieder ändern, «Complete the task»
+     * schickt sie erneut zur Freigabe.
+     */
+    async unlockSubtask(
+        tenantId: string,
+        actor: ProductionTaskActor,
+        isAdmin: boolean,
+        itemId: string,
+        taskId: string,
+        subtaskId: string,
+    ): Promise<{ task: ProductionTaskDto }> {
+        if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Die Sperre hebt nur die Verwaltung auf.', { status: 403 });
+        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+            if (!isCompleted(subtask) && subtask.status !== 'PENDING') {
+                throw productionTaskError('NOT_LOCKED', 'Nicht gesperrt.', { status: 409 });
+            }
+            return {
+                ...subtask,
+                status: 'IN_PROGRESS',
+                completedById: null,
+                completedByName: null,
+                completedAt: null,
+                completionNote: null,
+            };
+        }, actor.id);
+        return { task: taskDto(this.found(task)) };
+    }
+
+    /**
+     * «Request revision» (28.09.2026) — beim Prüfen der Dateien, nur die
+     * Verwaltung, nur eine offene Unteraufgabe mit «Approval»: zurück in
+     * Arbeit, mit wem, wann und was zu ändern ist.
+     */
+    async requestSubtaskRevision(
+        tenantId: string,
+        actor: ProductionTaskActor,
+        isAdmin: boolean,
+        itemId: string,
+        taskId: string,
+        subtaskId: string,
+        body: unknown,
+    ): Promise<{ task: ProductionTaskDto }> {
+        if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Zurückgeben darf nur die Verwaltung.', { status: 403 });
+        const rawNote = objectOf(body).note;
+        const note = typeof rawNote === 'string' ? rawNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
+        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+            if (!subtask.requiresApproval) {
+                throw productionTaskError('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
+            }
+            if (isCompleted(subtask)) throw productionTaskError('ALREADY_COMPLETED', 'Schon abgeschlossen.', { status: 409 });
+            // Zurückgeben lässt sich nur, was auf die Freigabe wartet.
+            if (subtask.status !== 'PENDING') {
+                throw productionTaskError('NOT_PENDING', 'Nur eine wartende Unteraufgabe lässt sich zurückgeben.', { status: 409 });
+            }
+            const at = new Date().toISOString();
+            return {
+                ...subtask,
+                // Sichtbar als eigener Stand «Revision requested» (28.09.2026).
+                status: 'REVISION',
+                revisionById: actor.id,
+                revisionByName: actor.name,
+                revisionAt: at,
+                revisionNote: note || null,
+                // … und im Verlauf, der auch nach der Freigabe bleibt (Prüfansicht).
+                revisionHistory: [...subtask.revisionHistory, { byId: actor.id, byName: actor.name, at, note: note || null }].slice(-50),
             };
         }, actor.id);
         return { task: taskDto(this.found(task)) };
@@ -352,7 +535,7 @@ export class ProductionDeviceTasksUseCase {
 
     /**
      * Eine Datei an eine Unteraufgabe (28.09.2026) — die Verwaltung und wer
-     * in der Aufgabe steht; an eine abgeschlossene nur die Verwaltung.
+     * in der Aufgabe steht; an eine freigegebene (gesperrte) niemand.
      */
     async uploadSubtaskFile(
         tenantId: string,
@@ -362,8 +545,16 @@ export class ProductionDeviceTasksUseCase {
         taskId: string,
         subtaskId: string,
         file: { body: Buffer; contentType: string; fileName: string } | null,
+        /** Neue Fassung dieser Datei (28.09.2026) — null: eine neue Datei. */
+        revisionOf: string | null = null,
+        /** Was sich geändert hat — Pflicht für eine neue Fassung (28.09.2026). */
+        rawRevisionNote: unknown = null,
     ): Promise<{ task: ProductionTaskDto }> {
         await this.assertOnTask(tenantId, actor, isAdmin, itemId, taskId, 'FILE_FORBIDDEN');
+        const revisionNote = typeof rawRevisionNote === 'string' ? rawRevisionNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
+        if (revisionOf && !revisionNote) {
+            throw productionTaskError('REVISION_NOTE_REQUIRED', 'Zu einer neuen Fassung gehört eine Notiz, was sich geändert hat.');
+        }
         if (!file || !file.body?.length) throw productionTaskError('FILE_REQUIRED', 'Keine Datei empfangen.');
         const contentType = String(file.contentType || '').toLowerCase();
         if (!SUBTASK_FILE_TYPES.has(contentType) || !this.files.accepts(contentType)) {
@@ -375,17 +566,23 @@ export class ProductionDeviceTasksUseCase {
         const ref = await this.files.store(tenantId, file.body, contentType);
         try {
             const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
-                if (!isAdmin && isCompleted(subtask)) {
-                    throw productionTaskError('SUBTASK_LOCKED', 'Abgeschlossen — nur die Verwaltung ändert sie.', { status: 403 });
-                }
+                // Gesperrt heisst für ALLE gesperrt (28.09.2026) — auch solange sie auf die Freigabe wartet.
+                assertFilesOpen(subtask);
                 if (subtask.files.length >= SUBTASK_FILE_LIMITS.files) {
                     throw productionTaskError('FILES_TOO_MANY', 'Zu viele Dateien.', { status: 409, params: { max: SUBTASK_FILE_LIMITS.files } });
                 }
+                const id = newSubtaskFileId();
+                // Neue Datei oder nächste Fassung einer vorhandenen (dieselbe groupId).
+                const { groupId, version } = fileVersionFor(subtask.files, id, revisionOf);
                 return {
                     ...subtask,
                     files: [...subtask.files, {
-                        id: newSubtaskFileId(),
+                        id,
                         ref,
+                        groupId,
+                        version,
+                        // Nur eine neue Fassung trägt eine Notiz; die erste Fassung keine.
+                        revisionNote: version > 1 ? revisionNote : null,
                         name: cleanFileName(file.fileName),
                         type: contentType,
                         size: file.body.length,
@@ -437,7 +634,8 @@ export class ProductionDeviceTasksUseCase {
         const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             const file = subtask.files.find((entry) => entry.id === fileId);
             if (!file) throw productionTaskError('FILE_NOT_FOUND', 'Datei nicht gefunden.', { status: 404 });
-            if (!isAdmin && (isCompleted(subtask) || file.uploadedById !== actor.id)) {
+            assertFilesOpen(subtask);
+            if (!isAdmin && file.uploadedById !== actor.id) {
                 throw productionTaskError('FILE_FORBIDDEN', 'Diese Datei entfernt nur die Verwaltung.', { status: 403 });
             }
             removed = file.ref;
