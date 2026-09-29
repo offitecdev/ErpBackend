@@ -254,6 +254,26 @@ export const assigneeIdsFrom = (value: unknown): string[] => {
     return ids;
 };
 
+/**
+ * Die Personen einer Aufgabe (29.09.2026: «only assign people to subtasks —
+ * but on the people cell of the main task show all people that are assigned
+ * to a subtask under that main task»): die Summe ihrer Unteraufgaben, in der
+ * Reihenfolge, in der sie zuerst vorkommen. Früher an der Aufgabe selbst
+ * gesetzte Personen fallen damit weg (Vorgabe: «drop them»).
+ */
+export const taskAssigneesOf = (subtasks: ReadonlyArray<Pick<ProductionSubtask, 'assigneeIds'>>): string[] =>
+    [...new Set(subtasks.flatMap((subtask) => subtask.assigneeIds))];
+
+/** Nur wer noch aktiv ist, bleibt an den Unteraufgaben; die Aufgabe rechnet ihre Personen neu. */
+export const withActiveAssignees = <T extends Pick<ProductionTaskDraft, 'assigneeIds' | 'subtasks'>>(task: T, active: ReadonlySet<string>): T => {
+    const subtasks = task.subtasks.map((subtask) => ({ ...subtask, assigneeIds: subtask.assigneeIds.filter((id) => active.has(id)) }));
+    return { ...task, subtasks, assigneeIds: taskAssigneesOf(subtasks) };
+};
+
+/** Arbeitet die Person an dieser Unteraufgabe? Nur wer an ihr steht — auch die Verwaltung nicht von selbst (29.09.2026). */
+export const worksOnSubtask = (subtask: Pick<ProductionSubtask, 'assigneeIds'>, personId: string): boolean =>
+    subtask.assigneeIds.includes(personId);
+
 /** Vergleich von Kürzeln: ohne Gross/klein, ohne Leerraum. */
 const codeKey = (code: string): string => code.replace(/\s+/g, '').toLocaleUpperCase('tr-TR');
 
@@ -439,6 +459,7 @@ const subtaskOf = (
     weight,
     startDate,
     dueDate,
+    assigneeIds: assigneeIdsFrom(row.assigneeIds),
     requiresDocument: row.requiresDocument === true,
     requiresApproval: row.requiresApproval === true,
     approvalChecklist: approvalChecklistFrom(row.approvalChecklist, row.requiresApproval === true),
@@ -529,7 +550,7 @@ export const mergeDeviceRecord = (edited: ProductionSubtask, kept: ProductionSub
         : merged;
 };
 
-/** Eine durch neue Pflichten wieder geöffnete Unteraufgabe — für die Nachricht an die Leute der Aufgabe. */
+/** Eine durch neue Pflichten wieder geöffnete Unteraufgabe — für die Nachricht an die Leute der Unteraufgabe. */
 export interface ReopenedSubtask {
     code: string;
     name: string;
@@ -550,7 +571,7 @@ export const reopenedSubtasks = (before: readonly TaskWithSubtasks[], after: rea
     return after.flatMap((task) => task.subtasks.flatMap((subtask, index) => {
         const previous = earlier.get(task.id)?.get(subtask.id);
         if (!previous || previous.status === 'TODO' || !requirementsAdded(previous, subtask)) return [];
-        return [{ code: `${task.code}.${index + 1}`, name: subtask.name, area: task.area, stage: task.stage, recipients: task.assigneeIds }];
+        return [{ code: `${task.code}.${index + 1}`, name: subtask.name, area: task.area, stage: task.stage, recipients: subtask.assigneeIds }];
     }));
 };
 
@@ -913,7 +934,8 @@ export const tasksInputFrom = (
             code,
             name: taskName,
             weight,
-            assigneeIds: assigneeIdsFrom(row.assigneeIds),
+            // Personen stehen nur an den Unteraufgaben (29.09.2026) — `row.assigneeIds` zählt nicht mehr.
+            assigneeIds: taskAssigneesOf(subtasks),
             // Beginn und Termin gibt es erst am Gerät — eine Vorlage trägt keine (28.09.2026).
             startDate,
             dueDate,
@@ -1006,25 +1028,36 @@ export const orderTasks = <T extends Pick<ProductionTaskDraft, 'area' | 'stage'>
 
 type NewsTask = Pick<ProductionTaskDraft, 'area' | 'stage' | 'code' | 'name'>;
 
+type NewsSubtask = Pick<ProductionSubtask, 'id' | 'name' | 'assigneeIds'>;
+
 /**
- * Person → die Aufgaben, in denen sie NEU steht. Verglichen wird je Aufgabe
- * über ihr Kürzel: wer beim Ersetzen einer Vorlage in derselben Aufgabe
- * bleibt, wird nicht noch einmal benachrichtigt.
+ * Person → die Unteraufgaben, an denen sie NEU steht (29.09.2026: Personen
+ * gibt es nur noch an Unteraufgaben). Verglichen wird je Unteraufgabe über
+ * das Kürzel ihrer Aufgabe und ihre Kennung: wer beim Ersetzen einer Vorlage
+ * an derselben Unteraufgabe bleibt, wird nicht noch einmal benachrichtigt.
+ * Die Nachricht nennt das Kürzel der Unteraufgabe («M-01.2») und ihren Namen.
  */
 export const assignmentNews = (
-    before: ReadonlyArray<Pick<ProductionTaskDraft, 'code' | 'assigneeIds'>>,
-    after: ReadonlyArray<NewsTask & Pick<ProductionTaskDraft, 'assigneeIds'>>,
+    before: ReadonlyArray<Pick<ProductionTaskDraft, 'code'> & { subtasks: ReadonlyArray<Pick<ProductionSubtask, 'id' | 'assigneeIds'>> }>,
+    after: ReadonlyArray<NewsTask & { subtasks: ReadonlyArray<NewsSubtask> }>,
 ): Map<string, NewsTask[]> => {
-    const previous = new Map(before.map((task) => [codeKey(task.code), new Set(task.assigneeIds)]));
+    // Kürzel der Aufgabe → Kennung der Unteraufgabe → ihre Personen vorher.
+    const previous = new Map(before.map((task) => [
+        codeKey(task.code),
+        new Map(task.subtasks.map((subtask) => [subtask.id, new Set(subtask.assigneeIds)])),
+    ]));
     const news = new Map<string, NewsTask[]>();
     for (const task of after) {
-        const had = previous.get(codeKey(task.code));
-        for (const id of task.assigneeIds) {
-            if (had?.has(id)) continue;
-            const list = news.get(id) ?? [];
-            list.push({ area: task.area, stage: task.stage, code: task.code, name: task.name });
-            news.set(id, list);
-        }
+        const earlier = previous.get(codeKey(task.code));
+        task.subtasks.forEach((subtask, index) => {
+            const had = earlier?.get(subtask.id);
+            for (const id of subtask.assigneeIds) {
+                if (had?.has(id)) continue;
+                const list = news.get(id) ?? [];
+                list.push({ area: task.area, stage: task.stage, code: `${task.code}.${index + 1}`, name: subtask.name });
+                news.set(id, list);
+            }
+        });
     }
     return news;
 };

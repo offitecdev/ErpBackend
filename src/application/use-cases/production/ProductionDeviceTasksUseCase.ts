@@ -21,7 +21,9 @@ import {
     isWorkingStatus,
     newSubtaskFileId,
     SUBTASK_FILE_LIMITS,
+    withActiveAssignees,
     withoutDeviceRecord,
+    worksOnSubtask,
     orderTasks,
     reopenedSubtasks,
     tasksInputFrom,
@@ -183,20 +185,20 @@ export class ProductionDeviceTasksUseCase {
 
         // Nur wer heute noch aktiv in der Firma ist, kommt mit auf das Gerät.
         const active = await this.directory.activePeople(tenantId, assigneesOf(template.tasks));
-        const tasks = orderTasks(template.tasks, template.sections).map((task) => ({
+        const tasks = orderTasks(template.tasks, template.sections).map((task) => withActiveAssignees({
             area: task.area,
             stage: task.stage,
             code: task.code,
             name: task.name,
             weight: task.weight,
-            assigneeIds: task.assigneeIds.filter((id) => active.has(id)),
+            assigneeIds: task.assigneeIds,
             startDate: task.startDate,
             dueDate: task.dueDate,
             // Am Gerät entsteht die Kopie heute — Aufgabe wie Unteraufgaben.
             createdAt: today(),
             // Am Gerät beginnt jede Unteraufgabe offen, ohne Dateien und Abschluss.
             subtasks: task.subtasks.map((subtask) => ({ ...withoutDeviceRecord(subtask), createdAt: today() })),
-        }));
+        }, active));
 
         let plan: ProductionDeviceTaskPlan;
         try {
@@ -227,11 +229,18 @@ export class ProductionDeviceTasksUseCase {
         return this.dto(tenantId, device, plan);
     }
 
-    async assign(
+    /**
+     * Die Personen einer Unteraufgabe setzen (29.09.2026, nur Administratorrolle —
+     * der Weg sichert es mit ADMIN): «they should only assign people to
+     * subtasks». Die Aufgabe zeigt danach alle Personen ihrer Unteraufgaben.
+     * Wer neu an der Unteraufgabe steht, bekommt eine Nachricht.
+     */
+    async assignSubtask(
         tenantId: string,
         actor: ProductionTaskActor,
         itemId: string,
         taskId: string,
+        subtaskId: string,
         body: unknown,
     ): Promise<{ task: ProductionTaskDto; people: ProductionTaskPerson[] }> {
         const wanted = assigneeIdsFrom(objectOf(body).assigneeIds);
@@ -242,11 +251,17 @@ export class ProductionDeviceTasksUseCase {
         if (!device) throw this.deviceNotFound();
         const kept = wanted.filter((id) => active.has(id));
 
-        const result = await this.plans.setAssignees(tenantId, itemId, taskId, kept, actor.id);
-        if (!result) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
+        let previous: string[] = [];
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+            previous = subtask.assigneeIds;
+            return { ...subtask, assigneeIds: kept };
+        }, actor.id));
 
-        const { task } = result;
-        const news = assignmentNews([{ code: task.code, assigneeIds: result.previous }], [task]);
+        const before = {
+            code: task.code,
+            subtasks: task.subtasks.map((subtask) => (subtask.id === subtaskId ? { ...subtask, assigneeIds: previous } : subtask)),
+        };
+        const news = assignmentNews([before], [task]);
         if (news.size) {
             void this.notifier.assigned({ tenantId, device, actorId: actor.id, actorName: actor.name, news });
         }
@@ -258,9 +273,9 @@ export class ProductionDeviceTasksUseCase {
      * Die Aufgaben des Geräts anpassen (28.09.2026, nur Administratorrolle):
      * «admin should be able to customize the tasks and subtasks — it shouldn't
      * change the template, only the version that the project uses». Name,
-     * Gewicht, Tage, Personen und Unteraufgaben; neue Aufgaben in einer Stufe,
-     * entfernte fallen weg. Wer neu in einer Aufgabe steht, bekommt eine
-     * Nachricht.
+     * Gewicht, Tage und Unteraufgaben samt ihren Personen; neue Aufgaben in
+     * einer Stufe, entfernte fallen weg. Wer neu an einer Unteraufgabe steht,
+     * bekommt eine Nachricht.
      */
     async updateTasks(tenantId: string, actor: ProductionTaskActor, itemId: string, body: unknown): Promise<ProductionDeviceTasksDto> {
         const [device, existing] = await Promise.all([
@@ -272,10 +287,7 @@ export class ProductionDeviceTasksUseCase {
 
         const input = tasksInputFrom(objectOf(body).tasks, existing.sections, true);
         const active = await this.directory.activePeople(tenantId, assigneesOf(input));
-        const tasks = orderTasks(input, existing.sections).map((task) => ({
-            ...task,
-            assigneeIds: task.assigneeIds.filter((id) => active.has(id)),
-        }));
+        const tasks = orderTasks(input, existing.sections).map((task) => withActiveAssignees(task, active));
 
         const plan = await this.plans.replaceTasks(tenantId, itemId, tasks, actor.id);
         if (!plan) throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
@@ -318,12 +330,14 @@ export class ProductionDeviceTasksUseCase {
 
     /**
      * Der Stand einer Aufgabe (28.09.2026): offen, in Arbeit, erledigt. Setzen
-     * darf ihn die Administratorrolle und jede Person, die in der Aufgabe steht.
+     * darf ihn nur, wer in der Aufgabe steht — die Verwaltung nicht von Hand
+     * (29.09.2026: «admins shouldn't be allowed to change the task statuses
+     * manually»). Personen stehen nur an Unteraufgaben; eine Aufgabe ohne
+     * Unteraufgaben hat also keine, und mit Unteraufgaben folgt sie ihnen.
      */
     async setStatus(
         tenantId: string,
         actor: ProductionTaskActor,
-        isAdmin: boolean,
         itemId: string,
         taskId: string,
         body: unknown,
@@ -336,8 +350,8 @@ export class ProductionDeviceTasksUseCase {
         }
         const current = await this.plans.getTask(tenantId, itemId, taskId);
         if (!current) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
-        if (!isAdmin && !current.assigneeIds.includes(actor.id)) {
-            throw productionTaskError('STATUS_FORBIDDEN', 'Den Stand setzen nur die Verwaltung und wer in der Aufgabe steht.', { status: 403 });
+        if (!current.assigneeIds.includes(actor.id)) {
+            throw productionTaskError('STATUS_FORBIDDEN', 'Den Stand setzt nur, wer in der Aufgabe steht.', { status: 403 });
         }
         // Mit Unteraufgaben folgt die Aufgabe ihnen — ihren Stand setzt niemand direkt (28.09.2026).
         if (current.subtasks.length > 0) {
@@ -349,9 +363,10 @@ export class ProductionDeviceTasksUseCase {
     }
 
     /**
-     * Der Stand einer Unteraufgabe (28.09.2026) — dieselben Leute wie beim
-     * Stand der Aufgabe: die Verwaltung und wer in der Aufgabe steht. Die
-     * Aufgabe folgt ihren Unteraufgaben (alle erledigt → erledigt).
+     * Der Stand einer Unteraufgabe (28.09.2026) — setzen darf ihn nur, wer an
+     * der Unteraufgabe steht; die Verwaltung nicht von Hand (29.09.2026), sie
+     * gibt frei, gibt zurück und hebt die Sperre auf. Die Aufgabe folgt ihren
+     * Unteraufgaben (alle erledigt → erledigt).
      *
      * Regeln siehe `subtaskStatusChange`: abgeschlossen = gesperrt für alle;
      * «Approval» schliesst nur «Complete the task»; «Document» braucht ein PDF.
@@ -359,7 +374,6 @@ export class ProductionDeviceTasksUseCase {
     async setSubtaskStatus(
         tenantId: string,
         actor: ProductionTaskActor,
-        isAdmin: boolean,
         itemId: string,
         taskId: string,
         subtaskId: string,
@@ -369,12 +383,12 @@ export class ProductionDeviceTasksUseCase {
         if (!isProductionTaskStatus(status)) {
             throw productionTaskError('STATUS_INVALID', 'Unbekannter Stand.');
         }
-        const current = await this.plans.getTask(tenantId, itemId, taskId);
-        if (!current) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
-        if (!isAdmin && !current.assigneeIds.includes(actor.id)) {
-            throw productionTaskError('STATUS_FORBIDDEN', 'Den Stand setzen nur die Verwaltung und wer in der Aufgabe steht.', { status: 403 });
-        }
-        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => subtaskStatusChange(subtask, status), actor.id);
+        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+            if (!worksOnSubtask(subtask, actor.id)) {
+                throw productionTaskError('STATUS_FORBIDDEN', 'Den Stand setzt nur, wer an der Unteraufgabe steht.', { status: 403 });
+            }
+            return subtaskStatusChange(subtask, status);
+        }, actor.id);
         return { task: taskDto(this.found(task)) };
     }
 
@@ -535,7 +549,7 @@ export class ProductionDeviceTasksUseCase {
 
     /**
      * Eine Datei an eine Unteraufgabe (28.09.2026) — die Verwaltung und wer
-     * in der Aufgabe steht; an eine freigegebene (gesperrte) niemand.
+     * an der Unteraufgabe steht; an eine freigegebene (gesperrte) niemand.
      */
     async uploadSubtaskFile(
         tenantId: string,
@@ -550,7 +564,7 @@ export class ProductionDeviceTasksUseCase {
         /** Was sich geändert hat — Pflicht für eine neue Fassung (28.09.2026). */
         rawRevisionNote: unknown = null,
     ): Promise<{ task: ProductionTaskDto }> {
-        await this.assertOnTask(tenantId, actor, isAdmin, itemId, taskId, 'FILE_FORBIDDEN');
+        await this.assertOnSubtask(tenantId, actor, isAdmin, itemId, taskId, subtaskId);
         const revisionNote = typeof rawRevisionNote === 'string' ? rawRevisionNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
         if (revisionOf && !revisionNote) {
             throw productionTaskError('REVISION_NOTE_REQUIRED', 'Zu einer neuen Fassung gehört eine Notiz, was sich geändert hat.');
@@ -618,7 +632,7 @@ export class ProductionDeviceTasksUseCase {
 
     /**
      * Eine Datei entfernen — die Verwaltung; sonst wer sie hochgeladen hat
-     * und noch in der Aufgabe steht, solange die Unteraufgabe offen ist.
+     * und noch an der Unteraufgabe steht, solange sie offen ist.
      */
     async removeSubtaskFile(
         tenantId: string,
@@ -629,7 +643,7 @@ export class ProductionDeviceTasksUseCase {
         subtaskId: string,
         fileId: string,
     ): Promise<{ task: ProductionTaskDto }> {
-        await this.assertOnTask(tenantId, actor, isAdmin, itemId, taskId, 'FILE_FORBIDDEN');
+        await this.assertOnSubtask(tenantId, actor, isAdmin, itemId, taskId, subtaskId);
         let removed: string | null = null;
         const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             const file = subtask.files.find((entry) => entry.id === fileId);
@@ -657,21 +671,22 @@ export class ProductionDeviceTasksUseCase {
 
     /* ── intern ─────────────────────────────────────────────────────── */
 
-    /** Die Verwaltung oder wer in der Aufgabe steht — sonst `code` (403). */
-    private async assertOnTask(
+    /** Die Verwaltung oder wer an der Unteraufgabe steht — sonst FILE_FORBIDDEN (403). */
+    private async assertOnSubtask(
         tenantId: string,
         actor: ProductionTaskActor,
         isAdmin: boolean,
         itemId: string,
         taskId: string,
-        code: 'FILE_FORBIDDEN' | 'STATUS_FORBIDDEN',
-    ): Promise<ProductionDeviceTask> {
+        subtaskId: string,
+    ): Promise<void> {
         const task = await this.plans.getTask(tenantId, itemId, taskId);
         if (!task) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
-        if (!isAdmin && !task.assigneeIds.includes(actor.id)) {
-            throw productionTaskError(code, 'Nur die Verwaltung und wer in der Aufgabe steht.', { status: 403 });
+        const subtask = task.subtasks.find((entry) => entry.id === subtaskId);
+        if (!subtask) throw productionTaskError('SUBTASK_NOT_FOUND', 'Unteraufgabe nicht gefunden.', { status: 404 });
+        if (!isAdmin && !worksOnSubtask(subtask, actor.id)) {
+            throw productionTaskError('FILE_FORBIDDEN', 'Nur die Verwaltung und wer an der Unteraufgabe steht.', { status: 403 });
         }
-        return task;
     }
 
     private found(task: ProductionDeviceTask | null | 'no-subtask'): ProductionDeviceTask {

@@ -54,14 +54,6 @@ export interface IProductionDeviceTaskRepository {
     getPlan(tenantId: string, itemId: string): Promise<ProductionDeviceTaskPlan | null>;
     /** Legt den Plan an; ein bestehender Plan des Geräts wird im selben Vorgang ersetzt. */
     replacePlan(tenantId: string, write: ProductionDevicePlanWrite): Promise<ProductionDeviceTaskPlan>;
-    /** Neue Personen einer Aufgabe; gibt die Aufgabe und die Personen davor zurück. */
-    setAssignees(
-        tenantId: string,
-        itemId: string,
-        taskId: string,
-        assigneeIds: string[],
-        actorId: string,
-    ): Promise<{ task: ProductionDeviceTask; previous: string[] } | null>;
     /**
      * Die Aufgaben des Plans neu (28.09.2026: die Verwaltung passt die Kopie
      * am Gerät an — die Vorlage bleibt, wie sie ist). Mitgebrachte Kennungen

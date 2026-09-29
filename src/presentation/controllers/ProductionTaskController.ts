@@ -79,13 +79,14 @@ export class ProductionTaskController {
         } catch (error) { fail(res, next, error); }
     }
 
-    async assignDeviceTask(req: Request, res: Response, next: NextFunction) {
+    async assignDeviceSubtask(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionTasksModule.devices.assign(
+            res.json(await productionTasksModule.devices.assignSubtask(
                 tenantOf(req),
                 await actorOf(req),
                 param(req, 'itemId'),
                 param(req, 'taskId'),
+                param(req, 'subtaskId'),
                 req.body,
             ));
         } catch (error) { fail(res, next, error); }
@@ -105,12 +106,10 @@ export class ProductionTaskController {
 
     async setDeviceTaskStatus(req: Request, res: Response, next: NextFunction) {
         try {
-            // Derselbe zwischengespeicherte Rolleneintrag wie requireSystemAdmin.
-            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            // Keine Ausnahme für die Verwaltung (29.09.2026) — nur wer in der Aufgabe steht.
             res.json(await productionTasksModule.devices.setStatus(
                 tenantOf(req),
                 await actorOf(req),
-                Boolean(isSystemAdmin),
                 param(req, 'itemId'),
                 param(req, 'taskId'),
                 req.body,
@@ -120,11 +119,10 @@ export class ProductionTaskController {
 
     async setDeviceSubtaskStatus(req: Request, res: Response, next: NextFunction) {
         try {
-            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            // Keine Ausnahme für die Verwaltung (29.09.2026) — nur wer an der Unteraufgabe steht.
             res.json(await productionTasksModule.devices.setSubtaskStatus(
                 tenantOf(req),
                 await actorOf(req),
-                Boolean(isSystemAdmin),
                 param(req, 'itemId'),
                 param(req, 'taskId'),
                 param(req, 'subtaskId'),

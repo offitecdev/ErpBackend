@@ -26,13 +26,13 @@ import type {
 import {
     areaSharesOf,
     areaTotals,
-    assigneeIdsFrom,
     placeTask,
     roundPercent,
     sectionsFrom,
     statusFrom,
     statusOfSubtasks,
     subtasksFrom,
+    taskAssigneesOf,
     mergeDeviceRecord,
     withoutDeviceRecord,
 } from '../../domain/services/productionTasks';
@@ -76,19 +76,24 @@ const dateOf = (day: string | null): Date | null => (day ? new Date(`${day}T00:0
 /* Eine Aufgabe liegt immer in einem Bereich und einer Stufe ihrer Vorlage —
    eine Stufe aus der Zeit vor den zwei Wegen (27.09.2026) am passenden Platz
    des Weges, sonst am Anfang, damit keine Aufgabe unsichtbar wird. */
-const draftOf = (row: TaskRow, sections: readonly ProductionTaskSection[]): ProductionTaskDraft & { id: string; sortOrder: number } => ({
-    id: row.id,
-    ...placeTask(sections, row.area, row.stage),
-    code: row.code,
-    name: row.name,
-    weight: roundPercent(Number(row.weight) || 0),
-    assigneeIds: assigneeIdsFrom(row.assigneeIds),
-    startDate: dayOf(row.startDate),
-    dueDate: dayOf(row.dueDate),
-    createdAt: dayOf(row.createdAt),
-    subtasks: subtasksFrom(row.subtasks),
-    sortOrder: row.sortOrder,
-});
+const draftOf = (row: TaskRow, sections: readonly ProductionTaskSection[]): ProductionTaskDraft & { id: string; sortOrder: number } => {
+    const subtasks = subtasksFrom(row.subtasks);
+    return {
+        id: row.id,
+        ...placeTask(sections, row.area, row.stage),
+        code: row.code,
+        name: row.name,
+        weight: roundPercent(Number(row.weight) || 0),
+        // Die Personen der Aufgabe sind die ihrer Unteraufgaben (29.09.2026). Die Spalte
+        // `assigneeIds` hält nur noch diese Summe; früher an der Aufgabe gesetzte Personen fallen weg.
+        assigneeIds: taskAssigneesOf(subtasks),
+        startDate: dayOf(row.startDate),
+        dueDate: dayOf(row.dueDate),
+        createdAt: dayOf(row.createdAt),
+        subtasks,
+        sortOrder: row.sortOrder,
+    };
+};
 
 type TemplateRow = {
     id: string;
@@ -374,29 +379,6 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
         return planOf(plan, writtenRows(rows).map((row) => ({ ...row, createdAt: now, updatedAt: now })));
     }
 
-    async setAssignees(
-        tenantId: string,
-        itemId: string,
-        taskId: string,
-        assigneeIds: string[],
-        actorId: string,
-    ): Promise<{ task: ProductionDeviceTask; previous: string[] } | null> {
-        const [current, plan] = await Promise.all([
-            prisma.productionDeviceTask.findFirst({ where: { id: taskId, tenantId, productionItemId: itemId } }),
-            prisma.productionDeviceTaskPlan.findUnique({
-                where: { tenantId_productionItemId: { tenantId, productionItemId: itemId } },
-                select: { areaShares: true, sections: true },
-            }),
-        ]);
-        if (!current) return null;
-        const updated = await prisma.productionDeviceTask.update({
-            where: { id: current.id },
-            data: { assigneeIds: assigneeIds as Prisma.InputJsonValue, updatedById: actorId },
-        });
-        const sections = plan ? sectionsFrom(plan.sections, plan.areaShares) : [];
-        return { task: deviceTaskOf(updated, sections), previous: assigneeIdsFrom(current.assigneeIds) };
-    }
-
     async setSections(tenantId: string, itemId: string, sections: ProductionTaskSection[]): Promise<ProductionDeviceTaskPlan | null> {
         const updated = await prisma.productionDeviceTaskPlan.updateMany({
             where: { tenantId, productionItemId: itemId },
@@ -516,8 +498,9 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
                 where: { id: row.id },
                 data: {
                     subtasks: next as unknown as Prisma.InputJsonValue,
-                    // Die Aufgabe folgt ihren Unteraufgaben.
+                    // Die Aufgabe folgt ihren Unteraufgaben — im Stand wie in den Personen.
                     status: statusOfSubtasks(next) ?? row.status,
+                    assigneeIds: taskAssigneesOf(next) as Prisma.InputJsonValue,
                     updatedById: actorId,
                 },
             });

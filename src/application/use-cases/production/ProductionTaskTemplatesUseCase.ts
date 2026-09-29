@@ -9,6 +9,7 @@ import {
     orderTasks,
     productionTaskError,
     templateInputFrom,
+    withActiveAssignees,
 } from '../../../domain/services/productionTasks';
 import {
     assigneesOf,
@@ -122,7 +123,7 @@ export class ProductionTaskTemplatesUseCase {
         const ids = assigneesOf(tasks);
         if (!ids.length) return tasks;
         const active = await this.directory.activePeople(tenantId, ids);
-        return tasks.map((task) => ({ ...task, assigneeIds: task.assigneeIds.filter((id) => active.has(id)) }));
+        return tasks.map((task) => withActiveAssignees(task, active));
     }
 
     private async dto(tenantId: string, template: ProductionTaskTemplate): Promise<ProductionTaskTemplateDto> {

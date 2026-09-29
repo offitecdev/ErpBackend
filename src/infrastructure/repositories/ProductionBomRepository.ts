@@ -45,6 +45,7 @@ import {
     storedCodes,
     unitFrom,
 } from '../../domain/services/productionBom';
+import { subtasksFrom, taskAssigneesOf } from '../../domain/services/productionTasks';
 import { CARD_TX_OPTIONS, type WarehouseTx } from './WarehouseCodeIssuer';
 
 /**
@@ -1111,17 +1112,13 @@ export class PrismaBomProductionDirectory implements IBomProductionDirectory {
     }
 
     async bomStageAssignees(tenantId: string, itemId: string, area: BomArea): Promise<string[]> {
+        // Personen stehen nur an Unteraufgaben (29.09.2026) — gelesen aus ihnen, nicht aus der
+        // Spalte der Aufgabe, die noch früher an der Aufgabe gesetzte Personen halten kann.
         const rows = await prisma.productionDeviceTask.findMany({
             where: { tenantId, productionItemId: itemId, area, stage: 'bom' },
-            select: { assigneeIds: true },
+            select: { subtasks: true },
         });
-        const ids = new Set<string>();
-        for (const row of rows) {
-            if (Array.isArray(row.assigneeIds)) {
-                for (const id of row.assigneeIds) if (typeof id === 'string' && id) ids.add(id);
-            }
-        }
-        return [...ids];
+        return [...new Set(rows.flatMap((row) => taskAssigneesOf(subtasksFrom(row.subtasks))))];
     }
 
     async personName(id: string): Promise<string | null> {

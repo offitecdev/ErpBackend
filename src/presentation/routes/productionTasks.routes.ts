@@ -18,18 +18,19 @@ import { ProductionTaskController } from '../controllers/ProductionTaskControlle
  *   GET    /devices/:itemId/tasks           Aufgaben eines Geräts (Plan + Personen)
  *   POST   /devices/:itemId/tasks           Vorlage auf das Gerät laden { templateId, replace } [Administratorrolle]
  *   PUT    /devices/:itemId/tasks           Aufgaben des Geräts anpassen { tasks } — nur die Kopie, nie die Vorlage [Administratorrolle]
- *   PATCH  /devices/:itemId/tasks/:taskId   Personen einer Aufgabe { assigneeIds } [Administratorrolle]
+ *   PATCH  /devices/:itemId/tasks/:taskId/subtasks/:subtaskId  Personen einer Unteraufgabe { assigneeIds } [Administratorrolle]
+ *                                           (29.09.2026: Personen nur an Unteraufgaben — die Aufgabe zeigt ihre Summe)
  *   PATCH  /devices/:itemId/tasks/:taskId/status  Stand { status: TODO|IN_PROGRESS|DONE }
- *                                           [Administratorrolle oder wer in der Aufgabe steht]
+ *                                           [wer in der Aufgabe steht — die Verwaltung nicht von Hand]
  *   PATCH  /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status  Stand einer Unteraufgabe { status }
- *                                           [dieselben — die Aufgabe folgt ihren Unteraufgaben]
+ *                                           [wer an der Unteraufgabe steht — die Aufgabe folgt ihren Unteraufgaben]
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/complete  «Complete the task» { note } [Administratorrolle]
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/revision  «Request revision» { note } — zurück in Arbeit [Administratorrolle]
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/unlock    Sperre aufheben — wartet wieder auf Freigabe [Administratorrolle]
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/checklist Punkt der Freigabe-Checkliste { text } — aus der Prüfansicht [Administratorrolle]
  *                                           (gesperrt: Dateien und Stand ändert niemand, auch nicht die Verwaltung)
  *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files     Datei (nur PDF, multipart `file`)
- *                                           [Administratorrolle oder wer in der Aufgabe steht]
+ *                                           [Administratorrolle oder wer an der Unteraufgabe steht]
  *   GET    /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … lesen
  *   DELETE /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … entfernen
  *   DELETE /devices/:itemId/tasks           Aufgaben vom Gerät nehmen           [Administratorrolle]
@@ -124,21 +125,21 @@ router.post('/devices/:itemId/stages', VIEW, MODULE, ADMIN, (req, res, next) => 
 
 /**
  * @swagger
- * /production/devices/{itemId}/tasks/{taskId}:
+ * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}:
  *   patch:
  *     tags: [Production]
- *     summary: "Görevlendirme: Personen einer Aufgabe setzen (nur Administratorrolle)"
+ *     summary: "Görevlendirme: Personen einer Unteraufgabe setzen (nur Administratorrolle)"
  *     security:
  *       - bearerAuth: []
  */
-router.patch('/devices/:itemId/tasks/:taskId', VIEW, MODULE, ADMIN, (req, res, next) => controller.assignDeviceTask(req, res, next));
+router.patch('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId', VIEW, MODULE, ADMIN, (req, res, next) => controller.assignDeviceSubtask(req, res, next));
 
 /**
  * @swagger
  * /production/devices/{itemId}/tasks/{taskId}/status:
  *   patch:
  *     tags: [Production]
- *     summary: "Görevlendirme: Stand einer Aufgabe setzen (Administratorrolle oder wer in der Aufgabe steht)"
+ *     summary: "Görevlendirme: Stand einer Aufgabe setzen (nur wer in der Aufgabe steht)"
  *     security:
  *       - bearerAuth: []
  */
@@ -149,7 +150,7 @@ router.patch('/devices/:itemId/tasks/:taskId/status', VIEW, MODULE, (req, res, n
  * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}/status:
  *   patch:
  *     tags: [Production]
- *     summary: "Görevlendirme: Stand einer Unteraufgabe setzen (Administratorrolle oder wer in der Aufgabe steht)"
+ *     summary: "Görevlendirme: Stand einer Unteraufgabe setzen (nur wer an der Unteraufgabe steht)"
  *     security:
  *       - bearerAuth: []
  */
@@ -166,7 +167,7 @@ router.patch('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status', VIEW, 
  * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}/files:
  *   post:
  *     tags: [Production]
- *     summary: "Görevlendirme: Datei an eine Unteraufgabe (Administratorrolle oder wer in der Aufgabe steht)"
+ *     summary: "Görevlendirme: Datei an eine Unteraufgabe (Administratorrolle oder wer an der Unteraufgabe steht)"
  *     security:
  *       - bearerAuth: []
  * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}/files/{fileId}:

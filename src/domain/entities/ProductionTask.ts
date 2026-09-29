@@ -121,6 +121,12 @@ export interface ProductionSubtask {
     weight: number | null;
     startDate: ProductionTaskDay | null;
     dueDate: ProductionTaskDay | null;
+    /**
+     * Wer an der Unteraufgabe arbeitet (29.09.2026: «they should only assign
+     * people to subtasks»). Die Personen der Aufgabe sind nur noch die Summe
+     * ihrer Unteraufgaben — eine Aufgabe ohne Unteraufgaben hat keine.
+     */
+    assigneeIds: string[];
     /** Zur Unteraufgabe gehört ein Dokument. */
     requiresDocument: boolean;
     /** Die Unteraufgabe braucht eine Freigabe. */
@@ -174,6 +180,10 @@ export interface ProductionTaskDraft {
     name: string;
     /** Gewicht innerhalb des Bereichs, in Prozent. */
     weight: number;
+    /**
+     * Alle Personen ihrer Unteraufgaben (29.09.2026) — abgeleitet, nie selbst
+     * gesetzt: siehe `taskAssigneesOf`. Ohne Unteraufgaben leer.
+     */
     assigneeIds: string[];
     /** Beginn und Termin (28.09.2026) — frei lassbar. */
     startDate: ProductionTaskDay | null;
