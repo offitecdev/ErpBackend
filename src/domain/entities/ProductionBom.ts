@@ -11,9 +11,10 @@
  *
  * Tabellen: prisma/schema/productionBom.prisma.
  */
-import type { ProductionTaskArea } from './ProductionTask';
+import type { ProductionBuiltInArea } from './ProductionTask';
 
-export type BomArea = ProductionTaskArea;
+/** Die BOM hängt an den FESTEN Bereichen (Mekanik / Elektrik), nicht an eigenen einer Vorlage. */
+export type BomArea = ProductionBuiltInArea;
 /** «bom şablon kategorisi elektrik, makineden biri». */
 export type BomCategory = 'MACHINE' | 'ELECTRICAL';
 export const BOM_CATEGORIES: readonly BomCategory[] = ['MACHINE', 'ELECTRICAL'];
@@ -47,7 +48,7 @@ export type BomStatus = 'DRAFT' | 'APPROVED' | 'COMPLETED';
 export type BomKind = 'MAIN' | 'SUB';
 
 /** «Ana BOM kod şudur: BOM-MEK-00001, BOM-ELK-00001.» */
-export const MAIN_BOM_PREFIX: Record<ProductionTaskArea, string> = { MECHANICAL: 'BOM-MEK', ELECTRICAL: 'BOM-ELK' };
+export const MAIN_BOM_PREFIX: Record<BomArea, string> = { MECHANICAL: 'BOM-MEK', ELECTRICAL: 'BOM-ELK' };
 
 /** Ein Alt-BOM-Kod der Einstellungen: Vorsatz und Name (MAK-COOL · Soğutma devresi). */
 export interface BomCode {

@@ -1,10 +1,12 @@
 import type {
-    ProductionAreaShares,
     ProductionDeviceTask,
     ProductionDeviceTaskPlan,
+    ProductionSubtask,
     ProductionTaskDevice,
     ProductionTaskDraft,
     ProductionTaskPerson,
+    ProductionTaskSection,
+    ProductionTaskStatus,
     ProductionTaskTemplate,
     ProductionTaskTemplateInput,
     ProductionTaskTemplateSummary,
@@ -33,7 +35,7 @@ export interface IProductionTaskTemplateRepository {
         input: ProductionTaskTemplateInput,
         exampleKey?: string,
     ): Promise<ProductionTaskTemplate>;
-    /** Name, Anteile und ALLE Aufgaben neu — in einem Vorgang. */
+    /** Name, Bereiche und ALLE Aufgaben neu — in einem Vorgang. */
     replace(tenantId: string, id: string, actorId: string, input: ProductionTaskTemplateInput): Promise<ProductionTaskTemplate | null>;
     softDelete(tenantId: string, id: string, actorId: string): Promise<boolean>;
 }
@@ -42,7 +44,8 @@ export interface ProductionDevicePlanWrite {
     device: ProductionTaskDevice;
     templateId: string;
     templateName: string;
-    areaShares: ProductionAreaShares;
+    /** Die Bereiche und Stufen der Vorlage — der Weg des Geräts. */
+    sections: ProductionTaskSection[];
     actorId: string;
     tasks: ProductionTaskDraft[];
 }
@@ -51,14 +54,48 @@ export interface IProductionDeviceTaskRepository {
     getPlan(tenantId: string, itemId: string): Promise<ProductionDeviceTaskPlan | null>;
     /** Legt den Plan an; ein bestehender Plan des Geräts wird im selben Vorgang ersetzt. */
     replacePlan(tenantId: string, write: ProductionDevicePlanWrite): Promise<ProductionDeviceTaskPlan>;
-    /** Neue Personen einer Aufgabe; gibt die Aufgabe und die Personen davor zurück. */
-    setAssignees(
+    /**
+     * Die Aufgaben des Plans neu (28.09.2026: die Verwaltung passt die Kopie
+     * am Gerät an — die Vorlage bleibt, wie sie ist). Mitgebrachte Kennungen
+     * bleiben, samt Stand und Zeitpunkt des Anlegens; null, wenn das Gerät
+     * keinen Plan hat.
+     */
+    replaceTasks(
+        tenantId: string,
+        itemId: string,
+        tasks: Array<ProductionTaskDraft & { id: string | null }>,
+        actorId: string,
+    ): Promise<ProductionDeviceTaskPlan | null>;
+    /**
+     * Die Bereiche und Stufen der Kopie am Gerät (28.09.2026: neue Stufe in den Zuweisungen).
+     * Aufgaben, Stände und Dateien bleiben unberührt; null ohne Plan.
+     */
+    setSections(tenantId: string, itemId: string, sections: ProductionTaskSection[]): Promise<ProductionDeviceTaskPlan | null>;
+    /** Eine Aufgabe des Geräts (für die Prüfung, wer ihren Stand setzen darf). */
+    getTask(tenantId: string, itemId: string, taskId: string): Promise<ProductionDeviceTask | null>;
+    /** Der neue Stand einer Aufgabe; null, wenn es sie nicht gibt. */
+    setStatus(
         tenantId: string,
         itemId: string,
         taskId: string,
-        assigneeIds: string[],
+        status: ProductionTaskStatus,
         actorId: string,
-    ): Promise<{ task: ProductionDeviceTask; previous: string[] } | null>;
+    ): Promise<ProductionDeviceTask | null>;
+    /**
+     * EINE Unteraufgabe ändern (Stand, Dateien, Abschluss) — in einem
+     * Vorgang mit gesperrter Zeile, damit zwei gleichzeitige Änderungen
+     * einander nicht überschreiben. `change` darf werfen (dann bleibt alles).
+     * Der Stand der Aufgabe folgt aus denen ihrer Unteraufgaben. null, wenn
+     * es die Aufgabe nicht gibt; 'no-subtask', wenn es die Unteraufgabe nicht gibt.
+     */
+    changeSubtask(
+        tenantId: string,
+        itemId: string,
+        taskId: string,
+        subtaskId: string,
+        change: (subtask: ProductionSubtask, task: ProductionDeviceTask) => ProductionSubtask,
+        actorId: string,
+    ): Promise<ProductionDeviceTask | null | 'no-subtask'>;
     deletePlan(tenantId: string, itemId: string): Promise<boolean>;
 }
 
@@ -82,5 +119,13 @@ export interface IProductionTaskNotifier {
         actorId: string;
         actorName: string | null;
         news: ProductionAssignmentNews;
+    }): Promise<void>;
+    /** Neue Pflichten haben begonnene Unteraufgaben wieder geöffnet — die Leute der Aufgabe prüfen und schliessen neu ab. */
+    reopened(input: {
+        tenantId: string;
+        device: ProductionTaskDevice;
+        actorId: string;
+        actorName: string | null;
+        subtasks: ReadonlyArray<{ code: string; name: string; area: string; stage: string; recipients: string[] }>;
     }): Promise<void>;
 }
