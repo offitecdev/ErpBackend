@@ -51,6 +51,11 @@ export interface ProductionTaskSectionStage {
     key: ProductionTaskStage;
     /** Leer bei den festen Stufen — ihr Name kommt aus der Übersetzung. */
     name: string;
+    /**
+     * Gewicht der Stufe im Bereich, in Prozent (30.09.2026: «the weights of the task only
+     * should fill the weight of its stage») — die Stufen eines Bereichs ergeben 100 %.
+     */
+    weight: number;
 }
 
 /** Ein Bereich («bölüm») einer Vorlage: Anteil an der Gesamtfertigstellung und seine Stufen. */
@@ -178,7 +183,11 @@ export interface ProductionTaskDraft {
     stage: ProductionTaskStage;
     code: string;
     name: string;
-    /** Gewicht innerhalb des Bereichs, in Prozent. */
+    /**
+     * Gewicht innerhalb der STUFE, in Prozent (30.09.2026) — die Aufgaben einer Stufe ergeben
+     * 100 %. Gespeichert wird zusätzlich der Anteil am Bereich (Spalte `weight`), den ältere
+     * Stände des Servers lesen; siehe `resolveTaskWeights`.
+     */
     weight: number;
     /**
      * Alle Personen ihrer Unteraufgaben (29.09.2026) — abgeleitet, nie selbst
@@ -220,8 +229,8 @@ export interface ProductionTaskTemplateSummary {
     name: string;
     sections: ProductionTaskSection[];
     taskCount: number;
-    /** Aufgaben und Gewichtssumme je Bereich (für die Prüfung). */
-    areas: ProductionAreaTotals;
+    /** Bereich, Stufe und Gewicht (in der Stufe) jeder Aufgabe — für die Prüfung der Summen. */
+    weights: Array<{ area: string; stage: string; weight: number }>;
     /** Auf so vielen Geräten liegt eine Kopie dieser Vorlage. */
     usedBy: number;
     exampleKey: string | null;
@@ -286,4 +295,104 @@ export interface ProductionTaskPerson {
     name: string;
     /** false: ausgetreten, gesperrt oder nicht mehr in dieser Firma. */
     active: boolean;
+}
+
+/**
+ * ── DER VERLAUF EINER STUFE (30.09.2026, Vorgabe Samet) ─────────────────────
+ *
+ * «Who did what — xxx started a subtask, xxx stopped it, xxx sent it to the
+ *  approval, xx uploaded a file, xxx deleted xxx file, xxx requested a
+ *  revision, xxx created a subtask, xxx assigned to xxx, xxx subtask updated
+ *  by xxx, xxx subtask deleted by xxx … I should click and see the details.»
+ */
+export type ProductionTaskActivityKind =
+    /* Stand einer Unteraufgabe — wer an ihr steht */
+    | 'SUBTASK_STARTED'
+    | 'SUBTASK_STOPPED'
+    | 'SUBTASK_SUBMITTED'
+    | 'SUBTASK_DONE'
+    /* Freigabe — die Verwaltung */
+    | 'SUBTASK_APPROVED'
+    | 'REVISION_REQUESTED'
+    | 'SUBTASK_UNLOCKED'
+    | 'CHECKLIST_ITEM_ADDED'
+    /* Dateien */
+    | 'FILE_UPLOADED'
+    | 'FILE_DELETED'
+    /* Personen */
+    | 'SUBTASK_ASSIGNED'
+    /* Anpassung der Kopie am Gerät */
+    | 'TASK_CREATED'
+    | 'TASK_UPDATED'
+    | 'TASK_DELETED'
+    | 'TASK_MOVED'
+    | 'TASK_STATUS'
+    | 'SUBTASK_CREATED'
+    | 'SUBTASK_UPDATED'
+    | 'SUBTASK_DELETED'
+    | 'STAGE_ADDED'
+    /* Anfragen an die Verwaltung (30.09.2026) */
+    | 'UNLOCK_REQUESTED'
+    | 'REQUEST_SOLVED'
+    /* das ganze Gerät (Bereich und Stufe leer) */
+    | 'PLAN_LOADED'
+    | 'PLAN_REMOVED';
+
+/** Eine Zeile des Verlaufs — angehängt, nie geändert. */
+export interface ProductionTaskActivityDraft {
+    tenantId: string;
+    productionItemId: string;
+    /** null: das ganze Gerät — steht im Verlauf jeder Stufe. */
+    area: string | null;
+    stage: string | null;
+    taskId: string | null;
+    taskCode: string | null;
+    taskName: string | null;
+    subtaskId: string | null;
+    subtaskCode: string | null;
+    subtaskName: string | null;
+    kind: ProductionTaskActivityKind;
+    actorId: string | null;
+    actorName: string | null;
+    /** Was ein Klick zeigt: Dateien, Notizen, Änderungen (je nach Art). */
+    details: Record<string, unknown> | null;
+}
+
+export interface ProductionTaskActivity extends ProductionTaskActivityDraft {
+    id: string;
+    createdAt: Date;
+}
+
+/**
+ * ── ANFRAGEN AN DIE VERWALTUNG (30.09.2026) ─────────────────────────────────
+ * APPROVAL: zur Freigabe geschickt (entsteht dabei selbst) · UNLOCK: Bitte um das Aufheben der Sperre.
+ */
+export type ProductionTaskRequestKind = 'APPROVAL' | 'UNLOCK';
+/** Wie eine Anfrage erledigt wurde: von Hand oder durch die passende Handlung der Verwaltung. */
+export type ProductionTaskRequestResolution = 'MANUAL' | 'APPROVED' | 'REVISION' | 'UNLOCKED';
+
+export interface ProductionTaskRequestDraft {
+    tenantId: string;
+    productionItemId: string;
+    area: string;
+    stage: string;
+    taskId: string;
+    taskCode: string;
+    taskName: string;
+    subtaskId: string;
+    subtaskCode: string;
+    subtaskName: string;
+    kind: ProductionTaskRequestKind;
+    note: string | null;
+    requestedById: string | null;
+    requestedByName: string | null;
+}
+
+export interface ProductionTaskRequest extends ProductionTaskRequestDraft {
+    id: string;
+    createdAt: Date;
+    solvedAt: Date | null;
+    solvedById: string | null;
+    solvedByName: string | null;
+    resolution: ProductionTaskRequestResolution | null;
 }

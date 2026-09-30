@@ -100,7 +100,7 @@ export class ProductionTaskController {
 
     async addDeviceStage(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionTasksModule.devices.addStage(tenantOf(req), param(req, 'itemId'), req.body));
+            res.json(await productionTasksModule.devices.addStage(tenantOf(req), await actorOf(req), param(req, 'itemId'), req.body));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -245,7 +245,121 @@ export class ProductionTaskController {
 
     async unloadDeviceTasks(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionTasksModule.devices.unload(tenantOf(req), param(req, 'itemId')));
+            res.json(await productionTasksModule.devices.unload(tenantOf(req), await actorOf(req), param(req, 'itemId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /* ── «Görevlerim» (30.09.2026): die eigenen Aufgaben, ohne Produktionsrechte ──
+       Wer hier handelt, handelt als Person an der Unteraufgabe — nie als Verwaltung
+       (`isAdmin` false): Stand setzen, eigene PDFs hochladen, lesen und entfernen. */
+
+    async myTasks(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.myTasks(tenantOf(req), await actorOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async mySubtaskStatus(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.setSubtaskStatus(
+                tenantOf(req),
+                await actorOf(req),
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                req.body,
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async myUploadSubtaskFile(req: Request, res: Response, next: NextFunction) {
+        try {
+            const file = (req as Request & { file?: { buffer: Buffer; mimetype: string; originalname: string } }).file;
+            res.json(await productionTasksModule.devices.uploadSubtaskFile(
+                tenantOf(req),
+                await actorOf(req),
+                false,
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                file ? { body: file.buffer, contentType: file.mimetype, fileName: Buffer.from(file.originalname, 'latin1').toString('utf8') } : null,
+                typeof req.body?.revisionOf === 'string' && req.body.revisionOf.trim() ? req.body.revisionOf.trim() : null,
+                req.body?.revisionNote,
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async myReadSubtaskFile(req: Request, res: Response, next: NextFunction) {
+        try {
+            const file = await productionTasksModule.devices.readSubtaskFileAsAssignee(
+                tenantOf(req),
+                await actorOf(req),
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                param(req, 'fileId'),
+            );
+            res.setHeader('Content-Type', file.contentType);
+            res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
+            res.setHeader('Cache-Control', 'private, no-store');
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.send(file.body);
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async myRemoveSubtaskFile(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.removeSubtaskFile(
+                tenantOf(req),
+                await actorOf(req),
+                false,
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                param(req, 'fileId'),
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /* ── Anfragen an die Verwaltung (30.09.2026) ── */
+
+    /** Bitte um Entsperren — auf dem Gerät (mit Produktionsrecht) und über «Görevlerim». */
+    async requestUnlock(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.status(201).json(await productionTasksModule.devices.requestUnlock(
+                tenantOf(req),
+                await actorOf(req),
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                req.body,
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /** Projekte und Geräte mit Aufgaben — die Auswahl der Startseite der Verwaltung (30.09.2026). */
+    async taskDevices(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.taskDevices(tenantOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async deviceRequests(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.listRequests(tenantOf(req), param(req, 'itemId'), req.query as Record<string, unknown>));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async solveDeviceRequest(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.solveRequest(tenantOf(req), await actorOf(req), param(req, 'itemId'), param(req, 'requestId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /** Der Verlauf einer Stufe (30.09.2026) — `?area=&stage=`, seitenweise, mit Arten, Person und Zeitraum. */
+    async deviceActivities(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.listActivities(tenantOf(req), param(req, 'itemId'), req.query as Record<string, unknown>));
         } catch (error) { fail(res, next, error); }
     }
 }

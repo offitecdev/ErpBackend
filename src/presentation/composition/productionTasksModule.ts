@@ -1,6 +1,8 @@
 import {
     PrismaProductionDeviceTaskRepository,
+    PrismaProductionTaskActivityLog,
     PrismaProductionTaskDirectory,
+    PrismaProductionTaskRequestRepository,
     PrismaProductionTaskTemplateRepository,
 } from '../../infrastructure/repositories/ProductionTaskRepository';
 import { ProductionTaskNotifier } from '../../infrastructure/services/productionTaskNotifications';
@@ -32,6 +34,10 @@ export const productionTasksModule = {
         directory,
         new ProductionTaskNotifier(),
         taskFiles,
+        // Der Verlauf je Stufe (30.09.2026).
+        new PrismaProductionTaskActivityLog(),
+        // Anfragen an die Verwaltung (30.09.2026).
+        new PrismaProductionTaskRequestRepository(),
     ),
     directory,
 };

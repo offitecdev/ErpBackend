@@ -140,6 +140,10 @@ export type ProductionTaskErrorCode =
     | 'DEVICE_NOT_FOUND'
     | 'PLAN_EXISTS'
     | 'PLAN_NOT_FOUND'
+    | 'STAGE_REQUIRED'
+    | 'STAGE_WEIGHT_INVALID'
+    | 'UNLOCK_ALREADY_REQUESTED'
+    | 'REQUEST_NOT_FOUND'
     | 'TASK_NOT_FOUND'
     | 'STATUS_INVALID'
     | 'STATUS_FORBIDDEN'
@@ -288,7 +292,8 @@ export const builtInSections = (areaShares: unknown): ProductionTaskSection[] =>
         key: area,
         name: '',
         share: percentFrom(shares[area]) ?? 0,
-        stages: BUILT_IN_STAGES[area].map((key) => ({ key, name: '' })),
+        // Das Gewicht der Stufen kennt eine Vorlage von vorher nicht — `resolveTaskWeights` leitet es ab.
+        stages: BUILT_IN_STAGES[area].map((key) => ({ key, name: '', weight: 0 })),
     }));
 };
 
@@ -310,7 +315,7 @@ export const sectionsFrom = (stored: unknown, areaShares: unknown): ProductionTa
             const stage = objectOf(rawStage);
             const stageKey = typeof stage.key === 'string' ? stage.key : '';
             if (!STAGE_KEY.test(stageKey) || RESERVED_STAGE_KEYS.has(stageKey) || stages.some((entry) => entry.key === stageKey)) continue;
-            stages.push({ key: stageKey, name: text(stage.name, PRODUCTION_TASK_LIMITS.stageName) });
+            stages.push({ key: stageKey, name: text(stage.name, PRODUCTION_TASK_LIMITS.stageName), weight: percentFrom(stage.weight) ?? 0 });
         }
         sections.push({
             key,
@@ -325,6 +330,112 @@ export const sectionsFrom = (stored: unknown, areaShares: unknown): ProductionTa
 /** Anteil je Bereich — für die Spalte `areaShares` und ältere Browserstände. */
 export const areaSharesOf = (sections: readonly ProductionTaskSection[]): ProductionAreaShares =>
     Object.fromEntries(sections.map((section) => [section.key, section.share]));
+
+/* ── Gewichte: Stufe im Bereich, Aufgabe in der Stufe (30.09.2026) ───────────
+ *
+ * «The weights of the task only should fill the weight of its stage, not the
+ *  other stages.» Jede Stufe trägt ein Gewicht im Bereich (die Stufen eines
+ * Bereichs ergeben 100 %), jede Aufgabe ein Gewicht in ihrer Stufe (die
+ * Aufgaben einer Stufe ergeben 100 %). Beitrag zur Gesamtfertigstellung =
+ * Anteil des Bereichs × Gewicht der Stufe × Gewicht der Aufgabe.
+ *
+ * GESPEICHERT wird so, dass ein älterer Stand des Servers (dieselbe Datenbank)
+ * weiterläuft: die Spalte `weight` hält wie bisher den Anteil der Aufgabe am
+ * BEREICH; das Gewicht in der Stufe steht daneben (`stageWeight`), das der
+ * Stufe in den Bereichen (`sections[].stages[].weight`). Fehlt eines davon —
+ * Daten von vorher oder von einem älteren Stand —, wird es aus den Anteilen am
+ * Bereich abgeleitet: Stufe = Summe ihrer Aufgaben, Aufgabe = Anteil / Stufe.
+ */
+
+/** Tragen alle Stufen der gespeicherten Bereiche ein Gewicht? (NULL = Vorlage von vorher: nein.) */
+export const storedStageWeightsComplete = (stored: unknown): boolean =>
+    Array.isArray(stored) && stored.every((raw) => {
+        const stages = objectOf(raw).stages;
+        return Array.isArray(stages) && stages.every((stage) => typeof objectOf(stage).weight === 'number');
+    });
+
+/** Der Anteil einer Aufgabe am Bereich — für die Spalte `weight` (ältere Stände lesen sie). */
+export const sectionShareOf = (stageWeight: number, taskWeight: number): number =>
+    Math.round(stageWeight * taskWeight * 100) / 10000;
+
+/** Das Gewicht einer Stufe in den Bereichen (0, wenn es sie nicht gibt). */
+export const stageWeightIn = (sections: readonly ProductionTaskSection[], area: string, stage: string): number =>
+    sections.find((section) => section.key === area)?.stages.find((entry) => entry.key === stage)?.weight ?? 0;
+
+/**
+ * Gerundete Anteile, die zusammen genau `target` ergeben: der Rundungsrest geht an den grössten
+ * (sonst ergäben 7 × 14,29 % nicht 100 %).
+ */
+const roundedTo = (values: readonly number[], target: number): number[] => {
+    const rounded = values.map(roundPercent);
+    if (!rounded.length) return rounded;
+    const rest = roundPercent(target - rounded.reduce((sum, value) => sum + value, 0));
+    if (rest !== 0) {
+        const largest = rounded.reduce((best, value, index) => (value > (rounded[best] ?? 0) ? index : best), 0);
+        rounded[largest] = roundPercent((rounded[largest] ?? 0) + rest);
+    }
+    return rounded;
+};
+
+/** Eine gespeicherte Aufgabe: Bereich, Stufe, Anteil am Bereich, Gewicht in der Stufe (NULL = von vorher). */
+export interface StoredTaskWeight {
+    area: string;
+    stage: string;
+    sectionShare: number;
+    stageWeight: number | null;
+}
+
+/**
+ * Die Gewichte aus der Datenbank: die Bereiche mit den Gewichten ihrer Stufen und je Aufgabe
+ * (in der Reihenfolge der Zeilen) ihr Gewicht in der Stufe. Gespeichertes gilt; was fehlt,
+ * wird aus den Anteilen am Bereich abgeleitet (siehe oben).
+ */
+export const resolveTaskWeights = (
+    sections: readonly ProductionTaskSection[],
+    stageWeightsStored: boolean,
+    rows: readonly StoredTaskWeight[],
+): { sections: ProductionTaskSection[]; weights: number[] } => {
+    const complete = stageWeightsStored && rows.every((row) => row.stageWeight !== null);
+    if (complete) {
+        return { sections: sections.map((section) => ({ ...section, stages: section.stages.map((stage) => ({ ...stage })) })), weights: rows.map((row) => roundPercent(row.stageWeight ?? 0)) };
+    }
+    // Abgeleitet: jede Stufe wiegt, was ihre Aufgaben am Bereich tragen …
+    const key = (area: string, stage: string) => `${area}|${stage}`;
+    const sums = new Map<string, number>();
+    for (const row of rows) sums.set(key(row.area, row.stage), (sums.get(key(row.area, row.stage)) ?? 0) + row.sectionShare);
+    const resolved = sections.map((section) => {
+        const stageKeys = section.stages.map((stage) => stage.key);
+        const derived = roundedTo(stageKeys.map((stage) => sums.get(key(section.key, stage)) ?? 0), roundPercent(stageKeys.reduce((sum, stage) => sum + (sums.get(key(section.key, stage)) ?? 0), 0)));
+        return { ...section, stages: section.stages.map((stage, index) => ({ ...stage, weight: derived[index] ?? 0 })) };
+    });
+    // … und jede Aufgabe ihren Teil davon — je Stufe genau 100 %.
+    const weights = rows.map(() => 0);
+    const byStage = new Map<string, number[]>();
+    rows.forEach((row, index) => byStage.set(key(row.area, row.stage), [...(byStage.get(key(row.area, row.stage)) ?? []), index]));
+    for (const [stageKey, indexes] of byStage) {
+        const total = sums.get(stageKey) ?? 0;
+        if (total <= 0) continue;
+        const parts = roundedTo(indexes.map((index) => ((rows[index]?.sectionShare ?? 0) / total) * 100), 100);
+        indexes.forEach((index, position) => { weights[index] = parts[position] ?? 0; });
+    }
+    return { sections: resolved, weights };
+};
+
+/**
+ * Aufgaben mit Anteilen am BEREICH (ein älterer Browserstand, das Beispiel) in das neue Mass:
+ * Stufen erhalten die Summe ihrer Aufgaben, Aufgaben ihren Teil der Stufe.
+ */
+export const fromSectionShares = <T extends { area: string; stage: string; weight: number }>(
+    sections: readonly ProductionTaskSection[],
+    tasks: readonly T[],
+): { sections: ProductionTaskSection[]; tasks: T[] } => {
+    const { sections: resolved, weights } = resolveTaskWeights(
+        sections,
+        false,
+        tasks.map((task) => ({ area: task.area, stage: task.stage, sectionShare: task.weight, stageWeight: null })),
+    );
+    return { sections: resolved, tasks: tasks.map((task, index) => ({ ...task, weight: weights[index] })) };
+};
 
 /**
  * Eine gespeicherte Aufgabe in den Bereichen ihrer Vorlage: ein unbekannter
@@ -776,11 +887,56 @@ const sectionsInputFrom = (value: unknown[]): ProductionTaskSection[] => {
                     params: { section: label, name: stageName },
                 });
             }
-            stages.push({ key: stageKey, name: stageName });
+            // Das Gewicht der Stufe im Bereich (30.09.2026) — fehlt es, kommt ein älterer Browserstand.
+            const weight = percentFrom(stage.weight ?? 0);
+            if (weight === null) {
+                throw productionTaskError('STAGE_WEIGHT_INVALID', 'Das Gewicht einer Stufe muss zwischen 0 und 100 liegen.', {
+                    params: { section: label, name: stageName || stageKey },
+                });
+            }
+            stages.push({ key: stageKey, name: stageName, weight });
         }
         sections.push({ key, name, share, stages });
     });
     return sections;
+};
+
+/** Bringt die Anfrage die Gewichte der Stufen mit? — sonst ein älterer Browserstand (Anteile am Bereich). */
+const requestHasStageWeights = (value: unknown): boolean =>
+    Array.isArray(value) && value.some((raw) => {
+        const stages = objectOf(raw).stages;
+        return Array.isArray(stages) && stages.some((stage) => objectOf(stage).weight !== undefined);
+    });
+
+/**
+ * Die Gewichte der Stufen der Kopie am Gerät neu (30.09.2026) — nur für Stufen, die es gibt;
+ * Namen, Reihenfolge und Anteile bleiben. Ohne Angabe bleibt alles, wie es ist.
+ */
+export const withStageWeights = (sections: readonly ProductionTaskSection[], value: unknown): ProductionTaskSection[] => {
+    if (!Array.isArray(value)) return sections.map((section) => ({ ...section }));
+    const given = new Map<string, unknown>();
+    for (const raw of value) {
+        const row = objectOf(raw);
+        for (const rawStage of Array.isArray(row.stages) ? row.stages : []) {
+            const stage = objectOf(rawStage);
+            if (typeof row.key === 'string' && typeof stage.key === 'string' && stage.weight !== undefined) {
+                given.set(`${row.key}|${stage.key}`, stage.weight);
+            }
+        }
+    }
+    return sections.map((section) => ({
+        ...section,
+        stages: section.stages.map((stage) => {
+            if (!given.has(`${section.key}|${stage.key}`)) return stage;
+            const weight = percentFrom(given.get(`${section.key}|${stage.key}`));
+            if (weight === null) {
+                throw productionTaskError('STAGE_WEIGHT_INVALID', 'Das Gewicht einer Stufe muss zwischen 0 und 100 liegen.', {
+                    params: { section: section.name || section.key, name: stage.name || stage.key },
+                });
+            }
+            return { ...stage, weight };
+        }),
+    }));
 };
 
 /**
@@ -793,7 +949,6 @@ export const withAddedStage = (
     sections: readonly ProductionTaskSection[],
     area: unknown,
     rawName: unknown,
-    tasks: ReadonlyArray<{ area: string; weight: number }>,
 ): ProductionTaskSection[] => {
     const section = sections.find((entry) => entry.key === area);
     if (!section) throw productionTaskError('SECTION_INVALID', 'Bereich nicht gefunden.', { status: 404, params: { row: 0 } });
@@ -811,14 +966,15 @@ export const withAddedStage = (
             params: { section: label, name },
         });
     }
-    const used = roundPercent(tasks.filter((task) => task.area === section.key).reduce((sum, task) => sum + task.weight, 0));
+    // Seit dem 30.09.2026 zählen die Gewichte der STUFEN: die neue nimmt, was im Bereich noch frei ist.
+    const used = roundPercent(section.stages.reduce((sum, stage) => sum + stage.weight, 0));
     if (used >= 100 - SUM_TOLERANCE) {
-        throw productionTaskError('SECTION_FULL', `Die Aufgaben von «${label}» wiegen schon 100 % — keine neue Stufe.`, {
+        throw productionTaskError('SECTION_FULL', `Die Stufen von «${label}» wiegen schon 100 % — keine neue Stufe.`, {
             status: 409,
             params: { section: label },
         });
     }
-    const stage: ProductionTaskSectionStage = { key: randomKey('g'), name };
+    const stage: ProductionTaskSectionStage = { key: randomKey('g'), name, weight: roundPercent(100 - used) };
     const last = section.stages[section.stages.length - 1];
     const beforeFlag = isBuiltInArea(section.key) && last?.key === 'final';
     const stages = beforeFlag ? [...section.stages.slice(0, -1), stage, last] : [...section.stages, stage];
@@ -856,7 +1012,8 @@ export const templateInputFrom = (body: unknown): ProductionTaskTemplateInput =>
 
     // Die Kennungen der Aufgaben braucht nur das Gerät; eine Vorlage schreibt ihre Zeilen neu.
     const tasks = tasksInputFrom(input.tasks, sections, false).map(({ id: _id, ...task }) => task);
-    return { name, sections, tasks };
+    // Ohne Gewichte der Stufen (älterer Browserstand) tragen die Aufgaben Anteile am Bereich.
+    return requestHasStageWeights(input.sections) ? { name, sections, tasks } : { name, ...fromSectionShares(sections, tasks) };
 };
 
 /** Eine Aufgabe aus einer Anfrage — mit der Kennung, die sie mitbringt (null = neu). */
@@ -949,12 +1106,24 @@ export const tasksInputFrom = (
 
 /* ── Vollständig? ───────────────────────────────────────────────────────── */
 
+/** Eine Stufe (30.09.2026): ihr Gewicht im Bereich und was ihre Aufgaben zusammen wiegen. */
+export interface ProductionTaskStageCheck {
+    stage: string;
+    weight: number;
+    taskCount: number;
+    /** Die Gewichte ihrer Aufgaben zusammen (in der Stufe) — 100 %, wenn sie Aufgaben hat. */
+    taskWeightSum: number;
+    ok: boolean;
+}
+
 export interface ProductionTaskAreaCheck {
     area: string;
     share: number;
     taskCount: number;
+    /** Die Gewichte der STUFEN zusammen (30.09.2026) — 100 %, wenn der Bereich Aufgaben hat. */
     weightSum: number;
     ok: boolean;
+    stages: ProductionTaskStageCheck[];
 }
 
 export interface ProductionTaskTemplateCheck {
@@ -965,40 +1134,33 @@ export interface ProductionTaskTemplateCheck {
 }
 
 /**
- * Gehen die Summen auf? Ein Bereich ohne Aufgaben ist nur in Ordnung, wenn er
- * auch keinen Anteil trägt; einer mit Aufgaben, wenn deren Gewichte 100 %
- * ergeben.
+ * Gehen die Summen auf? (30.09.2026: je Stufe.) Die Anteile der Bereiche ergeben 100 %. Ein
+ * Bereich ohne Aufgaben ist nur in Ordnung, wenn er keinen Anteil trägt; einer mit Aufgaben,
+ * wenn seine Stufen zusammen 100 % wiegen und jede Stufe stimmt: mit Aufgaben ergeben diese
+ * 100 % der Stufe, ohne Aufgaben wiegt sie 0.
  */
 export const templateCheck = (
-    sections: readonly Pick<ProductionTaskSection, 'key' | 'share'>[],
-    totals: ProductionAreaTotals,
+    sections: readonly ProductionTaskSection[],
+    tasks: ReadonlyArray<Pick<ProductionTaskDraft, 'area' | 'stage' | 'weight'>>,
 ): ProductionTaskTemplateCheck => {
     const sharesSum = roundPercent(sections.reduce((sum, section) => sum + section.share, 0));
     const sharesOk = Math.abs(sharesSum - 100) <= SUM_TOLERANCE;
     const checks = sections.map((section): ProductionTaskAreaCheck => {
-        const taskCount = totals[section.key]?.taskCount ?? 0;
-        const weightSum = roundPercent(totals[section.key]?.weightSum ?? 0);
-        const ok = taskCount > 0 ? Math.abs(weightSum - 100) <= SUM_TOLERANCE : section.share === 0;
-        return { area: section.key, share: section.share, taskCount, weightSum, ok };
+        const own = tasks.filter((task) => task.area === section.key);
+        const stages = section.stages.map((stage): ProductionTaskStageCheck => {
+            const inStage = own.filter((task) => task.stage === stage.key);
+            const taskWeightSum = roundPercent(inStage.reduce((sum, task) => sum + task.weight, 0));
+            const ok = inStage.length > 0 ? Math.abs(taskWeightSum - 100) <= SUM_TOLERANCE : stage.weight === 0;
+            return { stage: stage.key, weight: stage.weight, taskCount: inStage.length, taskWeightSum, ok };
+        });
+        const weightSum = roundPercent(section.stages.reduce((sum, stage) => sum + stage.weight, 0));
+        const ok = own.length > 0
+            ? Math.abs(weightSum - 100) <= SUM_TOLERANCE && stages.every((stage) => stage.ok)
+            : section.share === 0;
+        return { area: section.key, share: section.share, taskCount: own.length, weightSum, ok, stages };
     });
     const hasTasks = checks.some((check) => check.taskCount > 0);
     return { valid: sharesOk && hasTasks && checks.every((check) => check.ok), sharesSum, sharesOk, areas: checks };
-};
-
-/** Aufgaben und Gewichtssumme je Bereich — aus einer Aufgabenliste gezählt. */
-export const areaTotals = (
-    sections: readonly Pick<ProductionTaskSection, 'key'>[],
-    tasks: ReadonlyArray<Pick<ProductionTaskDraft, 'area' | 'weight'>>,
-): ProductionAreaTotals => {
-    const totals: ProductionAreaTotals = {};
-    for (const section of sections) totals[section.key] = { taskCount: 0, weightSum: 0 };
-    for (const task of tasks) {
-        const entry = totals[task.area];
-        if (!entry) continue;
-        entry.taskCount += 1;
-        entry.weightSum = roundPercent(entry.weightSum + task.weight);
-    }
-    return totals;
 };
 
 /**
@@ -1129,15 +1291,15 @@ const CHILLER_ELECTRICAL: ExampleTask[] = [
     ['E-15', 'Son durum dokümanları ve yedekleme', 'final', 2],
 ];
 
+// Die Liste nennt Anteile am Bereich — `fromSectionShares` macht daraus Stufen- und Aufgabengewichte.
 export const CHILLER_EXAMPLE: ProductionTaskTemplateInput = {
     name: 'Chiller',
-    sections: builtInSections({ MECHANICAL: 60, ELECTRICAL: 40 }),
-    tasks: [
+    ...fromSectionShares(builtInSections({ MECHANICAL: 60, ELECTRICAL: 40 }), [
         ...CHILLER_MECHANICAL.map(([code, name, stage, weight]): ProductionTaskDraft => ({
             area: 'MECHANICAL', stage, code, name, weight, assigneeIds: [], startDate: null, dueDate: null, createdAt: null, subtasks: [],
         })),
         ...CHILLER_ELECTRICAL.map(([code, name, stage, weight]): ProductionTaskDraft => ({
             area: 'ELECTRICAL', stage, code, name, weight, assigneeIds: [], startDate: null, dueDate: null, createdAt: null, subtasks: [],
         })),
-    ],
+    ]),
 };
