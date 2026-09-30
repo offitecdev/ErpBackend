@@ -111,7 +111,13 @@ class BomPurchasesUseCase {
             throw (0, productionBom_1.bomError)('PURCHASE_NOT_FOUND', 'Bestellung nicht gefunden.', { status: 404 });
         return { bom: await this.bomDtoOf(tenantId, link.bomId) };
     }
-    async uploadQuote(tenantId, actor, purchaseOrderId, file) {
+    /**
+     * Das Angebot ablegen (R2, sonst Platte). `lean` (29.09.2026, Samet: «pdf
+     * yüklemesi 5 saniye sürüyor, en fazla 200 ms»): die Antwort trägt nur die
+     * Datei, nicht die ganze BOM — deren Rechnung kostete allein ~0,5 s; die
+     * Seite zeigt das PDF sofort und liest den Rest im Hintergrund.
+     */
+    async uploadQuote(tenantId, actor, purchaseOrderId, file, options = {}) {
         const link = await this.requireLink(tenantId, purchaseOrderId);
         await this.assertCanPurchase(tenantId, actor, link);
         if (!file || !file.body?.length)
@@ -133,9 +139,13 @@ class BomPurchasesUseCase {
             await this.documents.remove(ref).catch(() => undefined);
             throw error;
         }
+        // Das ersetzte Angebot geht im Hintergrund — niemand wartet darauf.
         if (link.quoteFileRef && link.quoteFileRef !== ref)
-            await this.documents.remove(link.quoteFileRef).catch(() => undefined);
-        return { bom: await this.bomDtoOf(tenantId, link.bomId) };
+            void this.documents.remove(link.quoteFileRef).catch(() => undefined);
+        const quoteFile = { name, type: contentType, size: file.body.length };
+        if (options.lean)
+            return { bom: null, quoteFile };
+        return { bom: await this.bomDtoOf(tenantId, link.bomId), quoteFile };
     }
     async readQuote(tenantId, purchaseOrderId) {
         const link = await this.requireLink(tenantId, purchaseOrderId);

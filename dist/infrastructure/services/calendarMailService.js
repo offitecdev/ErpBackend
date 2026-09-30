@@ -8,8 +8,7 @@ const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const MailDispatchService_1 = require("./outlook/MailDispatchService");
 const calendarInvite_1 = require("./calendarInvite");
 const calendarInviteMail_1 = require("./calendarInviteMail");
-const mailBrand_1 = require("./mailBrand");
-const mailKindIcons_1 = require("./mailKindIcons");
+const mailCardKit_1 = require("./mailCardKit");
 const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 /**
  * TERMIN → EINLADUNGSMAIL (18.08.2026, Versand auf Befehl seit 19.08.2026).
@@ -186,7 +185,7 @@ const sendInvite = async (context) => {
         replyTo: settings.replyTo || null,
         // Logo, Welle und das Zeichen der Karte (Kalenderblatt bzw. Haken)
         // im Briefkopf — als Inline-Bilder, nicht als Anhang.
-        inlineImages: [(0, mailBrand_1.brandLogoInline)(), (0, mailBrand_1.brandWaveInline)(), (0, mailKindIcons_1.kindIconInline)("APPOINTMENT")],
+        inlineImages: (0, mailCardKit_1.mailInlineImages)(card.kind === "TASK" ? "TASK" : "APPOINTMENT"),
         calendar: { method: context.method, content: ics },
         // Zusätzlich als Datei — Programme, die den Alternativteil ignorieren,
         // können den Termin so trotzdem übernehmen. Danach die Checklisten,

@@ -42,6 +42,16 @@ const adapter = new adapter_mariadb_1.PrismaMariaDb({
     connectionLimit: 10,
     minimumIdle: 4,
     keepAliveDelay: 30_000,
+    // Sürücü varsayılanları yerel DB içindir: bağlantı kurma 1 sn, ping 250 ms.
+    // Uzak sunucuda (84.247.x) el sıkışma yavaş ağda 1 sn'yi aşınca her yeni
+    // bağlantı düşüyor, havuz boş kalıyor → "pool timeout (active=0 idle=0)".
+    connectTimeout: 10_000,
+    acquireTimeout: 20_000,
+    // Sürücü (3.4.x) destekliyor, tip tanımında yok.
+    ...{ pingTimeout: 3_000 },
+    // Sunucu wait_timeout'u boşta bekleyen bağlantıyı sessizce kesmeden önce
+    // havuz kendisi kapatsın (ECONNRESET yerine temiz yeniden bağlantı).
+    idleTimeout: 300,
 }, {
     // Metin protokolü (driver `query`): binary protokolün her ifade için ayrı
     // PREPARE + EXECUTE ağ turu var ve SQL metnimiz istekten isteğe değiştiği

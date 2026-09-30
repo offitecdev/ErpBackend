@@ -178,7 +178,11 @@ class BomTemplatesUseCase {
                 name: example.name,
                 brand: example.brand,
                 modelNumber: example.modelNumber,
-                suppliers: supplier ? [{ supplierId: supplier.id, name: supplier.name, barcode: null }] : [],
+                suppliers: supplier ? [{ supplierId: supplier.id, name: supplier.name, barcode: null, email: null }] : [],
+                productCode: null,
+                unit: 'PCS',
+                // Ein Beispiel ohne E-Mail des Lieferanten ist noch keine fertige Karte (30.09.2026).
+                isDraft: true,
                 description: example.description ?? null,
                 quantity: 0,
                 purchasePrice: null,

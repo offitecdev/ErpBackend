@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PrismaProductionPurchaseRepository = exports.PrismaProductionProjectRepository = exports.PrismaProductionSettingsRepository = exports.PrismaTenantDirectory = exports.sqlDateTime = void 0;
 const nanoid_1 = require("nanoid");
+const productionOrderList_1 = require("./productionOrderList");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const production_1 = require("../../domain/services/production");
 /* ── Kleinzeug für die Sammelanweisungen ────────────────────────────────────
@@ -139,6 +140,7 @@ const toItem = (row) => ({
     isActive: Boolean(row.isActive),
 });
 class PrismaProductionProjectRepository {
+    listOrderPage = productionOrderList_1.listProductionOrderPage;
     async existingIds(tenantId) {
         const [projects, orders, items] = await Promise.all([
             prisma_client_1.default.productionProject.findMany({ where: { tenantId }, select: { id: true, sourceKey: true } }),

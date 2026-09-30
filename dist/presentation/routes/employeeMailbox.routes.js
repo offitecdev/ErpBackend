@@ -82,16 +82,19 @@ const statusDto = async (row) => {
 };
 /** Die Vorgaben fürs Fenster: Server und Ports des Firmenpostfachs — meist
     liegen alle Konten auf demselben Server, dann fehlt nur das Passwort. */
+/* Ohne Firmenpostfach gilt der Server des Hauses (cyon, Vorgabe 29.09.2026):
+   im Fenster tippt die Verwaltung dann nur noch Adresse und Passwort. */
+const DEFAULT_MAIL_HOST = "mail.cyon.ch";
 const companyDefaults = async (tenantId) => {
     const settings = await prisma_client_1.default.mailSetting.findUnique({
         where: { tenantId: await (0, serviceTenantScope_1.getMailTenantId)(tenantId).catch(() => tenantId) },
         select: { smtpHost: true, smtpPort: true, smtpSecure: true, imapHost: true, imapPort: true, imapSecure: true },
     });
     return {
-        smtpHost: settings?.smtpHost || null,
+        smtpHost: settings?.smtpHost || DEFAULT_MAIL_HOST,
         smtpPort: settings?.smtpPort || 465,
         smtpSecure: settings?.smtpSecure ?? true,
-        imapHost: settings?.imapHost || null,
+        imapHost: settings?.imapHost || DEFAULT_MAIL_HOST,
         imapPort: settings?.imapPort || 993,
         imapSecure: settings?.imapSecure ?? true,
     };

@@ -1,7 +1,24 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.revisionOrderPlan = exports.acceptsMoreLines = exports.orderAtSupplier = exports.demandsWithRevision = exports.revisionChanges = exports.revisionLineIds = exports.ORDER_UNIT_LABELS = exports.sameLockedRows = exports.confirmProblems = exports.PRICE_REQUEST_STATUSES = exports.CONFIRMING_STATUSES = exports.CONFIRMED_ORDER_STATUSES = exports.completionOf = exports.requestLinesFrom = exports.mergeLinkRecords = exports.mergeOrderItems = exports.sameSupplier = exports.supplierKey = exports.orderLinesFrom = exports.orderProposal = exports.serialsToRelease = exports.serialAssignments = exports.computeCoverage = exports.openOf = exports.byPriority = exports.storedCodes = exports.codesFrom = exports.templateHeadFrom = exports.lineDraftsFrom = exports.quantityFrom = exports.formatBomNumber = exports.prefixFrom = exports.unitFrom = exports.areaFrom = exports.categoryFrom = exports.ceil3 = exports.round3 = exports.BOM_NUMBER_DIGITS = exports.PREFIX_MAX = exports.BOM_LIMITS = exports.bomErrorBody = exports.isBomError = exports.bomError = void 0;
+exports.revisionOrderPlan = exports.acceptsMoreLines = exports.orderAtSupplier = exports.demandsWithRevision = exports.revisionChanges = exports.revisionLineIds = exports.ORDER_UNIT_LABELS = exports.sameLockedRows = exports.confirmProblems = exports.PRICE_REQUEST_STATUSES = exports.CONFIRMING_STATUSES = exports.CONFIRMED_ORDER_STATUSES = exports.completionOf = exports.requestLinesFrom = exports.mergeLinkRecords = exports.mergeOrderItems = exports.sameSupplier = exports.supplierKey = exports.orderLinesFrom = exports.orderProposal = exports.serialsToRelease = exports.serialAssignments = exports.computeCoverage = exports.openOf = exports.byPriority = exports.storedCodes = exports.codesFrom = exports.templateHeadFrom = exports.lineDraftsFrom = exports.quantityFrom = exports.formatBomNumber = exports.prefixFrom = exports.unitFrom = exports.areaFrom = exports.categoryFrom = exports.ceil3 = exports.round3 = exports.BOM_NUMBER_DIGITS = exports.PREFIX_MAX = exports.BOM_LIMITS = exports.bomErrorBody = exports.isBomError = exports.bomError = exports.assertErpCodes = void 0;
 const ProductionBom_1 = require("../entities/ProductionBom");
+/**
+ * «ERP kodları olmadan BOM onaylanamasın» (Samet, 30.09.2026): die Zeilen,
+ * deren Depo-Karte (noch) keinen ERP-Code trägt — z. B. ohne Materialgruppe.
+ */
+const assertErpCodes = (lines, products) => {
+    const missing = lines.filter((line) => !String(products.get(line.productId)?.erpCode ?? '').trim());
+    if (!missing.length)
+        return;
+    throw (0, exports.bomError)('ERP_CODE_MISSING', 'Ohne ERP-Code lässt sich die BOM nicht freigeben.', {
+        status: 409,
+        params: {
+            count: missing.length,
+            names: missing.slice(0, 3).map((line) => products.get(line.productId)?.name ?? line.name).join(', ') + (missing.length > 3 ? ' …' : ''),
+        },
+    });
+};
+exports.assertErpCodes = assertErpCodes;
 const bomError = (code, message, options = {}) => Object.assign(new Error(message), {
     code,
     status: options.status ?? 400,
@@ -679,7 +696,9 @@ const confirmProblems = (order, link) => {
     const problems = [];
     if (!String(order.quoteNumber ?? '').trim())
         problems.push('QUOTE_NUMBER');
-    if (!link?.quoteFileRef)
+    /* Das Angebots-PDF braucht nur die ERSTE Bestätigung (30.09.2026, Samet: «revizyonda teklif
+       PDF'ini istemeye gerek yok, o ilk onay için») — eine revidierte Bestellung bestätigt man ohne. */
+    if (!link?.quoteFileRef && !((link?.orderRevision ?? 0) > 0))
         problems.push('QUOTE_FILE');
     return problems;
 };

@@ -4,6 +4,7 @@ exports.warehouseAvailability = exports.warehouseModule = void 0;
 const WarehouseRepository_1 = require("../../infrastructure/repositories/WarehouseRepository");
 const WarehouseCatalogRepository_1 = require("../../infrastructure/repositories/WarehouseCatalogRepository");
 const WarehouseImportRepository_1 = require("../../infrastructure/repositories/WarehouseImportRepository");
+const SupplierEmailBook_1 = require("../../infrastructure/repositories/SupplierEmailBook");
 const warehouseImportNotifications_1 = require("../../infrastructure/services/warehouseImportNotifications");
 const WarehouseProductsUseCase_1 = require("../../application/use-cases/warehouse/WarehouseProductsUseCase");
 const WarehouseSerialsUseCase_1 = require("../../application/use-cases/warehouse/WarehouseSerialsUseCase");
@@ -29,11 +30,13 @@ const settings = new WarehouseCatalogRepository_1.PrismaWarehouseSettingsReposit
 const imports = new WarehouseImportRepository_1.PrismaWarehouseImportRepository();
 const directory = new WarehouseRepository_1.PrismaWarehouseDirectory();
 const notifier = new warehouseImportNotifications_1.WarehouseImportNotifier();
+/* Eine an einer Karte eingetragene Lieferanten-E-Mail wird die des Lieferanten (30.09.2026). */
+const supplierEmails = new SupplierEmailBook_1.PrismaSupplierEmailBook();
 exports.warehouseModule = {
-    products: new WarehouseProductsUseCase_1.WarehouseProductsUseCase(products, groups, directory),
+    products: new WarehouseProductsUseCase_1.WarehouseProductsUseCase(products, groups, directory, supplierEmails),
     serials: new WarehouseSerialsUseCase_1.WarehouseSerialsUseCase(products, directory),
     catalog: new WarehouseCatalogUseCase_1.WarehouseCatalogUseCase(groups, directory, products, settings),
-    imports: new WarehouseImportsUseCase_1.WarehouseImportsUseCase(imports, groups, products, directory, notifier),
+    imports: new WarehouseImportsUseCase_1.WarehouseImportsUseCase(imports, groups, products, directory, notifier, supplierEmails),
     directory,
 };
 /* ── Der Firmentyp, kurz gemerkt ─────────────────────────────────────────────

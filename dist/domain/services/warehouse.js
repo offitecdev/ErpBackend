@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.searchFrom = exports.groupIdsFrom = exports.NO_GROUP_TOKEN = exports.pageSizeFrom = exports.pageFrom = exports.WAREHOUSE_MAX_PAGE_SIZE = exports.WAREHOUSE_PAGE_SIZE = exports.directionFrom = exports.sortKeyFrom = exports.firstDuplicate = exports.serialFromInput = exports.productFieldsFromInput = exports.assertSuppliersUnique = exports.makerBarcodesOf = exports.suppliersFromInput = exports.fieldsOfProduct = exports.parseCurrency = exports.parseMinimumOrderQuantity = exports.parsePrice = exports.parseQuantity = exports.cleanText = exports.cleanCode = exports.cleanLine = exports.WAREHOUSE_LIMITS = exports.warehouseErrorBody = exports.isWarehouseError = exports.warehouseError = void 0;
+exports.searchFrom = exports.groupIdsFrom = exports.NO_GROUP_TOKEN = exports.pageSizeFrom = exports.pageFrom = exports.WAREHOUSE_MAX_PAGE_SIZE = exports.WAREHOUSE_PAGE_SIZE = exports.directionFrom = exports.sortKeyFrom = exports.firstDuplicate = exports.serialFromInput = exports.productFieldsFromInput = exports.assertSuppliersUnique = exports.makerBarcodesOf = exports.suppliersFromInput = exports.fieldsOfProduct = exports.draftRequestOf = exports.draftStateOf = exports.missingForComplete = exports.parseSupplierEmail = exports.parseUnit = exports.parseCurrency = exports.parseMinimumOrderQuantity = exports.parsePrice = exports.parseQuantity = exports.cleanText = exports.cleanCode = exports.cleanLine = exports.WAREHOUSE_LIMITS = exports.warehouseErrorBody = exports.isWarehouseError = exports.warehouseError = void 0;
 const Warehouse_1 = require("../entities/Warehouse");
 const warehouseError = (code, message, options = {}) => Object.assign(new Error(message), {
     code,
@@ -34,7 +34,9 @@ exports.WAREHOUSE_LIMITS = {
     name: 255,
     brand: 120,
     modelNumber: 120,
+    productCode: 120,
     supplierName: 191,
+    supplierEmail: 191,
     description: 20_000,
     barcode: 128,
     /** Auch der Barcode je Lieferant. */
@@ -151,6 +153,90 @@ const parseCurrency = (raw) => {
     return value;
 };
 exports.parseCurrency = parseCurrency;
+/** Die Wörter, mit denen eine Einheit getippt oder importiert wird (drei Sprachen). */
+const UNIT_ALIASES = {
+    PCS: 'PCS', PC: 'PCS', STK: 'PCS', 'STK.': 'PCS', STÜCK: 'PCS', STUECK: 'PCS', ADET: 'PCS', AD: 'PCS', PIECE: 'PCS', PIECES: 'PCS', EA: 'PCS',
+    M: 'M', MT: 'M', METER: 'M', METRE: 'M', LFM: 'M',
+    KG: 'KG', KILO: 'KG', KILOGRAMM: 'KG', KILOGRAM: 'KG',
+    SET: 'SET', SATZ: 'SET', TAKIM: 'SET',
+    PACK: 'PACK', PAKET: 'PACK', PACKUNG: 'PACK', PKG: 'PACK', PCK: 'PACK',
+};
+/**
+ * Die Einheit einer Karte (30.09.2026): PCS | M | KG | SET | PACK — auch
+ * «Adet», «Stk», «m», «Paket» … werden verstanden. Leer = keine.
+ */
+const parseUnit = (raw) => {
+    if (raw === null || raw === undefined)
+        return null;
+    const value = String(raw).trim().toLocaleUpperCase('de-CH');
+    if (!value)
+        return null;
+    if (Warehouse_1.WAREHOUSE_UNITS.includes(value))
+        return value;
+    const alias = UNIT_ALIASES[value] ?? UNIT_ALIASES[value.replace(/\.$/, '')];
+    if (alias)
+        return alias;
+    throw (0, exports.warehouseError)('UNIT_INVALID', 'Unbekannte Einheit.', { params: { unit: value.slice(0, 12) } });
+};
+exports.parseUnit = parseUnit;
+/** Eine E-Mail-Adresse, wie sie in einen Kopf einer Mail darf — sonst ein Fehler mit dem Lieferanten. */
+const EMAIL_RE = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]{2,}$/;
+const parseSupplierEmail = (raw, supplierName) => {
+    const value = (0, exports.cleanCode)(raw, 'supplierEmail', exports.WAREHOUSE_LIMITS.supplierEmail);
+    if (!value)
+        return null;
+    const email = value.replace(/^mailto:/i, '').trim();
+    if (!EMAIL_RE.test(email)) {
+        throw (0, exports.warehouseError)('SUPPLIER_EMAIL_INVALID', 'Die E-Mail des Lieferanten ist ungültig.', { params: { name: supplierName, email: email.slice(0, 80) } });
+    }
+    return email;
+};
+exports.parseSupplierEmail = parseSupplierEmail;
+const missingForComplete = (fields) => {
+    const missing = [];
+    if (!fields.name.trim())
+        missing.push('name');
+    if (!fields.unit)
+        missing.push('unit');
+    if (!fields.suppliers.length)
+        missing.push('supplier');
+    if (!fields.suppliers.some((entry) => Boolean(entry.email)))
+        missing.push('supplierEmail');
+    return missing;
+};
+exports.missingForComplete = missingForComplete;
+/**
+ * Taslak oder fertig? `requested` = was die Eingabe ausdrücklich will:
+ *   false  «Kaydet» — nur mit allen Pflichtangaben, sonst PRODUCT_INCOMPLETE
+ *   true   «Taslak olarak kaydet» — immer
+ *   undefined (Scan, Excel, BOM-Schnellkarte, alte Aufrufer) — eine
+ *          unvollständige Karte wird Taslak, eine Taslak bleibt es.
+ */
+const draftStateOf = (fields, requested, current) => {
+    const missing = (0, exports.missingForComplete)(fields);
+    if (requested === true)
+        return true;
+    if (requested === false) {
+        if (missing.length) {
+            throw (0, exports.warehouseError)('PRODUCT_INCOMPLETE', 'Für eine fertige Karte fehlen Angaben — als Taslak speichern.', {
+                params: { missing: missing.join(',') },
+            });
+        }
+        return false;
+    }
+    return Boolean(current) || missing.length > 0;
+};
+exports.draftStateOf = draftStateOf;
+/** `isDraft` der Eingabe: true · false · (nicht angegeben) undefined. */
+const draftRequestOf = (raw) => {
+    const value = (raw && typeof raw === 'object' ? raw.isDraft : undefined);
+    if (value === true || value === 'true')
+        return true;
+    if (value === false || value === 'false')
+        return false;
+    return undefined;
+};
+exports.draftRequestOf = draftRequestOf;
 const has = (input, key) => Object.prototype.hasOwnProperty.call(input, key);
 /** Die Felder, die aus einer Karte für die Prüfung gebraucht werden. */
 const fieldsOfProduct = (product) => ({
@@ -159,6 +245,8 @@ const fieldsOfProduct = (product) => ({
     name: product.name,
     brand: product.brand,
     modelNumber: product.modelNumber,
+    productCode: product.productCode,
+    unit: product.unit,
     suppliers: product.suppliers.map((entry) => ({ ...entry })),
     description: product.description,
     quantity: product.quantity,
@@ -168,6 +256,7 @@ const fieldsOfProduct = (product) => ({
     barcode: product.barcode,
     manufacturerBarcode: product.manufacturerBarcode,
     serialRequired: product.serialRequired,
+    isDraft: product.isDraft,
 });
 exports.fieldsOfProduct = fieldsOfProduct;
 const EMPTY_FIELDS = {
@@ -176,6 +265,8 @@ const EMPTY_FIELDS = {
     name: '',
     brand: null,
     modelNumber: null,
+    productCode: null,
+    unit: null,
     suppliers: [],
     description: null,
     quantity: 0,
@@ -185,6 +276,7 @@ const EMPTY_FIELDS = {
     barcode: null,
     manufacturerBarcode: null,
     serialRequired: false,
+    isDraft: false,
 };
 /**
  * Die Lieferanten einer Karte aus der Eingabe: `[{ supplierId?, name, barcode? }]`.
@@ -208,7 +300,7 @@ const suppliersFromInput = (raw) => {
         }
         const idRaw = input.supplierId ?? input.id;
         const supplierId = idRaw === null || idRaw === undefined ? null : String(idRaw).trim().slice(0, 191) || null;
-        entries.push({ supplierId, name, barcode });
+        entries.push({ supplierId, name, barcode, email: (0, exports.parseSupplierEmail)(input.email, name) });
     }
     if (entries.length > L.suppliers) {
         throw (0, exports.warehouseError)('TOO_MANY_SUPPLIERS', 'Zu viele Lieferanten auf einer Karte.', { params: { max: L.suppliers } });
@@ -280,6 +372,10 @@ const productFieldsFromInput = (raw, base) => {
         next.brand = (0, exports.cleanLine)(input.brand, 'brand', L.brand);
     if (has(input, 'modelNumber'))
         next.modelNumber = (0, exports.cleanLine)(input.modelNumber, 'modelNumber', L.modelNumber);
+    if (has(input, 'productCode'))
+        next.productCode = (0, exports.cleanCode)(input.productCode, 'productCode', L.productCode);
+    if (has(input, 'unit'))
+        next.unit = (0, exports.parseUnit)(input.unit);
     if (has(input, 'suppliers')) {
         next.suppliers = (0, exports.suppliersFromInput)(input.suppliers);
     }

@@ -16,6 +16,8 @@ const panel_routes_1 = __importDefault(require("./panel.routes"));
 const productionTasks_routes_1 = __importDefault(require("./productionTasks.routes"));
 // BOM (27.09.2026): Vorlagen, BOMs der Geräte, Reservierung, Bestellungen.
 const productionBom_routes_1 = __importDefault(require("./productionBom.routes"));
+// Automatik des Einkaufs (30.09.2026): Postfächer, Senden, Bestellen aus dem Vergleich.
+const productionProcurement_routes_1 = __importDefault(require("./productionProcurement.routes"));
 /**
  * ── /production — DAS PRODUKTIONSMODUL (19.09.2026) ─────────────────────────
  *
@@ -45,6 +47,7 @@ router.get('/status', (req, res, next) => controller.status(req, res, next));
 router.post('/sync', VIEW_OR_INVENTORY, ProductionController_1.ProductionController.requireModule, (req, res, next) => controller.sync(req, res, next));
 router.get('/overview', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.overview(req, res, next));
 router.get('/projects/:id/devices', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.projectDevices(req, res, next));
+router.get('/projects/:id/devices/:deviceId', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.deviceHeader(req, res, next));
 router.get('/projects/:id', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.project(req, res, next));
 router.get('/lines', VIEW, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.lines(req, res, next));
 router.get('/items/:id', VIEW_OR_INVENTORY, ProductionController_1.ProductionController.requireModule, cache, (req, res, next) => controller.item(req, res, next));
@@ -61,6 +64,8 @@ router.use('/panels', panel_routes_1.default);
 // Görevlendirme: /task-templates und /devices/:itemId/tasks (erben `requireAuth`).
 router.use(productionTasks_routes_1.default);
 // BOM: /bom/* (erbt `requireAuth`).
+// VOR der BOM: dort fängt `/bom/procurement/requests/:id/:action` alles Übrige ab.
+router.use(productionProcurement_routes_1.default);
 router.use(productionBom_routes_1.default);
 exports.default = router;
 //# sourceMappingURL=production.routes.js.map

@@ -71,12 +71,16 @@ class WarehouseImportsUseCase {
     products;
     directory;
     notifier;
-    constructor(imports, groups, products, directory, notifier) {
+    emails;
+    constructor(imports, groups, products, directory, notifier, 
+    /** Die Lieferantenliste als Adressbuch (30.09.2026): Adressen aus dem Import werden die der Lieferanten. */
+    emails = null) {
         this.imports = imports;
         this.groups = groups;
         this.products = products;
         this.directory = directory;
         this.notifier = notifier;
+        this.emails = emails;
     }
     /** Zeilen prüfen, ohne etwas zu speichern. */
     async preview(tenantId, body) {
@@ -99,7 +103,10 @@ class WarehouseImportsUseCase {
             name: row.name,
             brand: row.brand,
             modelNumber: row.modelNumber,
+            productCode: row.productCode ?? null,
+            unit: row.unit ?? null,
             supplierName: row.supplierName,
+            supplierEmail: row.supplierEmail ?? null,
             description: row.description,
             quantity: row.quantity,
             purchasePrice: row.purchasePrice,
@@ -169,8 +176,11 @@ class WarehouseImportsUseCase {
                 brand: row.brand,
                 modelNumber: row.modelNumber,
                 suppliers: row.supplierName
-                    ? [{ supplierId: supplier?.id ?? null, name: supplier?.name ?? row.supplierName, barcode: row.manufacturerBarcode }]
+                    ? [{ supplierId: supplier?.id ?? null, name: supplier?.name ?? row.supplierName, barcode: row.manufacturerBarcode, email: row.supplierEmail ?? null }]
                     : [],
+                productCode: row.productCode ?? null,
+                unit: row.unit ?? null,
+                isDraft: false,
                 description: row.description,
                 quantity: row.serialRequired ? 0 : row.quantity,
                 purchasePrice: row.purchasePrice,
@@ -180,6 +190,8 @@ class WarehouseImportsUseCase {
                 manufacturerBarcode: row.supplierName ? null : row.manufacturerBarcode,
                 serialRequired: row.serialRequired,
             };
+            // Was einer fertigen Karte fehlt (Einheit, E-Mail des Lieferanten), macht sie zum Taslak (30.09.2026).
+            fields.isDraft = (0, warehouse_1.draftStateOf)(fields, undefined, null);
             creates.push({ row: row.row, fields });
         }
         if (!creates.length) {
@@ -195,6 +207,11 @@ class WarehouseImportsUseCase {
         if (!result) {
             const now = await this.imports.get(tenantId, id);
             throw this.notPending(now?.status ?? 'DONE');
+        }
+        if (this.emails) {
+            await this.emails.remember(tenantId, creates.flatMap((create) => create.fields.suppliers
+                .map((entry) => ({ supplierId: entry.supplierId, name: entry.name, email: entry.email }))))
+                .catch((error) => console.warn('[depo] Lieferanten-E-Mail (Import) nicht gemerkt:', error?.message));
         }
         await this.notifier.importDecided({
             tenantId,

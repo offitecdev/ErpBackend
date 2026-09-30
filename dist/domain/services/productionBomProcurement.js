@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.withoutSupplierFacts = exports.receiptAllocation = exports.procurementStatusAfter = exports.procurementProgress = exports.procurementLinesFrom = exports.remainingPriceRequestQuantities = exports.procurementKindFrom = void 0;
+exports.withoutSupplierFacts = exports.receiptAllocation = exports.procurementStatusAfter = exports.procurementProgress = exports.procurementLinesFrom = exports.remainingPriceRequestQuantities = exports.priceRequestedLineIds = exports.procurementKindFrom = void 0;
 const productionBom_1 = require("./productionBom");
 const EPS = 1e-9;
 /* ── Was ein Talep enthält ──────────────────────────────────────────────── */
@@ -9,6 +9,18 @@ const procurementKindFrom = (value) => {
     return raw === 'PRICE' || raw === 'ORDER' ? raw : null;
 };
 exports.procurementKindFrom = procurementKindFrom;
+/**
+ * «Fiyat talebi alınan üründen bir daha fiyat talebi istenemeyecek» (Samet,
+ * 30.09.2026): eine BOM-Zeile, die schon in einem Fiyat talebi steht (egal in
+ * welcher Revision, nur ein verworfener zählt nicht), kommt in keinen zweiten.
+ * Mehr Lieferanten fragt der Einkauf im SELBEN Talep an; eine Mehrmenge einer
+ * Revision folgt der Bestellung (Revision der Bestellung), nicht einer neuen
+ * Anfrage.
+ */
+const priceRequestedLineIds = (requests) => new Set(requests
+    .filter((request) => request.kind === 'PRICE' && request.status !== 'CANCELLED')
+    .flatMap((request) => request.lines.map((line) => line.bomLineId)));
+exports.priceRequestedLineIds = priceRequestedLineIds;
 /** Only the requested quantity is pending; another request can cover the remainder. */
 const remainingPriceRequestQuantities = (lines, revision, requests) => {
     const remaining = new Map(lines.map((line) => [line.id, (0, productionBom_1.round3)(line.quantity)]));
@@ -69,11 +81,17 @@ const procurementProgress = (request, docs) => {
     };
 };
 exports.procurementProgress = procurementProgress;
-/** Der Stand, den ein offener Talep nach neuen Belegen hat (geschlossene bleiben). */
-const procurementStatusAfter = (current, progress) => {
+/**
+ * Der Stand, den ein offener Talep nach neuen Belegen hat (geschlossene bleiben).
+ * Ein Satın alma talebi ist erledigt, wenn jede Zeile bestellt ist. Ein Fiyat
+ * talebi NIE von selbst (29.09.2026, Samet: «fiyat taleplerinin hepsinde
+ * tamamlandı diyor, ne alaka? … başka tedarikçilere de danışabilelim») — es
+ * bleibt offen für weitere Lieferanten, bis der Einkauf es schliesst.
+ */
+const procurementStatusAfter = (current, progress, kind = 'ORDER') => {
     if (current === 'CANCELLED' || current === 'DONE')
         return current;
-    if (progress.total > 0 && progress.covered >= progress.total)
+    if (kind === 'ORDER' && progress.total > 0 && progress.covered >= progress.total)
         return 'DONE';
     return progress.covered > 0 || progress.requests + progress.orders > 0 ? 'IN_PROGRESS' : 'OPEN';
 };

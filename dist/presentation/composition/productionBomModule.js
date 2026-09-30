@@ -1,6 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.productionBomModule = void 0;
+const BomRevisionApprovalRepository_1 = require("../../infrastructure/repositories/BomRevisionApprovalRepository");
+const bomRevisionNotifications_1 = require("../../infrastructure/services/bomRevisionNotifications");
+const SupplierEmailBook_1 = require("../../infrastructure/repositories/SupplierEmailBook");
 const ProductionBomRepository_1 = require("../../infrastructure/repositories/ProductionBomRepository");
 const productionBomPurchaseWriter_1 = require("../../infrastructure/services/productionBomPurchaseWriter");
 const productionBomRevisionWriter_1 = require("../../infrastructure/services/productionBomRevisionWriter");
@@ -16,6 +19,9 @@ const BomProcurementUseCase_1 = require("../../application/use-cases/production/
 const BomCostingUseCase_1 = require("../../application/use-cases/production/bom/BomCostingUseCase");
 const ProcurementDeskUseCase_1 = require("../../application/use-cases/production/bom/ProcurementDeskUseCase");
 const ProcurementJournalRepository_1 = require("../../infrastructure/repositories/ProcurementJournalRepository");
+const PriceComparisonUseCase_1 = require("../../application/use-cases/production/bom/PriceComparisonUseCase");
+const PriceComparisonRepository_1 = require("../../infrastructure/repositories/PriceComparisonRepository");
+const priceCompareAi_1 = require("../../infrastructure/services/priceCompareAi");
 const ProductionBomProcurementRepository_1 = require("../../infrastructure/repositories/ProductionBomProcurementRepository");
 const inventory_routes_1 = require("../routes/inventory.routes");
 const warehouseStockEvents_1 = require("../../shared/warehouseStockEvents");
@@ -52,17 +58,24 @@ const devices = new DeviceBomsUseCase_1.DeviceBomsUseCase(boms, templates, stock
 /* «Satın alma» (27.09.2026 abends): der Einkauf macht aus den Taleplern der BOM die Belege. */
 const procurement = new BomProcurementUseCase_1.BomProcurementUseCase(procurementRequests, goodsIn, purchases, stock, directory, reservations, devices, journal);
 devices.attachProcurement(procurement);
+/* Die Freigaben der Revisionen (eingereicht / zurückgewiesen) stehen an der BOM (30.09.2026). */
+const revisionApprovals = new BomRevisionApprovalRepository_1.PrismaBomRevisionApprovals();
+devices.attachRevisionApprovals(revisionApprovals);
 exports.productionBomModule = {
     templates: templateUseCase,
     devices,
     purchases: new BomPurchasesUseCase_1.BomPurchasesUseCase(purchases, boms, stock, warehouseProducts, reservations, devices, writer, productionBomGuardModule_1.productionBomDocumentStorage, bomTableAi_1.fillTableWithAi, revisions, goodsIn, directory),
     procurement,
     /* «Satın alma» (28.09.2026): Liste seitenweise, Stand + nächster Schritt, Verlauf, Handgriffe. */
-    desk: new ProcurementDeskUseCase_1.ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer),
+    desk: new ProcurementDeskUseCase_1.ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer, revisions, new SupplierEmailBook_1.PrismaSupplierEmailBook()),
+    /* «Fiyat karşılaştırma» (29.09.2026): bis zu vier Angebots-PDFs per KI vergleichen, gespeichert. */
+    comparisons: new PriceComparisonUseCase_1.PriceComparisonUseCase(procurementRequests, devices, procurement, productionBomGuardModule_1.productionBomDocumentStorage, priceCompareAi_1.compareOffersWithAi, new PriceComparisonRepository_1.PrismaPriceComparisonStore(), journal, directory),
     /* «Kalkülasyon» (27.09.2026 abends): geplante gegen tatsächliche Materialkosten. */
     costing: new BomCostingUseCase_1.BomCostingUseCase(boms, stock, directory, devices),
     /* «Bom onaylanırsa geri dönüş yok, revize olması lazım» (27.09.2026). */
-    revisions: new BomRevisionsUseCase_1.BomRevisionsUseCase(boms, revisions, directory, reservations, devices, new productionBomRevisionWriter_1.PrismaBomRevisionWriter(), productionBomGuardModule_1.productionBomDocumentStorage),
+    revisions: new BomRevisionsUseCase_1.BomRevisionsUseCase(boms, revisions, directory, reservations, devices, new productionBomRevisionWriter_1.PrismaBomRevisionWriter(), productionBomGuardModule_1.productionBomDocumentStorage, 
+    // Eine Revision gibt die Administratorrolle frei (30.09.2026).
+    revisionApprovals, new bomRevisionNotifications_1.BomRevisionNotifier()),
     settings: new BomSettingsUseCase_1.BomSettingsUseCase(settings),
     reservations,
     directory,

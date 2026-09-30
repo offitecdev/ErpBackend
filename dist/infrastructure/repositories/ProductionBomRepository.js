@@ -7,6 +7,7 @@ exports.PrismaBomSettingsRepository = exports.DEFAULT_BOM_SETTINGS = exports.Pri
 const nanoid_1 = require("nanoid");
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const ProductionBom_1 = require("../../domain/entities/ProductionBom");
 const productionBom_1 = require("../../domain/services/productionBom");
 const WarehouseCodeIssuer_1 = require("./WarehouseCodeIssuer");
 /**
@@ -294,13 +295,20 @@ const issueBomNumber = async (tx, tenantId, prefix) => {
     throw new Error('BOM-Nummer konnte nicht vergeben werden.');
 };
 class PrismaBomRepository {
-    async listForDevice(tenantId, productionItemId) {
+    async listForDevice(tenantId, productionItemId, lineArea) {
         const rows = await prisma_client_1.default.productionBom.findMany({
             where: { tenantId, productionItemId },
-            include: { lines: true },
+            include: { lines: lineArea ? { where: { bom: { area: lineArea } } } : true },
             orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         });
         return rows.map(toBom);
+    }
+    async getHeader(tenantId, id) {
+        const row = await prisma_client_1.default.productionBom.findFirst({ where: { tenantId, id } });
+        if (!row)
+            return null;
+        const { lines, ...header } = toBom({ ...row, lines: [] });
+        return header;
     }
     async listForProjects(tenantId, productionProjectIds) {
         const ids = productionProjectIds ? [...new Set(productionProjectIds.filter(Boolean))] : null;
@@ -525,21 +533,28 @@ class PrismaBomRepository {
 }
 exports.PrismaBomRepository = PrismaBomRepository;
 const STOCK_SELECT = client_1.Prisma.sql `
-    SELECT p.id, p.erpCode, p.name, p.brand, p.modelNumber, p.description, p.serialRequired,
+    SELECT p.id, p.erpCode, p.name, p.brand, p.modelNumber, p.productCode, p.unit, p.isDraft, g.name AS materialGroupName,
+           p.description, p.serialRequired,
            p.quantity, p.minimumOrderQuantity, p.materialGroupId, p.purchasePrice, p.currency
-      FROM depo_urun_kartlari p`;
+      FROM depo_urun_kartlari p
+      LEFT JOIN depo_malzeme_gruplari g ON g.id = p.materialGroupId`;
+/** Die Einheit der Karte, wie die BOM sie kennt (ältere Karten: keine). */
+const cardUnitOf = (value) => {
+    const text = String(value ?? '').trim().toUpperCase();
+    return ProductionBom_1.BOM_UNITS.includes(text) ? text : null;
+};
 const withSuppliers = async (tenantId, rows) => {
     if (!rows.length)
         return [];
     const suppliers = await prisma_client_1.default.warehouseProductSupplier.findMany({
         where: { tenantId, productId: { in: rows.map((row) => row.id) } },
-        select: { productId: true, supplierId: true, supplierName: true, sortOrder: true },
+        select: { productId: true, supplierId: true, supplierName: true, email: true, sortOrder: true },
         orderBy: { sortOrder: 'asc' },
     });
     const byProduct = new Map();
     for (const supplier of suppliers) {
         const list = byProduct.get(supplier.productId) ?? [];
-        list.push({ supplierId: supplier.supplierId, name: supplier.supplierName });
+        list.push({ supplierId: supplier.supplierId, name: supplier.supplierName, email: supplier.email ?? null });
         byProduct.set(supplier.productId, list);
     }
     return rows.map((row) => ({
@@ -548,6 +563,10 @@ const withSuppliers = async (tenantId, rows) => {
         name: row.name,
         brand: row.brand,
         modelNumber: row.modelNumber,
+        productCode: row.productCode ?? null,
+        unit: cardUnitOf(row.unit),
+        isDraft: row.isDraft === true || num(row.isDraft) === 1,
+        materialGroupName: row.materialGroupName ?? null,
         description: row.description,
         serialRequired: row.serialRequired === true || num(row.serialRequired) === 1,
         quantity: (0, productionBom_1.round3)(num(row.quantity)),
@@ -775,6 +794,7 @@ class PrismaBomPurchaseRepository {
                 status: true,
                 supplierId: true,
                 supplierName: true,
+                supplierEmail: true,
                 quoteNumber: true,
                 currency: true,
                 totalNet: true,
@@ -790,6 +810,7 @@ class PrismaBomPurchaseRepository {
             status: row.status,
             supplierId: row.supplierId,
             supplierName: row.supplierName,
+            supplierEmail: row.supplierEmail ?? null,
             quoteNumber: row.quoteNumber,
             currency: row.currency,
             totalNet: num(row.totalNet),

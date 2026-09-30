@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.newestFirst = exports.receiptEvents = exports.PROCUREMENT_EVENT_ACTIONS = exports.stageOf = exports.docStateOf = exports.receivedShareOf = void 0;
+exports.newestFirst = exports.revisionEvents = exports.receiptEvents = exports.PROCUREMENT_EVENT_ACTIONS = exports.stageOf = exports.docStateOf = exports.receivedShareOf = void 0;
 const productionBom_1 = require("./productionBom");
 const EPS = 1e-9;
 const priced = (item) => Number(item.grossPrice) > EPS || Number(item.netPrice) > EPS;
@@ -29,8 +29,12 @@ const docStateOf = (doc) => {
     if (productionBom_1.CONFIRMED_ORDER_STATUSES.has(status))
         return (0, exports.receivedShareOf)(doc.items) >= 1 - EPS ? 'RECEIVED' : 'CONFIRMED';
     // Die Bestätigung galt der alten Fassung: nach einer Revision geht sie neu hinaus.
-    if (doc.orderRevision > 0)
-        return 'REVISED';
+    // Ging die geänderte Fassung schon hinaus (automatisch oder von Hand), wartet
+    // sie auf die Bestätigung des Lieferanten wie jede gesendete (30.09.2026).
+    if (doc.orderRevision > 0) {
+        const resent = doc.emailSentAt && doc.revisedAt && doc.emailSentAt.getTime() >= doc.revisedAt.getTime();
+        return resent ? 'SENT' : 'REVISED';
+    }
     return doc.emailSentAt || status === 'ORDERED' ? 'SENT' : 'DRAFT';
 };
 exports.docStateOf = docStateOf;
@@ -48,6 +52,12 @@ const stageOf = (request, docs) => {
         return stage('CANCELLED', 0, 0);
     const open = request.status !== 'DONE';
     const live = docs.filter((doc) => doc.state !== 'CANCELLED');
+    /* «Fiyat talebinden satın almaya dönüşünce direkt labelı o oluyor»
+       (30.09.2026): hat ein Preistalep Bestellungen (aus dem Vergleich), folgt
+       sein Stand diesen Bestellungen — gesendet, bestätigt, geliefert. */
+    if (request.kind === 'PRICE' && live.some((doc) => doc.kind === 'ORDER')) {
+        return ordersStage(request, live.filter((doc) => doc.kind === 'ORDER'), false);
+    }
     if (request.kind === 'PRICE') {
         const asks = live.filter((doc) => doc.kind === 'REQUEST');
         const replied = asks.filter((doc) => doc.state === 'REPLIED').length;
@@ -66,14 +76,30 @@ const stageOf = (request, docs) => {
     const covered = request.lines.filter((line) => orders.some((doc) => holds(doc, line.bomLineId))).length;
     if (open && covered < request.lines.length)
         return stage('ORDER_NEEDED', covered, request.lines.length, 'ORDER');
+    return ordersStage(request, orders, true);
+};
+exports.stageOf = stageOf;
+/**
+ * Der Stand der Bestellungen eines Talep. `legacy` = ein Satın alma talebi
+ * von vor dem 30.09.2026 (Knopf «Teklif ekle»/«Onayla»); ein Preistalep mit
+ * Bestellungen kennt die Automatik: Entwurf → «Onayla ve gönder», beim
+ * Lieferanten → «Onay bekliyor».
+ */
+const ordersStage = (request, orders, legacy) => {
     const pending = orders.find((doc) => doc.state === 'DRAFT' || doc.state === 'SENT' || doc.state === 'REVISED');
     if (pending) {
         const confirmed = orders.filter((doc) => doc.state === 'CONFIRMED' || doc.state === 'RECEIVED').length;
-        const action = pending.state === 'REVISED' ? 'RESEND' : pending.hasQuote ? 'CONFIRM' : 'QUOTE';
-        return stage('QUOTE_NEEDED', confirmed, orders.length, action, pending.purchaseOrderId);
+        const action = pending.state === 'REVISED'
+            ? 'RESEND'
+            : legacy
+                ? (pending.hasQuote ? 'CONFIRM' : 'QUOTE')
+                : pending.state === 'DRAFT' ? 'SEND' : 'AWAIT';
+        return stage(!legacy && pending.state === 'SENT' ? 'CONFIRMATION_EXPECTED' : 'QUOTE_NEEDED', confirmed, orders.length, action, pending.purchaseOrderId);
     }
     // Eine Zeile ist da, wenn ihre bestellte Menge vollständig eingegangen ist.
-    const arrived = request.lines.filter((line) => {
+    // Beim Preistalep zählen nur die bestellten Zeilen (was im Lager war, wird nicht bestellt).
+    const lines = legacy ? request.lines : request.lines.filter((line) => orders.some((doc) => holds(doc, line.bomLineId)));
+    const arrived = lines.filter((line) => {
         let ordered = 0;
         let received = 0;
         for (const doc of orders) {
@@ -88,13 +114,13 @@ const stageOf = (request, docs) => {
     }).length;
     const expecting = orders.find((doc) => doc.state === 'CONFIRMED');
     if (expecting)
-        return stage('GOODS_EXPECTED', arrived, request.lines.length, 'RECEIVE', expecting.purchaseOrderId);
-    return stage('DONE', arrived, request.lines.length);
+        return stage('GOODS_EXPECTED', arrived, lines.length, 'RECEIVE', expecting.purchaseOrderId);
+    return stage('DONE', arrived, lines.length);
 };
-exports.stageOf = stageOf;
 exports.PROCUREMENT_EVENT_ACTIONS = [
     'REQUEST_CREATED', 'REQUEST_WITHDRAWN', 'ORDERS_CREATED', 'PRICE_REQUESTS_CREATED', 'PRICE_REQUESTS_SENT',
-    'ORDER_CONFIRMED', 'REPLY_ADDED', 'SELECTION_SAVED', 'GOODS_RECEIVED', 'REQUEST_CLOSED', 'REQUEST_CANCELLED', 'REQUEST_REOPENED',
+    'ORDER_CONFIRMED', 'REPLY_ADDED', 'SELECTION_SAVED', 'COMPARISON_SAVED', 'ORDER_REVISED', 'GOODS_RECEIVED', 'REQUEST_CLOSED', 'REQUEST_CANCELLED', 'REQUEST_REOPENED',
+    'ORDER_SENT', 'REVISION_SENT', 'SEND_FAILED', 'REPLY_RECEIVED', 'SUPPLIER_CONFIRMED',
 ];
 /**
  * Der Wareneingang schreibt seine eigene Spur (uretim_bom_gelen_mallar, auch
@@ -125,6 +151,19 @@ const receiptEvents = (rows) => {
     return [...groups.values()];
 };
 exports.receiptEvents = receiptEvents;
+/**
+ * Eine BOM-Revision änderte eine Bestellung beim Lieferanten (Archivzeile je
+ * Revision der Bestellung): ein Handgriff im Verlauf — die Satın alma muss die
+ * Änderung dem Lieferanten schicken (29.09.2026, Samet: «siparişte revize
+ * olması gerekmez mi … tedarikçiyi PDF ile bilgilendirmemiz lazım»).
+ */
+const revisionEvents = (rows, orders) => rows.flatMap((row) => {
+    const order = orders.get(row.purchaseOrderId);
+    return order
+        ? [{ action: 'ORDER_REVISED', at: row.createdAt, actorId: row.createdById, actorName: null, data: { code: order.code, supplier: order.supplier, revision: row.number } }]
+        : [];
+});
+exports.revisionEvents = revisionEvents;
 /** Neueste zuerst. */
 const newestFirst = (events) => [...events].sort((a, b) => b.at.getTime() - a.at.getTime());
 exports.newestFirst = newestFirst;

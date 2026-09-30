@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.brandWaveInline = exports.brandLogoInline = exports.BRAND_ICON_TASK_CID = exports.BRAND_ICON_APPOINTMENT_CID = exports.BRAND_TASK = exports.BRAND_RED = exports.BRAND_NAVY = exports.BRAND_WAVE_CID = exports.BRAND_LOGO_CID = void 0;
+exports.brandWaveInline = exports.brandLogoInline = exports.BRAND_ICON_DOCUMENT_CID = exports.BRAND_ICON_TASK_CID = exports.BRAND_ICON_APPOINTMENT_CID = exports.BRAND_TASK = exports.BRAND_RED = exports.BRAND_NAVY = exports.BRAND_WAVE_CID = exports.BRAND_LOGO_CID = void 0;
 const mailWaveAsset_1 = require("./mailWaveAsset");
 /**
  * MARKENZEICHEN FÜR SYSTEM-MAILS (18.08.2026).
@@ -29,12 +29,13 @@ exports.BRAND_RED = "#d30f15";
 exports.BRAND_TASK = "#0f766e";
 /**
  * DIE ZEICHEN DER KARTE (19.08.2026). Ein Kalenderblatt fuer Termine und
- * Besprechungen, ein Haken im Kreis fuer Aufgaben. Beide liegen als weisses
- * PNG auf durchsichtigem Grund in `mailKindIcons.ts`; die Farbe kommt aus der
- * Zelle darunter.
+ * Besprechungen, ein Haken im Kreis fuer Aufgaben, seit 30.09.2026 ein Blatt
+ * mit Eselsohr fuer Belege. Alle liegen als weisses PNG auf durchsichtigem
+ * Grund in `mailKindIcons.ts`; die Farbe kommt aus der Zelle darunter.
  */
 exports.BRAND_ICON_APPOINTMENT_CID = "offitec-kind-appointment";
 exports.BRAND_ICON_TASK_CID = "offitec-kind-task";
+exports.BRAND_ICON_DOCUMENT_CID = "offitec-kind-document";
 const BRAND_LOGO_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAQAElEQVR4nOydB3gU1RbHz+wSeheeCoQEU5CiUqQICUSsoLQQQKWKFB827HSlCAg+FEGfIo8u" +
     "KiRIEVBQShKUKtJLgpBEUATpPcnOO/+JG5PdmZ07s7O7ifLj22/Z2ZnNzD1n7j33lDs2usE/Ghvd4B/NDQX4h3NDAf7hFKG/KcHhHcL48uraJLkukVRXJrmq" +
     "RFIZfi/Fn0tKeJek8srOsnxWJukS/+cy73OJ97nA78f48x6HLO+WJNqTnrL4Z/obItHfgOoRsbfxhTSVydaUBdtYlqS6/LkUWYhMdEmSaRe/b2MF+cFms21K" +
