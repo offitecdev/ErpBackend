@@ -26,7 +26,7 @@ export interface StandardColumn {
     name: string;
     type: 'text' | 'number';
     /** null = eine freie Spalte (das Modell der Preisanfrage). */
-    label: 'productName' | 'quantity' | 'grossPrice' | 'netPrice' | 'total' | null;
+    label: 'productName' | 'quantity' | 'grossPrice' | 'netPrice' | 'discount' | 'total' | null;
     width: number;
 }
 
@@ -48,6 +48,44 @@ export const STANDARD_REQUEST_COLUMNS: StandardColumn[] = [STANDARD_ORDER_COLUMN
 const REQUEST_PRICE_KEYS = new Set(['stdUnitPrice', 'stdNetPrice', 'stdAmount']);
 
 export const STANDARD_TEMPLATE_TITLE = 'Standard';
+
+/**
+ * ── DIE VORLAGE DER PRODUKTION (30.09.2026, Vorgabe Samet) ────────────────
+ * «Fiyat talebi şablonu: malzeme grubu, ürün kodu (boş olabilir), ürün adı,
+ *  birim, miktar. Siparişte standart şablon: malzeme grubu, ürün kodu (boş
+ *  olabilir), ürün adı, birim, miktar, birim fiyat, indirim, satır tutarı —
+ *  en altta varsa KDV.» NUR die Belege der BOM tragen sie (der Stok behält
+ * seine Standardvorlage). Die Spalten ohne Zuordnung (Gruppe, Code, Einheit)
+ * sind eigene Angaben je Position; ihre Titel übersetzt die Oberfläche
+ * (`utils/standardOrderColumns.ts`), die Einheit ebenso.
+ */
+export const PRODUCTION_GROUP_KEY = 'stdGroup';
+export const PRODUCTION_CODE_KEY = 'stdProductCode';
+export const PRODUCTION_UNIT_KEY = 'stdUnit';
+
+export const PRODUCTION_REQUEST_COLUMNS: StandardColumn[] = [
+    { key: PRODUCTION_GROUP_KEY, name: 'Materialgruppe', type: 'text', label: null, width: 150 },
+    { key: PRODUCTION_CODE_KEY, name: 'Produktcode', type: 'text', label: null, width: 150 },
+    { key: 'stdName', name: 'Produktname', type: 'text', label: 'productName', width: 260 },
+    { key: PRODUCTION_UNIT_KEY, name: 'Einheit', type: 'text', label: null, width: 90 },
+    { key: 'stdQty', name: 'Menge', type: 'number', label: 'quantity', width: 100 },
+];
+
+export const PRODUCTION_ORDER_COLUMNS: StandardColumn[] = [
+    ...PRODUCTION_REQUEST_COLUMNS,
+    { key: 'stdUnitPrice', name: 'Einzelpreis', type: 'number', label: 'grossPrice', width: 120 },
+    { key: 'stdDiscount', name: 'Rabatt', type: 'number', label: 'discount', width: 100 },
+    { key: 'stdLineTotal', name: 'Betrag', type: 'number', label: 'total', width: 130 },
+];
+
+/** Die Spalten einer BOM-Anfrage/-Bestellung als Schnappschuss (`tableColumns`). */
+export const productionColumnsJson = (documentType: StandardDocumentType): string =>
+    JSON.stringify((documentType === 'PRICE_REQUEST' ? PRODUCTION_REQUEST_COLUMNS : PRODUCTION_ORDER_COLUMNS)
+        .map(({ key, name, label, type }) => ({ key, name, label, type })));
+
+/** Was die Vorlage der Produktion ausblendet: nie den ERP-Code, bei Anfragen keine Preise. */
+export const productionHiddenKeysJson = (documentType: StandardDocumentType): string =>
+    JSON.stringify(documentType === 'PRICE_REQUEST' ? ['code', 'priceGross', 'discount'] : ['code']);
 
 export const standardColumnsOf = (documentType: StandardDocumentType): StandardColumn[] =>
     documentType === 'PRICE_REQUEST' ? STANDARD_REQUEST_COLUMNS : STANDARD_ORDER_COLUMNS;

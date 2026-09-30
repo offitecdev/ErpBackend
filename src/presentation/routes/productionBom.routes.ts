@@ -421,6 +421,28 @@ router.post('/bom/boms/:bomId/revision/approve', VIEW, MODULE, AVAILABLE, (req, 
 
 /**
  * @swagger
+ * /production/bom/boms/{bomId}/revision/submit:
+ *   post:
+ *     tags: [Production]
+ *     summary: "BOM-Revision zur Freigabe einreichen (die Administratorrolle wird benachrichtigt)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/bom/boms/:bomId/revision/submit', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.submitRevision(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/boms/{bomId}/revision/reject:
+ *   post:
+ *     tags: [Production]
+ *     summary: "Eingereichte BOM-Revision zurückweisen (nur Administratorrolle)"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/bom/boms/:bomId/revision/reject', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.rejectRevision(req, res, next));
+
+/**
+ * @swagger
  * /production/bom/boms/{bomId}/revisions/{number}:
  *   get:
  *     tags: [Production]

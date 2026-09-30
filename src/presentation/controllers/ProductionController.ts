@@ -55,6 +55,15 @@ export class ProductionController {
 
     async overview(req: Request, res: Response, next: NextFunction) {
         try {
+            if (req.query.view === 'list') {
+                res.json(await productionModule.overview.list(tenantOf(req), {
+                    page: Number(req.query.page) || 1,
+                    pageSize: Number(req.query.pageSize) || 20,
+                    search: String(req.query.search ?? ''),
+                    ...(req.query.kind === 'PROJECT' || req.query.kind === 'DELIVERY' ? { kind: req.query.kind } : {}),
+                }));
+                return;
+            }
             res.json(await productionModule.overview.execute(tenantOf(req)));
         } catch (error) { fail(res, next, error); }
     }
@@ -62,6 +71,12 @@ export class ProductionController {
     async project(req: Request, res: Response, next: NextFunction) {
         try {
             res.json(await productionModule.project.execute(tenantOf(req), String(req.params.id)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async deviceHeader(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionModule.devices.header(tenantOf(req), String(req.params.id), String(req.params.deviceId)));
         } catch (error) { fail(res, next, error); }
     }
 

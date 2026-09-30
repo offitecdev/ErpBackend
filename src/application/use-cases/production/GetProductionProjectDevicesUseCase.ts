@@ -87,6 +87,24 @@ export class GetProductionProjectDevicesUseCase {
         private sources: IProductionProjectSourceReader,
     ) {}
 
+    async header(tenantId: string, projectId: string, deviceId: string) {
+        const [project, items, orders] = await Promise.all([
+            this.projects.getProject(tenantId, projectId),
+            this.projects.listItems(tenantId, { projectIds: [projectId], itemIds: [deviceId] }),
+            this.projects.listOrders(tenantId, [projectId]),
+        ]);
+        const device = items.find((item) => item.id === deviceId && item.isActive);
+        if (!project || !device) throw productionError('NOT_FOUND', 'Gerät nicht gefunden.', { status: 404 });
+        const order = orders.find((entry) => entry.id === device.productionOrderId);
+        return {
+            project: { id: project.id, projectNumber: project.projectNumber, projectName: project.projectName },
+            device: {
+                id: device.id, name: device.name, positionNumber: device.positionNumber, articleCode: device.articleCode,
+                quantity: device.quantity, unit: device.unit, salesOrderNumber: order?.orderNumber ?? null, orderKind: order?.orderKind ?? null,
+            },
+        };
+    }
+
     async execute(tenantId: string, projectId: string): Promise<ProductionProjectDevicesDto> {
         const project = await this.projects.getProject(tenantId, projectId);
         if (!project) throw productionError('PROJECT_NOT_FOUND', 'Produktionsprojekt nicht gefunden.', { status: 404 });

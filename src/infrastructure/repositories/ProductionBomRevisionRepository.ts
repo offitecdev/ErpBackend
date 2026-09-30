@@ -181,14 +181,15 @@ const toPurchaseRevisionLight = (row: Prisma.ProductionBomPurchaseRevisionGetPay
 const isUniqueViolation = (error: unknown): boolean => (error as { code?: string })?.code === 'P2002';
 
 export class PrismaBomRevisionRepository implements IBomRevisionRepository {
-    async listForBoms(tenantId: string, bomIds: string[]): Promise<BomRevision[]> {
+    async listForBoms(tenantId: string, bomIds: string[], options: { draftOnly?: boolean; omitLines?: boolean } = {}): Promise<BomRevision[]> {
         const unique = [...new Set(bomIds.filter(Boolean))];
         if (!unique.length) return [];
         const rows = await prisma.productionBomRevision.findMany({
-            where: { tenantId, bomId: { in: unique } },
+            where: { tenantId, bomId: { in: unique }, ...(options.draftOnly ? { status: 'DRAFT' } : {}) },
+            ...(options.omitLines ? { omit: { lines: true as const } } : {}),
             orderBy: [{ bomId: 'asc' }, { revision: 'asc' }],
         });
-        return rows.map(toRevision);
+        return rows.map((row) => toRevision({ ...row, lines: 'lines' in row ? row.lines : null }));
     }
 
     async listApproved(tenantId: string, limit: number): Promise<BomRevision[]> {

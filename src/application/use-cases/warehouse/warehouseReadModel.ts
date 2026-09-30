@@ -12,6 +12,7 @@ import type {
     WarehouseProjectOption,
     WarehouseSerial,
 } from '../../../domain/entities/Warehouse';
+import { missingForComplete } from '../../../domain/services/warehouse';
 import { erpPrefix, GS1_INTERNAL_PREFIX, nextErpCode } from '../../../domain/services/warehouseCodes';
 
 /**
@@ -35,14 +36,23 @@ export interface WarehouseProductDto {
     materialGroup: WarehouseGroupRefDto | null;
     name: string;
     brand: string | null;
+    /** «Üretici kodu» in der Oberfläche (30.09.2026) — nie gedruckt. */
     modelNumber: string | null;
+    /** «Ürün kodu» — steht im PDF der Preisanfrage und der Bestellung. */
+    productCode: string | null;
+    /** PCS | M | KG | SET | PACK — leer bei älteren Karten. */
+    unit: string | null;
+    /** Taslak — es fehlt, was `missing` nennt. */
+    isDraft: boolean;
+    /** Was einer fertigen Karte fehlt (leer = fertig): name · unit · supplier · supplierEmail. */
+    missing: string[];
     /** Der erste Lieferant (für Liste und Sortierung) — oder keiner. */
     supplier: { id: string | null; name: string } | null;
     /**
      * Alle Lieferanten, jeder mit seinem Barcode des Produkts (dritter und
      * vierter Durchgang). `id` fehlt bei einem frei geschriebenen Namen.
      */
-    suppliers: Array<{ id: string | null; name: string; barcode: string | null }>;
+    suppliers: Array<{ id: string | null; name: string; barcode: string | null; email: string | null }>;
     description: string | null;
     quantity: number;
     purchasePrice: number | null;
@@ -112,10 +122,14 @@ export const productDto = (product: WarehouseProduct, options: { preview?: boole
         name: product.name,
         brand: product.brand,
         modelNumber: product.modelNumber,
+        productCode: product.productCode,
+        unit: product.unit,
+        isDraft: product.isDraft,
+        missing: missingForComplete(product),
         supplier: product.suppliers[0]
             ? { id: product.suppliers[0].supplierId, name: product.suppliers[0].name }
             : product.supplierName ? { id: product.supplierId, name: product.supplierName } : null,
-        suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, barcode: entry.barcode })),
+        suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, barcode: entry.barcode, email: entry.email })),
         description,
         quantity: product.quantity,
         purchasePrice: product.purchasePrice,

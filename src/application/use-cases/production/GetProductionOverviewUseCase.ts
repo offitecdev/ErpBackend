@@ -4,6 +4,7 @@ import type {
     IProductionSettingsRepository,
     IPurchaseOrderReader,
     ITenantDirectory,
+    ProductionOrderListFilter,
 } from '../../../domain/repositories/IProductionRepository';
 import { sumCostFigures, type CostFigures } from '../../../domain/services/production';
 import {
@@ -43,6 +44,14 @@ export class GetProductionOverviewUseCase {
         private settings: IProductionSettingsRepository,
         private tenants: ITenantDirectory,
     ) {}
+
+    async list(tenantId: string, filter: ProductionOrderListFilter) {
+        const [page, settings] = await Promise.all([
+            this.projects.listOrderPage(tenantId, filter),
+            this.settings.get(tenantId),
+        ]);
+        return { ...page, lastSyncedAt: settings?.lastSyncedAt?.toISOString() ?? null };
+    }
 
     async execute(tenantId: string): Promise<ProductionOverviewDto> {
         const [projects, settings, tenants] = await Promise.all([

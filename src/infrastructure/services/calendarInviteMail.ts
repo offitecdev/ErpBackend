@@ -1,12 +1,20 @@
+import { BRAND_NAVY, BRAND_RED, BRAND_TASK } from "./mailBrand";
 import {
-    BRAND_ICON_APPOINTMENT_CID,
-    BRAND_ICON_TASK_CID,
-    BRAND_LOGO_CID,
-    BRAND_NAVY,
-    BRAND_RED,
-    BRAND_TASK,
-    BRAND_WAVE_CID,
-} from "./mailBrand";
+    cardClosing,
+    cardFileType,
+    cardGreeting,
+    cardGrid,
+    cardHeader,
+    cardHero,
+    cardNote,
+    cardPage,
+    cardTable,
+    cardTicket,
+    cardWave,
+    mailEscape,
+    mailNl2br,
+    type CardTableRow,
+} from "./mailCardKit";
 import type { CalendarMethod } from "./calendarInvite";
 
 /**
@@ -51,14 +59,6 @@ export type InviteAudience = "CUSTOMER" | "TEAM";
  * haengen bleibt — darum unterscheidet sich die Aufgabe genau darin.
  */
 export type InviteKind = "APPOINTMENT" | "MEETING" | "TASK";
-
-/**
- * Das Zeichen im Kopf der Karte. Termin und Besprechung teilen sich das
- * Kalenderblatt — beide sind ein Eintrag im Kalender; nur die Aufgabe hat ihr
- * eigenes Zeichen.
- */
-const kindIconCid = (kind: InviteKind) =>
-    kind === "TASK" ? BRAND_ICON_TASK_CID : BRAND_ICON_APPOINTMENT_CID;
 
 export interface InviteCardInput {
     method: CalendarMethod;
@@ -166,6 +166,8 @@ interface InviteWords {
     scheduleLeadTeam: string;
     scheduleLeadCustomer: string;
     attachments: string;
+    /** Kopfzeile der Angaben-Tabelle («Bilgiler»). */
+    details: string;
     autoNotice: string;
     /** Die Aufgabe ist keine Einladung — sie bekommt den nuechternen Satz. */
     autoNoticeTask: string;
@@ -217,6 +219,7 @@ const WORDS: Record<InviteLanguage, InviteWords> = {
         scheduleLeadTeam: "Ihr Einsatzplan sieht wie folgt aus:",
         scheduleLeadCustomer: "wir haben folgende Termine für Sie eingetragen:",
         attachments: "Checklisten im Anhang",
+        details: "Angaben",
         autoNotice: "Diese Einladung wurde automatisch vom Offitec Control Center erstellt.",
         autoNoticeTask: "Diese Nachricht wurde automatisch vom Offitec Control Center erstellt.",
         replyNotice: "Antworten Sie mit „Annehmen“ oder „Ablehnen“ in Ihrem Kalenderprogramm.",
@@ -260,6 +263,7 @@ const WORDS: Record<InviteLanguage, InviteWords> = {
         scheduleLeadTeam: "your assignment schedule is as follows:",
         scheduleLeadCustomer: "we have scheduled the following appointments for you:",
         attachments: "Checklists attached",
+        details: "Details",
         autoNotice: "This invitation was created automatically by Offitec Control Center.",
         autoNoticeTask: "This message was created automatically by Offitec Control Center.",
         replyNotice: "Reply with “Accept” or “Decline” in your calendar app.",
@@ -303,6 +307,7 @@ const WORDS: Record<InviteLanguage, InviteWords> = {
         scheduleLeadTeam: "görev planınız şu şekildedir:",
         scheduleLeadCustomer: "sizin için aşağıdaki randevuları planladık:",
         attachments: "Ekteki kontrol listeleri",
+        details: "Bilgiler",
         autoNotice: "Bu davet Offitec Control Center tarafından otomatik olarak oluşturuldu.",
         autoNoticeTask: "Bu mesaj Offitec Control Center tarafından otomatik olarak oluşturuldu.",
         replyNotice: "Takvim uygulamanızda “Kabul et” veya “Reddet” ile yanıtlayın.",
@@ -338,15 +343,6 @@ export const inviteWords = (language: InviteLanguage = "de"): InviteWords => WOR
 const TZ = "Europe/Zurich";
 /** Datums- und Zeitformat je Sprache; die Zeitzone bleibt immer die des Hauses. */
 const LOCALES: Record<InviteLanguage, string> = { de: "de-CH", en: "en-GB", tr: "tr-TR" };
-
-const escapeHtml = (value: string) =>
-    String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
-const nl2br = (value: string) => escapeHtml(value).replace(/\r?\n/g, "<br />");
 
 const fmt = (date: Date, options: Intl.DateTimeFormatOptions, language: InviteLanguage = "de") =>
     new Intl.DateTimeFormat(LOCALES[language], { timeZone: TZ, ...options }).format(date);
@@ -487,55 +483,20 @@ export const buildInviteText = (input: InviteCardInput): string => {
     ].join("\n");
 };
 
-const FONT = "font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;";
-
 /**
- * KARTENBREITE (19.08.2026 auf Wunsch verkleinert: vorher 660).
+ * HTML-Fassung — DIE KARTE (30.09.2026, Vorgabe Samet mit dem Bild der
+ * Augustkarte: «bunun gibi olsun ama biraz daha büyük, kart daha düzenli,
+ * tablolar renkli, sütunları ayrı renk, dalga aynı kalsın, premium»).
  *
- * 520 Pixel sind knapp die Breite eines Lesefensters ohne Zoom und schmal
- * genug, dass die Karte auch am grossen Bildschirm als Karte wirkt und nicht
- * als Seite. `width="100%"` + `max-width` macht sie auf dem Handy schmaler;
- * Outlook (Word-Renderer) kennt kein max-width und bekommt dieselbe Spalte
- * darum zusaetzlich in einem bedingten Kommentar mit fester Breite.
- */
-const WIDTH = 520;
-const MSO_OPEN = `<!--[if mso]><table role="presentation" width="${WIDTH}" cellpadding="0" cellspacing="0" border="0" align="center"><tr><td><![endif]-->`;
-const MSO_CLOSE = '<!--[if mso]></td></tr></table><![endif]-->';
-
-/**
- * Eine Zeile der Angaben: Bezeichnung links, Wert rechts, Haarlinie darunter.
- * Die Bezeichnungsspalte ist 96 Punkte BREIT, aber nicht gedeckelt: ein langes
- * Wort ("ANSPRECHPARTNER", "KATILIMCILAR") schiebt sie auf, statt in den Wert
- * hineinzulaufen. In einer Tabelle gilt die Breite fuer alle Zeilen, die Karte
- * bleibt also ausgerichtet.
- * Enger gesetzt als frueher (9 statt 13 Pixel Luft, 15 statt 16 Pixel Schrift) —
- * die Angaben sollen ein Block sein, keine Liste, durch die man scrollt.
- */
-const detailRow = (label: string, value: string, last: boolean) => `
-    <tr>
-        <td style="${FONT}padding:9px 14px 9px 0;width:96px;white-space:nowrap;vertical-align:top;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#8b93a7;${last ? "" : "border-bottom:1px solid #eef1f7;"}">${escapeHtml(label)}</td>
-        <td style="${FONT}padding:9px 0;vertical-align:top;font-size:15px;line-height:1.4;color:#0f172a;${last ? "" : "border-bottom:1px solid #eef1f7;"}">${nl2br(value)}</td>
-    </tr>`;
-
-/**
- * HTML-Fassung: EINE schmale, mittig stehende Karte mit runden Ecken.
- *
- * Aufbau von oben nach unten:
- *   Briefkopf  — Logo und Absender.
- *   Wellenband — die Welle der Anmeldeseite ueber die GANZE Kartenbreite
- *                (`cid:`-Bild, siehe mailWaveAsset.ts). Damit traegt die
- *                Terminmail dasselbe Zeichen wie der Anmeldebildschirm.
- *   Kopf       — Kicker und Titel, mittig.
- *   Termin     — Datum und Zeit als EIN kompakter, mittiger Block mit runden
- *                Ecken (bis 19.08.2026 war das ein grosses Kalenderblatt neben
- *                einer zweispaltigen Zeile — zu gross fuer die Sache).
- *   Anrede     — Gruss und Satz, linksbuendig: Fliesstext liest sich mittig
- *                schlecht, nur die Angaben stehen mittig.
- *   Angaben    — Ort, Projekt, Kunde, Team.
- *   Notizen / Checklisten / Hinweis / Gruss.
- *
- * Runde Ecken zeigt Outlook Desktop nicht (Word-Renderer); die Karte bleibt
- * dort eckig, aber vollstaendig lesbar.
+ * Von oben nach unten (Baukasten: mailCardKit.ts):
+ *   Kopf (Logo, Absender, Rubrik) · Welle · Zeichen · Stichwort · Titel,
+ *   das Datum als Ticket — beim mehrtägigen Einsatz stattdessen der
+ *   Einsatzplan als farbige Tabelle (Tag · Datum · Zeit),
+ *   Anrede und Satz, die Angaben als farbige Tabelle, die Notiz bernstein,
+ *   die Checklisten als Tabelle, Hinweis und Gruss;
+ *   unter der Karte der automatische Hinweis.
+ * Runde Ecken, Verläufe und Schatten zeigt Outlook Desktop nicht; die Karte
+ * bleibt dort eckig, aber vollständig lesbar.
  */
 export const buildInviteHtml = (input: InviteCardInput): string => {
     const kind = input.kind ?? "APPOINTMENT";
@@ -544,177 +505,80 @@ export const buildInviteHtml = (input: InviteCardInput): string => {
     const tone = toneOf(input.method, input.sequence, input.audience, kind, language);
     const cancelled = input.method === "CANCEL";
     const days = scheduleDays(input);
-    /* EIN Datum, in der Reihenfolge der Sprache: Deutsch «Dienstag, 18. August
-       2026», Tuerkisch «19 Eylul 2026 Cumartesi» — zusammengesetzt stuende der
-       Wochentag dort falsch vorn (16.09.2026, tuerkische Aufgabenkarte). */
-    const dateFull = formatInviteDate(input.start, language);
-    const time = formatInviteTime(input.start, input.end, language);
     const message = input.message?.trim();
     const notes = input.notes?.trim();
     const attachmentNames = (input.attachmentNames || []).filter((name) => Boolean(name && name.trim()));
+    const greeting = `${words.greeting}${input.greetingName?.trim() ? ` ${input.greetingName.trim()}` : ""},`;
+    const lead = message
+        ? mailNl2br(message)
+        : mailEscape(days
+            ? (input.audience === "TEAM" ? words.scheduleLeadTeam : words.scheduleLeadCustomer)
+            : tone.lead);
 
-    const rows: InviteDetail[] = [
+    const rows: CardTableRow[] = [
         ...(input.location ? [{ label: words.place, value: input.location }] : []),
         ...input.details.filter((row) => row.value && row.value.trim()),
     ];
 
-    /** Notiz- und Checklistenblock teilen sich dieselbe Form, nur die Farbe trennt sie. */
-    const softBox = (accent: string, background: string, inner: string) =>
-        `<div style="margin-top:14px;padding:11px 14px;background:${background};border-left:3px solid ${accent};border-radius:10px;">${inner}</div>`;
+    const blocks: string[] = [
+        cardHeader(words.brand, tone.label),
+        cardWave(),
+        cardHero({
+            icon: kind === "TASK" ? "TASK" : "APPOINTMENT",
+            accent: tone.accent,
+            kicker: tone.kicker,
+            title: input.summary,
+            strike: cancelled,
+        }),
+    ];
+    if (days) {
+        /* DER EINSATZPLAN (24.08.2026): eine Zeile je Tag, jede Spalte in
+           ihrer Farbe — die Nummer hell-marineblau, das Datum weiss, die
+           Zeiten dieses Tages rot getönt. */
+        blocks.push(cardGrid({
+            head: [{ text: words.schedule, colspan: 2 }, { text: words.time }],
+            rows: days.map((day, index) => [
+                String(index + 1),
+                formatInviteDate(day.start, language),
+                formatScheduleTime(day.start, day.end, language),
+            ]),
+            tones: ["navy", "plain", "red"],
+            widths: ["20px", "", ""],
+            nowrap: [2],
+        }));
+    } else if (!input.hideDate) {
+        /* Die Aufgabe hat nur einen Fälligkeitstag, keine Zeitspanne; ohne
+           Fälligkeit fällt das Ticket ganz weg — ein erfundenes Datum wäre
+           schlimmer als keins. */
+        blocks.push(cardTicket({
+            accent: tone.accent,
+            month: fmt(input.start, { month: "short" }, language).replace(/\.$/, "").toLocaleUpperCase(LOCALES[language]),
+            day: fmt(input.start, { day: "numeric" }, language),
+            label: kind === "TASK" ? words.due : null,
+            date: formatInviteDate(input.start, language),
+            time: kind === "TASK" ? null : formatInviteTime(input.start, input.end, language),
+        }));
+    }
+    blocks.push(cardGreeting(greeting, lead));
+    blocks.push(cardTable(rows, { title: words.details }));
+    if (notes) blocks.push(cardNote(mailNl2br(notes), "amber"));
+    if (attachmentNames.length) {
+        blocks.push(cardGrid({
+            head: [{ text: words.attachments, colspan: 2 }],
+            rows: attachmentNames.map((name) => [cardFileType(name), name]),
+            tones: ["red", "plain"],
+            widths: ["40px", ""],
+        }));
+    }
+    blocks.push(cardClosing(tone.footer, words.regards, words.brand));
 
-    /* DER EINSATZPLAN (24.08.2026). Beim mehrtägigen Einsatz steht an der
-       Stelle des einen Datumsblocks eine ZEILE JE TAG: links die Nummer des
-       Tages ("Tag 2"), rechts Wochentag, Datum und die Zeiten DIESES Tages.
-       Eine Tabelle, keine Liste — Outlooks Word-Renderer setzt Listen und
-       Abstände unzuverlässig, Tabellenzeilen überall gleich. */
-    const scheduleBlock = days
-        ? `
-    <tr><td align="center" style="padding:16px 26px 0;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6fb;border:1px solid #e6eaf4;border-radius:14px;">
-        <tr><td style="${FONT}padding:11px 16px 4px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8b93a7;">${escapeHtml(words.schedule)}</td></tr>
-        ${days.map((day, index) => `
-        <tr><td style="${FONT}padding:0 16px;">
-            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-            <tr>
-                <td style="${FONT}padding:8px 12px 8px 0;width:52px;white-space:nowrap;vertical-align:top;font-size:12px;font-weight:700;color:${tone.accent};${index === days.length - 1 ? "" : "border-bottom:1px solid #e2e7f3;"}">(${index + 1})</td>
-                <td style="${FONT}padding:8px 0;vertical-align:top;font-size:14px;line-height:1.45;color:#0f172a;${index === days.length - 1 ? "" : "border-bottom:1px solid #e2e7f3;"}">
-                    ${escapeHtml(fmt(day.start, { weekday: "long" }, language))}, ${escapeHtml(fmt(day.start, { day: "numeric", month: "long", year: "numeric" }, language))}
-                    <span style="display:block;font-weight:700;color:#0f172a;">${escapeHtml(formatScheduleTime(day.start, day.end, language))}</span>
-                </td>
-            </tr>
-            </table>
-        </td></tr>`).join("")}
-        <tr><td style="height:8px;line-height:8px;font-size:0;">&nbsp;</td></tr>
-        </table>
-    </td></tr>`
-        : "";
-
-    return `<!DOCTYPE html>
-<html lang="${language}">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="color-scheme" content="light" />
-<title>${escapeHtml(input.summary)}</title>
-</head>
-<!-- WEISSER GRUND (19.08.2026, Vorgabe Samet: kein blaeulicher Hintergrund
-     hinter der Karte). Die Karte hebt sich jetzt allein durch ihre Kontur und
-     den weichen Schatten ab. Die Farbe steht doppelt (body UND Tabelle): manche
-     Programme lesen das eine, manche das andere. -->
-<body style="margin:0;padding:0;background:#ffffff;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
-<tr><td align="center" style="padding:28px 16px 36px;">
-
-    ${MSO_OPEN}
-    <!-- Die Karte selbst: mittig, schmal, runde Ecken, ruhiger Schatten. -->
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" align="center" style="max-width:${WIDTH}px;margin:0 auto;background:#ffffff;border-radius:18px;border:1px solid #e1e5f0;box-shadow:0 10px 30px rgba(31,38,84,.10);">
-
-    <!-- Briefkopf: Logo und Absender. -->
-    <tr><td style="padding:20px 24px 16px;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr>
-            <td style="vertical-align:middle;width:36px;">
-                <img src="cid:${BRAND_LOGO_CID}" width="34" height="34" alt="" style="display:block;width:34px;height:34px;border:0;border-radius:17px;" />
-            </td>
-            <td style="${FONT}vertical-align:middle;padding-left:11px;">
-                <div style="font-size:14.5px;font-weight:700;color:${BRAND_NAVY};letter-spacing:.01em;">${escapeHtml(words.brand)}</div>
-                <div style="font-size:9.5px;color:#98a0b5;letter-spacing:.14em;text-transform:uppercase;margin-top:2px;">${escapeHtml(tone.label)}</div>
-            </td>
-        </tr>
-        </table>
-    </td></tr>
-
-    <!-- Die Welle der Anmeldeseite, ueber die GANZE Kartenbreite. Kein
-         Innenabstand: das Band soll die Karte fuellen, nicht in ihr schweben.
-         Die Prozentbreite traegt es durch jede Fensterbreite; die feste Breiten-
-         angabe im Attribut ist fuer Outlook, das kein Prozent auf Bildern mag. -->
-    <tr><td style="padding:0;font-size:0;line-height:0;">
-        <img src="cid:${BRAND_WAVE_CID}" width="${WIDTH}" height="62" alt="" style="display:block;width:100%;max-width:${WIDTH}px;height:auto;border:0;" />
-    </td></tr>
-
-    <!-- DAS ZEICHEN (19.08.2026): Kalenderblatt beim Termin, Haken im Kreis
-         bei der Aufgabe — weiss auf der Akzentflaeche. Die FLAECHE traegt die
-         Farbe, nicht das Bild: background-color auf einer Zelle ist das
-         Einzige, worauf in Outlook Verlass ist. Runde Ecken zeigt Outlook
-         nicht; dort steht ein Quadrat, und das ist in Ordnung. -->
-    <tr><td align="center" style="padding:18px 26px 0;">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
-        <tr><td align="center" width="52" height="52" bgcolor="${tone.accent}" style="width:52px;height:52px;background:${tone.accent};border-radius:16px;text-align:center;vertical-align:middle;font-size:0;line-height:0;">
-            <img src="cid:${kindIconCid(kind)}" width="28" height="28" alt="" style="display:inline-block;width:28px;height:28px;border:0;" />
-        </td></tr>
-        </table>
-    </td></tr>
-
-    <!-- Kopf: Kicker und Titel, mittig. -->
-    <tr><td align="center" style="padding:14px 26px 0;">
-        <div style="${FONT}font-size:10.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:${tone.accent};">${escapeHtml(tone.kicker)}</div>
-        <div style="${FONT}font-size:20px;line-height:1.3;font-weight:700;color:${BRAND_NAVY};margin-top:9px;${cancelled ? "text-decoration:line-through;color:#64748b;" : ""}">${escapeHtml(input.summary)}</div>
-    </td></tr>
-
-    <!-- Termin: EIN kompakter, mittiger Block. Die Aufgabe zeigt darin ihren
-         Fälligkeitstag — sie hat keine Zeitspanne. Ohne Fälligkeit fällt der
-         Block ganz weg. -->
-    ${scheduleBlock}
-    ${input.hideDate || days ? "" : `
-    <tr><td align="center" style="padding:16px 26px 0;">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;background:#f4f6fb;border:1px solid #e6eaf4;border-radius:14px;">
-        <tr><td align="center" style="${FONT}padding:12px 26px;">
-            ${kind === "TASK"
-                ? `<div style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8b93a7;">${escapeHtml(words.due)}</div>`
-                : ""}
-            <div style="font-size:15px;font-weight:700;color:#0f172a;${kind === "TASK" ? "margin-top:3px;" : ""}">${escapeHtml(dateFull)}</div>
-            ${kind === "TASK"
-                ? ""
-                : `<div style="font-size:16px;font-weight:700;color:${tone.accent};margin-top:3px;letter-spacing:.01em;">${escapeHtml(time)}</div>`}
-        </td></tr>
-        </table>
-    </td></tr>`}
-
-    <!-- Anrede: Fliesstext bleibt linksbuendig. -->
-    <tr><td style="padding:20px 26px 0;">
-        <div style="${FONT}font-size:14.5px;line-height:1.6;color:#475569;">${escapeHtml(words.greeting)}${input.greetingName?.trim() ? ` ${escapeHtml(input.greetingName.trim())}` : ""}</div>
-        <div style="${FONT}font-size:14.5px;line-height:1.6;color:#475569;margin-top:2px;">${message
-            ? nl2br(message)
-            : escapeHtml(days
-                ? (input.audience === "TEAM" ? words.scheduleLeadTeam : words.scheduleLeadCustomer)
-                : tone.lead)}</div>
-    </td></tr>
-
-    <!-- Die Angaben zum Termin. -->
-    <tr><td style="padding:12px 26px 0;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        ${rows.map((row, index) => detailRow(row.label, row.value, index === rows.length - 1)).join("")}
-        </table>
-        ${notes
-            ? softBox("#f59e0b", "#fffbeb", `<div style="${FONT}font-size:14px;line-height:1.5;color:#3f3f46;">${nl2br(notes)}</div>`)
-            : ""}
-        ${attachmentNames.length
-            ? softBox(BRAND_NAVY, "#f1f5fd",
-                `<div style="${FONT}font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8b93a7;">${escapeHtml(words.attachments)}</div>` +
-                attachmentNames.map((name) => `<div style="${FONT}font-size:14px;line-height:1.5;color:#0f172a;margin-top:4px;">${escapeHtml(name)}</div>`).join(""))
-            : ""}
-    </td></tr>
-
-    <!-- Hinweis und Gruss -->
-    <tr><td style="padding:16px 26px 24px;">
-        <div style="${FONT}font-size:12px;line-height:1.55;color:#8b93a7;padding-top:14px;border-top:1px solid #eef1f7;">${escapeHtml(tone.footer)}</div>
-        <div style="${FONT}font-size:14.5px;line-height:1.6;color:#0f172a;margin-top:16px;">${escapeHtml(words.regards)}<br /><strong>${escapeHtml(words.brand)}</strong></div>
-    </td></tr>
-    </table>
-    ${MSO_CLOSE}
-
-    ${MSO_OPEN}
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" align="center" style="max-width:${WIDTH}px;margin:0 auto;">
-    <tr><td align="center" style="${FONT}padding:16px 20px 0;font-size:10.5px;line-height:1.7;color:#a3abbd;">
-        ${kind === "TASK"
-            ? escapeHtml(words.autoNoticeTask)
-            : `${escapeHtml(words.autoNotice)}<br />${escapeHtml(words.replyNotice)}`}
-    </td></tr>
-    </table>
-    ${MSO_CLOSE}
-
-</td></tr>
-</table>
-</body>
-</html>`;
+    return cardPage({
+        lang: language,
+        title: input.summary,
+        preheader: `${tone.kicker} · ${input.summary}`,
+        rows: blocks,
+        below: kind === "TASK"
+            ? [words.autoNoticeTask]
+            : [words.autoNotice, words.replyNotice],
+    });
 };

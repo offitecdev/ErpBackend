@@ -2,8 +2,7 @@ import { nanoid } from "nanoid";
 import prisma from "../database/prisma.client";
 import { dispatchMail } from "./outlook/MailDispatchService";
 import { buildInviteHtml, buildInviteText, inviteWords, type InviteDetail } from "./calendarInviteMail";
-import { brandLogoInline, brandWaveInline } from "./mailBrand";
-import { kindIconInline } from "./mailKindIcons";
+import { mailInlineImages } from "./mailCardKit";
 import { getMailTenantId, getPersonnelTenantScope, employeeScopeWhere } from "../../presentation/controllers/serviceTenantScope";
 import { requestTypeOf, type RequestType } from "../../shared/personnel";
 
@@ -240,7 +239,7 @@ const sendOne = async (
             text: buildInviteText(card),
             html: buildInviteHtml(card),
             replyTo: settings.replyTo || null,
-            inlineImages: [brandLogoInline(), brandWaveInline(), kindIconInline("TASK")],
+            inlineImages: mailInlineImages("TASK"),
         },
         // Interne Post — sie gehört nicht in den Schriftverkehr eines Kunden.
         { record: null },

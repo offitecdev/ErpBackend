@@ -1,6 +1,8 @@
 import {
     WAREHOUSE_CURRENCIES,
+    WAREHOUSE_UNITS,
     type WarehouseCurrency,
+    type WarehouseUnit,
     type WarehouseProduct,
     type WarehouseProductFields,
     type WarehouseSortKey,
@@ -76,7 +78,11 @@ export type WarehouseErrorCode =
     | 'TOO_MANY_SUPPLIERS'
     | 'MANUFACTURER_BARCODE_TAKEN'
     // 28.09.2026: «Ürün ekle» bucht den Wareneingang — die Rücknahme passt nicht zur Buchung.
-    | 'RECEIPT_UNDO_INVALID';
+    | 'RECEIPT_UNDO_INVALID'
+    // 30.09.2026: Einheit, E-Mail je Lieferant, Taslak (Pflichtangaben einer fertigen Karte).
+    | 'UNIT_INVALID'
+    | 'SUPPLIER_EMAIL_INVALID'
+    | 'PRODUCT_INCOMPLETE';
 
 export type WarehouseError = Error & {
     code: WarehouseErrorCode;
@@ -124,7 +130,9 @@ export const WAREHOUSE_LIMITS = {
     name: 255,
     brand: 120,
     modelNumber: 120,
+    productCode: 120,
     supplierName: 191,
+    supplierEmail: 191,
     description: 20_000,
     barcode: 128,
     /** Auch der Barcode je Lieferant. */
@@ -231,6 +239,94 @@ export const parseCurrency = (raw: unknown): WarehouseCurrency | null => {
     return value as WarehouseCurrency;
 };
 
+/** Die Wörter, mit denen eine Einheit getippt oder importiert wird (drei Sprachen). */
+const UNIT_ALIASES: Record<string, WarehouseUnit> = {
+    PCS: 'PCS', PC: 'PCS', STK: 'PCS', 'STK.': 'PCS', STÜCK: 'PCS', STUECK: 'PCS', ADET: 'PCS', AD: 'PCS', PIECE: 'PCS', PIECES: 'PCS', EA: 'PCS',
+    M: 'M', MT: 'M', METER: 'M', METRE: 'M', LFM: 'M',
+    KG: 'KG', KILO: 'KG', KILOGRAMM: 'KG', KILOGRAM: 'KG',
+    SET: 'SET', SATZ: 'SET', TAKIM: 'SET',
+    PACK: 'PACK', PAKET: 'PACK', PACKUNG: 'PACK', PKG: 'PACK', PCK: 'PACK',
+};
+
+/**
+ * Die Einheit einer Karte (30.09.2026): PCS | M | KG | SET | PACK — auch
+ * «Adet», «Stk», «m», «Paket» … werden verstanden. Leer = keine.
+ */
+export const parseUnit = (raw: unknown): WarehouseUnit | null => {
+    if (raw === null || raw === undefined) return null;
+    const value = String(raw).trim().toLocaleUpperCase('de-CH');
+    if (!value) return null;
+    if ((WAREHOUSE_UNITS as readonly string[]).includes(value)) return value as WarehouseUnit;
+    const alias = UNIT_ALIASES[value] ?? UNIT_ALIASES[value.replace(/\.$/, '')];
+    if (alias) return alias;
+    throw warehouseError('UNIT_INVALID', 'Unbekannte Einheit.', { params: { unit: value.slice(0, 12) } });
+};
+
+/** Eine E-Mail-Adresse, wie sie in einen Kopf einer Mail darf — sonst ein Fehler mit dem Lieferanten. */
+const EMAIL_RE = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]{2,}$/;
+export const parseSupplierEmail = (raw: unknown, supplierName: string): string | null => {
+    const value = cleanCode(raw, 'supplierEmail', WAREHOUSE_LIMITS.supplierEmail);
+    if (!value) return null;
+    const email = value.replace(/^mailto:/i, '').trim();
+    if (!EMAIL_RE.test(email)) {
+        throw warehouseError('SUPPLIER_EMAIL_INVALID', 'Die E-Mail des Lieferanten ist ungültig.', { params: { name: supplierName, email: email.slice(0, 80) } });
+    }
+    return email;
+};
+
+/**
+ * ── WAS EINE FERTIGE KARTE BRAUCHT (30.09.2026, Vorgabe Samet) ────────────
+ * «Ürün kartlarının girilmesi zorunlu alanları var: ürün adı, tedarikçi en az
+ *  bir, tedarikçi maili en az bir tane … bunlar girilmeden ürün kartı sadece
+ *  taslak olarak kayıt edilebilir» — dazu die Einheit («her ürünün de birim
+ *  türü olmalıdır»). Die Liste nennt, was fehlt; leer = die Karte ist fertig.
+ */
+export type WarehouseMissingField = 'name' | 'unit' | 'supplier' | 'supplierEmail';
+
+export const missingForComplete = (
+    fields: Pick<WarehouseProductFields, 'name' | 'unit' | 'suppliers'>,
+): WarehouseMissingField[] => {
+    const missing: WarehouseMissingField[] = [];
+    if (!fields.name.trim()) missing.push('name');
+    if (!fields.unit) missing.push('unit');
+    if (!fields.suppliers.length) missing.push('supplier');
+    if (!fields.suppliers.some((entry) => Boolean(entry.email))) missing.push('supplierEmail');
+    return missing;
+};
+
+/**
+ * Taslak oder fertig? `requested` = was die Eingabe ausdrücklich will:
+ *   false  «Kaydet» — nur mit allen Pflichtangaben, sonst PRODUCT_INCOMPLETE
+ *   true   «Taslak olarak kaydet» — immer
+ *   undefined (Scan, Excel, BOM-Schnellkarte, alte Aufrufer) — eine
+ *          unvollständige Karte wird Taslak, eine Taslak bleibt es.
+ */
+export const draftStateOf = (
+    fields: Pick<WarehouseProductFields, 'name' | 'unit' | 'suppliers'>,
+    requested: boolean | undefined,
+    current: boolean | null,
+): boolean => {
+    const missing = missingForComplete(fields);
+    if (requested === true) return true;
+    if (requested === false) {
+        if (missing.length) {
+            throw warehouseError('PRODUCT_INCOMPLETE', 'Für eine fertige Karte fehlen Angaben — als Taslak speichern.', {
+                params: { missing: missing.join(',') },
+            });
+        }
+        return false;
+    }
+    return Boolean(current) || missing.length > 0;
+};
+
+/** `isDraft` der Eingabe: true · false · (nicht angegeben) undefined. */
+export const draftRequestOf = (raw: unknown): boolean | undefined => {
+    const value = (raw && typeof raw === 'object' ? (raw as Record<string, unknown>).isDraft : undefined);
+    if (value === true || value === 'true') return true;
+    if (value === false || value === 'false') return false;
+    return undefined;
+};
+
 const has = (input: Record<string, unknown>, key: string): boolean =>
     Object.prototype.hasOwnProperty.call(input, key);
 
@@ -241,6 +337,8 @@ export const fieldsOfProduct = (product: WarehouseProduct): WarehouseProductFiel
     name: product.name,
     brand: product.brand,
     modelNumber: product.modelNumber,
+    productCode: product.productCode,
+    unit: product.unit,
     suppliers: product.suppliers.map((entry) => ({ ...entry })),
     description: product.description,
     quantity: product.quantity,
@@ -250,6 +348,7 @@ export const fieldsOfProduct = (product: WarehouseProduct): WarehouseProductFiel
     barcode: product.barcode,
     manufacturerBarcode: product.manufacturerBarcode,
     serialRequired: product.serialRequired,
+    isDraft: product.isDraft,
 });
 
 const EMPTY_FIELDS: WarehouseProductFields = {
@@ -258,6 +357,8 @@ const EMPTY_FIELDS: WarehouseProductFields = {
     name: '',
     brand: null,
     modelNumber: null,
+    productCode: null,
+    unit: null,
     suppliers: [],
     description: null,
     quantity: 0,
@@ -267,6 +368,7 @@ const EMPTY_FIELDS: WarehouseProductFields = {
     barcode: null,
     manufacturerBarcode: null,
     serialRequired: false,
+    isDraft: false,
 };
 
 /**
@@ -290,7 +392,7 @@ export const suppliersFromInput = (raw: unknown): WarehouseSupplierEntry[] => {
         }
         const idRaw = input.supplierId ?? input.id;
         const supplierId = idRaw === null || idRaw === undefined ? null : String(idRaw).trim().slice(0, 191) || null;
-        entries.push({ supplierId, name, barcode });
+        entries.push({ supplierId, name, barcode, email: parseSupplierEmail(input.email, name) });
     }
     if (entries.length > L.suppliers) {
         throw warehouseError('TOO_MANY_SUPPLIERS', 'Zu viele Lieferanten auf einer Karte.', { params: { max: L.suppliers } });
@@ -360,6 +462,8 @@ export const productFieldsFromInput = (
     if (has(input, 'name') || !base) next.name = cleanLine(input.name, 'name', L.name) ?? '';
     if (has(input, 'brand')) next.brand = cleanLine(input.brand, 'brand', L.brand);
     if (has(input, 'modelNumber')) next.modelNumber = cleanLine(input.modelNumber, 'modelNumber', L.modelNumber);
+    if (has(input, 'productCode')) next.productCode = cleanCode(input.productCode, 'productCode', L.productCode);
+    if (has(input, 'unit')) next.unit = parseUnit(input.unit);
     if (has(input, 'suppliers')) {
         next.suppliers = suppliersFromInput(input.suppliers);
     } else if (has(input, 'supplierName') || has(input, 'supplierId') || has(input, 'supplierBarcode')) {

@@ -1,3 +1,4 @@
+import type { IBomRevisionApprovals } from '../../../../domain/repositories/IBomRevisionApprovals';
 import { nanoid } from 'nanoid';
 
 import type {
@@ -28,6 +29,7 @@ import {
     acceptsMoreLines,
     areaFrom,
     bomError,
+    assertErpCodes,
     completionOf,
     orderLinesFrom,
     orderProposal,
@@ -43,6 +45,11 @@ import type { BomPurchaseOrderWriter } from '../../../../infrastructure/services
 import type { BomReservationService, CoverageFacts } from './BomReservationService';
 import {
     bomDto,
+    bomActivity,
+    bomSummaryDto,
+    bomLinesDto,
+    revisionHistory,
+    type BomSummaryDto,
     productDto,
     templateSummaryDto,
     type BomDto,
@@ -197,14 +204,14 @@ export class DeviceBomsUseCase {
      * Bereichs beim ersten Öffnen angelegt (BOM-MEK-00001); Lesende sehen sie,
      * sobald es sie gibt.
      */
-    async view(tenantId: string, actor: BomActor, itemId: string, rawArea: unknown): Promise<BomAreaViewDto> {
+    async view(tenantId: string, actor: BomActor, itemId: string, rawArea: unknown, compact = false): Promise<BomAreaViewDto | (Omit<BomAreaViewDto, 'main' | 'subs' | 'boms'> & { main: BomSummaryDto | null; subs: BomSummaryDto[] })> {
         const area = areaFrom(rawArea) ?? 'MECHANICAL';
         const device = await this.requireDevice(tenantId, itemId);
         const [project, settings, listed, templates, assignees, deliveryDates] = await Promise.all([
             this.directory.project(tenantId, device.productionProjectId),
             this.settings.get(tenantId),
-            this.boms.listForDevice(tenantId, itemId),
-            this.templates.list(tenantId),
+            this.boms.listForDevice(tenantId, itemId, compact ? area : undefined),
+            compact ? Promise.resolve([]) : this.templates.list(tenantId),
             this.directory.bomStageAssignees(tenantId, itemId, area),
             this.directory.deliveryDates(tenantId, [device.productionProjectId]),
         ]);
@@ -218,7 +225,7 @@ export class DeviceBomsUseCase {
         }
         const subs = main ? this.subsOf(main, all) : [];
         const shown = main ? [main, ...subs] : [];
-        const dtos = await this.dtos(tenantId, shown, all);
+        const dtos = await this.dtos(tenantId, shown, all, compact ? 'summary' : 'full');
         const category = CATEGORY_OF_AREA[area];
         return {
             settings: { maxPerArea: settings.maxPerArea },
@@ -236,18 +243,38 @@ export class DeviceBomsUseCase {
                 MECHANICAL: all.filter((bom) => bom.area === 'MECHANICAL').length,
                 ELECTRICAL: all.filter((bom) => bom.area === 'ELECTRICAL').length,
             },
-            main: dtos[0] ?? null,
-            subs: dtos.slice(1),
-            boms: dtos,
+            ...(compact ? {
+                main: dtos[0] ? bomSummaryDto(dtos[0]) : null,
+                subs: dtos.slice(1).map(bomSummaryDto),
+            } : { main: dtos[0] ?? null, subs: dtos.slice(1), boms: dtos }),
             codes: settings.codes[area],
             templates: templates.filter((template) => template.category === category).map(templateSummaryDto),
         };
     }
 
-    async get(tenantId: string, bomId: string): Promise<BomDto> {
+    async get(tenantId: string, bomId: string, linesOnly = false): Promise<BomDto> {
         const bom = await this.requireBom(tenantId, bomId);
-        const [dto] = await this.dtos(tenantId, [bom]);
-        return dto!;
+        const [dto] = await this.dtos(tenantId, [bom], undefined, linesOnly ? 'lines' : 'full');
+        return linesOnly ? bomLinesDto(dto!) : dto!;
+    }
+
+    async history(tenantId: string, bomId: string) {
+        const [bom, revisions] = await Promise.all([
+            this.requireBomHeader(tenantId, bomId),
+            this.revisions.listForBoms(tenantId, [bomId], { omitLines: true }),
+        ]);
+        const ids = [bom.approvedById, ...revisions.map((entry) => entry.approvedById)].filter((id): id is string => Boolean(id));
+        const names = ids.length ? await this.directory.personNames(ids) : new Map<string, string>();
+        const draft = revisions.find((entry) => entry.status === 'DRAFT');
+        return { revisions: revisionHistory(bom, revisions, (id) => id ? names.get(id) ?? null : null),
+            draft: draft ? { revision: draft.revision, reason: draft.reason } : null };
+    }
+
+    async section(tenantId: string, bomId: string, section: 'requests' | 'goods') {
+        await this.requireBomHeader(tenantId, bomId);
+        const purchases = section === 'requests' ? await this.purchasesOf(tenantId, [bomId]) : [];
+        const data = await this.procurementOrFail().forBoms(tenantId, [bomId], purchases.map(({ link, order }) => ({ kind: link.kind, order })), { section });
+        return { procurement: data.requests.get(bomId) ?? [], goodsIn: data.goodsIn.get(bomId) ?? [] };
     }
 
     /**
@@ -267,7 +294,7 @@ export class DeviceBomsUseCase {
      * `deviceBoms` = alle BOMs der Geräte (für die Alt-BOMs einer Haupt-BOM);
      * fehlt es, liest die Funktion sie nach.
      */
-    async dtos(tenantId: string, boms: Bom[], deviceBoms?: Bom[]): Promise<BomDto[]> {
+    async dtos(tenantId: string, boms: Bom[], deviceBoms?: Bom[], mode: 'full' | 'lines' | 'summary' = 'full'): Promise<BomDto[]> {
         if (!boms.length) return [];
         const productIds = boms.flatMap((bom) => bom.lines.map((line) => line.productId));
         const mains = boms.filter((bom) => bom.kind === 'MAIN');
@@ -277,12 +304,13 @@ export class DeviceBomsUseCase {
             return (await Promise.all(items.map((itemId) => this.boms.listForDevice(tenantId, itemId)))).flat();
         };
         const bomIds = boms.map((bom) => bom.id);
-        const [facts, purchases, pool, revisions, purchaseRevisions] = await Promise.all([
+        const [facts, purchases, pool, revisions, purchaseRevisions, activity] = await Promise.all([
             this.reservations.facts(tenantId, productIds),
             this.purchasesOf(tenantId, bomIds),
             mains.length ? loadDevices() : Promise.resolve([] as Bom[]),
-            this.revisions.listForBoms(tenantId, bomIds),
-            this.revisions.purchaseRevisionsForBoms(tenantId, bomIds),
+            mode === 'summary' ? Promise.resolve([]) : this.revisions.listForBoms(tenantId, bomIds, { draftOnly: mode === 'lines' }),
+            mode === 'full' ? this.revisions.purchaseRevisionsForBoms(tenantId, bomIds) : Promise.resolve([]),
+            mode !== 'full' && this.procurement ? this.procurement.activityForBoms(tenantId, bomIds) : Promise.resolve(null),
         ]);
         // Die Karten der Arbeitskopie, die (noch) keine Zeile der BOM sind — mit ihrem freien Bestand.
         const draftProducts = [...new Set(revisions
@@ -292,28 +320,42 @@ export class DeviceBomsUseCase {
         const personIds = [
             ...revisions.flatMap((entry) => [entry.createdById, entry.approvedById]),
             ...boms.filter((bom) => bom.status !== 'DRAFT').map((bom) => bom.approvedById),
-        ].filter((id): id is string => Boolean(id));
-        const [extra, names] = await Promise.all([
+        ].filter((id): id is string => mode !== 'summary' && Boolean(id));
+        const draftIds = revisions.filter((entry) => entry.status === 'DRAFT').map((entry) => entry.id);
+        const [extra, names, approvals] = await Promise.all([
             draftProducts.length ? this.reservations.facts(tenantId, draftProducts) : Promise.resolve(null),
             personIds.length ? this.directory.personNames(personIds) : Promise.resolve(new Map<string, string>()),
+            draftIds.length && this.revisionApprovals
+                ? this.revisionApprovals.latest(tenantId, draftIds).catch(() => new Map())
+                : Promise.resolve(new Map()),
         ]);
         const products = extra ? new Map([...facts.products, ...extra.products]) : facts.products;
         const free = extra ? new Map([...facts.coverage.free, ...extra.coverage.free]) : facts.coverage.free;
-        const procurement = this.procurement
+        const procurement = this.procurement && mode === 'full'
             ? await this.procurement.forBoms(tenantId, bomIds, purchases.map(({ link, order }) => ({ kind: link.kind, order })))
             : null;
-        return boms.map((bom) => bomDto(bom, {
-            procurement: procurement?.requests.get(bom.id) ?? [],
-            goodsIn: procurement?.goodsIn.get(bom.id) ?? [],
-            coverage: facts.coverage.lines,
-            products,
-            free,
-            purchases: purchases.filter((entry) => entry.link.bomId === bom.id),
-            ...(bom.kind === 'MAIN' ? { subs: this.subsOf(bom, pool) } : {}),
-            revisions,
-            purchaseRevisions,
-            names,
-        }));
+        return boms.map((bom) => {
+            const dto = bomDto(bom, {
+                procurement: procurement?.requests.get(bom.id) ?? [],
+                goodsIn: procurement?.goodsIn.get(bom.id) ?? [],
+                coverage: facts.coverage.lines,
+                products,
+                free,
+                purchases: purchases.filter((entry) => entry.link.bomId === bom.id),
+                ...(bom.kind === 'MAIN' ? { subs: this.subsOf(bom, pool) } : {}),
+                revisions,
+                purchaseRevisions,
+                names,
+                approvals,
+            });
+            const compact = activity?.get(bom.id);
+            if (compact) {
+                const base = bomActivity(dto);
+                const needing = dto.status === 'DRAFT' && !dto.consumedAt ? dto.lines : dto.lines.filter((line) => line.coverage.missing > EPS);
+                dto.activity = { ...base, ...compact, requestedNeeding: needing.filter((line) => Boolean(compact.priceRequests[line.id])).length };
+            }
+            return dto;
+        });
     }
 
     /** Bestellungen/Anfragen der BOMs — verwaiste Verknüpfungen heilen beim Lesen. */
@@ -405,7 +447,7 @@ export class DeviceBomsUseCase {
             codePrefix: code.prefix,
             lines: [],
         }, actor.id);
-        return { bom: await this.get(tenantId, bom.id) };
+        return { bom: await this.get(tenantId, bom.id, true) };
     }
 
     async saveLines(tenantId: string, actor: BomActor, bomId: string, body: unknown): Promise<{ bom: BomDto }> {
@@ -415,12 +457,12 @@ export class DeviceBomsUseCase {
             // «Bom onaylanırsa geri dönüş yok, revize olması lazım» (27.09.2026):
             // eine freigegebene BOM ändert nur ihre Revision im Entwurf.
             await this.saveRevisionLines(tenantId, actor, bom, body);
-            return { bom: await this.get(tenantId, bomId) };
+            return { bom: await this.get(tenantId, bomId, true) };
         }
         const lines = await this.templateUseCase.linesFrom(tenantId, (body as Record<string, unknown> | null)?.lines);
         const saved = await this.boms.replaceLines(tenantId, bomId, lines, actor.id);
         if (!saved) throw bomError('STATUS_INVALID', 'Die BOM ist nicht mehr im Entwurf.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
 
     /**
@@ -513,6 +555,7 @@ export class DeviceBomsUseCase {
                 params: { row: missingCard + 1 },
             });
         }
+        assertErpCodes(bom.lines, products);
         const approved = await this.boms.setStatus(tenantId, bomId, ['DRAFT'], {
             status: 'APPROVED',
             approvedAt: new Date(),
@@ -525,7 +568,7 @@ export class DeviceBomsUseCase {
             console.warn('[production-bom] baseline revision failed', bomId, (error as Error)?.message);
         });
         await this.reservations.assignFreeSerials(tenantId, approved.lines.map((line) => line.productId));
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
 
     /**
@@ -559,7 +602,7 @@ export class DeviceBomsUseCase {
             completedById: actor.id,
         }, actor.id);
         if (!completed) throw bomError('STATUS_INVALID', 'Die BOM ist nicht freigegeben.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
 
     async reopen(tenantId: string, actor: BomActor, bomId: string): Promise<{ bom: BomDto }> {
@@ -578,7 +621,7 @@ export class DeviceBomsUseCase {
             completedById: null,
         }, actor.id);
         if (!reopened) throw bomError('STATUS_INVALID', 'Die BOM ist nicht abgeschlossen.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
 
     /**
@@ -605,7 +648,7 @@ export class DeviceBomsUseCase {
         }
         const consumed = await this.consumeOne(tenantId, actor, bom);
         if (!consumed) throw bomError('ALREADY_CONSUMED', 'Diese BOM ist schon abgebucht.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
 
     /** Eine BOM vom Bestand abbuchen (ihre Reservierungen, ihre Seriennummern). */
@@ -763,6 +806,7 @@ export class DeviceBomsUseCase {
                 const draftLines = group.lines.map((entry) => {
                     const line = byLine.get(entry.lineId)!;
                     const facts = proposed.get(entry.lineId);
+                    const product = proposal.facts.products.get(line.productId);
                     return {
                         bomLineId: line.id,
                         erpCode: facts?.erpCode ?? line.erpCode,
@@ -771,6 +815,8 @@ export class DeviceBomsUseCase {
                         modelNumber: facts?.modelNumber ?? line.modelNumber,
                         unit: line.unit,
                         quantity: entry.quantity,
+                        materialGroup: product?.materialGroupName ?? null,
+                        productCode: product?.productCode ?? null,
                     };
                 });
                 const records: BomPurchaseLineRecord[] = group.lines.map((entry) => {
@@ -976,6 +1022,8 @@ export class DeviceBomsUseCase {
                             modelNumber: product?.modelNumber ?? line.modelNumber,
                             unit: line.unit,
                             quantity: entry.quantity,
+                            materialGroup: product?.materialGroupName ?? null,
+                            productCode: product?.productCode ?? null,
                         };
                     }),
                 });
@@ -1031,6 +1079,18 @@ export class DeviceBomsUseCase {
 
     attachProcurement(procurement: BomProcurementUseCase): void {
         this.procurement = procurement;
+    }
+
+    /** Die Freigaben der Revisionen durch die Administratorrolle (30.09.2026) — nach dem Bau angeschlossen. */
+    private revisionApprovals: IBomRevisionApprovals | null = null;
+
+    attachRevisionApprovals(store: IBomRevisionApprovals): void {
+        this.revisionApprovals = store;
+    }
+
+    /** Die Depo-Karten (ERP-Code, Name …) — für die Prüfungen der Revision. */
+    productsOf(tenantId: string, productIds: string[]) {
+        return this.stock.products(tenantId, productIds);
     }
 
     private procurementOrFail(): BomProcurementUseCase {
@@ -1097,6 +1157,12 @@ export class DeviceBomsUseCase {
 
     async requireBom(tenantId: string, bomId: string): Promise<Bom> {
         const bom = await this.boms.get(tenantId, bomId);
+        if (!bom) throw bomError('BOM_NOT_FOUND', 'BOM nicht gefunden.', { status: 404 });
+        return bom;
+    }
+
+    private async requireBomHeader(tenantId: string, bomId: string): Promise<Omit<Bom, 'lines'>> {
+        const bom = await this.boms.getHeader(tenantId, bomId);
         if (!bom) throw bomError('BOM_NOT_FOUND', 'BOM nicht gefunden.', { status: 404 });
         return bom;
     }

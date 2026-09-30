@@ -38,8 +38,30 @@ export interface ProductionProjectFilter {
     search?: string;
 }
 
+export interface ProductionOrderListFilter {
+    page: number;
+    pageSize: number;
+    search?: string;
+    kind?: 'PROJECT' | 'DELIVERY';
+}
+
+export interface ProductionOrderListPage {
+    projects: Array<{
+        project: Pick<ProductionProject, 'id' | 'sourceKind' | 'projectNumber' | 'projectName' | 'customerName'>;
+        sourceTenantName: string | null;
+        orderNumbers: string[];
+        mainOrderNumbers: string[];
+        addonCount: number;
+        counts: { ordered: number; total: number };
+    }>;
+    total: number;
+    page: number;
+    pageSize: number;
+}
+
 /** Produktionsprojekte, ihre Aufträge und Geräte. */
 export interface IProductionProjectRepository {
+    listOrderPage(tenantId: string, filter: ProductionOrderListFilter): Promise<ProductionOrderListPage>;
     existingIds(tenantId: string): Promise<ExistingProductionIds>;
     /** Schreibt den Abgleich; alles, was er nicht mehr trägt, wird stillgelegt. */
     applySnapshot(tenantId: string, plan: SnapshotPlan, syncedAt: Date): Promise<void>;

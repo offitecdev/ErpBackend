@@ -3996,6 +3996,26 @@ const poProjectsOf = async (tenantId: string, ids: string[]): Promise<Map<string
     return new Map(rows.map((row) => [row.purchaseOrderId, { number: String(row.projectNumber ?? ''), name: String(row.projectName ?? '') }]));
 };
 
+/**
+ * DER BELEG, WIE DIE SEITE «PDF» IHN SIEHT (30.09.2026): die Zeile, die
+ * Produktionszuordnung, die BOM-Herkunft (Revision!) und das Projekt — in
+ * genau der Form von GET /purchase-orders/:id. Die Automatik der Produktion
+ * baut daraus auf dem Server dasselbe PDF wie der Browser (supplierPdfRenderer).
+ * `null` = gibt es nicht.
+ */
+export const purchaseOrderDocument = async (tenantId: string, id: string): Promise<Record<string, any> | null> => {
+    const row = await (prisma as any).purchaseOrder.findFirst({ where: { id, tenantId } });
+    if (!row) return null;
+    const [production, bomOrigin, projects] = await Promise.all([
+        productionModule.purchaseLink.isEnabled(tenantId)
+            .then((enabled) => (enabled ? productionModule.picker.assignmentFor(tenantId, row.id) : null))
+            .catch(() => null),
+        productionBomGuard.originOf(tenantId, row.id, row).catch(() => null),
+        poProjectsOf(tenantId, [row.id]),
+    ]);
+    return { ...parsePurchaseOrderRow(row), production, bomOrigin, project: projects.get(row.id) ?? null };
+};
+
 /** Yüzde alanı: 0–100 aralığına kırpılır (geçersiz değer 0 sayılır). */
 const poPercent = (value: unknown): number => {
     const parsed = Number(value);
@@ -4632,6 +4652,27 @@ const poForwardedBy = async (row: any): Promise<{ name: string } | null> => {
     return name ? { name } : null;
 };
 
+/* «TALEP EDEN» (30.09.2026, Samet: «fiyat talebinin kimden geldiğini öğreneceğiz;
+   sipariş no, sipariş veren, alıcı, komisyon, teklif no olmayacak»): jede
+   Preisanfrage nennt ihren Anleger — in der Liste wie in der Maske, gleich
+   welche Rolle er hat. */
+const poRequesterNames = async (rows: any[]): Promise<Map<string, string>> => {
+    const result = new Map<string, string>();
+    const asks = rows.filter((row) => row?.createdByEmpId && PO_PRICE_REQUEST_STATUSES.has(row.status));
+    const ids = [...new Set(asks.map((row) => String(row.createdByEmpId)))];
+    if (!ids.length) return result;
+    const people = await (prisma as any).employee.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, firstName: true, lastName: true },
+    }) as Array<{ id: string; firstName: string | null; lastName: string | null }>;
+    const names = new Map(people.map((person) => [person.id, [person.firstName, person.lastName].filter(Boolean).join(' ').trim()]));
+    for (const row of asks) {
+        const name = names.get(String(row.createdByEmpId));
+        if (name) result.set(row.id, name);
+    }
+    return result;
+};
+
 /* ══ FİYAT TALEBİ → SATIN ALMA (29.09.2026, Vorgabe Samet) ══════════════════
    «Purser veya admin dışında siparişler tabını kimse görmeyecek ve diğerlerinin
     de mail ve PDF gönderme şansı olacak … mail gönderecek ve orada fiyat
@@ -4916,14 +4957,21 @@ router.get(
                 }),
             ]);
             // Projektnummer und -name getrennt von der Kommission (29.09.2026).
-            const [projects, forwardings] = await Promise.all([
+            const [projects, forwardings, requesters] = await Promise.all([
                 poProjectsOf(tenantId, rows.map((row: any) => row.id)),
                 // «Satın almaya iletildi» — die letzte Sendung an den Einkauf je Zeile (29.09.2026).
                 poLatestForwardings(tenantId, rows.map((row: any) => row.id)).catch(() => new Map<string, PoForwarding>()),
+                poRequesterNames(rows).catch(() => new Map<string, string>()),
             ]);
             res.status(200).json({
                 items: rows.map((row: any) => {
-                    const parsed = { ...parsePurchaseOrderRow(row), project: projects.get(row.id) ?? null, forwarding: forwardings.get(row.id) ?? null };
+                    const requester = requesters.get(row.id);
+                    const parsed = {
+                        ...parsePurchaseOrderRow(row),
+                        project: projects.get(row.id) ?? null,
+                        forwarding: forwardings.get(row.id) ?? null,
+                        requestedBy: requester ? { name: requester } : null,
+                    };
                     return purchaser ? parsed : poWithoutSupplierFacts(parsed);
                 }),
                 total,
@@ -5193,13 +5241,22 @@ router.get(
                 console.warn('[production-bom] origin unreadable', row.id, error?.message);
                 return null;
             });
-            const [forwardedBy, forwardings, purchaser] = await Promise.all([
+            const [forwardedBy, forwardings, purchaser, requesters] = await Promise.all([
                 poForwardedBy(row).catch(() => null),
                 // Die letzte Sendung an den Einkauf (29.09.2026): wann, von wem, an wen.
                 poLatestForwardings(tenantId, [row.id]).catch(() => new Map<string, PoForwarding>()),
                 poCanPickRequestSuppliers(req.user!.id),
+                poRequesterNames([row]).catch(() => new Map<string, string>()),
             ]);
-            const detail = { ...parsePurchaseOrderRow(row), production, bomOrigin, forwardedBy, forwarding: forwardings.get(row.id) ?? null };
+            const requester = requesters.get(row.id);
+            const detail = {
+                ...parsePurchaseOrderRow(row),
+                production,
+                bomOrigin,
+                forwardedBy,
+                forwarding: forwardings.get(row.id) ?? null,
+                requestedBy: requester ? { name: requester } : null,
+            };
             /* Ohne Einkaufsrolle kein Lieferant (29.09.2026: «kullanıcı tedarikçiden
                haberi olmayacak»). Eine Bestellung aus dem Projekt bleibt, wie sie ist. */
             res.status(200).json(!purchaser && PO_PRICE_REQUEST_STATUSES.has(row.status) ? poWithoutSupplierFacts(detail) : detail);

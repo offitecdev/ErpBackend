@@ -13,6 +13,8 @@ import {
     parseCurrency,
     parsePrice,
     parseQuantity,
+    parseSupplierEmail,
+    parseUnit,
     WAREHOUSE_LIMITS,
 } from './warehouse';
 
@@ -269,7 +271,10 @@ export const importRowFromInput = (
             name: name ?? '',
             brand: guard('brand', () => cleanLine(input.brand, 'brand', L.brand), null),
             modelNumber: guard('modelNumber', () => cleanLine(input.modelNumber, 'modelNumber', L.modelNumber), null),
+            productCode: guard('productCode', () => cleanCode(input.productCode, 'productCode', L.productCode), null),
+            unit: guard('unit', () => parseUnit(input.unit), null),
             supplierName: guard('supplierName', () => cleanLine(input.supplierName, 'supplierName', L.supplierName), null),
+            supplierEmail: guard('supplierEmail', () => parseSupplierEmail(input.supplierEmail, String(input.supplierName ?? '')), null),
             description: guard('description', () => cleanText(input.description, 'description', L.description), null),
             quantity: finalQuantity,
             purchasePrice,

@@ -171,7 +171,16 @@ export interface BomStockProduct {
     erpCode: string | null;
     name: string;
     brand: string | null;
+    /** «Üretici kodu» (30.09.2026) — nie gedruckt. */
     modelNumber: string | null;
+    /** «Ürün kodu» (30.09.2026) — steht im PDF des Lieferanten. */
+    productCode?: string | null;
+    /** Einheit der Karte — die BOM-Zeile übernimmt sie (30.09.2026). */
+    unit?: BomUnit | null;
+    /** Taslak-Karte: Einheit, Lieferant oder seine E-Mail fehlen noch. */
+    isDraft?: boolean;
+    /** Die Materialgruppe (Spalte «Malzeme grubu» der Belege). */
+    materialGroupName?: string | null;
     description: string | null;
     serialRequired: boolean;
     /** Bestand der Karte (bei Seriennummernpflicht = Zahl der Nummern). */
@@ -179,7 +188,8 @@ export interface BomStockProduct {
     /** «minimum alış» — die Bestellung geht nie darunter. */
     minimumOrderQuantity: number | null;
     materialGroupId: string | null;
-    suppliers: Array<{ supplierId: string | null; name: string }>;
+    /** Die Lieferanten der Karte in ihrer Reihenfolge — mit ihrer E-Mail (30.09.2026). */
+    suppliers: Array<{ supplierId: string | null; name: string; email?: string | null }>;
     purchasePrice: number | null;
     currency: string | null;
 }

@@ -1,0 +1,121 @@
+/// ── ÜRETİM › SATIN ALMA OTOMASYONU (30.09.2026, Vorgabe Samet) ─────────────
+///
+/// «Fiyat talepleri artık otomatik gönderiliyor … e postalar otomatik fiyat
+///  talebinde rfq@offitec.ch olarak gönderilecektir … ayarlarda da üretim
+///  modülü ayarlarında o mailleri girelim, şifresi şu bu … o mailin altına
+///  gelen mailden pdf alınıyor ve direkt tedarikçinin teklifine işleniyor.»
+///
+///   uretim_posta_kutulari        die Postfächer der Produktion: RFQ (Preis-
+///                                anfragen, Antworten) und — freiwillig — ORDER
+///                                (Bestellungen; fehlt es, gilt das RFQ-Postfach)
+///   uretim_satinalma_postalari   jede verschickte Preisanfrage / Bestellung /
+///                                Revision mit IHRER Message-ID — daran erkennt
+///                                der Abruf die Antwort des Lieferanten
+///   uretim_satinalma_yanitlari   jede gelesene Antwort (einmal je Nachricht):
+///                                welcher Beleg, welches PDF, was die KI las
+///
+/// Wie `uretim_*`: keine Fremdschlüssel nach aussen, Passwörter verschlüsselt
+/// (mailCrypto.encryptSecret) wie EmployeeMailbox.
+
+model ProductionMailbox {
+  id              String    @id @db.VarChar(32)
+  tenantId        String
+  /// RFQ | ORDER
+  purpose         String    @db.VarChar(12)
+  isActive        Boolean   @default(true)
+  fromName        String?   @db.VarChar(255)
+  fromEmail       String    @db.VarChar(255)
+  smtpHost        String?   @db.VarChar(255)
+  smtpPort        Int       @default(465)
+  smtpSecure      Boolean   @default(true)
+  smtpUser        String?   @db.VarChar(255)
+  smtpPassword    String?   @db.Text
+  imapHost        String?   @db.VarChar(255)
+  imapPort        Int       @default(993)
+  imapSecure      Boolean   @default(true)
+  imapUser        String?   @db.VarChar(255)
+  imapPassword    String?   @db.Text
+  /// Der Ordner, in dem die Antworten liegen (leer = INBOX).
+  imapFolder      String?   @db.VarChar(255)
+  sentFolder      String?   @db.VarChar(255)
+  saveToSent      Boolean   @default(true)
+  imapUidValidity BigInt?
+  imapLastUid     BigInt?
+  imapLastSyncAt  DateTime?
+  imapLastError   String?   @db.Text
+  imapLastSummary String?   @db.VarChar(255)
+  updatedById     String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([tenantId, purpose])
+  @@map("uretim_posta_kutulari")
+}
+
+model ProcurementMail {
+  id              String   @id @db.VarChar(32)
+  tenantId        String
+  purchaseOrderId String
+  /// Der Talep (uretim_bom_talepleri), falls der Beleg aus einem kam.
+  requestId       String?
+  /// RFQ | ORDER | REVISION
+  kind            String   @db.VarChar(12)
+  /// SENT | PREVIEW | FAILED
+  status          String   @db.VarChar(12)
+  /// AUTO | MANUAL | RESEND | REVISION
+  trigger         String?  @db.VarChar(12)
+  mailboxId       String?  @db.VarChar(32)
+  fromEmail       String?  @db.VarChar(255)
+  /// JSON ["a@b.ch", …]
+  toEmails        String?  @db.Text
+  subject         String?  @db.VarChar(255)
+  /// Die Message-ID dieser Sendung (`<…@offitec.ch>`) — der Schlüssel der Antwort.
+  messageId       String?  @db.VarChar(255)
+  lang            String?  @db.VarChar(2)
+  revision        Int      @default(0)
+  /// Das verschickte PDF (R2, wie jede Datei).
+  fileRef         String?  @db.VarChar(512)
+  fileName        String?  @db.VarChar(255)
+  fileSize        Int?
+  error           String?  @db.Text
+  sentById        String?
+  sentByName      String?  @db.VarChar(191)
+  createdAt       DateTime @default(now())
+
+  @@index([tenantId, purchaseOrderId])
+  @@index([tenantId, messageId])
+  @@index([tenantId, requestId])
+  @@map("uretim_satinalma_postalari")
+}
+
+model ProcurementReply {
+  id                String    @id @db.VarChar(32)
+  tenantId          String
+  mailboxId         String    @db.VarChar(32)
+  /// `<Ordner>:<UIDVALIDITY>:<UID>` — dieselbe Nachricht wird nie zweimal gelesen.
+  providerKey       String    @db.VarChar(191)
+  internetMessageId String?   @db.VarChar(255)
+  purchaseOrderId   String?
+  /// Die Sendung, auf die geantwortet wurde (uretim_satinalma_postalari).
+  mailId            String?   @db.VarChar(32)
+  /// RFQ | ORDER — worauf die Antwort kam.
+  kind              String?   @db.VarChar(12)
+  /// ATTACHED | NO_PDF | UNMATCHED | FAILED
+  status            String    @db.VarChar(12)
+  fromEmail         String?   @db.VarChar(255)
+  fromName          String?   @db.VarChar(255)
+  subject           String?   @db.VarChar(255)
+  receivedAt        DateTime?
+  fileRef           String?   @db.VarChar(512)
+  fileName          String?   @db.VarChar(255)
+  fileType          String?   @db.VarChar(100)
+  fileSize          Int?
+  /// Was die KI aus dem Angebot las: { offerNumber, offerDate, contactName, contactEmail, language, … }.
+  facts             Json?
+  error             String?   @db.Text
+  createdAt         DateTime  @default(now())
+
+  @@unique([tenantId, mailboxId, providerKey], map: "uretim_satinalma_yanitlari_mailbox_provider_key")
+  @@index([tenantId, purchaseOrderId])
+  @@map("uretim_satinalma_yanitlari")
+}

@@ -11,6 +11,8 @@ import panelRouter from './panel.routes';
 import productionTaskRouter from './productionTasks.routes';
 // BOM (27.09.2026): Vorlagen, BOMs der Geräte, Reservierung, Bestellungen.
 import productionBomRouter from './productionBom.routes';
+// Automatik des Einkaufs (30.09.2026): Postfächer, Senden, Bestellen aus dem Vergleich.
+import productionProcurementRouter from './productionProcurement.routes';
 
 /**
  * ── /production — DAS PRODUKTIONSMODUL (19.09.2026) ─────────────────────────
@@ -46,6 +48,7 @@ router.post('/sync', VIEW_OR_INVENTORY, ProductionController.requireModule, (req
 
 router.get('/overview', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.overview(req, res, next));
 router.get('/projects/:id/devices', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.projectDevices(req, res, next));
+router.get('/projects/:id/devices/:deviceId', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.deviceHeader(req, res, next));
 router.get('/projects/:id', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.project(req, res, next));
 router.get('/lines', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.lines(req, res, next));
 router.get('/items/:id', VIEW_OR_INVENTORY, ProductionController.requireModule, cache, (req, res, next) => controller.item(req, res, next));
@@ -67,6 +70,8 @@ router.use('/panels', panelRouter);
 router.use(productionTaskRouter);
 
 // BOM: /bom/* (erbt `requireAuth`).
+// VOR der BOM: dort fängt `/bom/procurement/requests/:id/:action` alles Übrige ab.
+router.use(productionProcurementRouter);
 router.use(productionBomRouter);
 
 export default router;

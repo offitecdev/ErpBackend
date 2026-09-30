@@ -1,10 +1,11 @@
-import { BRAND_ICON_APPOINTMENT_CID, BRAND_ICON_TASK_CID } from "./mailBrand";
+import { BRAND_ICON_APPOINTMENT_CID, BRAND_ICON_DOCUMENT_CID, BRAND_ICON_TASK_CID } from "./mailBrand";
 
 /**
- * DIE ZWEI KENNZEICHEN DER KALENDER-MAILS (19.08.2026) — als Base64.
+ * DIE KENNZEICHEN DER MAIL-KARTEN (19.08.2026, Beleg seit 30.09.2026) — als
+ * Base64.
  *
  * ERZEUGT von `scripts/mail-kind-icons.py`; von Hand geaendert wird hier
- * nichts. Beide Bilder sind WEISS auf durchsichtigem Grund: die Farbe kommt
+ * nichts. Alle Bilder sind WEISS auf durchsichtigem Grund: die Farbe kommt
  * aus der Flaeche darunter (Marineblau beim Termin, Gruen bei der Aufgabe,
  * Rot bei der Absage), damit ein Bild fuer alle Faelle reicht.
  */
@@ -88,9 +89,35 @@ const TASK_PNG_BASE64 =
     "xvipBECCsii+90y9eacDWAPgbPQHXb4D/d7FTfTbrg8ywXbrvjyjjqMnAfwc/XmAv3QzAhKU1t402vNTPdfX3rOunXqaR42ka7l+jL6S6A1lvGiDyrTryL" +
     "Vu7027E2fqATDgmoAZtRotlj1goSoMrzwAAqaEZN3zvTHNAKqppppqqqmmmmqqqaaaaqqppppqqqmm8dGfAHqLpjtOEJcTAAAAAElFTkSuQmCC";
 
+const DOCUMENT_PNG_BASE64 =
+    "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";
+
+export type MailIconKind = "APPOINTMENT" | "TASK" | "DOCUMENT";
+
 /** Inline-Bild fuer `SendMailInput.inlineImages`; im HTML per `cid:` einsetzen. */
-export const kindIconInline = (kind: "APPOINTMENT" | "TASK") => (
+export const kindIconInline = (kind: MailIconKind) => (
     kind === "TASK"
         ? { cid: BRAND_ICON_TASK_CID, contentType: "image/png", contentBase64: TASK_PNG_BASE64 }
-        : { cid: BRAND_ICON_APPOINTMENT_CID, contentType: "image/png", contentBase64: APPOINTMENT_PNG_BASE64 }
+        : kind === "DOCUMENT"
+            ? { cid: BRAND_ICON_DOCUMENT_CID, contentType: "image/png", contentBase64: DOCUMENT_PNG_BASE64 }
+            : { cid: BRAND_ICON_APPOINTMENT_CID, contentType: "image/png", contentBase64: APPOINTMENT_PNG_BASE64 }
 );

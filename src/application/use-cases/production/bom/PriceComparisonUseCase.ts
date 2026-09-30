@@ -14,6 +14,7 @@ import type { BomDocumentStore } from './BomPurchasesUseCase';
 import type { BomProcurementUseCase } from './BomProcurementUseCase';
 import type { BomActor } from './BomTemplatesUseCase';
 import type { DeviceBomsUseCase } from './DeviceBomsUseCase';
+import { systemActorOf } from './ProcurementDispatchUseCase';
 
 export interface PriceComparisonDto {
     id: string;
@@ -27,6 +28,26 @@ export interface PriceComparisonDto {
         project: { number: string; name: string } | null;
         device: { name: string; position: string | null } | null;
     };
+    /**
+     * Die BOM des Talep (30.09.2026): bestellt wird erst aus einer freigegebenen —
+     * die Seite sagt es vorher und führt zur BOM.
+     */
+    bom: {
+        id: string;
+        number: string | null;
+        status: string;
+        approved: boolean;
+        consumed: boolean;
+        area: string | null;
+        productionProjectId: string;
+        productionItemId: string;
+    } | null;
+    /**
+     * Was «Oluştur ve gönder» je Zeile bestellen würde (nur bei freigegebener BOM):
+     * die Menge (was fehlt, nie unter der Mindestmenge) — oder warum nicht
+     * (am Lager, schon bestellt, keine Karte). Die Seite zeigt es VOR dem Bestellen.
+     */
+    orderable: Record<string, { quantity: number; reason: 'IN_STOCK' | 'OPEN_ORDER' | 'NO_PRODUCT' | null }> | null;
     result: ComparisonResult;
 }
 
@@ -89,7 +110,7 @@ export class PriceComparisonUseCase {
         const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
         const wanted = [...new Set((Array.isArray(input.purchaseOrderIds) ? input.purchaseOrderIds : []).map(String).filter(Boolean))];
         if (!wanted.length || wanted.length > COMPARE_MAX_SUPPLIERS) {
-            throw bomError('COMPARE_COUNT', 'Ein bis vier Angebote vergleichen.', { params: { max: COMPARE_MAX_SUPPLIERS } });
+            throw bomError('COMPARE_COUNT', 'Ein bis acht Angebote vergleichen.', { params: { max: COMPARE_MAX_SUPPLIERS } });
         }
         const mine = new Map((await this.devices.purchasesOf(tenantId, [request.bomId]))
             .filter(({ link, order }) => link.kind === 'REQUEST' && request.purchaseOrderIds.includes(order.id))
@@ -113,6 +134,8 @@ export class PriceComparisonUseCase {
                 supplierName: order.supplierName,
                 fileName: link.quoteFileName || `${order.referenceNumber}.pdf`,
                 currency: order.currency,
+                // Die Automatik fragt jeden Lieferanten nur nach SEINEN Zeilen (30.09.2026).
+                askedLineIds: [...new Set(order.items.flatMap((item) => (typeof item.bomLineId === 'string' ? [item.bomLineId] : [])))],
                 body: await this.documents.read(link.quoteFileRef),
             });
         }
@@ -131,7 +154,12 @@ export class PriceComparisonUseCase {
         try {
             read = await this.compare({
                 rows,
-                sources: sources.map((source) => ({ supplierName: source.supplierName, fileName: source.fileName, body: source.body })),
+                sources: sources.map((source) => ({
+                    supplierName: source.supplierName,
+                    fileName: source.fileName,
+                    body: source.body,
+                    askedIndexes: rows.flatMap((row, index) => (source.askedLineIds?.includes(row.bomLineId) ? [index] : [])),
+                })),
                 language,
             });
         } catch (error) {
@@ -186,14 +214,32 @@ export class PriceComparisonUseCase {
         return { ...dto, others: all.map(summaryOf) };
     }
 
+    /** Je Zeile des Vergleichs: bestellt würde … / nicht, weil … — derselbe Vorschlag wie beim Bestellen. */
+    private async orderableOf(tenantId: string, bomId: string, lineIds: string[]): Promise<PriceComparisonDto['orderable']> {
+        try {
+            const proposal = await this.devices.proposal(tenantId, systemActorOf(null), bomId);
+            const byLine = new Map(proposal.lines.map((line) => [line.lineId, line]));
+            return Object.fromEntries(lineIds.map((lineId) => {
+                const facts = byLine.get(lineId);
+                if (!facts) return [lineId, { quantity: 0, reason: 'IN_STOCK' as const }];
+                const reason = facts.block === 'OPEN_ORDER' || facts.block === 'NO_PRODUCT' ? facts.block : null;
+                return [lineId, { quantity: facts.floor, reason }];
+            }));
+        } catch (error) {
+            console.warn('[satın alma] Bestellvorschlag zum Vergleich nicht gelesen:', bomId, (error as Error)?.message);
+            return null;
+        }
+    }
+
     private async dtoOf(
         tenantId: string,
         entry: StoredPriceComparison,
-        request: { id: string; requestNumber: string; status: string; productionProjectId: string; productionItemId: string },
+        request: { id: string; requestNumber: string; status: string; productionProjectId: string; productionItemId: string; bomId: string },
     ): Promise<PriceComparisonDto> {
-        const [projects, devices] = await Promise.all([
+        const [projects, devices, bom] = await Promise.all([
             this.directory.projects(tenantId, [request.productionProjectId]),
             this.directory.devices(tenantId, [request.productionItemId]),
+            this.devices.requireBom(tenantId, request.bomId).catch(() => null),
         ]);
         const project = projects.get(request.productionProjectId) ?? null;
         const device = devices.get(request.productionItemId) ?? null;
@@ -209,6 +255,21 @@ export class PriceComparisonUseCase {
                 project: project ? { number: project.projectNumber, name: project.projectName } : null,
                 device: device ? { name: device.name, position: device.positionNumber } : null,
             },
+            orderable: bom && bom.status === 'APPROVED' && !bom.consumedAt
+                ? await this.orderableOf(tenantId, bom.id, entry.result.lines.map((line) => line.bomLineId))
+                : null,
+            bom: bom
+                ? {
+                    id: bom.id,
+                    number: bom.bomNumber ?? null,
+                    status: bom.status,
+                    approved: bom.status === 'APPROVED',
+                    consumed: Boolean(bom.consumedAt),
+                    area: bom.area ?? null,
+                    productionProjectId: bom.productionProjectId,
+                    productionItemId: bom.productionItemId,
+                }
+                : null,
             result: entry.result,
         };
     }

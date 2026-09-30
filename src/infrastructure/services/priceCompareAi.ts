@@ -22,6 +22,8 @@ export interface PriceCompareSource {
     fileName: string;
     /** Das Angebot als PDF. */
     body: Buffer;
+    /** Die Zeilen (#), nach denen dieser Lieferant gefragt wurde (30.09.2026) — fehlt = alle. */
+    askedIndexes?: number[];
 }
 
 export interface PriceCompareInput {
@@ -52,7 +54,7 @@ const LANGUAGE_NAME: Record<PriceCompareInput['language'], string> = { tr: 'Turk
 
 const SYSTEM_PROMPT = [
     'You compare supplier quotations for a purchasing department.',
-    'You get our request lines (FIXED: never add, remove, merge or reorder them) and up to four supplier documents',
+    'You get our request lines (FIXED: never add, remove, merge or reorder them) and up to eight supplier documents',
     '(quotations, offers or order confirmations - the text layer of a PDF or the PDF itself).',
     'STEP 1 - MATCH. For every request line find, in EACH supplier document, the one position that means the SAME article.',
     'Compare the manufacturer part/model number first (ignore spaces, dots, dashes, slashes and letter case), otherwise the meaning of the names:',
@@ -61,14 +63,17 @@ const SYSTEM_PROMPT = [
     '"Reihenklemme" = terminal block = klemens; "Stk.", "St.", "Stück" = pcs = adet.',
     'A supplier position belongs to at most one request line. Freight, packaging, surcharges, sums and VAT lines never match a request line.',
     'When a document has no position for a line, that supplier has NO offer for the line: leave its unitPrice and total "".',
+    'Every supplier was asked only for the lines listed after its name ("asked for"): for any other line leave its unitPrice and total "".',
     'STEP 2 - TRANSCRIBE. unitPrice is the price of ONE unit of the request line AFTER all discounts the document states for that position',
     '(when only a list price and a discount are printed you may apply the discount); total is the printed amount of the whole position.',
     'Copy numbers exactly as printed, without currency and without thousands separators that are not printed. Never invent a value.',
     'When the document prints a price per price unit ("PE 100", "je 100 Stk", "/100"), divide it so that unitPrice is the price of ONE unit.',
+    'listPrice is the printed price of ONE unit BEFORE the position discount and discount the printed discount percentage of that position (both "" when not printed).',
     'Take prices without VAT when both are printed. deliveryTime of an offer is the delivery time the document states for that position ("" when none).',
     'In "evidence" copy the matched position of the document, verbatim and short.',
     'For every supplier also read the header: the offer/quotation/confirmation number, its date as yyyy-mm-dd, the currency as a 3-letter ISO code',
     '(EUR, CHF, USD, TRY ...), the general delivery time, the payment terms and how long the offer is valid; "" when a value is not printed.',
+    'Also read the contact person of the supplier (contactName, a person) with his e-mail (contactEmail) and the language of the document (language: de, tr, en, fr, it ...).',
     'In "notes" name what matters for the decision in one short sentence (freight, minimum order value, positions the supplier did not offer).',
     'STEP 3 - DECIDE. For every request line set "best" to the supplier index with the lowest unit price for the SAME article (-1 when no supplier',
     'offers it); with different currencies judge the value sensibly and say so in "reason". "reason" is one short sentence.',
@@ -101,8 +106,11 @@ const SCHEMA = {
                     paymentTerms: { ...TEXT, description: 'Payment terms; "" when none are printed' },
                     validity: { ...TEXT, description: 'How long the offer is valid; "" when not printed' },
                     notes: { ...TEXT, description: 'One short sentence on what matters for the decision; "" when nothing' },
+                    contactName: { ...TEXT, description: 'The contact person at the supplier; "" when none is printed' },
+                    contactEmail: { ...TEXT, description: 'E-mail of that contact (or the sales address); "" when none is printed' },
+                    language: { ...TEXT, description: 'Language of the document as a 2-letter code' },
                 },
-                required: ['supplier', 'offerNumber', 'offerDate', 'currency', 'deliveryTime', 'paymentTerms', 'validity', 'notes'],
+                required: ['supplier', 'offerNumber', 'offerDate', 'currency', 'deliveryTime', 'paymentTerms', 'validity', 'notes', 'contactName', 'contactEmail', 'language'],
             },
         },
         rows: {
@@ -123,11 +131,13 @@ const SCHEMA = {
                                 supplier: { ...INT, description: 'The supplier index' },
                                 unitPrice: { ...TEXT, description: 'Price of ONE unit after discounts, as printed; "" when the supplier does not offer this line' },
                                 total: { ...TEXT, description: 'Printed amount of the whole position; "" when not printed' },
+                                listPrice: { ...TEXT, description: 'Price of ONE unit before the position discount; "" when not printed' },
+                                discount: { ...TEXT, description: 'Discount percentage of the position; "" when not printed' },
                                 deliveryTime: { ...TEXT, description: 'Delivery time of this position; "" when none is printed' },
                                 note: { ...TEXT, description: 'A short remark (another variant, other quantity, alternative article); "" when nothing' },
                                 evidence: { ...TEXT, description: 'The matched position, copied verbatim and short; "" when none' },
                             },
-                            required: ['supplier', 'unitPrice', 'total', 'deliveryTime', 'note', 'evidence'],
+                            required: ['supplier', 'unitPrice', 'total', 'listPrice', 'discount', 'deliveryTime', 'note', 'evidence'],
                         },
                     },
                     best: { ...INT, description: 'Supplier index with the most favourable offer for this line; -1 when none' },
@@ -178,7 +188,8 @@ export const compareOffersWithAi: PriceCompareAiPort = async (input) => {
     /* Je Angebot die Textlage; ein Scan ohne Textlage geht als Datei mit — das Modell liest ihn selbst. */
     const parts: unknown[] = [];
     for (const [index, source] of input.sources.entries()) {
-        const head = `=== Supplier ${index}: ${oneLine(source.supplierName) || '-'} (file ${oneLine(source.fileName) || '-'}) ===`;
+        const asked = source.askedIndexes?.length ? ` - asked for lines ${source.askedIndexes.map((line) => `#${line}`).join(', ')}` : ' - asked for all lines';
+        const head = `=== Supplier ${index}: ${oneLine(source.supplierName) || '-'} (file ${oneLine(source.fileName) || '-'})${asked} ===`;
         try {
             const read = await readDocumentText({ data: source.body.toString('base64'), fileName: source.fileName, mimeType: 'application/pdf' });
             parts.push({ type: 'text', text: `${head}\n${read.text.slice(0, MAX_SOURCE_CHARS)}` });
@@ -209,7 +220,7 @@ export const compareOffersWithAi: PriceCompareAiPort = async (input) => {
 
     const model = bomTableModel();
     const thinking = isReasoningModel(model);
-    const answerBudget = Math.min(16_384, 800 + input.rows.length * input.sources.length * 90 + input.sources.length * 200);
+    const answerBudget = Math.min(24_000, 800 + input.rows.length * input.sources.length * 110 + input.sources.length * 260);
     let parsed: any;
     let usage: GptUsage;
     try {
@@ -243,6 +254,9 @@ export const compareOffersWithAi: PriceCompareAiPort = async (input) => {
             paymentTerms: oneLine(entry?.paymentTerms),
             validity: oneLine(entry?.validity),
             notes: oneLine(entry?.notes),
+            contactName: oneLine(entry?.contactName),
+            contactEmail: oneLine(entry?.contactEmail),
+            language: oneLine(entry?.language),
         })),
         rows: rows.map((entry: any) => ({
             index: Number(entry?.index),
@@ -250,6 +264,8 @@ export const compareOffersWithAi: PriceCompareAiPort = async (input) => {
                 supplier: Number(offer?.supplier),
                 unitPrice: printed(offer?.unitPrice),
                 total: printed(offer?.total),
+                listPrice: printed(offer?.listPrice),
+                discount: printed(offer?.discount),
                 deliveryTime: oneLine(offer?.deliveryTime),
                 note: oneLine(offer?.note),
                 evidence: oneLine(offer?.evidence),

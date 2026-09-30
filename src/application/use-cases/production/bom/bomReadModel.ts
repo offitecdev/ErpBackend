@@ -1,3 +1,4 @@
+import type { BomRevisionApprovalEntry } from '../../../../domain/repositories/IBomRevisionApprovals';
 import type {
     Bom,
     BomLine,
@@ -62,9 +63,17 @@ export interface BomProductDto {
     name: string;
     brand: string | null;
     modelNumber: string | null;
+    /** «Ürün kodu» der Karte (30.09.2026). */
+    productCode: string | null;
+    /** Einheit der Karte — eine neue BOM-Zeile übernimmt sie. */
+    unit: string | null;
+    /** Taslak-Karte (Einheit, Lieferant oder E-Mail fehlen noch). */
+    isDraft: boolean;
+    materialGroupName: string | null;
     description: string | null;
     supplierName: string | null;
-    suppliers: Array<{ id: string | null; name: string }>;
+    /** Lieferanten der Karte (nur für den Einkauf sichtbar) — `hasEmail`: eine automatische Anfrage geht. */
+    suppliers: Array<{ id: string | null; name: string; hasEmail: boolean }>;
     quantity: number;
     /** Nicht reserviert. */
     free: number;
@@ -79,9 +88,13 @@ export const productDto = (product: BomStockProduct, free?: number): BomProductD
     name: product.name,
     brand: product.brand,
     modelNumber: product.modelNumber,
+    productCode: product.productCode ?? null,
+    unit: product.unit ?? null,
+    isDraft: Boolean(product.isDraft),
+    materialGroupName: product.materialGroupName ?? null,
     description: product.description,
     supplierName: product.suppliers[0]?.name ?? null,
-    suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name })),
+    suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, hasEmail: Boolean(entry.email) })),
     quantity: product.quantity,
     free: round3(free ?? product.quantity),
     serialRequired: product.serialRequired,
@@ -256,6 +269,11 @@ export interface BomRevisionDraftDto {
     createdByName: string | null;
     updatedAt: string;
     lines: BomRevisionLineDto[];
+    /**
+     * Die Freigabe durch die Administratorrolle (30.09.2026): eingereicht (wartet)
+     * oder zurückgewiesen — null = noch nicht eingereicht.
+     */
+    approval: { state: 'SUBMITTED' | 'REJECTED'; at: string; byName: string | null; note: string | null } | null;
 }
 
 /** Eine freigegebene Revision in der Geschichte der BOM (ohne ihre Zeilen). */
@@ -298,7 +316,54 @@ export interface BomDto {
     procurement: BomProcurementSummaryDto[];
     /** Eingegangene Ware, die bei der Buchung an diese BOM ging (Gelen mallar). */
     goodsIn: BomGoodsInDto[];
+    activity?: BomActivityDto;
 }
+
+export interface BomActivityDto {
+    requestsCount: number;
+    goodsCount: number;
+    priceRequests: Record<string, string>;
+    received: Record<string, number>;
+    orderCount: number;
+    confirmedOrders: number;
+    needing: number;
+    requestedNeeding: number;
+}
+
+export type BomSummaryDto = Pick<BomDto,
+    'id' | 'bomNumber' | 'kind' | 'parentBomId' | 'templateName' | 'area' | 'status'
+    | 'consumedAt' | 'revision' | 'updatedAt' | 'completion' | 'counts'> & { activity: BomActivityDto };
+
+export const bomActivity = (bom: BomDto): BomActivityDto => {
+    if (bom.activity) return bom.activity;
+    const priceRequests: Record<string, string> = {};
+    for (const request of bom.procurement) {
+        if (request.kind !== 'PRICE' || request.status === 'CANCELLED') continue;
+        for (const line of request.lines) priceRequests[line.bomLineId] ??= request.requestNumber;
+    }
+    const received: Record<string, number> = {};
+    for (const entry of bom.goodsIn) {
+        if (entry.lineId) received[entry.lineId] = (received[entry.lineId] ?? 0) + entry.quantity;
+    }
+    const orders = bom.purchases.filter((order) => order.kind === 'ORDER');
+    const needing = bom.status === 'DRAFT' && !bom.consumedAt ? bom.lines : bom.lines.filter((line) => line.coverage.missing > 1e-9);
+    return {
+        requestsCount: bom.procurement.length, goodsCount: bom.goodsIn.length, priceRequests, received,
+        orderCount: orders.length, confirmedOrders: orders.filter((order) => order.checks.confirmed).length,
+        needing: needing.length, requestedNeeding: needing.filter((line) => Boolean(priceRequests[line.id])).length,
+    };
+};
+
+export const bomSummaryDto = (bom: BomDto): BomSummaryDto => ({
+    id: bom.id, bomNumber: bom.bomNumber, kind: bom.kind, parentBomId: bom.parentBomId,
+    templateName: bom.templateName, area: bom.area, status: bom.status, consumedAt: bom.consumedAt,
+    revision: bom.revision, updatedAt: bom.updatedAt, completion: bom.completion, counts: bom.counts,
+    activity: { ...bomActivity(bom), priceRequests: {}, received: {} },
+});
+
+export const bomLinesDto = (bom: BomDto): BomDto => ({
+    ...bom, activity: bomActivity(bom), purchases: [], revisions: [], procurement: [], goodsIn: [],
+});
 
 const itemNumber = (value: unknown): number => {
     const parsed = Number(value ?? 0);
@@ -411,6 +476,8 @@ export const bomDto = (
         purchaseRevisions?: Array<Omit<BomPurchaseRevision, 'previousOrder'>>;
         /** Namen der Personen (Kennung → Name). */
         names?: Map<string, string>;
+        /** Die jüngste Freigabe-Handlung je Revision im Entwurf (Kennung der Revision → Eintrag). */
+        approvals?: Map<string, BomRevisionApprovalEntry>;
         /** Die Talepler dieser BOM an den Einkauf. */
         procurement?: BomProcurementSummaryDto[];
         /** Die eingegangene Ware, die an diese BOM ging. */
@@ -512,6 +579,12 @@ export const bomDto = (
                 createdAt: draft.createdAt.toISOString(),
                 createdByName: nameOf(draft.createdById),
                 updatedAt: draft.updatedAt.toISOString(),
+                approval: (() => {
+                    const entry = context.approvals?.get(draft.id);
+                    return entry && entry.action !== 'APPROVED'
+                        ? { state: entry.action, at: entry.at.toISOString(), byName: entry.actorName, note: entry.note }
+                        : null;
+                })(),
                 lines: draft.lines.map((line) => {
                     const product = context.products.get(line.productId) ?? null;
                     return {
@@ -541,7 +614,7 @@ export const bomDto = (
  * Rev.0 — dann steht Rev.0 aus der BOM selbst da (ihre Zeilen haben sich seit
  * der Freigabe nicht geändert).
  */
-const revisionHistory = (bom: Bom, revisions: BomRevision[], nameOf: (id: string | null) => string | null): BomRevisionSummaryDto[] => {
+export const revisionHistory = (bom: Pick<Bom, 'status' | 'revision' | 'approvedAt' | 'approvedById'>, revisions: BomRevision[], nameOf: (id: string | null) => string | null): BomRevisionSummaryDto[] => {
     if (bom.status === 'DRAFT' && !bom.revision) return [];
     const approved = revisions.filter((entry) => entry.status === 'APPROVED').sort((a, b) => a.revision - b.revision);
     const history: BomRevisionSummaryDto[] = approved.map((entry) => ({

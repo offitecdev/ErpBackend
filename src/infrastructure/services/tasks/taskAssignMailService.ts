@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import prisma from "../../database/prisma.client";
 import { getMailTenantId } from "../../../presentation/controllers/serviceTenantScope";
 import { formatInviteDate, inviteWords } from "../calendarInviteMail";
-import { brandLogoInline } from "../mailBrand";
+import { mailInlineImages } from "../mailCardKit";
 import { dispatchMail } from "../outlook/MailDispatchService";
 import { TASK_MAIL_BLUE, buildTaskMailHtml, buildTaskMailText, type TaskMailCardInput, type TaskMailRow } from "./taskMailCard";
 
@@ -191,7 +191,7 @@ const sendOne = async (
             text: buildTaskMailText(card),
             html: buildTaskMailHtml(card),
             replyTo: settings.replyTo || null,
-            inlineImages: [brandLogoInline()],
+            inlineImages: mailInlineImages("TASK"),
         },
         { record: null },
     );

@@ -1,3 +1,6 @@
+import { PrismaBomRevisionApprovals } from '../../infrastructure/repositories/BomRevisionApprovalRepository';
+import { BomRevisionNotifier } from '../../infrastructure/services/bomRevisionNotifications';
+import { PrismaSupplierEmailBook } from '../../infrastructure/repositories/SupplierEmailBook';
 import {
     PrismaBomProductionDirectory,
     PrismaBomPurchaseRepository,
@@ -76,6 +79,9 @@ const devices = new DeviceBomsUseCase(
 /* «Satın alma» (27.09.2026 abends): der Einkauf macht aus den Taleplern der BOM die Belege. */
 const procurement = new BomProcurementUseCase(procurementRequests, goodsIn, purchases, stock, directory, reservations, devices, journal);
 devices.attachProcurement(procurement);
+/* Die Freigaben der Revisionen (eingereicht / zurückgewiesen) stehen an der BOM (30.09.2026). */
+const revisionApprovals = new PrismaBomRevisionApprovals();
+devices.attachRevisionApprovals(revisionApprovals);
 
 export const productionBomModule = {
     templates: templateUseCase,
@@ -96,7 +102,7 @@ export const productionBomModule = {
     ),
     procurement,
     /* «Satın alma» (28.09.2026): Liste seitenweise, Stand + nächster Schritt, Verlauf, Handgriffe. */
-    desk: new ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer, revisions),
+    desk: new ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer, revisions, new PrismaSupplierEmailBook()),
     /* «Fiyat karşılaştırma» (29.09.2026): bis zu vier Angebots-PDFs per KI vergleichen, gespeichert. */
     comparisons: new PriceComparisonUseCase(
         procurementRequests,
@@ -119,6 +125,9 @@ export const productionBomModule = {
         devices,
         new PrismaBomRevisionWriter(),
         productionBomDocumentStorage,
+        // Eine Revision gibt die Administratorrolle frei (30.09.2026).
+        revisionApprovals,
+        new BomRevisionNotifier(),
     ),
     settings: new BomSettingsUseCase(settings),
     reservations,

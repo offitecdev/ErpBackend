@@ -114,6 +114,16 @@ const bumpCounter = async (tx: Tx, tenantId: string, docType: string): Promise<n
 };
 
 export class PrismaBomProcurementRepository implements IBomProcurementRepository {
+    async activityForBoms(tenantId: string, bomIds: string[]) {
+        if (!bomIds.length) return [];
+        const rows = await prisma.productionBomProcurementRequest.findMany({
+            where: { tenantId, bomId: { in: [...new Set(bomIds)] } },
+            select: { bomId: true, requestNumber: true, kind: true, status: true, lines: true },
+            orderBy: { createdAt: 'desc' },
+        });
+        return rows.map((row) => ({ bomId: row.bomId, requestNumber: row.requestNumber, kind: row.kind, status: row.status, lineIds: linesOf(row.lines).map((line) => line.bomLineId) }));
+    }
+
     async create(tenantId: string, input: BomProcurementCreateInput, userId: string): Promise<BomProcurementRequest> {
         const year = new Date().getFullYear();
         const row = await prisma.$transaction(async (tx) => {
@@ -201,6 +211,16 @@ const toGoods = (row: GoodsRow): BomGoodsIn => ({
 });
 
 export class PrismaBomGoodsInRepository implements IBomGoodsInRepository {
+    async totalsForBoms(tenantId: string, bomIds: string[]) {
+        if (!bomIds.length) return [];
+        const rows = await prisma.productionBomGoodsIn.groupBy({
+            by: ['bomId', 'lineId'],
+            where: { tenantId, bomId: { in: [...new Set(bomIds)] } },
+            _sum: { quantity: true }, _count: { _all: true },
+        });
+        return rows.map((row) => ({ bomId: row.bomId!, lineId: row.lineId, quantity: round3(num(row._sum.quantity)), count: row._count._all }));
+    }
+
     async add(tenantId: string, rows: Array<Omit<BomGoodsIn, 'id' | 'tenantId'>>): Promise<void> {
         if (!rows.length) return;
         await prisma.productionBomGoodsIn.createMany({

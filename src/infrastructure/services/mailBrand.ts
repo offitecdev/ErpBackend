@@ -29,12 +29,13 @@ export const BRAND_TASK = "#0f766e";
 
 /**
  * DIE ZEICHEN DER KARTE (19.08.2026). Ein Kalenderblatt fuer Termine und
- * Besprechungen, ein Haken im Kreis fuer Aufgaben. Beide liegen als weisses
- * PNG auf durchsichtigem Grund in `mailKindIcons.ts`; die Farbe kommt aus der
- * Zelle darunter.
+ * Besprechungen, ein Haken im Kreis fuer Aufgaben, seit 30.09.2026 ein Blatt
+ * mit Eselsohr fuer Belege. Alle liegen als weisses PNG auf durchsichtigem
+ * Grund in `mailKindIcons.ts`; die Farbe kommt aus der Zelle darunter.
  */
 export const BRAND_ICON_APPOINTMENT_CID = "offitec-kind-appointment";
 export const BRAND_ICON_TASK_CID = "offitec-kind-task";
+export const BRAND_ICON_DOCUMENT_CID = "offitec-kind-document";
 
 const BRAND_LOGO_PNG_BASE64 =
     "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAQAElEQVR4nOydB3gU1RbHz+wSeheeCoQEU5CiUqQICUSsoLQQQKWKFB827HSlCAg+FEGfIo8u" +

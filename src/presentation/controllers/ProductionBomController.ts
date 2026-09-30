@@ -16,7 +16,7 @@ import { userHasPermission } from '../middlewares/RbacMiddleware';
 
 const roles = new RoleRepository();
 
-const fail = (res: Response, next: NextFunction, error: unknown) => {
+export const fail = (res: Response, next: NextFunction, error: unknown) => {
     if (isBomError(error)) {
         res.status(error.status).json(bomErrorBody(error));
         return;
@@ -28,7 +28,13 @@ const tenantOf = (req: Request) => req.user!.tenantId;
 const param = (req: Request, name: string) => String(req.params[name] ?? '');
 
 /** Wer handelt — Rolle und die zwei Rechte, die die BOM unterscheidet. */
-const actorOf = async (req: Request): Promise<BomActor> => {
+/** Die Sprache der Oberfläche — die Seite schickt sie als `Accept-Language` (tr · de · en). */
+const uiLangOf = (req: Request): 'de' | 'tr' | 'en' | null => {
+    const first = String(req.get('accept-language') ?? '').split(',')[0]?.trim().slice(0, 2).toLowerCase();
+    return first === 'de' || first === 'tr' || first === 'en' ? first : null;
+};
+
+export const actorOf = async (req: Request): Promise<BomActor> => {
     const user = req.user!;
     const [roleInfo, canManage, canPurchase] = await Promise.all([
         roles.getEmployeeRoleInfo(user.id),
@@ -48,6 +54,7 @@ const actorOf = async (req: Request): Promise<BomActor> => {
         canSeeProcurement: procurementLevel >= 1,
         canProcure: procurementLevel >= 2,
         canSeeCosting: Number(roleInfo?.pageAccess?.[COSTING_PAGE] ?? 0) >= 1,
+        lang: uiLangOf(req),
     };
 };
 
@@ -148,7 +155,7 @@ export class ProductionBomController {
     async deviceView(req: Request, res: Response, next: NextFunction) {
         try {
             const actor = await actorOf(req);
-            res.json(shaped(actor, await productionBomModule.devices.view(tenantOf(req), actor, param(req, 'itemId'), req.query.area)));
+            res.json(shaped(actor, await productionBomModule.devices.view(tenantOf(req), actor, param(req, 'itemId'), req.query.area, req.query.view === 'summary')));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -163,7 +170,12 @@ export class ProductionBomController {
     async getBom(req: Request, res: Response, next: NextFunction) {
         try {
             const actor = await actorOf(req);
-            res.json(shaped(actor, { bom: await productionBomModule.devices.get(tenantOf(req), param(req, 'bomId')) }));
+            const tenantId = tenantOf(req);
+            const bomId = param(req, 'bomId');
+            const section = req.query.view;
+            if (section === 'history') res.json(shaped(actor, await productionBomModule.devices.history(tenantId, bomId)));
+            else if (section === 'requests' || section === 'goods') res.json(shaped(actor, await productionBomModule.devices.section(tenantId, bomId, section)));
+            else res.json(shaped(actor, { bom: await productionBomModule.devices.get(tenantId, bomId, section === 'lines') }));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -221,6 +233,22 @@ export class ProductionBomController {
         try {
             const actor = await actorOf(req);
             res.json(shaped(actor, await productionBomModule.revisions.preview(tenantOf(req), actor, param(req, 'bomId'), req.query.keep)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /** «Onaya gönder» — die Revision bei der Administratorrolle einreichen (30.09.2026). */
+    async submitRevision(req: Request, res: Response, next: NextFunction) {
+        try {
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.revisions.submit(tenantOf(req), actor, param(req, 'bomId'))));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /** «Reddet» — nur die Administratorrolle. */
+    async rejectRevision(req: Request, res: Response, next: NextFunction) {
+        try {
+            const actor = await actorOf(req);
+            res.json(shaped(actor, await productionBomModule.revisions.reject(tenantOf(req), actor, param(req, 'bomId'), req.body)));
         } catch (error) { fail(res, next, error); }
     }
 

@@ -21,7 +21,9 @@ import type {
     BomTemplateInput,
     BomTemplateLine,
     BomTemplateSummary,
+    BomUnit,
 } from '../../domain/entities/ProductionBom';
+import { BOM_UNITS } from '../../domain/entities/ProductionBom';
 import type {
     BomConsumePlan,
     BomCreateInput,
@@ -364,13 +366,20 @@ const issueBomNumber = async (tx: Tx, tenantId: string, prefix: string): Promise
 };
 
 export class PrismaBomRepository implements IBomRepository {
-    async listForDevice(tenantId: string, productionItemId: string): Promise<Bom[]> {
+    async listForDevice(tenantId: string, productionItemId: string, lineArea?: BomArea): Promise<Bom[]> {
         const rows = await prisma.productionBom.findMany({
             where: { tenantId, productionItemId },
-            include: { lines: true },
+            include: { lines: lineArea ? { where: { bom: { area: lineArea } } } : true },
             orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         });
         return rows.map(toBom);
+    }
+
+    async getHeader(tenantId: string, id: string): Promise<Omit<Bom, 'lines'> | null> {
+        const row = await prisma.productionBom.findFirst({ where: { tenantId, id } });
+        if (!row) return null;
+        const { lines, ...header } = toBom({ ...row, lines: [] });
+        return header;
     }
 
     async listForProjects(tenantId: string, productionProjectIds: string[] | null): Promise<Bom[]> {
@@ -621,6 +630,10 @@ type StockRow = {
     name: string;
     brand: string | null;
     modelNumber: string | null;
+    productCode: string | null;
+    unit: string | null;
+    isDraft: unknown;
+    materialGroupName: string | null;
     description: string | null;
     serialRequired: unknown;
     quantity: unknown;
@@ -631,21 +644,29 @@ type StockRow = {
 };
 
 const STOCK_SELECT = Prisma.sql`
-    SELECT p.id, p.erpCode, p.name, p.brand, p.modelNumber, p.description, p.serialRequired,
+    SELECT p.id, p.erpCode, p.name, p.brand, p.modelNumber, p.productCode, p.unit, p.isDraft, g.name AS materialGroupName,
+           p.description, p.serialRequired,
            p.quantity, p.minimumOrderQuantity, p.materialGroupId, p.purchasePrice, p.currency
-      FROM depo_urun_kartlari p`;
+      FROM depo_urun_kartlari p
+      LEFT JOIN depo_malzeme_gruplari g ON g.id = p.materialGroupId`;
+
+/** Die Einheit der Karte, wie die BOM sie kennt (ältere Karten: keine). */
+const cardUnitOf = (value: unknown): BomUnit | null => {
+    const text = String(value ?? '').trim().toUpperCase();
+    return (BOM_UNITS as readonly string[]).includes(text) ? text as BomUnit : null;
+};
 
 const withSuppliers = async (tenantId: string, rows: StockRow[]): Promise<BomStockProduct[]> => {
     if (!rows.length) return [];
     const suppliers = await prisma.warehouseProductSupplier.findMany({
         where: { tenantId, productId: { in: rows.map((row) => row.id) } },
-        select: { productId: true, supplierId: true, supplierName: true, sortOrder: true },
+        select: { productId: true, supplierId: true, supplierName: true, email: true, sortOrder: true },
         orderBy: { sortOrder: 'asc' },
     });
-    const byProduct = new Map<string, Array<{ supplierId: string | null; name: string }>>();
+    const byProduct = new Map<string, Array<{ supplierId: string | null; name: string; email: string | null }>>();
     for (const supplier of suppliers) {
         const list = byProduct.get(supplier.productId) ?? [];
-        list.push({ supplierId: supplier.supplierId, name: supplier.supplierName });
+        list.push({ supplierId: supplier.supplierId, name: supplier.supplierName, email: supplier.email ?? null });
         byProduct.set(supplier.productId, list);
     }
     return rows.map((row) => ({
@@ -654,6 +675,10 @@ const withSuppliers = async (tenantId: string, rows: StockRow[]): Promise<BomSto
         name: row.name,
         brand: row.brand,
         modelNumber: row.modelNumber,
+        productCode: row.productCode ?? null,
+        unit: cardUnitOf(row.unit),
+        isDraft: row.isDraft === true || num(row.isDraft) === 1,
+        materialGroupName: row.materialGroupName ?? null,
         description: row.description,
         serialRequired: row.serialRequired === true || num(row.serialRequired) === 1,
         quantity: round3(num(row.quantity)),
@@ -900,6 +925,7 @@ export class PrismaBomPurchaseRepository implements IBomPurchaseRepository {
                 status: true,
                 supplierId: true,
                 supplierName: true,
+                supplierEmail: true,
                 quoteNumber: true,
                 currency: true,
                 totalNet: true,
@@ -915,6 +941,7 @@ export class PrismaBomPurchaseRepository implements IBomPurchaseRepository {
             status: row.status,
             supplierId: row.supplierId,
             supplierName: row.supplierName,
+            supplierEmail: row.supplierEmail ?? null,
             quoteNumber: row.quoteNumber,
             currency: row.currency,
             totalNet: num(row.totalNet),

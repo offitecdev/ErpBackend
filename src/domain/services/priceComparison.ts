@@ -14,7 +14,12 @@
  * Wahl des Modells, und sie ist als solche gekennzeichnet. Reine Funktionen.
  */
 
-export const COMPARE_MAX_SUPPLIERS = 4;
+/**
+ * Höchstzahl der Angebote eines Vergleichs. 29.09.2026: vier; seit dem
+ * 30.09.2026 fragt die Automatik JEDEN Lieferanten der Karten an (A: X,Y ·
+ * B: X,Y,Z,T …) — der Vergleich nimmt darum bis zu acht.
+ */
+export const COMPARE_MAX_SUPPLIERS = 8;
 
 /** Eine Zeile des Talep — fest, in ihrer Reihenfolge. */
 export interface ComparisonRowInput {
@@ -35,6 +40,11 @@ export interface ComparisonSupplierInput {
     fileName: string;
     /** Die Währung der Preisanfrage — falls das Angebot keine druckt. */
     currency: string;
+    /**
+     * Die Zeilen, nach denen DIESER Lieferant gefragt wurde (seine
+     * Preisanfrage) — fehlt die Liste, gilt er als nach allen gefragt.
+     */
+    askedLineIds?: string[];
 }
 
 /** Was das Modell abgeschrieben hat (Texte, Zahlen als gedruckte Zeichen). */
@@ -48,10 +58,24 @@ export interface RawComparison {
         paymentTerms: string;
         validity: string;
         notes: string;
+        /** 30.09.2026: Ansprechpartner und Sprache des Angebots (für die Bestellung). */
+        contactName?: string;
+        contactEmail?: string;
+        language?: string;
     }>;
     rows: Array<{
         index: number;
-        offers: Array<{ supplier: number; unitPrice: number | null; total: number | null; deliveryTime: string; note: string; evidence: string }>;
+        offers: Array<{
+            supplier: number;
+            unitPrice: number | null;
+            total: number | null;
+            deliveryTime: string;
+            note: string;
+            evidence: string;
+            /** Listenpreis vor Rabatt und Rabatt in % — wo das Angebot beides druckt. */
+            listPrice?: number | null;
+            discount?: number | null;
+        }>;
         best: number;
         reason: string;
     }>;
@@ -66,6 +90,11 @@ export interface ComparisonOffer {
     deliveryTime: string;
     note: string;
     evidence: string;
+    /** Wurde dieser Lieferant nach der Zeile gefragt? (nein = «sorulmadı», nie ein Preis) */
+    asked?: boolean;
+    /** Listenpreis vor Rabatt und Rabatt in % (die Bestellung schreibt beides). */
+    listPrice?: number | null;
+    discount?: number | null;
 }
 
 export interface ComparisonSupplier extends ComparisonSupplierInput {
@@ -75,6 +104,12 @@ export interface ComparisonSupplier extends ComparisonSupplierInput {
     paymentTerms: string;
     validity: string;
     notes: string;
+    contactName?: string;
+    contactEmail?: string;
+    /** de | tr | en — die Sprache der Bestellung an diesen Lieferanten. */
+    language?: string;
+    /** So viele Zeilen wurden bei ihm angefragt. */
+    askedLines?: number;
     /** Summe der Zeilenbeträge, die dieses Angebot nennt. */
     total: number;
     pricedLines: number;
@@ -110,6 +145,15 @@ const round = (value: number, digits: number): number => {
 };
 
 const clip = (value: unknown, max: number): string => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+/** «de», «Deutsch», «fr» → de/tr/en (Französisch/Italienisch → de, wie die Schweiz schreibt). */
+export const languageCode = (raw: unknown): string => {
+    const value = clip(raw, 20).toLowerCase();
+    if (value.startsWith('tr') || value.startsWith('tür') || value.startsWith('tur')) return 'tr';
+    if (value.startsWith('en')) return 'en';
+    if (value.startsWith('de') || value.startsWith('ger') || value.startsWith('deu') || value.startsWith('fr') || value.startsWith('it')) return 'de';
+    return '';
+};
 
 const SYMBOLS: Record<string, string> = { '€': 'EUR', 'EURO': 'EUR', '$': 'USD', 'US$': 'USD', '£': 'GBP', '₺': 'TRY', 'TL': 'TRY', 'FR.': 'CHF', 'SFR': 'CHF', 'SFR.': 'CHF' };
 
@@ -152,14 +196,24 @@ export const settleComparison = (
             paymentTerms: clip(read?.paymentTerms, 160),
             validity: clip(read?.validity, 120),
             notes: clip(read?.notes, 400),
+            contactName: clip(read?.contactName, 120),
+            contactEmail: clip(read?.contactEmail, 191),
+            language: languageCode(read?.language),
         };
     });
+    const askedBy = suppliersIn.map((supplier) => (supplier.askedLineIds ? new Set(supplier.askedLineIds) : null));
+    const wasAsked = (supplierIndex: number, bomLineId: string): boolean => {
+        const set = askedBy[supplierIndex];
+        return !set || set.has(bomLineId);
+    };
 
     const lines: ComparisonLine[] = rows.map((row, rowIndex) => {
         const read = raw.rows.find((entry) => entry.index === rowIndex);
         const quantity = row.quantity > 0 ? row.quantity : 0;
         const offers: ComparisonOffer[] = suppliersIn.map((_, index) => {
-            const offer = read?.offers.find((entry) => entry.supplier === index);
+            const asked = wasAsked(index, row.bomLineId);
+            // Wer nicht gefragt wurde, hat für die Zeile kein Angebot — was das Modell auch liest.
+            const offer = asked ? read?.offers.find((entry) => entry.supplier === index) : undefined;
             let unitPrice = positive(offer?.unitPrice);
             let total = positive(offer?.total);
             let computed = false;
@@ -170,6 +224,8 @@ export const settleComparison = (
                 unitPrice = round(total / quantity, 4);
                 computed = true;
             }
+            const listPrice = positive(offer?.listPrice);
+            const discount = typeof offer?.discount === 'number' && offer.discount > 0 && offer.discount < 100 ? round(offer.discount, 2) : null;
             return {
                 unitPrice,
                 total,
@@ -177,6 +233,9 @@ export const settleComparison = (
                 deliveryTime: clip(offer?.deliveryTime, 80),
                 note: clip(offer?.note, 200),
                 evidence: clip(offer?.evidence, 300),
+                asked,
+                listPrice: unitPrice !== null && listPrice !== null && listPrice + 1e-9 >= unitPrice ? listPrice : null,
+                discount: unitPrice !== null ? discount : null,
             };
         });
         const priced = offers.flatMap((offer, index) => (offer.unitPrice !== null ? [{ index, price: offer.unitPrice }] : []));
@@ -198,11 +257,14 @@ export const settleComparison = (
 
     const suppliers: ComparisonSupplier[] = facts.map((supplier, index) => {
         const priced = lines.filter((line) => line.offers[index]!.total !== null);
+        // Vollständig heisst: jede Zeile, nach der er GEFRAGT wurde, hat einen Preis.
+        const asked = lines.filter((line) => line.offers[index]!.asked !== false);
         return {
             ...supplier,
             total: round(priced.reduce((sum, line) => sum + (line.offers[index]!.total ?? 0), 0), 2),
             pricedLines: priced.length,
-            complete: lines.length > 0 && priced.length === lines.length,
+            askedLines: asked.length,
+            complete: asked.length > 0 && asked.every((line) => line.offers[index]!.total !== null),
         };
     });
 
