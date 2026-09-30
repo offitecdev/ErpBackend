@@ -161,6 +161,8 @@ export type ProcurementEventAction =
     | 'ORDER_CONFIRMED'
     | 'REPLY_ADDED'
     | 'SELECTION_SAVED'
+    | 'COMPARISON_SAVED'
+    | 'ORDER_REVISED'
     | 'GOODS_RECEIVED'
     | 'REQUEST_CLOSED'
     | 'REQUEST_CANCELLED'
@@ -168,7 +170,7 @@ export type ProcurementEventAction =
 
 export const PROCUREMENT_EVENT_ACTIONS: readonly ProcurementEventAction[] = [
     'REQUEST_CREATED', 'REQUEST_WITHDRAWN', 'ORDERS_CREATED', 'PRICE_REQUESTS_CREATED', 'PRICE_REQUESTS_SENT',
-    'ORDER_CONFIRMED', 'REPLY_ADDED', 'SELECTION_SAVED', 'GOODS_RECEIVED', 'REQUEST_CLOSED', 'REQUEST_CANCELLED', 'REQUEST_REOPENED',
+    'ORDER_CONFIRMED', 'REPLY_ADDED', 'SELECTION_SAVED', 'COMPARISON_SAVED', 'ORDER_REVISED', 'GOODS_RECEIVED', 'REQUEST_CLOSED', 'REQUEST_CANCELLED', 'REQUEST_REOPENED',
 ];
 
 export interface ProcurementEvent {
@@ -216,6 +218,22 @@ export const receiptEvents = (
     }
     return [...groups.values()];
 };
+
+/**
+ * Eine BOM-Revision änderte eine Bestellung beim Lieferanten (Archivzeile je
+ * Revision der Bestellung): ein Handgriff im Verlauf — die Satın alma muss die
+ * Änderung dem Lieferanten schicken (29.09.2026, Samet: «siparişte revize
+ * olması gerekmez mi … tedarikçiyi PDF ile bilgilendirmemiz lazım»).
+ */
+export const revisionEvents = (
+    rows: Array<{ purchaseOrderId: string; number: number; createdAt: Date; createdById: string | null }>,
+    orders: Map<string, { code: string; supplier: string }>,
+): ProcurementEvent[] => rows.flatMap((row) => {
+    const order = orders.get(row.purchaseOrderId);
+    return order
+        ? [{ action: 'ORDER_REVISED' as const, at: row.createdAt, actorId: row.createdById, actorName: null, data: { code: order.code, supplier: order.supplier, revision: row.number } }]
+        : [];
+});
 
 /** Neueste zuerst. */
 export const newestFirst = (events: ProcurementEvent[]): ProcurementEvent[] =>

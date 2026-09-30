@@ -1,8 +1,11 @@
 /**
  * ── STANDART ŞABLON (Vorgabe Samet, 24.09.2026) ─────────────────────────────
  *
- * Sipariş ve fiyat taleplerinde ürün, miktar, birim fiyat ve tutar bulunur.
- * Fiyatlar talep aşamasında boş kalabilir, tedarikçi yanıtıyla doldurulur.
+ * «Varsayılan sipariş şablonumuz, 3 dilde de: ÜRÜN - MALZEME / MİKTAR /
+ *  BİRİM FİYAT / NET FİYAT / TUTAR» — und seit dem 29.09.2026 wieder:
+ * «fiyat talebi standart şablon ürün malzeme, model no, miktar olması
+ *  gerekiyor; birim fiyat, tutar olmayacak» (Samet). Eine Preisanfrage FRAGT
+ * nach Preisen, sie trägt keine; die Angebote kommen als PDF zum Talep.
  *
  * Her şirkette sipariş ve fiyat talebi için BİRER sabit şablon kendiliğinden
  * kurulur. Sütun ANAHTARLARI (`std…`) sabittir ve arayüz + PDF başlığı o
@@ -22,7 +25,8 @@ export interface StandardColumn {
     key: string;
     name: string;
     type: 'text' | 'number';
-    label: 'productName' | 'quantity' | 'grossPrice' | 'netPrice' | 'total';
+    /** null = eine freie Spalte (das Modell der Preisanfrage). */
+    label: 'productName' | 'quantity' | 'grossPrice' | 'netPrice' | 'total' | null;
     width: number;
 }
 
@@ -34,7 +38,14 @@ export const STANDARD_ORDER_COLUMNS: StandardColumn[] = [
     { key: 'stdAmount', name: 'Betrag', type: 'number', label: 'total', width: 130 },
 ];
 
-export const STANDARD_REQUEST_COLUMNS: StandardColumn[] = STANDARD_ORDER_COLUMNS.filter((column) => column.label !== 'netPrice');
+/** Das Modell der Preisanfrage — derselbe Schlüssel wie in der BOM (`stdModel`). */
+const STANDARD_MODEL_COLUMN: StandardColumn = { key: 'stdModel', name: 'Modell', type: 'text', label: null, width: 180 };
+
+/** Preisanfrage: Produkt - Material · Modell · Menge — keine Preise. */
+export const STANDARD_REQUEST_COLUMNS: StandardColumn[] = [STANDARD_ORDER_COLUMNS[0]!, STANDARD_MODEL_COLUMN, STANDARD_ORDER_COLUMNS[1]!];
+
+/** Die Preisspalten, die eine Preisanfrage vom 28.09.2026 (Codex) mitbekam — sie gehen wieder heraus. */
+const REQUEST_PRICE_KEYS = new Set(['stdUnitPrice', 'stdNetPrice', 'stdAmount']);
 
 export const STANDARD_TEMPLATE_TITLE = 'Standard';
 
@@ -47,10 +58,10 @@ export const standardTableColumnsJson = (documentType: StandardDocumentType): st
 
 /**
  * Şablonun gizlediği sütunlar: ERP kodu hiçbir zaman PDF'e girmez; standart
- * sipariş ve fiyat talebi standart şablonlarında indirim sütunu yoktur.
+ * sipariş şablonunda indirim yoktur, fiyat talebinde fiyat da yoktur.
  */
-export const standardHiddenKeysJson = (_documentType: StandardDocumentType): string =>
-    JSON.stringify(['code', 'discount']);
+export const standardHiddenKeysJson = (documentType: StandardDocumentType): string =>
+    JSON.stringify(documentType === 'PRICE_REQUEST' ? ['code', 'priceGross', 'discount'] : ['code', 'discount']);
 
 /** Bir sütun listesi standart şablonun mu? (ilk sütunun anahtarından tanınır) */
 export const isStandardColumns = (raw: unknown): boolean => {
@@ -76,15 +87,21 @@ export const ensureStandardTemplate = async (tenantId: string, documentType: Sta
     });
     if (rows.length) {
         if (documentType === 'PRICE_REQUEST') {
-            // Add the price fields to existing standard templates, preserving custom fields and names.
-            let config: { columns?: StandardColumn[] } = {};
-            try { config = JSON.parse(rows[0].config || '{}'); } catch { /* Rebuild an unreadable standard template. */ }
+            /* 29.09.2026: die Preisspalten, die der 28.09. an die Standardvorlage der
+               Preisanfrage hängte, gehen wieder heraus, und das Modell kommt nach dem
+               Produkt dazu. Eigene Spalten und eigene Namen bleiben, wie sie sind. */
+            let config: { columns?: Array<Partial<StandardColumn>> } = {};
+            try { config = JSON.parse(rows[0].config || '{}'); } catch { /* unlesbar — so lassen */ }
             const columns = Array.isArray(config.columns) ? config.columns : [];
-            const missing = STANDARD_REQUEST_COLUMNS.filter((column) => !columns.some((entry) => entry.label === column.label));
-            if (missing.length) {
+            const next = columns.filter((column) => !REQUEST_PRICE_KEYS.has(String(column?.key ?? '')));
+            if (!next.some((column) => column?.key === STANDARD_MODEL_COLUMN.key)) {
+                const product = next.findIndex((column) => column?.key === 'stdProduct');
+                next.splice(product + 1, 0, STANDARD_MODEL_COLUMN);
+            }
+            if (columns.length && JSON.stringify(next) !== JSON.stringify(columns)) {
                 await (prisma as any).supplierOrderTemplate.update({
                     where: { id: rows[0].id },
-                    data: { config: JSON.stringify({ ...config, columns: [...columns, ...missing] }) },
+                    data: { config: JSON.stringify({ ...config, columns: next }) },
                 });
             }
         }

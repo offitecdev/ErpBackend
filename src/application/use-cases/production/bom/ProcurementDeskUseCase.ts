@@ -2,6 +2,7 @@ import type { BomProcurementRequest } from '../../../../domain/entities/Producti
 import type {
     BomPurchaseOrderRow,
     IBomGoodsInRepository,
+    IBomRevisionRepository,
     IBomProcurementRepository,
     IBomProductionDirectory,
     IBomPurchaseRepository,
@@ -13,6 +14,7 @@ import {
     docStateOf,
     newestFirst,
     receiptEvents,
+    revisionEvents,
     stageOf,
     type ProcurementDocFacts,
     type ProcurementDocState,
@@ -54,12 +56,15 @@ export interface ProcurementDocView {
     code: string;
     kind: 'ORDER' | 'REQUEST';
     state: ProcurementDocState;
+    supplierId: string | null;
     supplierName: string;
     currency: string;
     totalNet: number;
     lineCount: number;
     quoteNumber: string | null;
     hasQuoteFile: boolean;
+    /** Das Angebot des Lieferanten (29.09.2026: nur ein PDF zählt für den Vergleich). */
+    quoteFile: { name: string; type: string | null } | null;
 }
 
 const fold = (value: unknown): string => String(value ?? '').toLocaleLowerCase('tr-TR');
@@ -113,6 +118,8 @@ export class ProcurementDeskUseCase {
         private directory: IBomProductionDirectory,
         private stock: IBomStockReader,
         private writer: BomPurchaseOrderWriter,
+        /** Die Archivzeilen revidierter Bestellungen — sie erscheinen als «revize edildi» (29.09.2026). */
+        private revisions: IBomRevisionRepository | null = null,
     ) {}
 
     /* ── Die Liste ─────────────────────────────────────────────────────── */
@@ -129,14 +136,18 @@ export class ProcurementDeskUseCase {
         const all = await this.requests.list(tenantId);
         if (!all.length) return { items: [], total: 0, page: 1, pageSize: PAGE_SIZE, canProcure };
         const bomIds = [...new Set(all.map((request) => request.bomId))];
-        const [purchases, receipts, latest, boms, projects, devices] = await Promise.all([
+        const [purchases, receipts, latest, boms, projects, devices, revised] = await Promise.all([
             this.devices.purchasesOf(tenantId, bomIds),
             this.goodsIn.forBoms(tenantId, bomIds),
             this.journal.latest(tenantId, all.map((request) => request.id)),
             this.devices.bomsByIds(tenantId, bomIds),
             this.directory.projects(tenantId, all.map((request) => request.productionProjectId)),
             this.directory.devices(tenantId, all.map((request) => request.productionItemId)),
+            this.revisions ? this.revisions.purchaseRevisionsForBoms(tenantId, bomIds).catch(() => []) : Promise.resolve([]),
         ]);
+        const orderFacts = new Map(purchases.map(({ order }) => [order.id, { code: order.referenceNumber, supplier: order.supplierName }]));
+        const revisedByOrder = new Map<string, typeof revised>();
+        for (const row of revised) revisedByOrder.set(row.purchaseOrderId, [...(revisedByOrder.get(row.purchaseOrderId) ?? []), row]);
         const docById = new Map(purchases.map((entry) => [entry.order.id, entry]));
         const bomNumber = new Map(boms.map((bom) => [bom.id, bom.bomNumber]));
         const receiptsByOrder = new Map<string, typeof receipts>();
@@ -146,7 +157,10 @@ export class ProcurementDeskUseCase {
         }
 
         const needle = fold(query.search).trim().slice(0, 80);
+        // «Fiyat talebi hangisi, satın alma hangisi» (29.09.2026): die Liste lässt sich nach Art filtern.
+        const kind = query.kind === 'PRICE' || query.kind === 'ORDER' ? query.kind : null;
         const rows = all.flatMap((request) => {
+            if (kind && request.kind !== kind) return [];
             const mine = request.purchaseOrderIds.flatMap((id) => docById.get(id) ?? []);
             const project = projects.get(request.productionProjectId) ?? null;
             const device = devices.get(request.productionItemId) ?? null;
@@ -163,7 +177,10 @@ export class ProcurementDeskUseCase {
                 if (!haystack.some((value) => value.includes(needle))) return [];
             }
             // Der letzte Handgriff: Verlauf, Wareneingang (auch vom Depo) oder der Talep selbst.
-            const derived = request.purchaseOrderIds.flatMap((id) => receiptEvents(receiptsByOrder.get(id) ?? []));
+            const derived = request.purchaseOrderIds.flatMap((id) => [
+                ...receiptEvents(receiptsByOrder.get(id) ?? []),
+                ...revisionEvents(revisedByOrder.get(id) ?? [], orderFacts),
+            ]);
             const created: ProcurementEvent = {
                 action: 'REQUEST_CREATED',
                 at: request.createdAt,
@@ -263,12 +280,14 @@ export class ProcurementDeskUseCase {
                     code: doc.referenceNumber,
                     kind: doc.kind,
                     state: facts.state,
+                    supplierId: doc.supplierId,
                     supplierName: doc.supplierName,
                     currency: doc.currency,
                     totalNet: doc.totalNet,
                     lineCount: purchase?.lineCount ?? items.length,
                     quoteNumber: purchase?.quoteNumber ?? null,
                     hasQuoteFile: Boolean(purchase?.quoteFile),
+                    quoteFile: purchase?.quoteFile ? { name: purchase.quoteFile.name, type: purchase.quoteFile.type } : null,
                 },
             };
         });

@@ -66,6 +66,15 @@ const idsOf = (value: Prisma.JsonValue | null): string[] =>
 
 type RequestRow = Prisma.ProductionBomProcurementRequestGetPayload<Record<string, never>>;
 
+/* Bis zum 29.09.2026 schloss sich ein Fiyat talebi von selbst, sobald jede Zeile
+   angefragt war (DONE ohne closedAt). Es bleibt seither offen, bis der Einkauf es
+   schliesst — die so geschlossenen gelten wieder als in Arbeit. Von Hand
+   geschlossene (closedAt gesetzt) bleiben erledigt. */
+const statusOf = (row: RequestRow): BomProcurementStatus => {
+    const status = STATUSES.has(row.status as BomProcurementStatus) ? row.status as BomProcurementStatus : 'OPEN';
+    return row.kind === 'PRICE' && status === 'DONE' && !row.closedAt ? 'IN_PROGRESS' : status;
+};
+
 const toRequest = (row: RequestRow): BomProcurementRequest => ({
     id: row.id,
     tenantId: row.tenantId,
@@ -75,7 +84,7 @@ const toRequest = (row: RequestRow): BomProcurementRequest => ({
     productionItemId: row.productionItemId,
     area: (row.area === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL') as BomArea,
     kind: KINDS.has(row.kind as BomProcurementKind) ? row.kind as BomProcurementKind : 'ORDER',
-    status: STATUSES.has(row.status as BomProcurementStatus) ? row.status as BomProcurementStatus : 'OPEN',
+    status: statusOf(row),
     bomRevision: Number(row.bomRevision) || 0,
     lines: linesOf(row.lines),
     note: row.note,

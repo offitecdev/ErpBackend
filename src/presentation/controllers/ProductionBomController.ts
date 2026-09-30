@@ -330,6 +330,27 @@ export class ProductionBomController {
         } catch (error) { fail(res, next, error); }
     }
 
+    /* ── Fiyat karşılaştırması (29.09.2026) ───────────────────────────────── */
+
+    /** Bis zu vier Angebots-PDFs des Talep per KI vergleichen — gespeichert, danach eine eigene Seite. */
+    async createComparison(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.status(201).json(await productionBomModule.comparisons.create(tenantOf(req), await actorOf(req), param(req, 'requestId'), req.body));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async listComparisons(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.comparisons.list(tenantOf(req), await actorOf(req), param(req, 'requestId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async getComparison(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionBomModule.comparisons.get(tenantOf(req), await actorOf(req), param(req, 'comparisonId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
     async procurementAction(req: Request, res: Response, next: NextFunction) {
         try {
             res.json(await productionBomModule.procurement.setStatus(tenantOf(req), await actorOf(req), param(req, 'requestId'), param(req, 'action')));
@@ -389,6 +410,7 @@ export class ProductionBomController {
                 await actorOf(req),
                 param(req, 'purchaseOrderId'),
                 file ? { body: file.buffer, contentType: file.mimetype, fileName: Buffer.from(file.originalname, 'latin1').toString('utf8') } : null,
+                { lean: req.query.lean === '1' },
             ));
         } catch (error) { fail(res, next, error); }
     }

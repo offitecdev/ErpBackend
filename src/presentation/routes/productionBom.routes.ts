@@ -41,6 +41,9 @@ import { ProductionBomController } from '../controllers/ProductionBomController'
  *   GET    /bom/procurement/requests/:id           … einer mit BOM (voll), Stand, Belegen und Verlauf
  *   POST   /bom/procurement/requests/:id/report    … bestätigte Bestellung / verschickte Anfragen im Verlauf festhalten
  *   POST   /bom/procurement/requests/:id/selection … Auswahl des Preisvergleichs an die Depo-Karten
+ *   GET    /bom/procurement/requests/:id/comparisons  die gespeicherten Fiyat karşılaştırmaları eines Preistalep
+ *   POST   /bom/procurement/requests/:id/comparisons  … neu: bis zu vier Angebots-PDFs per KI vergleichen { purchaseOrderIds, language }
+ *   GET    /bom/procurement/comparisons/:id        … einer (eigene Seite)
  *   POST   /bom/procurement/requests/:id/{close|reopen|cancel}
  *   GET    /bom/costing                            «Kalkülasyon»: Projekte mit geplanten/tatsächlichen Materialkosten
  *   GET    /bom/costing/:projectId                 … ein Projekt: je Gerät die Kalemler (Menge, Alışpreis, Summe)
@@ -335,6 +338,35 @@ router.post('/bom/procurement/requests/:requestId/report', PURCHASE_VIEW, MODULE
  *       - bearerAuth: []
  */
 router.post('/bom/procurement/requests/:requestId/selection', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.saveProcurementSelection(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/requests/{requestId}/comparisons:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: die gespeicherten Preisvergleiche eines Preistalep"
+ *     security:
+ *       - bearerAuth: []
+ *   post:
+ *     tags: [Production]
+ *     summary: "Satın alma: bis zu vier Angebots-PDFs per KI vergleichen und speichern"
+ *     security:
+ *       - bearerAuth: []
+ */
+// Vor `/:action`.
+router.get('/bom/procurement/requests/:requestId/comparisons', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.listComparisons(req, res, next));
+router.post('/bom/procurement/requests/:requestId/comparisons', PURCHASE_VIEW, MODULE, AVAILABLE, aiLimiter, (req, res, next) => controller.createComparison(req, res, next));
+
+/**
+ * @swagger
+ * /production/bom/procurement/comparisons/{comparisonId}:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Satın alma: ein gespeicherter Preisvergleich"
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/bom/procurement/comparisons/:comparisonId', PURCHASE_VIEW, MODULE, AVAILABLE, (req, res, next) => controller.getComparison(req, res, next));
 
 /**
  * @swagger

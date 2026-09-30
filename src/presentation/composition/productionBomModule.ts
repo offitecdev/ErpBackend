@@ -20,6 +20,9 @@ import { BomProcurementUseCase } from '../../application/use-cases/production/bo
 import { BomCostingUseCase } from '../../application/use-cases/production/bom/BomCostingUseCase';
 import { ProcurementDeskUseCase } from '../../application/use-cases/production/bom/ProcurementDeskUseCase';
 import { PrismaProcurementJournal } from '../../infrastructure/repositories/ProcurementJournalRepository';
+import { PriceComparisonUseCase } from '../../application/use-cases/production/bom/PriceComparisonUseCase';
+import { PrismaPriceComparisonStore } from '../../infrastructure/repositories/PriceComparisonRepository';
+import { compareOffersWithAi } from '../../infrastructure/services/priceCompareAi';
 import { PrismaBomGoodsInRepository, PrismaBomProcurementRepository } from '../../infrastructure/repositories/ProductionBomProcurementRepository';
 import type { BomDemand, BomGoodsIn } from '../../domain/entities/ProductionBom';
 import { nextPurchaseReference } from '../routes/inventory.routes';
@@ -93,7 +96,18 @@ export const productionBomModule = {
     ),
     procurement,
     /* «Satın alma» (28.09.2026): Liste seitenweise, Stand + nächster Schritt, Verlauf, Handgriffe. */
-    desk: new ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer),
+    desk: new ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer, revisions),
+    /* «Fiyat karşılaştırma» (29.09.2026): bis zu vier Angebots-PDFs per KI vergleichen, gespeichert. */
+    comparisons: new PriceComparisonUseCase(
+        procurementRequests,
+        devices,
+        procurement,
+        productionBomDocumentStorage,
+        compareOffersWithAi,
+        new PrismaPriceComparisonStore(),
+        journal,
+        directory,
+    ),
     /* «Kalkülasyon» (27.09.2026 abends): geplante gegen tatsächliche Materialkosten. */
     costing: new BomCostingUseCase(boms, stock, directory, devices),
     /* «Bom onaylanırsa geri dönüş yok, revize olması lazım» (27.09.2026). */

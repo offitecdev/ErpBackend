@@ -1012,16 +1012,12 @@ export class DeviceBomsUseCase {
 
     /* ── Hilfen ────────────────────────────────────────────────────────── */
 
-    /** «Projekt · Name — Gerät (BOM-Nummer)» — so steht der Beleg beim Projekt. */
+    /** Die Kommission des Belegs: NUR der Projektname (29.09.2026, Samet: «komisyonda sadece
+        projenin adı yazsın; proje kodu ayrı yerde») — bis dahin «Projekt · Name — Gerät (BOM)».
+        Projektnummer, Gerät und BOM kennt der Beleg über seine Zuordnung. */
     private async projectLabelOf(tenantId: string, bom: Bom): Promise<string> {
-        const [project, device] = await Promise.all([
-            this.directory.project(tenantId, bom.productionProjectId),
-            this.directory.device(tenantId, bom.productionItemId),
-        ]);
-        return [
-            project ? [project.projectNumber, project.projectName].filter(Boolean).join(' · ') : null,
-            device?.name ?? null,
-        ].filter(Boolean).join(' — ') + ` (${bom.bomNumber})`;
+        const project = await this.directory.project(tenantId, bom.productionProjectId);
+        return (project?.projectName || project?.projectNumber || '').trim();
     }
 
     /** Preisanfragen und Bestellungen macht der Einkauf (Buchhaltung, Administratorrolle — Seite «Satın alma»). */

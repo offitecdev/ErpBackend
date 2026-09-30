@@ -117,13 +117,20 @@ export const procurementProgress = (
     };
 };
 
-/** Der Stand, den ein offener Talep nach neuen Belegen hat (geschlossene bleiben). */
+/**
+ * Der Stand, den ein offener Talep nach neuen Belegen hat (geschlossene bleiben).
+ * Ein Satın alma talebi ist erledigt, wenn jede Zeile bestellt ist. Ein Fiyat
+ * talebi NIE von selbst (29.09.2026, Samet: «fiyat taleplerinin hepsinde
+ * tamamlandı diyor, ne alaka? … başka tedarikçilere de danışabilelim») — es
+ * bleibt offen für weitere Lieferanten, bis der Einkauf es schliesst.
+ */
 export const procurementStatusAfter = (
     current: BomProcurementStatus,
     progress: ProcurementProgress,
+    kind: BomProcurementKind = 'ORDER',
 ): BomProcurementStatus => {
     if (current === 'CANCELLED' || current === 'DONE') return current;
-    if (progress.total > 0 && progress.covered >= progress.total) return 'DONE';
+    if (kind === 'ORDER' && progress.total > 0 && progress.covered >= progress.total) return 'DONE';
     return progress.covered > 0 || progress.requests + progress.orders > 0 ? 'IN_PROGRESS' : 'OPEN';
 };
 

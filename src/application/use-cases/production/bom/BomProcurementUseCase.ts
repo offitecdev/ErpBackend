@@ -40,6 +40,7 @@ export interface ProcurementDocumentDto {
     /** REQUEST = Preisanfrage, ORDER = Bestellung. */
     kind: 'ORDER' | 'REQUEST';
     status: string;
+    supplierId: string | null;
     supplierName: string;
     currency: string;
     totalNet: number;
@@ -129,6 +130,7 @@ const docDto = (kind: 'ORDER' | 'REQUEST', order: BomPurchaseOrderRow): Procurem
         referenceNumber: order.referenceNumber,
         kind,
         status,
+        supplierId: order.supplierId,
         supplierName: order.supplierName,
         currency: order.currency,
         totalNet: order.totalNet,
@@ -399,7 +401,7 @@ export class BomProcurementUseCase {
             await this.note(tenantId, actor, request, 'REQUEST_CANCELLED');
         } else if (action === 'reopen') {
             const docs = await this.docFacts(tenantId, [request.bomId]);
-            const status = procurementStatusAfter('OPEN', procurementProgress(request, docs));
+            const status = procurementStatusAfter('OPEN', procurementProgress(request, docs), request.kind);
             await this.requests.update(tenantId, request.id, { status: status === 'DONE' ? 'IN_PROGRESS' : status, closedById: null, closedAt: null });
             await this.note(tenantId, actor, request, 'REQUEST_REOPENED');
         } else {
@@ -419,7 +421,7 @@ export class BomProcurementUseCase {
         if (!request || request.bomId !== bomId || !purchaseOrderIds.length) return;
         const ids = [...new Set([...request.purchaseOrderIds, ...purchaseOrderIds])];
         const docs = await this.docFacts(tenantId, [bomId]);
-        const status = procurementStatusAfter(request.status, procurementProgress({ ...request, purchaseOrderIds: ids }, docs));
+        const status = procurementStatusAfter(request.status, procurementProgress({ ...request, purchaseOrderIds: ids }, docs), request.kind);
         await this.requests.update(tenantId, request.id, { purchaseOrderIds: ids, status });
         const orders = await this.purchases.orders(tenantId, purchaseOrderIds);
         await this.note(tenantId, actor, request, request.kind === 'PRICE' ? 'PRICE_REQUESTS_CREATED' : 'ORDERS_CREATED', {

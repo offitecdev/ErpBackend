@@ -124,7 +124,12 @@ export type BomErrorCode =
     | 'REQUEST_MISMATCH'
     // Satın alma, der Schreibtisch (28.09.2026)
     | 'PRICES_REQUIRED'
-    | 'PRICE_MISSING';
+    | 'PRICE_MISSING'
+    // Fiyat karşılaştırması (29.09.2026)
+    | 'COMPARE_COUNT'
+    | 'COMPARE_PDF_REQUIRED'
+    | 'COMPARE_PDF_UNREADABLE'
+    | 'COMPARISON_NOT_FOUND';
 
 export type BomError = Error & {
     code: BomErrorCode;

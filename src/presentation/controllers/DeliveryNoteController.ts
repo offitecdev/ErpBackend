@@ -173,14 +173,33 @@ export class DeliveryNoteController {
                 .map((id) => id.trim())
                 .filter(Boolean)
                 .slice(0, 500);
-            if (ids.length === 0) return res.json({ codes: {} });
-            const rows: Array<{ id: string; articleCode: string | null }> = await db.article.findMany({
-                where: { tenantId, id: { in: ids } },
-                select: { id: true, articleCode: true },
-            });
+            if (ids.length === 0) return res.json({ codes: {}, stock: {} });
+            const [rows, balances]: [
+                Array<{ id: string; articleCode: string | null }>,
+                Array<{ articleId: string; _sum: { currentQuantity: number | null } }>,
+            ] = await Promise.all([
+                db.article.findMany({
+                    where: { tenantId, id: { in: ids } },
+                    select: { id: true, articleCode: true },
+                }),
+                // Lagerbestand (29.09.2026, Samet): nur für die Erfassungsmaske —
+                // Summe über alle Lagerorte, wie die Artikelliste sie zeigt.
+                db.stockBalance.groupBy({
+                    by: ['articleId'],
+                    where: { tenantId, articleId: { in: ids } },
+                    _sum: { currentQuantity: true },
+                }),
+            ]);
             const codes: Record<string, string> = {};
-            rows.forEach((row) => { if (row.articleCode) codes[row.id] = row.articleCode; });
-            res.json({ codes });
+            const stock: Record<string, number> = {};
+            rows.forEach((row) => {
+                if (row.articleCode) codes[row.id] = row.articleCode;
+                stock[row.id] = 0;
+            });
+            balances.forEach((row) => {
+                if (row.articleId in stock) stock[row.articleId] = Math.round((Number(row._sum.currentQuantity) || 0) * 1000) / 1000;
+            });
+            res.json({ codes, stock });
         } catch (error) {
             fail(res, error);
         }

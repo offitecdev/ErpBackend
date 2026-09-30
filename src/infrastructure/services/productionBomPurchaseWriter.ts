@@ -36,16 +36,17 @@ import { productionModule } from '../../presentation/composition/productionModul
  *  fiyatı.»
  *
  * Eine BOM-Bestellung ist eine gewöhnliche Lieferantenbestellung
- * (ORDER_DRAFT, Standardvorlage, eigene BE-Nummer) mit drei Besonderheiten:
- *   · vorn eine Spalte «ERP-Code» (`stdErp`, eine eigene Angabe der Zeile) —
- *     so steht der Code in Tabelle UND PDF, ohne das PDF anzufassen;
+ * (ORDER_DRAFT, Standardvorlage, eigene BE-Nummer) mit zwei Besonderheiten:
  *   · jede Position trägt ihre BOM-Zeile (`bomLineId`) und ihr Gerät;
  *   · die Bestellung ist dem Produktionsprojekt und Gerät zugeordnet
  *     (uretim_siparis_atamalari) — sie erscheint dort wie jede andere.
+ *
+ * KEIN ERP-CODE AUF DEM BELEG (29.09.2026, Samet: «sipariş PDF'lerinde ERP
+ * kodları gözükmesin, satırlarda da gözükmesin — sipariş, hani aktarım
+ * yapıyoruz»): die frühere Spalte «ERP-Code» vorn (`stdErp`) wird nicht mehr
+ * geschrieben. Der Code reist nur noch im Feld `code` der Position mit — das
+ * zeigt weder die Tabelle noch ein PDF; der Wareneingang braucht ihn.
  */
-
-export const ERP_COLUMN_KEY = 'stdErp';
-const ERP_COLUMN_NAME = 'ERP-Code';
 /* Die Preisanfrage trägt statt des ERP-Codes das MODELL des Produkts (Samet,
    27.09.2026: «fiyat talebinde sadece ürün adı, miktarı, modeli ile aktarım
    yapılsın») — eine eigene Spalte gleich nach dem Namen. Der Name steht in
@@ -66,17 +67,11 @@ export interface BomOrderDraftLine {
     quantity: number;
 }
 
-/** Bestellung: ERP-Code vorn, dann die Standardvorlage. */
-const orderColumnsJson = (): string => JSON.stringify([
-    { key: ERP_COLUMN_KEY, name: ERP_COLUMN_NAME, label: null, type: 'text' },
-    ...STANDARD_ORDER_COLUMNS.map(({ key, name, label, type }) => ({ key, name, label, type })),
-]);
+/** Bestellung: die Standardvorlage — ohne ERP-Code. */
+const orderColumnsJson = (): string => JSON.stringify(STANDARD_ORDER_COLUMNS.map(({ key, name, label, type }) => ({ key, name, label, type })));
 
-/** Preisanfrage: Produkt · Modell · Menge — kein ERP-Code, keine Preise. */
-const requestColumnsJson = (): string => JSON.stringify(STANDARD_REQUEST_COLUMNS.flatMap(({ key, name, label, type }) => [
-    { key, name, label, type },
-    ...(label === 'productName' ? [{ key: MODEL_COLUMN_KEY, name: MODEL_COLUMN_NAME, label: null, type: 'text' }] : []),
-]));
+/** Preisanfrage: die Standardvorlage — Produkt · Modell · Menge, kein ERP-Code, keine Preise. */
+const requestColumnsJson = (): string => JSON.stringify(STANDARD_REQUEST_COLUMNS.map(({ key, name, label, type }) => ({ key, name, label, type })));
 
 /** Eine Zeile der Preisanfrage — ohne Hersteller, ohne ERP-Spalte. */
 export interface BomRequestDraftLine {
@@ -109,7 +104,6 @@ const itemOf = (line: BomOrderDraftLine, productionItemId: string) => ({
     calcMode: 'DIRECT',
     directCopy: true,
     lineTotal: 0,
-    extras: [{ key: ERP_COLUMN_KEY, name: ERP_COLUMN_NAME, value: line.erpCode ?? '', width: 130 }],
     bomLineId: line.bomLineId,
     productionItemId,
 });
