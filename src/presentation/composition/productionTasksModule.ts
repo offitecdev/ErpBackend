@@ -6,6 +6,7 @@ import {
     PrismaProductionTaskTemplateRepository,
 } from '../../infrastructure/repositories/ProductionTaskRepository';
 import { ProductionTaskNotifier } from '../../infrastructure/services/productionTaskNotifications';
+import { documentStandardsReviewer } from '../../infrastructure/services/documentStandardsReview';
 import { ProductionTaskTemplatesUseCase } from '../../application/use-cases/production/ProductionTaskTemplatesUseCase';
 import { ProductionDeviceTasksUseCase } from '../../application/use-cases/production/ProductionDeviceTasksUseCase';
 import path from 'path';
@@ -16,6 +17,13 @@ const taskFiles = new DocumentStorage({
     prefix: 'local:production-task-file/',
     directory: process.env.OFFITEC_PRODUCTION_TASK_UPLOAD_DIR
         || path.join(process.cwd(), 'storage', 'production-task-files'),
+});
+
+/** Die Standards der Dokumente als PDF (01.10.2026): eigene Ablage, sonst wie die Dateien. */
+const standardsFiles = new DocumentStorage({
+    prefix: 'local:production-task-standards/',
+    directory: process.env.OFFITEC_PRODUCTION_TASK_STANDARDS_DIR
+        || path.join(process.cwd(), 'storage', 'production-task-standards'),
 });
 
 /**
@@ -38,6 +46,9 @@ export const productionTasksModule = {
         new PrismaProductionTaskActivityLog(),
         // Anfragen an die Verwaltung (30.09.2026).
         new PrismaProductionTaskRequestRepository(),
+        // Die KI-Prüfung der PDFs gegen die Standards der Dokumente (01.10.2026).
+        documentStandardsReviewer,
+        standardsFiles,
     ),
     directory,
 };

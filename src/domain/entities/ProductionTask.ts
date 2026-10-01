@@ -103,6 +103,52 @@ export interface ProductionSubtaskFile {
     uploadedByName: string | null;
     /** Zeitpunkt (ISO). */
     uploadedAt: string;
+    /** Die Prüfung gegen die Standards der Dokumente durch die KI (01.10.2026) — null: nie geprüft. */
+    analysis: ProductionFileAnalysis | null;
+}
+
+/**
+ * Das PDF mit den Standards einer Unteraufgabe (01.10.2026). `ref` zeigt in die eigene Ablage
+ * der Standards — mit der Firma im Pfad; gelesen wird nur aus der eigenen Firma.
+ */
+export interface ProductionStandardsFile {
+    ref: string;
+    name: string;
+    size: number;
+    /** Zeitpunkt (ISO). */
+    uploadedAt: string;
+}
+
+export type ProductionFileAnalysisStatus = 'QUEUED' | 'RUNNING' | 'DONE' | 'FAILED';
+/** Das Urteil über die ganze Datei. */
+export type ProductionFileAnalysisVerdict = 'PASS' | 'FAIL' | 'UNCLEAR';
+/** Das Urteil über einen Standard. */
+export type ProductionFileAnalysisResult = 'MET' | 'NOT_MET' | 'UNCLEAR';
+
+/**
+ * ── KI-PRÜFUNG EINES PDFs (01.10.2026, Vorgabe Samet) ──────────────────────
+ *
+ * «These standards are for AI to control them against the PDF.» Beim
+ * Schicken zur Freigabe prüft gpt-5.4-mini jedes PDF gegen die Standards der
+ * Unteraufgabe; die Verwaltung sieht den Bericht beim Prüfen der Dateien, wer
+ * an der Unteraufgabe steht, darunter. Nur ein Rat — freigegeben wird wie
+ * bisher von Hand.
+ */
+export interface ProductionFileAnalysis {
+    status: ProductionFileAnalysisStatus;
+    /** Die Standards, gegen die geprüft wird — ändern sie sich, gilt die Prüfung nicht mehr. */
+    standards: string;
+    /** … und das PDF der Standards (sein `ref`), falls eines dabei war. */
+    standardsFileRef: string | null;
+    /** Zeitpunkte (ISO). `requestedAt` kennzeichnet den Auftrag: ein älterer schreibt nicht mehr. */
+    requestedAt: string;
+    finishedAt: string | null;
+    verdict: ProductionFileAnalysisVerdict | null;
+    summary: string | null;
+    checks: Array<{ standard: string; result: ProductionFileAnalysisResult; reason: string }>;
+    model: string | null;
+    /** Warum sie scheiterte (z. B. GPT_NOT_CONFIGURED, GPT_QUOTA, ANALYSIS_INTERRUPTED). */
+    errorCode: string | null;
 }
 
 /** Ein Punkt der Freigabe-Checkliste einer Unteraufgabe (28.09.2026). */
@@ -138,6 +184,18 @@ export interface ProductionSubtask {
     requiresApproval: boolean;
     /** Was die Verwaltung bei der Freigabe prüft (nur mit «Approval», sonst leer). */
     approvalChecklist: ProductionSubtaskChecklistItem[];
+    /**
+     * Die Standards der Dokumente (01.10.2026: «the admin will write standarts
+     * that the documents that are added to that subtask should meet»): freier
+     * Text mit Zeilen, nur mit «Document» — sonst null. Steht beim Prüfen der
+     * Dateien unter der Checkliste.
+     */
+    documentStandards: string | null;
+    /**
+     * Die Standards als PDF (01.10.2026: «the admins should be able to upload the standards as
+     * pdf … both upload pdf and write text, the AI should consider both») — nur mit «Document».
+     */
+    documentStandardsFile: ProductionStandardsFile | null;
     /**
      * Der Stand der Unteraufgabe am Gerät (28.09.2026: «assign the statuses to
      * the subtasks»). In der Vorlage immer TODO — der Anfang.

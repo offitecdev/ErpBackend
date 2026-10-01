@@ -3,6 +3,8 @@ import type {
     ProductionAreaTotals,
     ProductionBuiltInArea,
     ProductionBuiltInStage,
+    ProductionFileAnalysis,
+    ProductionStandardsFile,
     ProductionSubtask,
     ProductionSubtaskChecklistItem,
     ProductionSubtaskFile,
@@ -101,6 +103,7 @@ export const PRODUCTION_TASK_LIMITS = {
     subtaskName: 200,
     checklistItems: 30,
     checklistItemText: 200,
+    documentStandards: 2000,
 } as const;
 
 /**
@@ -159,6 +162,10 @@ export type ProductionTaskErrorCode =
     | 'SECTION_FULL'
     | 'REVISION_NOTE_REQUIRED'
     | 'CHECKLIST_TOO_MANY'
+    // KI-Prüfung der PDFs gegen die Standards (01.10.2026).
+    | 'NO_STANDARDS'
+    | 'ANALYSIS_RUNNING'
+    | 'STANDARDS_FILE_NOT_FOUND'
     | 'NOT_PENDING'
     | 'NOT_APPROVABLE'
     | 'ALREADY_COMPLETED'
@@ -208,6 +215,17 @@ export const roundPercent = (value: number): number => Math.round(value * 100) /
 
 const text = (value: unknown, max: number): string =>
     (typeof value === 'string' ? value : '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+/** Wie `text`, aber die Zeilen bleiben (höchstens eine Leerzeile am Stück). */
+const multilineText = (value: unknown, max: number): string =>
+    (typeof value === 'string' ? value : '')
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+        .slice(0, max);
 
 const objectOf = (value: unknown): Record<string, unknown> =>
     (value && typeof value === 'object' && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
@@ -488,10 +506,149 @@ const filesFrom = (value: unknown): ProductionSubtaskFile[] => {
             uploadedById: typeof row.uploadedById === 'string' ? row.uploadedById : null,
             uploadedByName: text(row.uploadedByName, 120) || null,
             uploadedAt: typeof row.uploadedAt === 'string' ? row.uploadedAt : '',
+            analysis: fileAnalysisFrom(row.analysis),
         });
     }
     return list;
 };
+
+/* ── Die Standards als PDF (01.10.2026) ─────────────────────────────────────── */
+
+/** So sieht ein Verweis in die Ablage der Standards aus: Art, Firma, Monat, Zufallsname. */
+const STANDARDS_REF = /^(?:local|r2):production-task-standards\/([A-Za-z0-9_-]+)\/[0-9-]+\/[0-9a-f-]{36}\.pdf$/;
+/** So gross darf das PDF der Standards sein (zusammen mit dem geprüften PDF unter der Grenze der KI). */
+export const STANDARDS_FILE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Gehört dieser Verweis in die Ablage der Standards DIESER Firma? Sonst wird nichts gelesen. */
+export const isStandardsRefOf = (ref: string, tenantId: string): boolean =>
+    STANDARDS_REF.exec(ref)?.[1] === String(tenantId).replace(/[^a-zA-Z0-9_-]/g, '_');
+
+/** Das PDF der Standards aus Datenbank oder Anfrage — nur mit «Document»; ein fremder Verweis fällt weg. */
+const standardsFileFrom = (value: unknown, requiresDocument: boolean): ProductionStandardsFile | null => {
+    if (!requiresDocument) return null;
+    const row = objectOf(value);
+    const ref = typeof row.ref === 'string' ? row.ref : '';
+    if (!STANDARDS_REF.test(ref)) return null;
+    return {
+        ref,
+        name: text(row.name, 200) || 'standards.pdf',
+        size: typeof row.size === 'number' && Number.isFinite(row.size) ? row.size : 0,
+        uploadedAt: typeof row.uploadedAt === 'string' ? row.uploadedAt : '',
+    };
+};
+
+/** Trägt die Unteraufgabe Standards — Text, PDF oder beides? */
+export const hasDocumentStandards = (subtask: Pick<ProductionSubtask, 'requiresDocument' | 'documentStandards' | 'documentStandardsFile'>): boolean =>
+    subtask.requiresDocument && Boolean(subtask.documentStandards || subtask.documentStandardsFile);
+
+/* ── KI-Prüfung der PDFs gegen die Standards (01.10.2026) ──────────────────── */
+
+const ANALYSIS_STATUSES = new Set(['QUEUED', 'RUNNING', 'DONE', 'FAILED']);
+const ANALYSIS_VERDICTS = new Set(['PASS', 'FAIL', 'UNCLEAR']);
+const ANALYSIS_RESULTS = new Set(['MET', 'NOT_MET', 'UNCLEAR']);
+/** Höchstens so viele geprüfte Standards je Datei, so lang ein Grund, so lang die Zusammenfassung. */
+export const FILE_ANALYSIS_LIMITS = { checks: 40, standard: 300, reason: 600, summary: 1200 } as const;
+
+/** Die Prüfung einer Datei aus der Datenbank — Unlesbares heisst «nie geprüft». */
+const fileAnalysisFrom = (value: unknown): ProductionFileAnalysis | null => {
+    const row = objectOf(value);
+    if (!ANALYSIS_STATUSES.has(String(row.status)) || typeof row.requestedAt !== 'string') return null;
+    const checks = Array.isArray(row.checks) ? row.checks : [];
+    return {
+        status: row.status as ProductionFileAnalysis['status'],
+        standards: multilineText(row.standards, PRODUCTION_TASK_LIMITS.documentStandards),
+        standardsFileRef: typeof row.standardsFileRef === 'string' && STANDARDS_REF.test(row.standardsFileRef) ? row.standardsFileRef : null,
+        requestedAt: row.requestedAt,
+        finishedAt: typeof row.finishedAt === 'string' ? row.finishedAt : null,
+        verdict: ANALYSIS_VERDICTS.has(String(row.verdict)) ? row.verdict as ProductionFileAnalysis['verdict'] : null,
+        summary: multilineText(row.summary, FILE_ANALYSIS_LIMITS.summary) || null,
+        checks: checks.slice(0, FILE_ANALYSIS_LIMITS.checks).map((raw) => objectOf(raw)).map((check) => ({
+            standard: text(check.standard, FILE_ANALYSIS_LIMITS.standard),
+            result: (ANALYSIS_RESULTS.has(String(check.result)) ? check.result : 'UNCLEAR') as ProductionFileAnalysis['checks'][number]['result'],
+            reason: multilineText(check.reason, FILE_ANALYSIS_LIMITS.reason),
+        })).filter((check) => check.standard),
+        model: text(row.model, 60) || null,
+        errorCode: text(row.errorCode, 60) || null,
+    };
+};
+
+/** So lange darf eine Prüfung warten oder laufen — danach ist sie verloren (z. B. Neustart des Servers). */
+const ANALYSIS_STALE_MS = 15 * 60 * 1000;
+
+/** Wartet oder läuft sie noch wirklich? Eine liegengebliebene gilt als gescheitert. */
+export const isAnalysisActive = (analysis: ProductionFileAnalysis | null, now = Date.now()): boolean =>
+    Boolean(analysis && (analysis.status === 'QUEUED' || analysis.status === 'RUNNING')
+        && now - Date.parse(analysis.requestedAt) < ANALYSIS_STALE_MS);
+
+/** Eine liegengebliebene Prüfung, wie die Oberfläche sie sieht: gescheitert, «unterbrochen». */
+export const analysisAsSeen = (analysis: ProductionFileAnalysis | null, now = Date.now()): ProductionFileAnalysis | null => {
+    if (!analysis || analysis.status === 'DONE' || analysis.status === 'FAILED' || isAnalysisActive(analysis, now)) return analysis;
+    return { ...analysis, status: 'FAILED', errorCode: 'ANALYSIS_INTERRUPTED' };
+};
+
+/**
+ * Welche PDFs beim Schicken zur Freigabe geprüft werden: je Datei die aktuelle
+ * Fassung — sofern die Unteraufgabe «Document» und Standards trägt und die
+ * Fassung nicht schon gegen DIESELBEN Standards geprüft ist (gescheitert zählt nicht).
+ */
+export const filesToAnalyse = (subtask: ProductionSubtask): string[] => {
+    if (!hasDocumentStandards(subtask)) return [];
+    const standards = subtask.documentStandards ?? '';
+    const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    const latest = new Map<string, ProductionSubtaskFile>();
+    for (const file of subtask.files) {
+        const known = latest.get(file.groupId);
+        if (!known || file.version > known.version) latest.set(file.groupId, file);
+    }
+    return [...latest.values()]
+        .filter((file) => file.type === 'application/pdf')
+        .filter((file) => !file.analysis
+            || file.analysis.standards !== standards
+            || file.analysis.standardsFileRef !== standardsFileRef
+            || analysisAsSeen(file.analysis)?.status === 'FAILED')
+        .map((file) => file.id);
+};
+
+/** Diese Dateien warten auf die Prüfung — gegen die heutigen Standards der Unteraufgabe. */
+export const withQueuedAnalyses = (subtask: ProductionSubtask, fileIds: readonly string[], requestedAt: string): ProductionSubtask => {
+    const wanted = new Set(fileIds);
+    const standards = subtask.documentStandards ?? '';
+    const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    return {
+        ...subtask,
+        files: subtask.files.map((file) => (!wanted.has(file.id) ? file : {
+            ...file,
+            analysis: {
+                status: 'QUEUED',
+                standards,
+                standardsFileRef,
+                requestedAt,
+                finishedAt: null,
+                verdict: null,
+                summary: null,
+                checks: [],
+                model: null,
+                errorCode: null,
+            },
+        })),
+    };
+};
+
+/**
+ * Ein Schritt der Prüfung einer Datei — nur, solange DIESER Auftrag gilt (dieselbe
+ * `requestedAt`): ein neuerer Auftrag oder eine entfernte Datei bleiben unberührt.
+ */
+export const withFileAnalysis = (
+    subtask: ProductionSubtask,
+    fileId: string,
+    requestedAt: string,
+    patch: Partial<ProductionFileAnalysis>,
+): ProductionSubtask => ({
+    ...subtask,
+    files: subtask.files.map((file) => (file.id !== fileId || file.analysis?.requestedAt !== requestedAt
+        ? file
+        : { ...file, analysis: { ...file.analysis, ...patch } })),
+});
 
 /**
  * Die Freigabe-Checkliste einer Unteraufgabe (28.09.2026: «add Approval
@@ -574,6 +731,10 @@ const subtaskOf = (
     requiresDocument: row.requiresDocument === true,
     requiresApproval: row.requiresApproval === true,
     approvalChecklist: approvalChecklistFrom(row.approvalChecklist, row.requiresApproval === true),
+    documentStandards: row.requiresDocument === true
+        ? multilineText(row.documentStandards, PRODUCTION_TASK_LIMITS.documentStandards) || null
+        : null,
+    documentStandardsFile: standardsFileFrom(row.documentStandardsFile, row.requiresDocument === true),
     status: statusFrom(row.status),
     files: filesFrom(row.files),
     completedById: typeof row.completedById === 'string' ? row.completedById : null,

@@ -13,7 +13,7 @@ import type {
     ProductionTaskTemplate,
     ProductionTaskTemplateSummary,
 } from '../../../domain/entities/ProductionTask';
-import { areaSharesOf, templateCheck, type ProductionTaskTemplateCheck } from '../../../domain/services/productionTasks';
+import { analysisAsSeen, areaSharesOf, templateCheck, type ProductionTaskTemplateCheck } from '../../../domain/services/productionTasks';
 
 /**
  * ── GÖREVLENDİRME · WAS DIE OBERFLÄCHE BEKOMMT ──────────────────────────────
@@ -106,7 +106,8 @@ export const taskDto = (task: ProductionTaskDraft & { id: string; status?: Produ
     status: task.status ?? 'TODO',
     subtasks: task.subtasks.map((subtask) => ({
         ...subtask,
-        files: subtask.files.map(({ ref: _ref, ...file }) => file),
+        // Eine liegengebliebene KI-Prüfung (01.10.2026) zeigt sich als gescheitert, «unterbrochen».
+        files: subtask.files.map(({ ref: _ref, ...file }) => ({ ...file, analysis: analysisAsSeen(file.analysis) })),
     })),
 });
 

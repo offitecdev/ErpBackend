@@ -161,6 +161,52 @@ export class ProductionTaskController {
         } catch (error) { fail(res, next, error); }
     }
 
+    /** Die Standards als PDF hochladen (01.10.2026) — nur die Verwaltung. */
+    async uploadStandardsFile(req: Request, res: Response, next: NextFunction) {
+        try {
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            const file = (req as Request & { file?: { buffer: Buffer; mimetype: string; originalname: string } }).file;
+            res.json(await productionTasksModule.devices.uploadStandardsFile(
+                tenantOf(req),
+                Boolean(isSystemAdmin),
+                // multer liefert den Namen als latin1 — zurück nach UTF-8.
+                file ? { body: file.buffer, contentType: file.mimetype, fileName: Buffer.from(file.originalname, 'latin1').toString('utf8') } : null,
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /** Das PDF der Standards lesen (`?ref=…&name=…`) — nur aus der eigenen Firma. */
+    async readStandardsFile(req: Request, res: Response, next: NextFunction) {
+        try {
+            const file = await productionTasksModule.devices.readStandardsFile(
+                tenantOf(req),
+                typeof req.query.ref === 'string' ? req.query.ref : '',
+                typeof req.query.name === 'string' ? req.query.name : '',
+            );
+            res.setHeader('Content-Type', file.contentType);
+            res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
+            res.setHeader('Cache-Control', 'private, no-store');
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.send(file.body);
+        } catch (error) { fail(res, next, error); }
+    }
+
+    /** Die KI-Prüfung eines PDFs noch einmal (01.10.2026) — nur die Verwaltung. */
+    async retryDeviceFileAnalysis(req: Request, res: Response, next: NextFunction) {
+        try {
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            res.json(await productionTasksModule.devices.retryFileAnalysis(
+                tenantOf(req),
+                await actorOf(req),
+                Boolean(isSystemAdmin),
+                param(req, 'itemId'),
+                param(req, 'taskId'),
+                param(req, 'subtaskId'),
+                param(req, 'fileId'),
+            ));
+        } catch (error) { fail(res, next, error); }
+    }
+
     async unlockDeviceSubtask(req: Request, res: Response, next: NextFunction) {
         try {
             const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
