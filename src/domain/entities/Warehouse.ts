@@ -29,12 +29,23 @@ export type WarehouseCurrency = typeof WAREHOUSE_CURRENCIES[number];
 export const WAREHOUSE_UNITS = ['PCS', 'M', 'KG', 'SET', 'PACK'] as const;
 export type WarehouseUnit = typeof WAREHOUSE_UNITS[number];
 
+/**
+ * Der BOM-Bereich einer Hauptkategorie (01.10.2026, Samet: «bomda mekanik olan
+ * sadece kendi MAK kodlarını görebilecek … her kod türü, bu kod türlerine de
+ * alan atama olacak: mekanik, elektrik ve ikisi de»). Die BOM-Suche eines
+ * Bereichs zeigt nur Karten aus Kategorien dieses Bereichs oder BOTH.
+ */
+export const WAREHOUSE_BOM_AREAS = ['MECHANICAL', 'ELECTRICAL', 'BOTH'] as const;
+export type WarehouseBomArea = typeof WAREHOUSE_BOM_AREAS[number];
+
 /** Hauptkategorie (erste Zelle des ERP-Codes). */
 export interface WarehouseCategory {
     id: string;
     tenantId: string;
     name: string;
     code: string;
+    /** In welchen BOMs ihre Karten gesucht werden (Vorgabe BOTH). */
+    bomArea: WarehouseBomArea;
     sortOrder: number;
 }
 

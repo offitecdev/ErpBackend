@@ -1,4 +1,5 @@
 import type {
+    WarehouseBomArea,
     WarehouseCategoryWithGroups,
     WarehouseDeviceOption,
     WarehouseImport,
@@ -217,6 +218,8 @@ export interface WarehouseCategoryDto {
     id: string;
     name: string;
     code: string;
+    /** BOM-Bereich (01.10.2026): MECHANICAL | ELECTRICAL | BOTH. */
+    bomArea: WarehouseBomArea;
     productCount: number;
     locked: boolean;
     groups: WarehouseGroupDto[];
@@ -247,6 +250,7 @@ export const catalogDto = (tree: { categories: WarehouseCategoryWithGroups[]; un
             id: category.id,
             name: category.name,
             code: category.code,
+            bomArea: category.bomArea,
             productCount: groups.reduce((sum, group) => sum + group.productCount, 0),
             locked: groups.some((group) => group.locked),
             groups,

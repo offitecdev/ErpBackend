@@ -129,6 +129,7 @@ export type BomErrorCode =
     | 'COMPARE_COUNT'
     | 'COMPARE_PDF_REQUIRED'
     | 'COMPARE_PDF_UNREADABLE'
+    | 'COMPARE_PDF_MISSING'
     | 'COMPARISON_NOT_FOUND'
     // Satın alma otomasyonu (30.09.2026)
     | 'ORDER_REQUEST_RETIRED'

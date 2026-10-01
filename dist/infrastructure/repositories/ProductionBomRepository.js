@@ -608,20 +608,39 @@ class PrismaBomStockReader {
         });
         return rows.map((row) => ({ ...row, createdAt: toDate(row.createdAt) }));
     }
-    async search(tenantId, query, limit) {
+    async search(tenantId, query, limit, area) {
         const needle = query.trim().slice(0, 120);
         if (!needle)
             return [];
         const like = likeOf(needle);
-        const rows = await prisma_client_1.default.$queryRaw `${STOCK_SELECT}
+        /* «Bomda mekanik olan sadece kendi MAK kodlarını görebilecek» (01.10.2026):
+           Depo › Ayarlar ordnet jede Hauptkategorie einem Bereich zu (oder beiden).
+           Karten ohne Gruppe haben keinen Kod türü — sie bleiben überall sichtbar. */
+        const areaFilter = area
+            ? client_1.Prisma.sql `AND (p.materialGroupId IS NULL OR p.materialGroupId NOT IN (
+                  SELECT g.id FROM depo_malzeme_gruplari g JOIN depo_ana_kategoriler c ON c.id = g.categoryId
+                   WHERE g.tenantId = ${tenantId} AND c.bomArea <> 'BOTH' AND c.bomArea <> ${area}))`
+            : client_1.Prisma.empty;
+        const run = (filter) => prisma_client_1.default.$queryRaw `${STOCK_SELECT}
             WHERE p.tenantId = ${tenantId}
               AND (p.erpCode LIKE ${like} OR p.modelNumber LIKE ${like} OR p.name LIKE ${like} OR p.brand LIKE ${like}
                    OR p.barcode = ${needle} OR p.manufacturerBarcode = ${needle}
                    OR p.id IN (SELECT s.productId FROM depo_urun_tedarikcileri s WHERE s.tenantId = ${tenantId} AND s.barcode = ${needle}))
+              ${filter}
             ORDER BY (p.erpCode = ${needle}) DESC, (p.modelNumber = ${needle}) DESC,
                      (p.erpCode LIKE ${`${needle.replace(/[\\%_]/g, (char) => `\\${char}`)}%`}) DESC,
                      p.name ASC
             LIMIT ${Math.max(1, Math.min(50, limit))}`;
+        let rows;
+        try {
+            rows = await run(areaFilter);
+        }
+        catch (error) {
+            // Ohne die Migration vom 01.10.2026 gibt es `bomArea` noch nicht — dann ungefiltert.
+            if (!area || !/Unknown column|\b1054\b/i.test(String(error?.message ?? error)))
+                throw error;
+            rows = await run(client_1.Prisma.empty);
+        }
         return withSuppliers(tenantId, rows);
     }
     async assignSerials(tenantId, assignments) {

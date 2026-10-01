@@ -108,6 +108,7 @@ const catalogDto = (tree) => ({
             id: category.id,
             name: category.name,
             code: category.code,
+            bomArea: category.bomArea,
             productCount: groups.reduce((sum, group) => sum + group.productCount, 0),
             locked: groups.some((group) => group.locked),
             groups,

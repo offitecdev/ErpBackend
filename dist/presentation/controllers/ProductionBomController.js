@@ -152,7 +152,7 @@ class ProductionBomController {
     async searchProducts(req, res, next) {
         try {
             const actor = await (0, exports.actorOf)(req);
-            res.json(shaped(actor, await productionBomModule_1.productionBomModule.templates.searchProducts(tenantOf(req), req.query.q)));
+            res.json(shaped(actor, await productionBomModule_1.productionBomModule.templates.searchProducts(tenantOf(req), req.query.q, req.query.area)));
         }
         catch (error) {
             (0, exports.fail)(res, next, error);

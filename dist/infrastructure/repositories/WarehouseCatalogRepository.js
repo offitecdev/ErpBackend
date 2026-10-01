@@ -19,13 +19,36 @@ const toGroup = (row) => ({
     lastNumber: (0, WarehouseRepository_1.num)(row.lastNumber),
     sortOrder: (0, WarehouseRepository_1.num)(row.sortOrder),
 });
-const toCategory = (row) => ({
+const toCategory = (row, bomArea = 'BOTH') => ({
     id: row.id,
     tenantId: row.tenantId,
     name: row.name,
     code: row.code,
+    bomArea,
     sortOrder: (0, WarehouseRepository_1.num)(row.sortOrder),
 });
+/** Die Spalte `bomArea` fehlt, solange die Migration vom 01.10.2026 nicht lief. */
+const isMissingColumn = (error) => /Unknown column|ER_BAD_FIELD_ERROR|1054/i.test(String(error?.message ?? error));
+const bomAreaOf = (value) => value === 'MECHANICAL' || value === 'ELECTRICAL' ? value : 'BOTH';
+/**
+ * BOM-Bereich je Kategorie — roh gelesen (01.10.2026): ein älterer Prisma-
+ * Client kennt die Spalte nicht, und ohne Migration gilt überall BOTH.
+ */
+const bomAreasOf = async (tenantId, id) => {
+    try {
+        const rows = id
+            ? await prisma_client_1.default.$queryRaw `
+                SELECT id, bomArea FROM depo_ana_kategoriler WHERE tenantId = ${tenantId} AND id = ${id}`
+            : await prisma_client_1.default.$queryRaw `
+                SELECT id, bomArea FROM depo_ana_kategoriler WHERE tenantId = ${tenantId}`;
+        return new Map(rows.map((row) => [row.id, bomAreaOf(row.bomArea)]));
+    }
+    catch (error) {
+        if (isMissingColumn(error))
+            return new Map();
+        throw error;
+    }
+};
 const GROUP_SELECT = client_1.Prisma.sql `
     SELECT g.id, g.tenantId, g.categoryId, c.name AS categoryName, c.code AS categoryCode,
            g.name, g.code, g.lastNumber, g.sortOrder
@@ -33,7 +56,7 @@ const GROUP_SELECT = client_1.Prisma.sql `
       JOIN depo_ana_kategoriler c ON c.id = g.categoryId`;
 class PrismaWarehouseGroupRepository {
     async tree(tenantId) {
-        const [categories, groups, ungrouped] = await Promise.all([
+        const [categories, groups, ungrouped, areas] = await Promise.all([
             prisma_client_1.default.warehouseCategory.findMany({
                 where: { tenantId },
                 orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
@@ -49,6 +72,7 @@ class PrismaWarehouseGroupRepository {
                  GROUP BY g.id, g.tenantId, g.categoryId, g.name, g.code, g.lastNumber, g.sortOrder
                  ORDER BY g.sortOrder ASC, g.name ASC`,
             prisma_client_1.default.warehouseProduct.count({ where: { tenantId, materialGroupId: null } }),
+            bomAreasOf(tenantId),
         ]);
         const byCategory = new Map();
         const categoryOf = new Map(categories.map((category) => [category.id, category]));
@@ -64,7 +88,7 @@ class PrismaWarehouseGroupRepository {
             byCategory.set(row.categoryId, list);
         }
         return {
-            categories: categories.map((category) => ({ ...toCategory(category), groups: byCategory.get(category.id) ?? [] })),
+            categories: categories.map((category) => ({ ...toCategory(category, areas.get(category.id)), groups: byCategory.get(category.id) ?? [] })),
             ungroupedCount: ungrouped,
         };
     }
@@ -76,8 +100,11 @@ class PrismaWarehouseGroupRepository {
     }
     /* ── Hauptkategorien ─────────────────────────────────────────────── */
     async getCategory(tenantId, id) {
-        const row = await prisma_client_1.default.warehouseCategory.findFirst({ where: { id, tenantId } });
-        return row ? toCategory(row) : null;
+        const [row, areas] = await Promise.all([
+            prisma_client_1.default.warehouseCategory.findFirst({ where: { id, tenantId } }),
+            bomAreasOf(tenantId, id),
+        ]);
+        return row ? toCategory(row, areas.get(row.id)) : null;
     }
     async findCategory(tenantId, by, excludeId) {
         const or = [];
@@ -97,9 +124,21 @@ class PrismaWarehouseGroupRepository {
         const row = await prisma_client_1.default.warehouseCategory.create({
             data: { id: (0, WarehouseRepository_1.newId)(), tenantId, name: input.name, code: input.code, sortOrder: (last._max.sortOrder ?? 0) + 1 },
         });
+        if (input.bomArea && input.bomArea !== 'BOTH') {
+            await this.setBomArea(tenantId, row.id, input.bomArea);
+            return toCategory(row, input.bomArea);
+        }
         return toCategory(row);
     }
+    /** Roh geschrieben — die Spalte kennt ein älterer Prisma-Client nicht. */
+    async setBomArea(tenantId, id, bomArea) {
+        return prisma_client_1.default.$executeRaw `
+            UPDATE depo_ana_kategoriler SET bomArea = ${bomArea}, updatedAt = NOW(3)
+             WHERE tenantId = ${tenantId} AND id = ${id}`;
+    }
     async updateCategory(tenantId, id, patch) {
+        if (patch.bomArea !== undefined && !(await this.setBomArea(tenantId, id, patch.bomArea)))
+            return null;
         const data = {
             ...(patch.name !== undefined ? { name: patch.name } : {}),
             ...(patch.code !== undefined ? { code: patch.code } : {}),

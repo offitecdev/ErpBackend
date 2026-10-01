@@ -1,4 +1,5 @@
 import type {
+    WarehouseBomArea,
     WarehouseCategory,
     WarehouseCategoryWithGroups,
     WarehouseCodeConflict,
@@ -132,9 +133,16 @@ export interface IWarehouseGroupRepository {
 
     getCategory(tenantId: string, id: string): Promise<WarehouseCategory | null>;
     findCategory(tenantId: string, by: { name?: string; code?: string }, excludeId?: string): Promise<WarehouseCategory | null>;
-    createCategory(tenantId: string, input: { name: string; code: string }): Promise<WarehouseCategory>;
-    /** Ein neues Kürzel setzt die Zähler der Gruppen auf 0 (es gibt dann noch keinen Code). */
-    updateCategory(tenantId: string, id: string, patch: { name?: string; code?: string }): Promise<WarehouseCategory | null>;
+    createCategory(tenantId: string, input: { name: string; code: string; bomArea?: WarehouseBomArea }): Promise<WarehouseCategory>;
+    /**
+     * Ein neues Kürzel setzt die Zähler der Gruppen auf 0 (es gibt dann noch keinen Code).
+     * `bomArea` (01.10.2026): in welchen BOMs ihre Karten gesucht werden.
+     */
+    updateCategory(
+        tenantId: string,
+        id: string,
+        patch: { name?: string; code?: string; bomArea?: WarehouseBomArea },
+    ): Promise<WarehouseCategory | null>;
     deleteCategory(tenantId: string, id: string): Promise<boolean>;
     groupCount(tenantId: string, categoryId: string): Promise<number>;
     /** Karten mit ERP-Code in den Gruppen dieser Kategorie. */

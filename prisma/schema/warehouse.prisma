@@ -32,6 +32,10 @@ model WarehouseCategory {
   /// Kürzel, 2–5 Grossbuchstaben oder Ziffern (ELK). Fest, sobald eine ihrer
   /// Gruppen einen Code vergeben hat.
   code      String   @db.VarChar(8)
+  /// BOM-Bereich (01.10.2026, «bomda mekanik olan sadece kendi MAK kodlarını
+  /// görebilecek»): MECHANICAL | ELECTRICAL | BOTH — in welchen BOMs die Suche
+  /// die Karten dieser Kategorie zeigt. Gelesen/geschrieben roh (ältere Clients).
+  bomArea   String   @default("BOTH") @db.VarChar(16)
   /// Reihenfolge des Anlegens («ekledikçe eklenmesi gerekiyor»).
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
