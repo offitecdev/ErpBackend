@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CHILLER_EXAMPLE = exports.CHILLER_EXAMPLE_KEY = exports.assignmentNews = exports.orderTasks = exports.areaTotals = exports.templateCheck = exports.templateInputFrom = exports.sameTaskCode = exports.areaSharesFrom = exports.assigneeIdsFrom = exports.isProductionTaskArea = exports.roundPercent = exports.productionTaskErrorBody = exports.isProductionTaskError = exports.productionTaskError = exports.PRODUCTION_TASK_LIMITS = exports.stageOfArea = exports.PRODUCTION_TASK_STAGES = exports.PRODUCTION_TASK_AREAS = void 0;
+exports.templateCheck = exports.tasksInputFrom = exports.templateInputFrom = exports.withAddedStage = exports.withStageWeights = exports.taskCodeOf = exports.sectionPrefixes = exports.taskDatesProblem = exports.subtaskWeightSum = exports.statusOfSubtasks = exports.statusFrom = exports.isProductionTaskStatus = exports.isWorkingStatus = exports.PRODUCTION_TASK_STATUSES = exports.subtasksFrom = exports.reopenedSubtasks = exports.mergeDeviceRecord = exports.requirementsAdded = exports.withoutDeviceRecord = exports.hasSubtaskDocument = exports.SUBTASK_FILE_LIMITS = exports.newSubtaskFileId = exports.fileVersionFor = exports.withChecklistItem = exports.today = exports.placeTask = exports.fromSectionShares = exports.resolveTaskWeights = exports.stageWeightIn = exports.sectionShareOf = exports.storedStageWeightsComplete = exports.areaSharesOf = exports.sectionsFrom = exports.builtInSections = exports.sameTaskCode = exports.worksOnSubtask = exports.withActiveAssignees = exports.taskAssigneesOf = exports.assigneeIdsFrom = exports.dayFrom = exports.roundPercent = exports.productionTaskErrorBody = exports.isProductionTaskError = exports.productionTaskError = exports.PRODUCTION_TASK_LIMITS = exports.stageOfSection = exports.isBuiltInStage = exports.isBuiltInArea = exports.BUILT_IN_STAGES = exports.BUILT_IN_AREAS = void 0;
+exports.CHILLER_EXAMPLE = exports.CHILLER_EXAMPLE_KEY = exports.assignmentNews = exports.orderTasks = void 0;
 /**
  * ── GÖREVLENDİRME · DIE REGELN (26.09.2026, Vorgabe Samet) ─────────────────
  *
@@ -12,8 +13,15 @@ exports.CHILLER_EXAMPLE = exports.CHILLER_EXAMPLE_KEY = exports.assignmentNews =
  * Bereich mit Anteil ergeben die Gewichte seiner Aufgaben 100 %. Gespeichert
  * werden darf auch eine unvollständige Vorlage (man baut sie Stück für
  * Stück); auf ein Gerät laden lässt sich nur eine vollständige.
+ *
+ * EIGENE BEREICHE UND STUFEN (28.09.2026): eine neue Vorlage beginnt leer —
+ * die Bereiche (Name, Anteil) und ihre Stufen legt man selbst an. Die
+ * Vorlagen von vorher tragen keine Liste und behalten die FESTEN Bereiche
+ * Mekanik / Elektrik mit ihren festen Stufen (`builtInSections`). Die Kürzel
+ * der Aufgaben vergibt die Oberfläche (M-01, H-03 …); fehlt eins, vergibt es
+ * der Server. Jede Aufgabe kann Unteraufgaben haben.
  */
-exports.PRODUCTION_TASK_AREAS = ['MECHANICAL', 'ELECTRICAL'];
+exports.BUILT_IN_AREAS = ['MECHANICAL', 'ELECTRICAL'];
 /**
  * Die ZWEI WEGE des Geräts (27.09.2026, Vorgabe Samet: «Üretim hedef yolu iki
  * yola ayrılmalıdır — makine, elektrik … ayrı takip edilir»):
@@ -25,13 +33,19 @@ exports.PRODUCTION_TASK_AREAS = ['MECHANICAL', 'ELECTRICAL'];
  *
  * «Satın alma» gehört zu keinem der beiden Wege mehr. Die Zuweisungen
  * (Görevlendirme) stehen vor jedem Weg und sind keine Stufe mit Aufgaben.
+ * Seit dem 28.09.2026 sind das die Stufen der FESTEN Bereiche.
  */
-exports.PRODUCTION_TASK_STAGES = {
+exports.BUILT_IN_STAGES = {
     MECHANICAL: ['equipment', 'drawing', 'approval', 'bom', 'production', 'test', 'final'],
     ELECTRICAL: ['circuit', 'approval', 'bom', 'panel', 'test', 'final'],
 };
+const BUILT_IN_STAGE_KEYS = new Set([...exports.BUILT_IN_STAGES.MECHANICAL, ...exports.BUILT_IN_STAGES.ELECTRICAL]);
+const isBuiltInArea = (value) => typeof value === 'string' && exports.BUILT_IN_AREAS.includes(value);
+exports.isBuiltInArea = isBuiltInArea;
+const isBuiltInStage = (value) => typeof value === 'string' && BUILT_IN_STAGE_KEYS.has(value);
+exports.isBuiltInStage = isBuiltInStage;
 /**
- * Wohin eine Stufe gehört, die es im Bereich (nicht mehr) gibt — für
+ * Wohin eine Stufe gehört, die es im festen Bereich (nicht mehr) gibt — für
  * Aufgaben aus der Zeit vor den zwei Wegen und für einen Browser mit altem
  * Stand: die Zeichnung der Mekanik wird in der Elektrik zum EPLAN-Stromlauf,
  * die Montage zum Schaltschrankbau, der Einkauf fällt auf die Stückliste.
@@ -44,22 +58,43 @@ const STAGE_TWINS = {
     panel: { MECHANICAL: 'production' },
     purchasing: { MECHANICAL: 'bom', ELECTRICAL: 'bom' },
 };
-/** Die gültige Stufe eines Bereichs zu einer gespeicherten/gesendeten; unbekannt → null. */
-const stageOfArea = (area, value) => {
+/**
+ * Die Stufe eines Bereichs zu einer gespeicherten/gesendeten Kennung — in den
+ * festen Bereichen auch ihr Gegenstück im anderen Weg; unbekannt → null.
+ */
+const stageOfSection = (section, value) => {
     if (typeof value !== 'string')
         return null;
-    if (exports.PRODUCTION_TASK_STAGES[area].includes(value))
+    if (section.stages.some((stage) => stage.key === value))
         return value;
-    return STAGE_TWINS[value]?.[area] ?? null;
+    const twin = (0, exports.isBuiltInArea)(section.key) ? STAGE_TWINS[value]?.[section.key] : undefined;
+    return twin && section.stages.some((stage) => stage.key === twin) ? twin : null;
 };
-exports.stageOfArea = stageOfArea;
+exports.stageOfSection = stageOfSection;
 exports.PRODUCTION_TASK_LIMITS = {
     templateName: 120,
     code: 16,
     taskName: 200,
     tasks: 200,
     assignees: 20,
+    sections: 12,
+    sectionName: 60,
+    stages: 20,
+    stageName: 60,
+    subtasks: 30,
+    subtaskName: 200,
+    checklistItems: 30,
+    checklistItemText: 200,
 };
+/**
+ * Kennungen eigener Bereiche, Stufen und Unteraufgaben vergibt die Oberfläche
+ * («s-…», «g-…», «u-…»); sie passen in die Spalten `area` (16) und `stage` (24).
+ */
+const SECTION_KEY = /^[A-Za-z0-9_-]{1,16}$/;
+const STAGE_KEY = /^[A-Za-z0-9_-]{1,24}$/;
+const SUBTASK_ID = /^[A-Za-z0-9_-]{1,24}$/;
+/** Die Stufe der Zuweisungen am Gerät — keine Arbeitsstufe, also keine Kennung einer eigenen. */
+const RESERVED_STAGE_KEYS = new Set(['assignments']);
 /** Rechentoleranz der Prozentsummen (zwei Nachkommastellen). */
 const SUM_TOLERANCE = 0.01;
 const productionTaskError = (code, message, options = {}) => Object.assign(new Error(message), {
@@ -85,6 +120,7 @@ exports.productionTaskErrorBody = productionTaskErrorBody;
 const roundPercent = (value) => Math.round(value * 100) / 100;
 exports.roundPercent = roundPercent;
 const text = (value, max) => (typeof value === 'string' ? value : '').replace(/\s+/g, ' ').trim().slice(0, max);
+const objectOf = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
 const percentFrom = (value) => {
     const number = typeof value === 'string' ? Number(value.replace(',', '.')) : Number(value);
     if (typeof value === 'boolean' || value === null || value === undefined || value === '')
@@ -93,8 +129,32 @@ const percentFrom = (value) => {
         return null;
     return (0, exports.roundPercent)(number);
 };
-const isProductionTaskArea = (value) => typeof value === 'string' && exports.PRODUCTION_TASK_AREAS.includes(value);
-exports.isProductionTaskArea = isProductionTaskArea;
+/**
+ * Zwei Namen sind derselbe, wenn sie sich nur in Gross/klein unterscheiden —
+ * auch über das türkische I hinweg («MEKANIK» wie «Mekanik» wie «MEKANİK»).
+ */
+const nameKey = (value) => value.toLocaleLowerCase('tr-TR').replace(/ı/g, 'i');
+const sameName = (left, right) => nameKey(left) === nameKey(right);
+/** Eine neue Kennung — nur für Unteraufgaben, die ohne eine ankommen. */
+const randomKey = (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 10).padEnd(8, '0')}`;
+/**
+ * Ein Kalendertag `YYYY-MM-DD` (28.09.2026: Beginn und Termin). Leer → null,
+ * Unlesbares oder ein Tag, den es nicht gibt (31.02.) → undefined.
+ */
+const dayFrom = (value) => {
+    if (value === null || value === undefined || value === '')
+        return null;
+    if (typeof value !== 'string')
+        return undefined;
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+    if (!match)
+        return undefined;
+    const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    const date = new Date(Date.UTC(year, month - 1, day));
+    const real = date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+    return real ? match[0] : undefined;
+};
+exports.dayFrom = dayFrom;
 /** Personenkennungen: Zeichenketten, ohne Doppelte, höchstens 20. */
 const assigneeIdsFrom = (value) => {
     if (!Array.isArray(value))
@@ -113,150 +173,884 @@ const assigneeIdsFrom = (value) => {
     return ids;
 };
 exports.assigneeIdsFrom = assigneeIdsFrom;
-/** Anteile aus der Datenbank oder einer Anfrage — Unbekanntes wird 0. */
-const areaSharesFrom = (value) => {
-    const source = (value && typeof value === 'object' ? value : {});
-    return {
-        MECHANICAL: percentFrom(source.MECHANICAL) ?? 0,
-        ELECTRICAL: percentFrom(source.ELECTRICAL) ?? 0,
-    };
+/**
+ * Die Personen einer Aufgabe (29.09.2026: «only assign people to subtasks —
+ * but on the people cell of the main task show all people that are assigned
+ * to a subtask under that main task»): die Summe ihrer Unteraufgaben, in der
+ * Reihenfolge, in der sie zuerst vorkommen. Früher an der Aufgabe selbst
+ * gesetzte Personen fallen damit weg (Vorgabe: «drop them»).
+ */
+const taskAssigneesOf = (subtasks) => [...new Set(subtasks.flatMap((subtask) => subtask.assigneeIds))];
+exports.taskAssigneesOf = taskAssigneesOf;
+/** Nur wer noch aktiv ist, bleibt an den Unteraufgaben; die Aufgabe rechnet ihre Personen neu. */
+const withActiveAssignees = (task, active) => {
+    const subtasks = task.subtasks.map((subtask) => ({ ...subtask, assigneeIds: subtask.assigneeIds.filter((id) => active.has(id)) }));
+    return { ...task, subtasks, assigneeIds: (0, exports.taskAssigneesOf)(subtasks) };
 };
-exports.areaSharesFrom = areaSharesFrom;
+exports.withActiveAssignees = withActiveAssignees;
+/** Arbeitet die Person an dieser Unteraufgabe? Nur wer an ihr steht — auch die Verwaltung nicht von selbst (29.09.2026). */
+const worksOnSubtask = (subtask, personId) => subtask.assigneeIds.includes(personId);
+exports.worksOnSubtask = worksOnSubtask;
 /** Vergleich von Kürzeln: ohne Gross/klein, ohne Leerraum. */
 const codeKey = (code) => code.replace(/\s+/g, '').toLocaleUpperCase('tr-TR');
 const sameTaskCode = (left, right) => codeKey(left) === codeKey(right);
 exports.sameTaskCode = sameTaskCode;
-/* ── Eine Vorlage aus der Anfrage ──────────────────────────────────────── */
+/* ── Bereiche und Stufen ────────────────────────────────────────────────── */
+/** Die festen Bereiche einer Vorlage von vorher: Mekanik und Elektrik mit ihren Stufen. */
+const builtInSections = (areaShares) => {
+    const shares = objectOf(areaShares);
+    return exports.BUILT_IN_AREAS.map((area) => ({
+        key: area,
+        name: '',
+        share: percentFrom(shares[area]) ?? 0,
+        // Das Gewicht der Stufen kennt eine Vorlage von vorher nicht — `resolveTaskWeights` leitet es ab.
+        stages: exports.BUILT_IN_STAGES[area].map((key) => ({ key, name: '', weight: 0 })),
+    }));
+};
+exports.builtInSections = builtInSections;
 /**
- * Liest Name, Anteile und Aufgaben einer Vorlage. Wirft bei allem, was sich
- * nicht speichern lässt (Name fehlt, unbekannter Bereich, Stufe passt nicht
- * zum Bereich, Kürzel doppelt …). Summen, die nicht aufgehen, sind KEIN
- * Fehler — das sagt `templateCheck`.
+ * Die Bereiche aus der Datenbank. Steht keine Liste da (NULL — eine Vorlage
+ * oder ein Plan von vor dem 28.09.2026), gelten die festen Bereiche mit den
+ * Anteilen aus `areaShares`. Was sich nicht lesen lässt, fällt heraus; eine
+ * leere Liste ist eine neue Vorlage ohne Bereiche.
+ */
+const sectionsFrom = (stored, areaShares) => {
+    if (!Array.isArray(stored))
+        return (0, exports.builtInSections)(areaShares);
+    const sections = [];
+    for (const raw of stored) {
+        const row = objectOf(raw);
+        const key = typeof row.key === 'string' ? row.key : '';
+        if (!SECTION_KEY.test(key) || sections.some((section) => section.key === key))
+            continue;
+        const stages = [];
+        for (const rawStage of Array.isArray(row.stages) ? row.stages : []) {
+            const stage = objectOf(rawStage);
+            const stageKey = typeof stage.key === 'string' ? stage.key : '';
+            if (!STAGE_KEY.test(stageKey) || RESERVED_STAGE_KEYS.has(stageKey) || stages.some((entry) => entry.key === stageKey))
+                continue;
+            stages.push({ key: stageKey, name: text(stage.name, exports.PRODUCTION_TASK_LIMITS.stageName), weight: percentFrom(stage.weight) ?? 0 });
+        }
+        sections.push({
+            key,
+            name: (0, exports.isBuiltInArea)(key) ? '' : text(row.name, exports.PRODUCTION_TASK_LIMITS.sectionName),
+            share: percentFrom(row.share) ?? 0,
+            stages,
+        });
+    }
+    return sections;
+};
+exports.sectionsFrom = sectionsFrom;
+/** Anteil je Bereich — für die Spalte `areaShares` und ältere Browserstände. */
+const areaSharesOf = (sections) => Object.fromEntries(sections.map((section) => [section.key, section.share]));
+exports.areaSharesOf = areaSharesOf;
+/* ── Gewichte: Stufe im Bereich, Aufgabe in der Stufe (30.09.2026) ───────────
+ *
+ * «The weights of the task only should fill the weight of its stage, not the
+ *  other stages.» Jede Stufe trägt ein Gewicht im Bereich (die Stufen eines
+ * Bereichs ergeben 100 %), jede Aufgabe ein Gewicht in ihrer Stufe (die
+ * Aufgaben einer Stufe ergeben 100 %). Beitrag zur Gesamtfertigstellung =
+ * Anteil des Bereichs × Gewicht der Stufe × Gewicht der Aufgabe.
+ *
+ * GESPEICHERT wird so, dass ein älterer Stand des Servers (dieselbe Datenbank)
+ * weiterläuft: die Spalte `weight` hält wie bisher den Anteil der Aufgabe am
+ * BEREICH; das Gewicht in der Stufe steht daneben (`stageWeight`), das der
+ * Stufe in den Bereichen (`sections[].stages[].weight`). Fehlt eines davon —
+ * Daten von vorher oder von einem älteren Stand —, wird es aus den Anteilen am
+ * Bereich abgeleitet: Stufe = Summe ihrer Aufgaben, Aufgabe = Anteil / Stufe.
+ */
+/** Tragen alle Stufen der gespeicherten Bereiche ein Gewicht? (NULL = Vorlage von vorher: nein.) */
+const storedStageWeightsComplete = (stored) => Array.isArray(stored) && stored.every((raw) => {
+    const stages = objectOf(raw).stages;
+    return Array.isArray(stages) && stages.every((stage) => typeof objectOf(stage).weight === 'number');
+});
+exports.storedStageWeightsComplete = storedStageWeightsComplete;
+/** Der Anteil einer Aufgabe am Bereich — für die Spalte `weight` (ältere Stände lesen sie). */
+const sectionShareOf = (stageWeight, taskWeight) => Math.round(stageWeight * taskWeight * 100) / 10000;
+exports.sectionShareOf = sectionShareOf;
+/** Das Gewicht einer Stufe in den Bereichen (0, wenn es sie nicht gibt). */
+const stageWeightIn = (sections, area, stage) => sections.find((section) => section.key === area)?.stages.find((entry) => entry.key === stage)?.weight ?? 0;
+exports.stageWeightIn = stageWeightIn;
+/**
+ * Gerundete Anteile, die zusammen genau `target` ergeben: der Rundungsrest geht an den grössten
+ * (sonst ergäben 7 × 14,29 % nicht 100 %).
+ */
+const roundedTo = (values, target) => {
+    const rounded = values.map(exports.roundPercent);
+    if (!rounded.length)
+        return rounded;
+    const rest = (0, exports.roundPercent)(target - rounded.reduce((sum, value) => sum + value, 0));
+    if (rest !== 0) {
+        const largest = rounded.reduce((best, value, index) => (value > (rounded[best] ?? 0) ? index : best), 0);
+        rounded[largest] = (0, exports.roundPercent)((rounded[largest] ?? 0) + rest);
+    }
+    return rounded;
+};
+/**
+ * Die Gewichte aus der Datenbank: die Bereiche mit den Gewichten ihrer Stufen und je Aufgabe
+ * (in der Reihenfolge der Zeilen) ihr Gewicht in der Stufe. Gespeichertes gilt; was fehlt,
+ * wird aus den Anteilen am Bereich abgeleitet (siehe oben).
+ */
+const resolveTaskWeights = (sections, stageWeightsStored, rows) => {
+    const complete = stageWeightsStored && rows.every((row) => row.stageWeight !== null);
+    if (complete) {
+        return { sections: sections.map((section) => ({ ...section, stages: section.stages.map((stage) => ({ ...stage })) })), weights: rows.map((row) => (0, exports.roundPercent)(row.stageWeight ?? 0)) };
+    }
+    // Abgeleitet: jede Stufe wiegt, was ihre Aufgaben am Bereich tragen …
+    const key = (area, stage) => `${area}|${stage}`;
+    const sums = new Map();
+    for (const row of rows)
+        sums.set(key(row.area, row.stage), (sums.get(key(row.area, row.stage)) ?? 0) + row.sectionShare);
+    const resolved = sections.map((section) => {
+        const stageKeys = section.stages.map((stage) => stage.key);
+        const derived = roundedTo(stageKeys.map((stage) => sums.get(key(section.key, stage)) ?? 0), (0, exports.roundPercent)(stageKeys.reduce((sum, stage) => sum + (sums.get(key(section.key, stage)) ?? 0), 0)));
+        return { ...section, stages: section.stages.map((stage, index) => ({ ...stage, weight: derived[index] ?? 0 })) };
+    });
+    // … und jede Aufgabe ihren Teil davon — je Stufe genau 100 %.
+    const weights = rows.map(() => 0);
+    const byStage = new Map();
+    rows.forEach((row, index) => byStage.set(key(row.area, row.stage), [...(byStage.get(key(row.area, row.stage)) ?? []), index]));
+    for (const [stageKey, indexes] of byStage) {
+        const total = sums.get(stageKey) ?? 0;
+        if (total <= 0)
+            continue;
+        const parts = roundedTo(indexes.map((index) => ((rows[index]?.sectionShare ?? 0) / total) * 100), 100);
+        indexes.forEach((index, position) => { weights[index] = parts[position] ?? 0; });
+    }
+    return { sections: resolved, weights };
+};
+exports.resolveTaskWeights = resolveTaskWeights;
+/**
+ * Aufgaben mit Anteilen am BEREICH (ein älterer Browserstand, das Beispiel) in das neue Mass:
+ * Stufen erhalten die Summe ihrer Aufgaben, Aufgaben ihren Teil der Stufe.
+ */
+const fromSectionShares = (sections, tasks) => {
+    const { sections: resolved, weights } = (0, exports.resolveTaskWeights)(sections, false, tasks.map((task) => ({ area: task.area, stage: task.stage, sectionShare: task.weight, stageWeight: null })));
+    return { sections: resolved, tasks: tasks.map((task, index) => ({ ...task, weight: weights[index] })) };
+};
+exports.fromSectionShares = fromSectionShares;
+/**
+ * Eine gespeicherte Aufgabe in den Bereichen ihrer Vorlage: ein unbekannter
+ * Bereich fällt auf den ersten, eine unbekannte Stufe auf ihr Gegenstück oder
+ * die erste des Bereichs — damit keine Aufgabe unsichtbar wird.
+ */
+const placeTask = (sections, area, stage) => {
+    const section = sections.find((entry) => entry.key === area) ?? sections[0];
+    if (!section)
+        return { area, stage };
+    return { area: section.key, stage: (0, exports.stageOfSection)(section, stage) ?? section.stages[0]?.key ?? stage };
+};
+exports.placeTask = placeTask;
+/* ── Unteraufgaben ──────────────────────────────────────────────────────── */
+/** Heute als Kalendertag (UTC) — der Tag des Anlegens, wenn keiner mitkommt. */
+const today = () => new Date().toISOString().slice(0, 10);
+exports.today = today;
+/** Ein mitgeschickter Tag des Anlegens gilt — aber nie einer in der Zukunft. */
+const createdDayFrom = (value) => {
+    const day = (0, exports.dayFrom)(value);
+    const now = (0, exports.today)();
+    return day && day <= now ? day : now;
+};
+/** Die Dateien einer Unteraufgabe aus der Datenbank; Unlesbares fällt heraus. */
+const filesFrom = (value) => {
+    if (!Array.isArray(value))
+        return [];
+    const list = [];
+    for (const raw of value) {
+        const row = objectOf(raw);
+        const id = typeof row.id === 'string' ? row.id : '';
+        const ref = typeof row.ref === 'string' ? row.ref : '';
+        if (!SUBTASK_ID.test(id) || !ref || list.some((entry) => entry.id === id))
+            continue;
+        // Ältere Dateien (ohne Fassung) sind Fassung 1 ihrer eigenen Gruppe.
+        const groupId = typeof row.groupId === 'string' && SUBTASK_ID.test(row.groupId) ? row.groupId : id;
+        const version = typeof row.version === 'number' && Number.isInteger(row.version) && row.version > 0 ? row.version : 1;
+        list.push({
+            id,
+            ref,
+            groupId,
+            version,
+            revisionNote: text(row.revisionNote, 500) || null,
+            name: text(row.name, 200) || 'file',
+            type: typeof row.type === 'string' ? row.type : 'application/octet-stream',
+            size: typeof row.size === 'number' && Number.isFinite(row.size) ? row.size : 0,
+            uploadedById: typeof row.uploadedById === 'string' ? row.uploadedById : null,
+            uploadedByName: text(row.uploadedByName, 120) || null,
+            uploadedAt: typeof row.uploadedAt === 'string' ? row.uploadedAt : '',
+        });
+    }
+    return list;
+};
+/**
+ * Die Freigabe-Checkliste einer Unteraufgabe (28.09.2026: «add Approval
+ * Checklist after they select approval checkbox»). Nur mit «Approval» —
+ * ohne fällt sie weg; leere Punkte fallen heraus.
+ */
+const approvalChecklistFrom = (value, requiresApproval) => {
+    if (!requiresApproval || !Array.isArray(value))
+        return [];
+    const list = [];
+    for (const raw of value) {
+        if (list.length >= exports.PRODUCTION_TASK_LIMITS.checklistItems)
+            break;
+        const row = objectOf(raw);
+        const itemText = text(row.text, exports.PRODUCTION_TASK_LIMITS.checklistItemText);
+        if (!itemText)
+            continue;
+        const given = typeof row.id === 'string' ? row.id.trim() : '';
+        const id = SUBTASK_ID.test(given) && !list.some((entry) => entry.id === given) ? given : randomKey('c');
+        list.push({ id, text: itemText });
+    }
+    return list;
+};
+/**
+ * Ein Punkt mehr in der Freigabe-Checkliste (28.09.2026: «admins should be
+ * able to add items to the checklist through the approve files modal»).
+ * Leer oder zu viele → Fehler. Öffnet die Unteraufgabe NICHT wieder: wer
+ * prüft, ergänzt, was er gerade selbst prüft.
+ */
+const withChecklistItem = (subtask, rawText) => {
+    const itemText = text(rawText, exports.PRODUCTION_TASK_LIMITS.checklistItemText);
+    if (!itemText)
+        throw (0, exports.productionTaskError)('CHECKLIST_ITEM_REQUIRED', 'Bitte einen Text für den Punkt eingeben.');
+    if (subtask.approvalChecklist.length >= exports.PRODUCTION_TASK_LIMITS.checklistItems) {
+        throw (0, exports.productionTaskError)('CHECKLIST_TOO_MANY', 'Zu viele Punkte.', { status: 409, params: { max: exports.PRODUCTION_TASK_LIMITS.checklistItems } });
+    }
+    return { ...subtask, approvalChecklist: [...subtask.approvalChecklist, { id: randomKey('c'), text: itemText }] };
+};
+exports.withChecklistItem = withChecklistItem;
+/**
+ * Gruppe und Nummer einer neuen Datei (28.09.2026): ohne `revisionOf` eine neue Datei
+ * (eigene Gruppe, Fassung 1); mit `revisionOf` die nächste Fassung derselben Datei —
+ * die Kennung muss eine Datei DIESER Unteraufgabe sein.
+ */
+const fileVersionFor = (files, newId, revisionOf) => {
+    if (!revisionOf)
+        return { groupId: newId, version: 1 };
+    const base = files.find((file) => file.id === revisionOf);
+    if (!base)
+        throw (0, exports.productionTaskError)('FILE_NOT_FOUND', 'Die Datei für die neue Fassung gibt es hier nicht.', { status: 404 });
+    const newest = files.filter((file) => file.groupId === base.groupId).reduce((max, file) => Math.max(max, file.version), 0);
+    return { groupId: base.groupId, version: newest + 1 };
+};
+exports.fileVersionFor = fileVersionFor;
+/** Neue Kennung einer Datei an einer Unteraufgabe. */
+const newSubtaskFileId = () => randomKey('f');
+exports.newSubtaskFileId = newSubtaskFileId;
+/** Höchstens so viele Dateien je Unteraufgabe; so gross darf eine sein. */
+exports.SUBTASK_FILE_LIMITS = { files: 20, bytes: 25 * 1024 * 1024 };
+/** Gilt das Dokument einer Unteraufgabe als da? Ein PDF («görev PDF'siz kapanmaz»). */
+const hasSubtaskDocument = (subtask) => subtask.files.some((file) => file.type === 'application/pdf');
+exports.hasSubtaskDocument = hasSubtaskDocument;
+const subtaskOf = (row, id, name, startDate, dueDate, createdAt, weight) => ({
+    id,
+    name,
+    createdAt,
+    weight,
+    startDate,
+    dueDate,
+    assigneeIds: (0, exports.assigneeIdsFrom)(row.assigneeIds),
+    requiresDocument: row.requiresDocument === true,
+    requiresApproval: row.requiresApproval === true,
+    approvalChecklist: approvalChecklistFrom(row.approvalChecklist, row.requiresApproval === true),
+    status: (0, exports.statusFrom)(row.status),
+    files: filesFrom(row.files),
+    completedById: typeof row.completedById === 'string' ? row.completedById : null,
+    completedByName: text(row.completedByName, 120) || null,
+    completedAt: typeof row.completedAt === 'string' ? row.completedAt : null,
+    completionNote: text(row.completionNote, 500) || null,
+    revisionById: typeof row.revisionById === 'string' ? row.revisionById : null,
+    revisionByName: text(row.revisionByName, 120) || null,
+    revisionAt: typeof row.revisionAt === 'string' ? row.revisionAt : null,
+    revisionNote: text(row.revisionNote, 500) || null,
+    revisionHistory: revisionHistoryFrom(row.revisionHistory),
+});
+/** Der Verlauf der Rückgaben aus der Datenbank (höchstens 50, älteste zuerst); Unlesbares fällt heraus. */
+const revisionHistoryFrom = (value) => {
+    if (!Array.isArray(value))
+        return [];
+    return value
+        .map((raw) => objectOf(raw))
+        .filter((row) => typeof row.at === 'string' && row.at)
+        .slice(-50)
+        .map((row) => ({
+        byId: typeof row.byId === 'string' ? row.byId : null,
+        byName: text(row.byName, 120) || null,
+        at: row.at,
+        note: text(row.note, 500) || null,
+    }));
+};
+/**
+ * Was am Gerät dem Server gehört (Stand, Dateien, Abschluss) — eine Anfrage
+ * bringt es nie mit; die Anpassung am Gerät behält es aus der Datenbank.
+ */
+const withoutDeviceRecord = (subtask) => ({
+    ...subtask,
+    status: 'TODO',
+    files: [],
+    completedById: null,
+    completedByName: null,
+    completedAt: null,
+    completionNote: null,
+    revisionById: null,
+    revisionByName: null,
+    revisionAt: null,
+    revisionNote: null,
+    revisionHistory: [],
+});
+exports.withoutDeviceRecord = withoutDeviceRecord;
+/**
+ * Kommt durch die Anpassung am Gerät eine Pflicht DAZU (28.09.2026: «it
+ * didn't require a document but admin adds it, or adds a new checklist
+ * item»)? «Document» oder «Approval» neu angehakt, oder ein Punkt der
+ * Checkliste neu bzw. anders formuliert. Weniger Pflichten zählen nicht.
+ */
+const requirementsAdded = (before, after) => {
+    if (after.requiresDocument && !before.requiresDocument)
+        return true;
+    if (after.requiresApproval && !before.requiresApproval)
+        return true;
+    const earlier = new Map(before.approvalChecklist.map((item) => [item.id, item.text]));
+    return after.approvalChecklist.some((item) => earlier.get(item.id) !== item.text);
+};
+exports.requirementsAdded = requirementsAdded;
+/**
+ * Eine angepasste Unteraufgabe mit dem, was dem Server gehört: Stand,
+ * Dateien, Freigabe und Rückgabe bleiben aus der Datenbank — die Anfrage
+ * setzt sie nie. Kommt eine Pflicht dazu, beginnt sie von vorn: offen (▶
+ * wieder da), ohne Freigabe/Sperre und ohne alte Rückgabe; die Dateien bleiben.
+ */
+const mergeDeviceRecord = (edited, kept) => {
+    const merged = {
+        ...edited,
+        status: kept.status,
+        files: kept.files,
+        completedById: kept.completedById,
+        completedByName: kept.completedByName,
+        completedAt: kept.completedAt,
+        completionNote: kept.completionNote,
+        revisionById: kept.revisionById,
+        revisionByName: kept.revisionByName,
+        revisionAt: kept.revisionAt,
+        revisionNote: kept.revisionNote,
+        revisionHistory: kept.revisionHistory,
+    };
+    // Auch beim Neubeginn bleiben Dateien und der Verlauf der Rückgaben (er ist Geschichte, kein Stand).
+    return (0, exports.requirementsAdded)(kept, edited)
+        ? { ...(0, exports.withoutDeviceRecord)(merged), files: kept.files, revisionHistory: kept.revisionHistory }
+        : merged;
+};
+exports.mergeDeviceRecord = mergeDeviceRecord;
+/**
+ * Welche schon begonnenen Unteraufgaben hat die Anpassung wieder geöffnet
+ * (28.09.2026: «the assignee should check the subtask and complete it
+ * again»)? Nur was vorher nicht mehr offen war — eine offene bleibt offen.
+ */
+const reopenedSubtasks = (before, after) => {
+    const earlier = new Map(before.map((task) => [task.id, new Map(task.subtasks.map((subtask) => [subtask.id, subtask]))]));
+    return after.flatMap((task) => task.subtasks.flatMap((subtask, index) => {
+        const previous = earlier.get(task.id)?.get(subtask.id);
+        if (!previous || previous.status === 'TODO' || !(0, exports.requirementsAdded)(previous, subtask))
+            return [];
+        return [{ code: `${task.code}.${index + 1}`, name: subtask.name, area: task.area, stage: task.stage, recipients: subtask.assigneeIds }];
+    }));
+};
+exports.reopenedSubtasks = reopenedSubtasks;
+/** Unteraufgaben aus der Datenbank; leere fallen heraus. */
+const subtasksFrom = (value) => {
+    if (!Array.isArray(value))
+        return [];
+    const list = [];
+    value.forEach((raw, index) => {
+        const row = objectOf(raw);
+        const name = text(row.name, exports.PRODUCTION_TASK_LIMITS.subtaskName);
+        if (!name || list.length >= exports.PRODUCTION_TASK_LIMITS.subtasks)
+            return;
+        const given = typeof row.id === 'string' ? row.id : '';
+        const id = SUBTASK_ID.test(given) && !list.some((entry) => entry.id === given) ? given : `u-${index + 1}`;
+        list.push(subtaskOf(row, id, name, (0, exports.dayFrom)(row.startDate) ?? null, (0, exports.dayFrom)(row.dueDate) ?? null, (0, exports.dayFrom)(row.createdAt) ?? null, percentFrom(row.weight)));
+    });
+    return list;
+};
+exports.subtasksFrom = subtasksFrom;
+/**
+ * Unteraufgaben aus einer Anfrage — null, wenn es zu viele sind, keine Liste
+ * oder ein Gewicht bzw. (am Gerät) ein Tag unlesbar ist.
+ */
+const subtasksInputFrom = (value, withDates) => {
+    if (value === undefined || value === null)
+        return [];
+    if (!Array.isArray(value) || value.length > exports.PRODUCTION_TASK_LIMITS.subtasks)
+        return null;
+    const list = [];
+    for (const raw of value) {
+        const row = objectOf(raw);
+        const name = text(row.name, exports.PRODUCTION_TASK_LIMITS.subtaskName);
+        // Eine leere Zeile ist keine Unteraufgabe.
+        if (!name)
+            continue;
+        const given = typeof row.id === 'string' ? row.id.trim() : '';
+        const id = SUBTASK_ID.test(given) && !list.some((entry) => entry.id === given) ? given : randomKey('u');
+        // Leer = ohne Gewicht; eine Zahl ausserhalb 0…100 ist ein Fehler.
+        const empty = row.weight === undefined || row.weight === null || row.weight === '';
+        const weight = empty ? null : percentFrom(row.weight);
+        if (!empty && weight === null)
+            return null;
+        // Eine Vorlage trägt keine Tage (28.09.2026) — erst die Kopie am Gerät.
+        const startDate = withDates ? (0, exports.dayFrom)(row.startDate) : null;
+        const dueDate = withDates ? (0, exports.dayFrom)(row.dueDate) : null;
+        if (startDate === undefined || dueDate === undefined)
+            return null;
+        // Stand, Dateien und Abschluss setzt nie die Anfrage — am Gerät behält
+        // der Server sie (replaceTasks), in der Vorlage beginnt alles offen.
+        list.push((0, exports.withoutDeviceRecord)(subtaskOf(row, id, name, startDate, dueDate, createdDayFrom(row.createdAt), weight)));
+    }
+    return list;
+};
+/* ── Stand ──────────────────────────────────────────────────────────────── */
+exports.PRODUCTION_TASK_STATUSES = ['TODO', 'IN_PROGRESS', 'REVISION', 'PENDING', 'DONE'];
+/** In Arbeit — auch zur Überarbeitung zurückgegeben (REVISION): von hier aus wird abgeschlossen. */
+const isWorkingStatus = (status) => status === 'IN_PROGRESS' || status === 'REVISION';
+exports.isWorkingStatus = isWorkingStatus;
+const isProductionTaskStatus = (value) => typeof value === 'string' && exports.PRODUCTION_TASK_STATUSES.includes(value);
+exports.isProductionTaskStatus = isProductionTaskStatus;
+/** Der Stand aus der Datenbank — Unbekanntes gilt als offen. */
+const statusFrom = (value) => ((0, exports.isProductionTaskStatus)(value) ? value : 'TODO');
+exports.statusFrom = statusFrom;
+/**
+ * Der Stand einer Aufgabe aus dem ihrer Unteraufgaben (28.09.2026): alle
+ * erledigt → erledigt; alle erledigt oder wartend → wartet auf Freigabe;
+ * eine begonnen → in Arbeit; sonst offen.
+ * Ohne Unteraufgaben null — dann setzt man den Stand der Aufgabe selbst.
+ */
+const statusOfSubtasks = (subtasks) => {
+    if (!subtasks.length)
+        return null;
+    if (subtasks.every((subtask) => subtask.status === 'DONE'))
+        return 'DONE';
+    // Alles fertig, aber noch nicht alles freigegeben: die Aufgabe wartet auf die Freigabe.
+    if (subtasks.every((subtask) => subtask.status === 'DONE' || subtask.status === 'PENDING'))
+        return 'PENDING';
+    if (subtasks.some((subtask) => subtask.status !== 'TODO'))
+        return 'IN_PROGRESS';
+    return 'TODO';
+};
+exports.statusOfSubtasks = statusOfSubtasks;
+/**
+ * Die Gewichte der Unteraufgaben zusammen. Sie sind Anteile an ihrer Aufgabe
+ * («10 means 10% of its parent», 28.09.2026) und ergeben zusammen höchstens
+ * 100 % — eine einzelne höchstens den Rest. Wortgleich mit der Oberfläche.
+ */
+const subtaskWeightSum = (subtasks) => (0, exports.roundPercent)(subtasks.reduce((sum, subtask) => sum + (subtask.weight ?? 0), 0));
+exports.subtaskWeightSum = subtaskWeightSum;
+/**
+ * Passen die Tage einer Aufgabe am Gerät? Der Beginn liegt nicht nach dem
+ * Termin, und jede Unteraufgabe liegt innerhalb der Tage ihrer Aufgabe
+ * («the subtask's due date can't be further than its parent's due date, and
+ * the start date can't be older than its parent's starting date»). Leere
+ * Tage binden nichts; `YYYY-MM-DD` ist als Text vergleichbar. Wortgleich
+ * mit der Oberfläche.
+ */
+const taskDatesProblem = (task, subtasks) => {
+    if (task.startDate && task.dueDate && task.startDate > task.dueDate)
+        return 'dueDate';
+    for (const subtask of subtasks) {
+        if (subtask.startDate && subtask.dueDate && subtask.startDate > subtask.dueDate)
+            return 'subtasks';
+        for (const day of [subtask.startDate, subtask.dueDate]) {
+            if (!day)
+                continue;
+            if (task.startDate && day < task.startDate)
+                return 'subtasks';
+            if (task.dueDate && day > task.dueDate)
+                return 'subtasks';
+        }
+    }
+    return null;
+};
+exports.taskDatesProblem = taskDatesProblem;
+/* ── Kürzel ─────────────────────────────────────────────────────────────── */
+/**
+ * Das Kürzel-Präfix je Bereich — wortgleich mit der Oberfläche: M und E für
+ * die festen, sonst der Anfang des Namens («Hidrolik» → H). Je Vorlage
+ * eindeutig: ist der Buchstabe vergeben, werden es zwei («Montaj» → MO).
+ */
+const sectionPrefixes = (sections) => {
+    const used = new Set();
+    const prefixes = new Map();
+    for (const section of sections) {
+        const letters = section.key === 'MECHANICAL' ? 'M'
+            : section.key === 'ELECTRICAL' ? 'E'
+                : section.name.toLocaleUpperCase('tr-TR').replace(/[^\p{L}]/gu, '');
+        const base = letters || 'T';
+        let prefix = [base.slice(0, 1), base.slice(0, 2), base.slice(0, 3)].find((candidate) => !used.has(candidate));
+        for (let number = 2; !prefix; number += 1) {
+            if (!used.has(`${base.slice(0, 1)}${number}`))
+                prefix = `${base.slice(0, 1)}${number}`;
+        }
+        used.add(prefix);
+        prefixes.set(section.key, prefix);
+    }
+    return prefixes;
+};
+exports.sectionPrefixes = sectionPrefixes;
+const taskCodeOf = (prefix, number) => `${prefix}-${String(number).padStart(2, '0')}`;
+exports.taskCodeOf = taskCodeOf;
+/** Aufgaben ohne Kürzel bekommen das nächste freie ihres Bereichs (M-15 nach M-14). */
+const fillMissingCodes = (sections, tasks) => {
+    const prefixes = (0, exports.sectionPrefixes)(sections);
+    for (const task of tasks) {
+        if (task.code)
+            continue;
+        const prefix = prefixes.get(task.area) ?? 'T';
+        let number = 1;
+        while (tasks.some((other) => other.code && (0, exports.sameTaskCode)(other.code, (0, exports.taskCodeOf)(prefix, number))))
+            number += 1;
+        task.code = (0, exports.taskCodeOf)(prefix, number);
+    }
+};
+/* ── Eine Vorlage aus der Anfrage ──────────────────────────────────────── */
+/** Die Bereiche einer Anfrage — streng: was sich nicht speichern lässt, ist ein Fehler. */
+const sectionsInputFrom = (value) => {
+    if (value.length > exports.PRODUCTION_TASK_LIMITS.sections) {
+        throw (0, exports.productionTaskError)('SECTIONS_TOO_MANY', `Höchstens ${exports.PRODUCTION_TASK_LIMITS.sections} Bereiche je Vorlage.`, {
+            params: { max: exports.PRODUCTION_TASK_LIMITS.sections },
+        });
+    }
+    const sections = [];
+    value.forEach((raw, index) => {
+        const row = objectOf(raw);
+        const invalid = () => (0, exports.productionTaskError)('SECTION_INVALID', `Bereich ${index + 1} ist ungültig.`, {
+            params: { row: index + 1 },
+        });
+        const key = typeof row.key === 'string' ? row.key.trim() : '';
+        if (!SECTION_KEY.test(key) || sections.some((section) => section.key === key))
+            throw invalid();
+        const builtIn = (0, exports.isBuiltInArea)(key);
+        const name = builtIn ? '' : text(row.name, exports.PRODUCTION_TASK_LIMITS.sectionName);
+        if (!builtIn && !name) {
+            throw (0, exports.productionTaskError)('SECTION_NAME_REQUIRED', 'Jeder Bereich braucht einen Namen.', { params: { row: index + 1 } });
+        }
+        if (name && sections.some((section) => section.name && sameName(section.name, name))) {
+            throw (0, exports.productionTaskError)('SECTION_NAME_TAKEN', `Zwei Bereiche heissen «${name}».`, { status: 409, params: { name } });
+        }
+        const label = name || key;
+        const share = percentFrom(row.share ?? 0);
+        if (share === null) {
+            throw (0, exports.productionTaskError)('SHARES_INVALID', 'Der Anteil eines Bereichs muss zwischen 0 und 100 liegen.', {
+                params: { area: label },
+            });
+        }
+        const rawStages = Array.isArray(row.stages) ? row.stages : [];
+        if (rawStages.length > exports.PRODUCTION_TASK_LIMITS.stages) {
+            throw (0, exports.productionTaskError)('STAGES_TOO_MANY', `Höchstens ${exports.PRODUCTION_TASK_LIMITS.stages} Stufen je Bereich.`, {
+                params: { max: exports.PRODUCTION_TASK_LIMITS.stages, section: label },
+            });
+        }
+        const stages = [];
+        for (const rawStage of rawStages) {
+            const stage = objectOf(rawStage);
+            const stageKey = typeof stage.key === 'string' ? stage.key.trim() : '';
+            if (!STAGE_KEY.test(stageKey) || RESERVED_STAGE_KEYS.has(stageKey) || stages.some((entry) => entry.key === stageKey)) {
+                throw invalid();
+            }
+            const stageName = text(stage.name, exports.PRODUCTION_TASK_LIMITS.stageName);
+            // Nur eine feste Stufe darf ohne Namen kommen — ihr Name steht in der Übersetzung.
+            if (!stageName && !(0, exports.isBuiltInStage)(stageKey)) {
+                throw (0, exports.productionTaskError)('STAGE_NAME_REQUIRED', 'Jede Stufe braucht einen Namen.', { params: { section: label } });
+            }
+            if (stageName && stages.some((entry) => entry.name && sameName(entry.name, stageName))) {
+                throw (0, exports.productionTaskError)('STAGE_NAME_TAKEN', `Im Bereich «${label}» heissen zwei Stufen «${stageName}».`, {
+                    status: 409,
+                    params: { section: label, name: stageName },
+                });
+            }
+            // Das Gewicht der Stufe im Bereich (30.09.2026) — fehlt es, kommt ein älterer Browserstand.
+            const weight = percentFrom(stage.weight ?? 0);
+            if (weight === null) {
+                throw (0, exports.productionTaskError)('STAGE_WEIGHT_INVALID', 'Das Gewicht einer Stufe muss zwischen 0 und 100 liegen.', {
+                    params: { section: label, name: stageName || stageKey },
+                });
+            }
+            stages.push({ key: stageKey, name: stageName, weight });
+        }
+        sections.push({ key, name, share, stages });
+    });
+    return sections;
+};
+/** Bringt die Anfrage die Gewichte der Stufen mit? — sonst ein älterer Browserstand (Anteile am Bereich). */
+const requestHasStageWeights = (value) => Array.isArray(value) && value.some((raw) => {
+    const stages = objectOf(raw).stages;
+    return Array.isArray(stages) && stages.some((stage) => objectOf(stage).weight !== undefined);
+});
+/**
+ * Die Gewichte der Stufen der Kopie am Gerät neu (30.09.2026) — nur für Stufen, die es gibt;
+ * Namen, Reihenfolge und Anteile bleiben. Ohne Angabe bleibt alles, wie es ist.
+ */
+const withStageWeights = (sections, value) => {
+    if (!Array.isArray(value))
+        return sections.map((section) => ({ ...section }));
+    const given = new Map();
+    for (const raw of value) {
+        const row = objectOf(raw);
+        for (const rawStage of Array.isArray(row.stages) ? row.stages : []) {
+            const stage = objectOf(rawStage);
+            if (typeof row.key === 'string' && typeof stage.key === 'string' && stage.weight !== undefined) {
+                given.set(`${row.key}|${stage.key}`, stage.weight);
+            }
+        }
+    }
+    return sections.map((section) => ({
+        ...section,
+        stages: section.stages.map((stage) => {
+            if (!given.has(`${section.key}|${stage.key}`))
+                return stage;
+            const weight = percentFrom(given.get(`${section.key}|${stage.key}`));
+            if (weight === null) {
+                throw (0, exports.productionTaskError)('STAGE_WEIGHT_INVALID', 'Das Gewicht einer Stufe muss zwischen 0 und 100 liegen.', {
+                    params: { section: section.name || section.key, name: stage.name || stage.key },
+                });
+            }
+            return { ...stage, weight };
+        }),
+    }));
+};
+exports.withStageWeights = withStageWeights;
+/**
+ * Eine neue Stufe in einem Bereich der Kopie am Gerät (28.09.2026: «admins should be able to
+ * add new stage if the section's weight is not 100%»). Nur solange die Aufgaben des Bereichs
+ * zusammen unter 100 % wiegen — die neue Stufe nimmt den Rest auf. Name Pflicht und eindeutig;
+ * in einem festen Bereich kommt sie vor die Fahne («final»), sonst ans Ende.
+ */
+const withAddedStage = (sections, area, rawName) => {
+    const section = sections.find((entry) => entry.key === area);
+    if (!section)
+        throw (0, exports.productionTaskError)('SECTION_INVALID', 'Bereich nicht gefunden.', { status: 404, params: { row: 0 } });
+    const label = section.name || section.key;
+    const name = text(rawName, exports.PRODUCTION_TASK_LIMITS.stageName);
+    if (!name)
+        throw (0, exports.productionTaskError)('STAGE_NAME_REQUIRED', 'Jede Stufe braucht einen Namen.', { params: { section: label } });
+    if (section.stages.length >= exports.PRODUCTION_TASK_LIMITS.stages) {
+        throw (0, exports.productionTaskError)('STAGES_TOO_MANY', `Höchstens ${exports.PRODUCTION_TASK_LIMITS.stages} Stufen je Bereich.`, {
+            params: { max: exports.PRODUCTION_TASK_LIMITS.stages, section: label },
+        });
+    }
+    if (section.stages.some((entry) => sameName(entry.name || entry.key, name))) {
+        throw (0, exports.productionTaskError)('STAGE_NAME_TAKEN', `Im Bereich «${label}» gibt es die Stufe «${name}» schon.`, {
+            status: 409,
+            params: { section: label, name },
+        });
+    }
+    // Seit dem 30.09.2026 zählen die Gewichte der STUFEN: die neue nimmt, was im Bereich noch frei ist.
+    const used = (0, exports.roundPercent)(section.stages.reduce((sum, stage) => sum + stage.weight, 0));
+    if (used >= 100 - SUM_TOLERANCE) {
+        throw (0, exports.productionTaskError)('SECTION_FULL', `Die Stufen von «${label}» wiegen schon 100 % — keine neue Stufe.`, {
+            status: 409,
+            params: { section: label },
+        });
+    }
+    const stage = { key: randomKey('g'), name, weight: (0, exports.roundPercent)(100 - used) };
+    const last = section.stages[section.stages.length - 1];
+    const beforeFlag = (0, exports.isBuiltInArea)(section.key) && last?.key === 'final';
+    const stages = beforeFlag ? [...section.stages.slice(0, -1), stage, last] : [...section.stages, stage];
+    return sections.map((entry) => (entry.key === section.key ? { ...entry, stages } : entry));
+};
+exports.withAddedStage = withAddedStage;
+/** Ein älterer Browserstand schickt nur die Anteile von Mekanik und Elektrik. */
+const legacySectionsFrom = (value) => {
+    const shares = objectOf(value);
+    return (0, exports.builtInSections)({}).map((section) => {
+        const share = percentFrom(shares[section.key] ?? 0);
+        if (share === null) {
+            throw (0, exports.productionTaskError)('SHARES_INVALID', 'Der Anteil eines Bereichs muss zwischen 0 und 100 liegen.', {
+                params: { area: section.key },
+            });
+        }
+        return { ...section, share };
+    });
+};
+/**
+ * Liest Name, Bereiche und Aufgaben einer Vorlage. Wirft bei allem, was sich
+ * nicht speichern lässt (Name fehlt, Bereich ohne Namen, unbekannter Bereich,
+ * Stufe passt nicht zum Bereich, Kürzel doppelt …). Summen, die nicht
+ * aufgehen, sind KEIN Fehler — das sagt `templateCheck`.
  */
 const templateInputFrom = (body) => {
-    const input = (body && typeof body === 'object' ? body : {});
+    const input = objectOf(body);
     const name = text(input.name, exports.PRODUCTION_TASK_LIMITS.templateName);
     if (!name)
         throw (0, exports.productionTaskError)('NAME_REQUIRED', 'Die Vorlage braucht einen Namen.');
-    const rawShares = (input.areaShares && typeof input.areaShares === 'object' ? input.areaShares : {});
-    const areaShares = {};
-    for (const area of exports.PRODUCTION_TASK_AREAS) {
-        const share = percentFrom(rawShares[area] ?? 0);
-        if (share === null) {
-            throw (0, exports.productionTaskError)('SHARES_INVALID', 'Der Anteil eines Bereichs muss zwischen 0 und 100 liegen.', {
-                params: { area },
-            });
-        }
-        areaShares[area] = share;
-    }
-    const rawTasks = Array.isArray(input.tasks) ? input.tasks : [];
+    // Seit dem 28.09.2026 kommen die Bereiche mit; ohne sie ist es ein älterer Browserstand.
+    const sections = Array.isArray(input.sections) ? sectionsInputFrom(input.sections) : legacySectionsFrom(input.areaShares);
+    // Die Kennungen der Aufgaben braucht nur das Gerät; eine Vorlage schreibt ihre Zeilen neu.
+    const tasks = (0, exports.tasksInputFrom)(input.tasks, sections, false).map(({ id: _id, ...task }) => task);
+    // Ohne Gewichte der Stufen (älterer Browserstand) tragen die Aufgaben Anteile am Bereich.
+    return requestHasStageWeights(input.sections) ? { name, sections, tasks } : { name, ...(0, exports.fromSectionShares)(sections, tasks) };
+};
+exports.templateInputFrom = templateInputFrom;
+/**
+ * Die Aufgaben einer Anfrage in den Bereichen einer Vorlage bzw. eines Plans.
+ * `withDates`: am Gerät tragen Aufgabe und Unteraufgaben Beginn und Termin
+ * (und müssen zusammenpassen); in der Vorlage fallen sie weg. Aufgaben ohne
+ * Kürzel bekommen das nächste freie ihres Bereichs.
+ */
+const tasksInputFrom = (value, sections, withDates) => {
+    const rawTasks = Array.isArray(value) ? value : [];
     if (rawTasks.length > exports.PRODUCTION_TASK_LIMITS.tasks) {
-        throw (0, exports.productionTaskError)('TASKS_TOO_MANY', `Höchstens ${exports.PRODUCTION_TASK_LIMITS.tasks} Aufgaben je Vorlage.`, {
+        throw (0, exports.productionTaskError)('TASKS_TOO_MANY', `Höchstens ${exports.PRODUCTION_TASK_LIMITS.tasks} Aufgaben.`, {
             params: { max: exports.PRODUCTION_TASK_LIMITS.tasks },
         });
     }
     const tasks = [];
     rawTasks.forEach((raw, index) => {
-        const row = (raw && typeof raw === 'object' ? raw : {});
+        const row = objectOf(raw);
         const invalid = (field) => (0, exports.productionTaskError)('TASK_INVALID', `Aufgabe ${index + 1}: «${field}» ist ungültig.`, {
             params: { row: index + 1, field },
             details: { index, field },
         });
-        if (!(0, exports.isProductionTaskArea)(row.area))
+        const section = sections.find((entry) => entry.key === row.area);
+        if (!section)
             throw invalid('area');
-        const area = row.area;
         // Eine Stufe des anderen Wegs (alter Browserstand) wird umgelegt, Unbekanntes abgewiesen.
-        const stage = (0, exports.stageOfArea)(area, row.stage);
+        const stage = (0, exports.stageOfSection)(section, row.stage);
         if (!stage)
             throw invalid('stage');
         const code = text(row.code, exports.PRODUCTION_TASK_LIMITS.code);
-        if (!code)
-            throw invalid('code');
         const taskName = text(row.name, exports.PRODUCTION_TASK_LIMITS.taskName);
         if (!taskName)
             throw invalid('name');
         const weight = percentFrom(row.weight);
         if (weight === null)
             throw invalid('weight');
-        if (tasks.some((task) => (0, exports.sameTaskCode)(task.code, code))) {
+        const subtasks = subtasksInputFrom(row.subtasks, withDates);
+        if (!subtasks)
+            throw invalid('subtasks');
+        const startDate = withDates ? (0, exports.dayFrom)(row.startDate) : null;
+        if (startDate === undefined)
+            throw invalid('startDate');
+        const dueDate = withDates ? (0, exports.dayFrom)(row.dueDate) : null;
+        if (dueDate === undefined)
+            throw invalid('dueDate');
+        const datesProblem = (0, exports.taskDatesProblem)({ startDate, dueDate }, subtasks);
+        if (datesProblem) {
+            throw (0, exports.productionTaskError)('TASK_DATES_INVALID', `Aufgabe ${index + 1}: die Tage passen nicht zusammen.`, {
+                params: { row: index + 1, field: datesProblem },
+                details: { index, field: datesProblem },
+            });
+        }
+        // Wiegt die Aufgabe 0, tragen ihre Unteraufgaben kein Gewicht (28.09.2026).
+        if (weight === 0)
+            for (const subtask of subtasks)
+                subtask.weight = null;
+        const subtaskSum = (0, exports.subtaskWeightSum)(subtasks);
+        if (subtaskSum > 100 + SUM_TOLERANCE) {
+            throw (0, exports.productionTaskError)('SUBTASK_WEIGHTS_INVALID', `Aufgabe ${index + 1}: die Unteraufgaben ergeben zusammen mehr als 100 % der Aufgabe.`, {
+                params: { row: index + 1, sum: subtaskSum, max: 100 },
+                details: { index, field: 'subtasks' },
+            });
+        }
+        if (code && tasks.some((task) => task.code && (0, exports.sameTaskCode)(task.code, code))) {
             throw (0, exports.productionTaskError)('CODE_DUPLICATE', `Das Kürzel ${code} steht zweimal in der Vorlage.`, {
                 status: 409,
                 params: { code },
                 details: { index, field: 'code' },
             });
         }
-        tasks.push({ area, stage, code, name: taskName, weight, assigneeIds: (0, exports.assigneeIdsFrom)(row.assigneeIds) });
+        const id = typeof row.id === 'string' && row.id.trim() ? row.id.trim() : null;
+        tasks.push({
+            id,
+            area: section.key,
+            stage,
+            code,
+            name: taskName,
+            weight,
+            // Personen stehen nur an den Unteraufgaben (29.09.2026) — `row.assigneeIds` zählt nicht mehr.
+            assigneeIds: (0, exports.taskAssigneesOf)(subtasks),
+            // Beginn und Termin gibt es erst am Gerät — eine Vorlage trägt keine (28.09.2026).
+            startDate,
+            dueDate,
+            createdAt: createdDayFrom(row.createdAt),
+            subtasks,
+        });
     });
-    return { name, areaShares, tasks };
+    fillMissingCodes(sections, tasks);
+    return tasks;
 };
-exports.templateInputFrom = templateInputFrom;
+exports.tasksInputFrom = tasksInputFrom;
 /**
- * Gehen die Summen auf? Ein Bereich ohne Aufgaben ist nur in Ordnung, wenn er
- * auch keinen Anteil trägt; einer mit Aufgaben, wenn deren Gewichte 100 %
- * ergeben.
+ * Gehen die Summen auf? (30.09.2026: je Stufe.) Die Anteile der Bereiche ergeben 100 %. Ein
+ * Bereich ohne Aufgaben ist nur in Ordnung, wenn er keinen Anteil trägt; einer mit Aufgaben,
+ * wenn seine Stufen zusammen 100 % wiegen und jede Stufe stimmt: mit Aufgaben ergeben diese
+ * 100 % der Stufe, ohne Aufgaben wiegt sie 0.
  */
-const templateCheck = (areaShares, areas) => {
-    const sharesSum = (0, exports.roundPercent)(exports.PRODUCTION_TASK_AREAS.reduce((sum, area) => sum + (areaShares[area] ?? 0), 0));
+const templateCheck = (sections, tasks) => {
+    const sharesSum = (0, exports.roundPercent)(sections.reduce((sum, section) => sum + section.share, 0));
     const sharesOk = Math.abs(sharesSum - 100) <= SUM_TOLERANCE;
-    const checks = exports.PRODUCTION_TASK_AREAS.map((area) => {
-        const share = areaShares[area] ?? 0;
-        const taskCount = areas[area]?.taskCount ?? 0;
-        const weightSum = (0, exports.roundPercent)(areas[area]?.weightSum ?? 0);
-        const ok = taskCount > 0 ? Math.abs(weightSum - 100) <= SUM_TOLERANCE : share === 0;
-        return { area, share, taskCount, weightSum, ok };
+    const checks = sections.map((section) => {
+        const own = tasks.filter((task) => task.area === section.key);
+        const stages = section.stages.map((stage) => {
+            const inStage = own.filter((task) => task.stage === stage.key);
+            const taskWeightSum = (0, exports.roundPercent)(inStage.reduce((sum, task) => sum + task.weight, 0));
+            const ok = inStage.length > 0 ? Math.abs(taskWeightSum - 100) <= SUM_TOLERANCE : stage.weight === 0;
+            return { stage: stage.key, weight: stage.weight, taskCount: inStage.length, taskWeightSum, ok };
+        });
+        const weightSum = (0, exports.roundPercent)(section.stages.reduce((sum, stage) => sum + stage.weight, 0));
+        const ok = own.length > 0
+            ? Math.abs(weightSum - 100) <= SUM_TOLERANCE && stages.every((stage) => stage.ok)
+            : section.share === 0;
+        return { area: section.key, share: section.share, taskCount: own.length, weightSum, ok, stages };
     });
     const hasTasks = checks.some((check) => check.taskCount > 0);
     return { valid: sharesOk && hasTasks && checks.every((check) => check.ok), sharesSum, sharesOk, areas: checks };
 };
 exports.templateCheck = templateCheck;
-/** Aufgaben und Gewichtssumme je Bereich — aus einer Aufgabenliste gezählt. */
-const areaTotals = (tasks) => {
-    const totals = {};
-    for (const area of exports.PRODUCTION_TASK_AREAS)
-        totals[area] = { taskCount: 0, weightSum: 0 };
-    for (const task of tasks) {
-        const entry = totals[task.area];
-        if (!entry)
-            continue;
-        entry.taskCount += 1;
-        entry.weightSum = (0, exports.roundPercent)(entry.weightSum + task.weight);
-    }
-    return totals;
-};
-exports.areaTotals = areaTotals;
 /**
  * Reihenfolge der Aufgaben: Bereich, Stufe des Weges, dann wie eingegeben.
  * So stehen sie in der Vorlage wie am Gerät in derselben Folge.
  */
-const orderTasks = (tasks) => tasks
-    .map((task, index) => ({ task, index }))
-    .sort((left, right) => {
-    const area = exports.PRODUCTION_TASK_AREAS.indexOf(left.task.area) - exports.PRODUCTION_TASK_AREAS.indexOf(right.task.area);
-    if (area)
-        return area;
-    const stages = exports.PRODUCTION_TASK_STAGES[left.task.area];
-    const stage = stages.indexOf(left.task.stage) - stages.indexOf(right.task.stage);
-    return stage || left.index - right.index;
-})
-    .map((entry) => entry.task);
+const orderTasks = (tasks, sections) => {
+    const last = Number.MAX_SAFE_INTEGER;
+    const areaRank = new Map(sections.map((section, index) => [section.key, index]));
+    const stageRank = new Map(sections.map((section) => [section.key, new Map(section.stages.map((stage, index) => [stage.key, index]))]));
+    return tasks
+        .map((task, index) => ({ task, index }))
+        .sort((left, right) => {
+        const area = (areaRank.get(left.task.area) ?? last) - (areaRank.get(right.task.area) ?? last);
+        if (area)
+            return area;
+        const stages = stageRank.get(left.task.area);
+        const stage = (stages?.get(left.task.stage) ?? last) - (stages?.get(right.task.stage) ?? last);
+        return stage || left.index - right.index;
+    })
+        .map((entry) => entry.task);
+};
 exports.orderTasks = orderTasks;
 /**
- * Person → die Aufgaben, in denen sie NEU steht. Verglichen wird je Aufgabe
- * über ihr Kürzel: wer beim Ersetzen einer Vorlage in derselben Aufgabe
- * bleibt, wird nicht noch einmal benachrichtigt.
+ * Person → die Unteraufgaben, an denen sie NEU steht (29.09.2026: Personen
+ * gibt es nur noch an Unteraufgaben). Verglichen wird je Unteraufgabe über
+ * das Kürzel ihrer Aufgabe und ihre Kennung: wer beim Ersetzen einer Vorlage
+ * an derselben Unteraufgabe bleibt, wird nicht noch einmal benachrichtigt.
+ * Die Nachricht nennt das Kürzel der Unteraufgabe («M-01.2») und ihren Namen.
  */
 const assignmentNews = (before, after) => {
-    const previous = new Map(before.map((task) => [codeKey(task.code), new Set(task.assigneeIds)]));
+    // Kürzel der Aufgabe → Kennung der Unteraufgabe → ihre Personen vorher.
+    const previous = new Map(before.map((task) => [
+        codeKey(task.code),
+        new Map(task.subtasks.map((subtask) => [subtask.id, new Set(subtask.assigneeIds)])),
+    ]));
     const news = new Map();
     for (const task of after) {
-        const had = previous.get(codeKey(task.code));
-        for (const id of task.assigneeIds) {
-            if (had?.has(id))
-                continue;
-            const list = news.get(id) ?? [];
-            list.push({ area: task.area, stage: task.stage, code: task.code, name: task.name });
-            news.set(id, list);
-        }
+        const earlier = previous.get(codeKey(task.code));
+        task.subtasks.forEach((subtask, index) => {
+            const had = earlier?.get(subtask.id);
+            for (const id of subtask.assigneeIds) {
+                if (had?.has(id))
+                    continue;
+                const list = news.get(id) ?? [];
+                list.push({ area: task.area, stage: task.stage, code: `${task.code}.${index + 1}`, name: subtask.name });
+                news.set(id, list);
+            }
+        });
     }
     return news;
 };
@@ -285,7 +1079,8 @@ exports.assignmentNews = assignmentNews;
  *                    Test                     E-12 … E-14 (Software, E/A, Prüfungen)
  *                    Final                    E-15 Son durum dokümanları ve yedekleme
  *
- * Personen stehen im Beispiel keine — die weist die Firma selbst zu.
+ * Personen stehen im Beispiel keine — die weist die Firma selbst zu. Es
+ * bleibt bei den festen Bereichen Mekanik / Elektrik.
  */
 exports.CHILLER_EXAMPLE_KEY = 'chiller';
 const CHILLER_MECHANICAL = [
@@ -321,16 +1116,16 @@ const CHILLER_ELECTRICAL = [
     ['E-14', 'Elektriksel testler', 'test', 5],
     ['E-15', 'Son durum dokümanları ve yedekleme', 'final', 2],
 ];
+// Die Liste nennt Anteile am Bereich — `fromSectionShares` macht daraus Stufen- und Aufgabengewichte.
 exports.CHILLER_EXAMPLE = {
     name: 'Chiller',
-    areaShares: { MECHANICAL: 60, ELECTRICAL: 40 },
-    tasks: [
+    ...(0, exports.fromSectionShares)((0, exports.builtInSections)({ MECHANICAL: 60, ELECTRICAL: 40 }), [
         ...CHILLER_MECHANICAL.map(([code, name, stage, weight]) => ({
-            area: 'MECHANICAL', stage, code, name, weight, assigneeIds: [],
+            area: 'MECHANICAL', stage, code, name, weight, assigneeIds: [], startDate: null, dueDate: null, createdAt: null, subtasks: [],
         })),
         ...CHILLER_ELECTRICAL.map(([code, name, stage, weight]) => ({
-            area: 'ELECTRICAL', stage, code, name, weight, assigneeIds: [],
+            area: 'ELECTRICAL', stage, code, name, weight, assigneeIds: [], startDate: null, dueDate: null, createdAt: null, subtasks: [],
         })),
-    ],
+    ]),
 };
 //# sourceMappingURL=productionTasks.js.map

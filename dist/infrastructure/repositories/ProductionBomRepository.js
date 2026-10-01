@@ -9,6 +9,7 @@ const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const ProductionBom_1 = require("../../domain/entities/ProductionBom");
 const productionBom_1 = require("../../domain/services/productionBom");
+const productionTasks_1 = require("../../domain/services/productionTasks");
 const WarehouseCodeIssuer_1 = require("./WarehouseCodeIssuer");
 /**
  * ── BOM · DIE DATENBANKSEITE (27.09.2026) ────────────────────────────────────
@@ -546,15 +547,22 @@ const cardUnitOf = (value) => {
 const withSuppliers = async (tenantId, rows) => {
     if (!rows.length)
         return [];
-    const suppliers = await prisma_client_1.default.warehouseProductSupplier.findMany({
-        where: { tenantId, productId: { in: rows.map((row) => row.id) } },
-        select: { productId: true, supplierId: true, supplierName: true, email: true, sortOrder: true },
-        orderBy: { sortOrder: 'asc' },
-    });
+    // Roh gelesen: Artikel-/Bestellnummer (01.10.2026) kennt ein älterer Prisma-Client nicht.
+    const suppliers = await prisma_client_1.default.$queryRaw `
+        SELECT s.productId, s.supplierId, s.supplierName, s.email, s.articleNumber, s.orderNumber
+          FROM depo_urun_tedarikcileri s
+         WHERE s.tenantId = ${tenantId} AND s.productId IN (${client_1.Prisma.join(rows.map((row) => row.id))})
+         ORDER BY s.sortOrder`;
     const byProduct = new Map();
     for (const supplier of suppliers) {
         const list = byProduct.get(supplier.productId) ?? [];
-        list.push({ supplierId: supplier.supplierId, name: supplier.supplierName, email: supplier.email ?? null });
+        list.push({
+            supplierId: supplier.supplierId,
+            name: supplier.supplierName,
+            email: supplier.email ?? null,
+            articleNumber: supplier.articleNumber ?? null,
+            orderNumber: supplier.orderNumber ?? null,
+        });
         byProduct.set(supplier.productId, list);
     }
     return rows.map((row) => ({
@@ -600,20 +608,39 @@ class PrismaBomStockReader {
         });
         return rows.map((row) => ({ ...row, createdAt: toDate(row.createdAt) }));
     }
-    async search(tenantId, query, limit) {
+    async search(tenantId, query, limit, area) {
         const needle = query.trim().slice(0, 120);
         if (!needle)
             return [];
         const like = likeOf(needle);
-        const rows = await prisma_client_1.default.$queryRaw `${STOCK_SELECT}
+        /* «Bomda mekanik olan sadece kendi MAK kodlarını görebilecek» (01.10.2026):
+           Depo › Ayarlar ordnet jede Hauptkategorie einem Bereich zu (oder beiden).
+           Karten ohne Gruppe haben keinen Kod türü — sie bleiben überall sichtbar. */
+        const areaFilter = area
+            ? client_1.Prisma.sql `AND (p.materialGroupId IS NULL OR p.materialGroupId NOT IN (
+                  SELECT g.id FROM depo_malzeme_gruplari g JOIN depo_ana_kategoriler c ON c.id = g.categoryId
+                   WHERE g.tenantId = ${tenantId} AND c.bomArea <> 'BOTH' AND c.bomArea <> ${area}))`
+            : client_1.Prisma.empty;
+        const run = (filter) => prisma_client_1.default.$queryRaw `${STOCK_SELECT}
             WHERE p.tenantId = ${tenantId}
               AND (p.erpCode LIKE ${like} OR p.modelNumber LIKE ${like} OR p.name LIKE ${like} OR p.brand LIKE ${like}
                    OR p.barcode = ${needle} OR p.manufacturerBarcode = ${needle}
                    OR p.id IN (SELECT s.productId FROM depo_urun_tedarikcileri s WHERE s.tenantId = ${tenantId} AND s.barcode = ${needle}))
+              ${filter}
             ORDER BY (p.erpCode = ${needle}) DESC, (p.modelNumber = ${needle}) DESC,
                      (p.erpCode LIKE ${`${needle.replace(/[\\%_]/g, (char) => `\\${char}`)}%`}) DESC,
                      p.name ASC
             LIMIT ${Math.max(1, Math.min(50, limit))}`;
+        let rows;
+        try {
+            rows = await run(areaFilter);
+        }
+        catch (error) {
+            // Ohne die Migration vom 01.10.2026 gibt es `bomArea` noch nicht — dann ungefiltert.
+            if (!area || !/Unknown column|\b1054\b/i.test(String(error?.message ?? error)))
+                throw error;
+            rows = await run(client_1.Prisma.empty);
+        }
         return withSuppliers(tenantId, rows);
     }
     async assignSerials(tenantId, assignments) {
@@ -1031,19 +1058,13 @@ class PrismaBomProductionDirectory {
         return result;
     }
     async bomStageAssignees(tenantId, itemId, area) {
+        // Personen stehen nur an Unteraufgaben (29.09.2026) — gelesen aus ihnen, nicht aus der
+        // Spalte der Aufgabe, die noch früher an der Aufgabe gesetzte Personen halten kann.
         const rows = await prisma_client_1.default.productionDeviceTask.findMany({
             where: { tenantId, productionItemId: itemId, area, stage: 'bom' },
-            select: { assigneeIds: true },
+            select: { subtasks: true },
         });
-        const ids = new Set();
-        for (const row of rows) {
-            if (Array.isArray(row.assigneeIds)) {
-                for (const id of row.assigneeIds)
-                    if (typeof id === 'string' && id)
-                        ids.add(id);
-            }
-        }
-        return [...ids];
+        return [...new Set(rows.flatMap((row) => (0, productionTasks_1.taskAssigneesOf)((0, productionTasks_1.subtasksFrom)(row.subtasks))))];
     }
     async personName(id) {
         const row = await prisma_client_1.default.employee.findUnique({ where: { id }, select: { firstName: true, lastName: true } }).catch(() => null);

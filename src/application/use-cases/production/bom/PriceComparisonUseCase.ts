@@ -136,7 +136,7 @@ export class PriceComparisonUseCase {
                 currency: order.currency,
                 // Die Automatik fragt jeden Lieferanten nur nach SEINEN Zeilen (30.09.2026).
                 askedLineIds: [...new Set(order.items.flatMap((item) => (typeof item.bomLineId === 'string' ? [item.bomLineId] : [])))],
-                body: await this.documents.read(link.quoteFileRef),
+                body: await this.readQuote(link.quoteFileRef, order),
             });
         }
 
@@ -212,6 +212,28 @@ export class PriceComparisonUseCase {
         if (!request) throw bomError('REQUEST_NOT_FOUND', 'Talep nicht gefunden.', { status: 404 });
         const [dto, all] = await Promise.all([this.dtoOf(tenantId, entry, request), this.store.forRequest(tenantId, request.id)]);
         return { ...dto, others: all.map(summaryOf) };
+    }
+
+    /**
+     * Das Angebots-PDF lesen (01.10.2026). Steht der Verweis in der Datenbank, die Datei aber
+     * nicht mehr in der Ablage (auf der Platte eines anderen Rechners hochgeladen, nie in R2),
+     * war das ein 500 «Sunucu hatası» — jetzt sagt es, welches Angebot neu hochzuladen ist.
+     */
+    private async readQuote(reference: string, order: { referenceNumber: string; supplierName: string }): Promise<Buffer> {
+        try {
+            return await this.documents.read(reference);
+        } catch (error) {
+            const failure = error as { code?: string; name?: string };
+            const code = String(failure?.code ?? failure?.name ?? '');
+            if (code === 'ENOENT' || code === 'NoSuchKey' || code === 'NotFound') {
+                console.warn('[satın alma] Angebots-PDF fehlt in der Ablage:', order.referenceNumber, reference);
+                throw bomError('COMPARE_PDF_MISSING', 'Die Datei des Angebots-PDF fehlt — neu hochladen.', {
+                    status: 409,
+                    params: { code: order.referenceNumber, supplier: order.supplierName },
+                });
+            }
+            throw error;
+        }
     }
 
     /** Je Zeile des Vergleichs: bestellt würde … / nicht, weil … — derselbe Vorschlag wie beim Bestellen. */

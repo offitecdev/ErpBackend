@@ -1,6 +1,8 @@
 import {
+    WAREHOUSE_BOM_AREAS,
     WAREHOUSE_CURRENCIES,
     WAREHOUSE_UNITS,
+    type WarehouseBomArea,
     type WarehouseCurrency,
     type WarehouseUnit,
     type WarehouseProduct,
@@ -82,7 +84,9 @@ export type WarehouseErrorCode =
     // 30.09.2026: Einheit, E-Mail je Lieferant, Taslak (Pflichtangaben einer fertigen Karte).
     | 'UNIT_INVALID'
     | 'SUPPLIER_EMAIL_INVALID'
-    | 'PRODUCT_INCOMPLETE';
+    | 'PRODUCT_INCOMPLETE'
+    // 01.10.2026: BOM-Bereich einer Hauptkategorie.
+    | 'CATEGORY_BOM_AREA_INVALID';
 
 export type WarehouseError = Error & {
     code: WarehouseErrorCode;
@@ -146,6 +150,16 @@ export const WAREHOUSE_LIMITS = {
     /** Lieferanten je Karte. */
     suppliers: 20,
 } as const;
+
+/** BOM-Bereich einer Hauptkategorie; Unbekanntes = Fehler, leer = null. */
+export const bomAreaFrom = (raw: unknown): WarehouseBomArea | null => {
+    const value = String(raw ?? '').trim().toUpperCase();
+    if (!value) return null;
+    if ((WAREHOUSE_BOM_AREAS as readonly string[]).includes(value)) return value as WarehouseBomArea;
+    throw warehouseError('CATEGORY_BOM_AREA_INVALID', 'Unbekannter BOM-Bereich (MECHANICAL, ELECTRICAL oder BOTH).', {
+        params: { value: value.slice(0, 32) },
+    });
+};
 
 /** DECIMAL(14,3) bzw. DECIMAL(14,4) — mit Luft nach unten. */
 const MAX_QUANTITY = 99_999_999_999;

@@ -66,6 +66,8 @@ const suppliersOf = (raw) => {
         name: String(entry.name),
         barcode: textOrNull(entry.barcode),
         email: textOrNull(entry.email),
+        articleNumber: textOrNull(entry.articleNumber),
+        orderNumber: textOrNull(entry.orderNumber),
     }));
 };
 /** Eine gespeicherte Einheit — nur, was die Liste kennt (ältere Karten: keine). */
@@ -120,7 +122,8 @@ const PRODUCT_SELECT = client_1.Prisma.sql `
     SELECT p.id, p.tenantId, p.erpCode, p.materialGroupId, g.name AS materialGroupName, g.code AS materialGroupCode,
            c.id AS categoryId, c.name AS categoryName, c.code AS categoryCode, p.name, p.brand,
            p.modelNumber, p.productCode, p.unit, p.isDraft, p.supplierId, p.supplierName,
-           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode, 'email', s.email)
+           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode, 'email', s.email,
+                                      'articleNumber', s.articleNumber, 'orderNumber', s.orderNumber)
                    ORDER BY s.sortOrder, s.supplierName)
               FROM depo_urun_tedarikcileri s WHERE s.productId = p.id) AS suppliersJson,
            p.description, p.quantity,
@@ -202,6 +205,8 @@ const supplierRows = (tenantId, productId, suppliers) => suppliers.map((entry, i
     supplierName: entry.name,
     barcode: entry.barcode,
     email: entry.email,
+    articleNumber: entry.articleNumber ?? null,
+    orderNumber: entry.orderNumber ?? null,
     sortOrder: index,
 }));
 exports.supplierRows = supplierRows;

@@ -6,7 +6,7 @@
  * (ProcurementDispatchUseCase) und vom Talep (ProcurementDeskUseCase).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.cardEmailOf = exports.cleanSupplierEmail = void 0;
+exports.cardSupplierNumbersOf = exports.cardEmailOf = exports.cleanSupplierEmail = void 0;
 const EMAIL = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]{2,}$/;
 /** Eine gültige Adresse (ohne «mailto:», getrimmt) — sonst null. */
 const cleanSupplierEmail = (value) => {
@@ -36,4 +36,20 @@ const cardEmailOf = (supplier, productIds, products) => {
     return null;
 };
 exports.cardEmailOf = cardEmailOf;
+/**
+ * Die Artikel- und Bestellnummer, die die Karte für DIESEN Lieferanten trägt
+ * (01.10.2026, Samet: «her tedarikçiye özel … ürün numarası ve sipariş
+ * numarası … ilgili tedarikçilere kendi maillerine gitmeli»). Erst per
+ * Kennung, dann per Name; die Karte kennt ihn nicht → beide leer.
+ */
+const cardSupplierNumbersOf = (supplier, product) => {
+    const cards = product?.suppliers ?? [];
+    const card = cards.find((entry) => same(entry, supplier))
+        ?? cards.find((entry) => fold(entry.name) === fold(supplier.supplierName));
+    return {
+        supplierArticleNumber: card?.articleNumber?.trim() || null,
+        supplierOrderNumber: card?.orderNumber?.trim() || null,
+    };
+};
+exports.cardSupplierNumbersOf = cardSupplierNumbersOf;
 //# sourceMappingURL=supplierEmails.js.map

@@ -1,10 +1,21 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.productionTasksModule = void 0;
 const ProductionTaskRepository_1 = require("../../infrastructure/repositories/ProductionTaskRepository");
 const productionTaskNotifications_1 = require("../../infrastructure/services/productionTaskNotifications");
 const ProductionTaskTemplatesUseCase_1 = require("../../application/use-cases/production/ProductionTaskTemplatesUseCase");
 const ProductionDeviceTasksUseCase_1 = require("../../application/use-cases/production/ProductionDeviceTasksUseCase");
+const path_1 = __importDefault(require("path"));
+const LocalFileStorage_1 = require("../../infrastructure/services/LocalFileStorage");
+/** Dateien an Unteraufgaben (28.09.2026): Platte, sobald eingerichtet R2 — wie die BOM. */
+const taskFiles = new LocalFileStorage_1.DocumentStorage({
+    prefix: 'local:production-task-file/',
+    directory: process.env.OFFITEC_PRODUCTION_TASK_UPLOAD_DIR
+        || path_1.default.join(process.cwd(), 'storage', 'production-task-files'),
+});
 /**
  * ── GÖREVLENDİRME, ZUSAMMENGESTECKT (26.09.2026) ─────────────────────────────
  * Die einzige Stelle, an der die Anwendungsfälle der Görevlendirme ihre
@@ -14,7 +25,11 @@ const templates = new ProductionTaskRepository_1.PrismaProductionTaskTemplateRep
 const directory = new ProductionTaskRepository_1.PrismaProductionTaskDirectory();
 exports.productionTasksModule = {
     templates: new ProductionTaskTemplatesUseCase_1.ProductionTaskTemplatesUseCase(templates, directory),
-    devices: new ProductionDeviceTasksUseCase_1.ProductionDeviceTasksUseCase(new ProductionTaskRepository_1.PrismaProductionDeviceTaskRepository(), templates, directory, new productionTaskNotifications_1.ProductionTaskNotifier()),
+    devices: new ProductionDeviceTasksUseCase_1.ProductionDeviceTasksUseCase(new ProductionTaskRepository_1.PrismaProductionDeviceTaskRepository(), templates, directory, new productionTaskNotifications_1.ProductionTaskNotifier(), taskFiles, 
+    // Der Verlauf je Stufe (30.09.2026).
+    new ProductionTaskRepository_1.PrismaProductionTaskActivityLog(), 
+    // Anfragen an die Verwaltung (30.09.2026).
+    new ProductionTaskRepository_1.PrismaProductionTaskRequestRepository()),
     directory,
 };
 //# sourceMappingURL=productionTasksModule.js.map

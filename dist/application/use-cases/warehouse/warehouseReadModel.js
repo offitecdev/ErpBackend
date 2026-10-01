@@ -34,7 +34,14 @@ const productDto = (product, options = {}) => {
         supplier: product.suppliers[0]
             ? { id: product.suppliers[0].supplierId, name: product.suppliers[0].name }
             : product.supplierName ? { id: product.supplierId, name: product.supplierName } : null,
-        suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, barcode: entry.barcode, email: entry.email })),
+        suppliers: product.suppliers.map((entry) => ({
+            id: entry.supplierId,
+            name: entry.name,
+            barcode: entry.barcode,
+            email: entry.email,
+            articleNumber: entry.articleNumber ?? null,
+            orderNumber: entry.orderNumber ?? null,
+        })),
         description,
         quantity: product.quantity,
         purchasePrice: product.purchasePrice,
@@ -101,6 +108,7 @@ const catalogDto = (tree) => ({
             id: category.id,
             name: category.name,
             code: category.code,
+            bomArea: category.bomArea,
             productCount: groups.reduce((sum, group) => sum + group.productCount, 0),
             locked: groups.some((group) => group.locked),
             groups,

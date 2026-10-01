@@ -246,10 +246,15 @@ const importRowFromInput = (raw, fallbackRow) => {
             name: name ?? '',
             brand: guard('brand', () => (0, warehouse_1.cleanLine)(input.brand, 'brand', L.brand), null),
             modelNumber: guard('modelNumber', () => (0, warehouse_1.cleanLine)(input.modelNumber, 'modelNumber', L.modelNumber), null),
-            productCode: guard('productCode', () => (0, warehouse_1.cleanCode)(input.productCode, 'productCode', L.productCode), null),
+            /* «Ürün kodu» gibt es auf der Karte nicht mehr (01.10.2026): er ist die
+               Artikelnummer des Lieferanten der Zeile — eine ältere Datei mit der
+               Spalte «Ürün kodu» landet dort. */
+            productCode: null,
             unit: guard('unit', () => (0, warehouse_1.parseUnit)(input.unit), null),
             supplierName: guard('supplierName', () => (0, warehouse_1.cleanLine)(input.supplierName, 'supplierName', L.supplierName), null),
             supplierEmail: guard('supplierEmail', () => (0, warehouse_1.parseSupplierEmail)(input.supplierEmail, String(input.supplierName ?? '')), null),
+            supplierArticleNumber: guard('supplierArticleNumber', () => (0, warehouse_1.cleanCode)(input.supplierArticleNumber ?? input.productCode, 'supplierArticleNumber', L.supplierArticleNumber), null),
+            supplierOrderNumber: guard('supplierOrderNumber', () => (0, warehouse_1.cleanCode)(input.supplierOrderNumber, 'supplierOrderNumber', L.supplierOrderNumber), null),
             description: guard('description', () => (0, warehouse_1.cleanText)(input.description, 'description', L.description), null),
             quantity: finalQuantity,
             purchasePrice,

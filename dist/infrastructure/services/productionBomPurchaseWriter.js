@@ -43,12 +43,14 @@ const MODEL_COLUMN_NAME = 'Modell';
 const UNIT_LABELS = productionBom_1.ORDER_UNIT_LABELS;
 /**
  * Die eigenen Angaben der Produktionsvorlage an einer Position: Gruppe,
- * «Ürün kodu» (leer, bis ihn jemand an der Karte einträgt) und die Einheit
+ * Produkttyp- und Bestellnummer DES Lieferanten (von seiner Zeile auf der
+ * Depo-Karte, 01.10.2026; leer → die Spalte fällt im PDF weg) und die Einheit
  * als Wort («Adet» — das PDF schreibt sie in seiner Sprache).
  */
 const productionExtras = (line) => [
     { key: standardOrderTemplate_1.PRODUCTION_GROUP_KEY, name: 'Materialgruppe', value: (line.materialGroup ?? '').trim(), width: 150 },
-    { key: standardOrderTemplate_1.PRODUCTION_CODE_KEY, name: 'Produktcode', value: (line.productCode ?? '').trim(), width: 150 },
+    { key: standardOrderTemplate_1.PRODUCTION_ARTICLE_NO_KEY, name: 'Produkttypnummer', value: (line.supplierArticleNumber ?? '').trim(), width: 140 },
+    { key: standardOrderTemplate_1.PRODUCTION_ORDER_NO_KEY, name: 'Bestellnummer', value: (line.supplierOrderNumber ?? '').trim(), width: 140 },
     { key: standardOrderTemplate_1.PRODUCTION_UNIT_KEY, name: 'Einheit', value: UNIT_LABELS[line.unit] ?? 'Adet', width: 90 },
 ];
 /**
@@ -143,9 +145,14 @@ class BomPurchaseOrderWriter {
         const normalized = (0, inventory_routes_1.normalizePurchaseOrderItems)(input.lines.map((line) => itemOf(line, input.productionItemId)));
         // KDV: wie jede neue Bestellung — Angabe des Lieferanten, sonst die der letzten Bestellung.
         const vatLiable = record?.vatLiable;
-        const vat = typeof vatLiable === 'boolean'
-            ? { vatMode: 'TOTAL', orderVatRate: vatLiable ? Number(record?.vatRate) || 0 : 0 }
-            : { vatMode: last?.vatMode === 'TOTAL' ? 'TOTAL' : 'LINE', orderVatRate: Number(last?.orderVatRate) || 0 };
+        const offerVat = typeof input.vatRate === 'number' && Number.isFinite(input.vatRate) ? input.vatRate : null;
+        /* Druckt das Angebot eine MwSt, gilt SIE — als Gesamt-MwSt ganz unten
+           («KDV eğer PDF'de yakalarsa en sona», Samet 01.10.2026), nie je Zeile. */
+        const vat = offerVat !== null
+            ? { vatMode: 'TOTAL', orderVatRate: offerVat }
+            : typeof vatLiable === 'boolean'
+                ? { vatMode: 'TOTAL', orderVatRate: vatLiable ? Number(record?.vatRate) || 0 : 0 }
+                : { vatMode: last?.vatMode === 'TOTAL' ? 'TOTAL' : 'LINE', orderVatRate: Number(last?.orderVatRate) || 0 };
         const vatCountry = typeof vatLiable === 'boolean'
             ? (vatLiable ? record?.vatCountry ?? null : last?.orderVatCountry ?? null)
             : last?.orderVatCountry ?? null;

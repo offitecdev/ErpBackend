@@ -17,7 +17,7 @@
  * Tabellen: `depo_*` (prisma/schema/warehouse.prisma).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.WAREHOUSE_UNITS = exports.WAREHOUSE_CURRENCIES = void 0;
+exports.WAREHOUSE_BOM_AREAS = exports.WAREHOUSE_UNITS = exports.WAREHOUSE_CURRENCIES = void 0;
 /** Dieselbe Liste wie die Offerte (Frontend utils/currency.ts). */
 exports.WAREHOUSE_CURRENCIES = ['CHF', 'EUR', 'USD', 'GBP', 'TRY'];
 /**
@@ -27,4 +27,11 @@ exports.WAREHOUSE_CURRENCIES = ['CHF', 'EUR', 'USD', 'GBP', 'TRY'];
  * importiert die BOM nicht, darum hier gespiegelt.
  */
 exports.WAREHOUSE_UNITS = ['PCS', 'M', 'KG', 'SET', 'PACK'];
+/**
+ * Der BOM-Bereich einer Hauptkategorie (01.10.2026, Samet: «bomda mekanik olan
+ * sadece kendi MAK kodlarını görebilecek … her kod türü, bu kod türlerine de
+ * alan atama olacak: mekanik, elektrik ve ikisi de»). Die BOM-Suche eines
+ * Bereichs zeigt nur Karten aus Kategorien dieses Bereichs oder BOTH.
+ */
+exports.WAREHOUSE_BOM_AREAS = ['MECHANICAL', 'ELECTRICAL', 'BOTH'];
 //# sourceMappingURL=Warehouse.js.map

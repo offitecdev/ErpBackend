@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.searchFrom = exports.groupIdsFrom = exports.NO_GROUP_TOKEN = exports.pageSizeFrom = exports.pageFrom = exports.WAREHOUSE_MAX_PAGE_SIZE = exports.WAREHOUSE_PAGE_SIZE = exports.directionFrom = exports.sortKeyFrom = exports.firstDuplicate = exports.serialFromInput = exports.productFieldsFromInput = exports.assertSuppliersUnique = exports.makerBarcodesOf = exports.suppliersFromInput = exports.fieldsOfProduct = exports.draftRequestOf = exports.draftStateOf = exports.missingForComplete = exports.parseSupplierEmail = exports.parseUnit = exports.parseCurrency = exports.parseMinimumOrderQuantity = exports.parsePrice = exports.parseQuantity = exports.cleanText = exports.cleanCode = exports.cleanLine = exports.WAREHOUSE_LIMITS = exports.warehouseErrorBody = exports.isWarehouseError = exports.warehouseError = void 0;
+exports.searchFrom = exports.groupIdsFrom = exports.NO_GROUP_TOKEN = exports.pageSizeFrom = exports.pageFrom = exports.WAREHOUSE_MAX_PAGE_SIZE = exports.WAREHOUSE_PAGE_SIZE = exports.directionFrom = exports.sortKeyFrom = exports.firstDuplicate = exports.serialFromInput = exports.productFieldsFromInput = exports.assertSuppliersUnique = exports.makerBarcodesOf = exports.suppliersFromInput = exports.fieldsOfProduct = exports.draftRequestOf = exports.draftStateOf = exports.missingForComplete = exports.parseSupplierEmail = exports.parseUnit = exports.parseCurrency = exports.parseMinimumOrderQuantity = exports.parsePrice = exports.parseQuantity = exports.cleanText = exports.cleanCode = exports.cleanLine = exports.bomAreaFrom = exports.WAREHOUSE_LIMITS = exports.warehouseErrorBody = exports.isWarehouseError = exports.warehouseError = void 0;
 const Warehouse_1 = require("../entities/Warehouse");
 const warehouseError = (code, message, options = {}) => Object.assign(new Error(message), {
     code,
@@ -37,6 +37,9 @@ exports.WAREHOUSE_LIMITS = {
     productCode: 120,
     supplierName: 191,
     supplierEmail: 191,
+    /** Artikel- und Bestellnummer je Lieferant (01.10.2026). */
+    supplierArticleNumber: 120,
+    supplierOrderNumber: 120,
     description: 20_000,
     barcode: 128,
     /** Auch der Barcode je Lieferant. */
@@ -47,6 +50,18 @@ exports.WAREHOUSE_LIMITS = {
     /** Lieferanten je Karte. */
     suppliers: 20,
 };
+/** BOM-Bereich einer Hauptkategorie; Unbekanntes = Fehler, leer = null. */
+const bomAreaFrom = (raw) => {
+    const value = String(raw ?? '').trim().toUpperCase();
+    if (!value)
+        return null;
+    if (Warehouse_1.WAREHOUSE_BOM_AREAS.includes(value))
+        return value;
+    throw (0, exports.warehouseError)('CATEGORY_BOM_AREA_INVALID', 'Unbekannter BOM-Bereich (MECHANICAL, ELECTRICAL oder BOTH).', {
+        params: { value: value.slice(0, 32) },
+    });
+};
+exports.bomAreaFrom = bomAreaFrom;
 /** DECIMAL(14,3) bzw. DECIMAL(14,4) — mit Luft nach unten. */
 const MAX_QUANTITY = 99_999_999_999;
 const MAX_PRICE = 9_999_999_999;
@@ -300,7 +315,14 @@ const suppliersFromInput = (raw) => {
         }
         const idRaw = input.supplierId ?? input.id;
         const supplierId = idRaw === null || idRaw === undefined ? null : String(idRaw).trim().slice(0, 191) || null;
-        entries.push({ supplierId, name, barcode, email: (0, exports.parseSupplierEmail)(input.email, name) });
+        entries.push({
+            supplierId,
+            name,
+            barcode,
+            email: (0, exports.parseSupplierEmail)(input.email, name),
+            articleNumber: (0, exports.cleanCode)(input.articleNumber, 'supplierArticleNumber', L.supplierArticleNumber),
+            orderNumber: (0, exports.cleanCode)(input.orderNumber, 'supplierOrderNumber', L.supplierOrderNumber),
+        });
     }
     if (entries.length > L.suppliers) {
         throw (0, exports.warehouseError)('TOO_MANY_SUPPLIERS', 'Zu viele Lieferanten auf einer Karte.', { params: { max: L.suppliers } });

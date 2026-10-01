@@ -44,9 +44,10 @@ class WarehouseCatalogUseCase {
         const input = objectOf(body);
         const name = this.categoryName(input.name);
         const code = this.abbreviation(input.code, 'CATEGORY_CODE_INVALID');
+        const bomArea = (0, warehouse_1.bomAreaFrom)(input.bomArea) ?? undefined;
         await this.assertCategoryFree(tenantId, { name, code });
         try {
-            return await this.groups.createCategory(tenantId, { name, code });
+            return await this.groups.createCategory(tenantId, { name, code, ...(bomArea ? { bomArea } : {}) });
         }
         catch (error) {
             throw this.categoryUnique(error, { name, code });
@@ -58,6 +59,12 @@ class WarehouseCatalogUseCase {
         if (!current)
             throw (0, warehouse_1.warehouseError)('CATEGORY_NOT_FOUND', 'Hauptkategorie nicht gefunden.', { status: 404 });
         const patch = {};
+        // «Her kod türü, bu kod türlerine de alan atama olacak» (01.10.2026) — frei änderbar, auch mit Codes.
+        if (has(input, 'bomArea')) {
+            const bomArea = (0, warehouse_1.bomAreaFrom)(input.bomArea) ?? 'BOTH';
+            if (bomArea !== current.bomArea)
+                patch.bomArea = bomArea;
+        }
         if (has(input, 'name')) {
             const name = this.categoryName(input.name);
             if (name !== current.name)

@@ -7,6 +7,7 @@ const ProductionMailboxRepository_1 = require("../../../../infrastructure/reposi
 const procurementMailContent_1 = require("../../../../infrastructure/services/procurementMailContent");
 const SmtpMailService_1 = require("../../../../infrastructure/services/SmtpMailService");
 const purchaseDocumentCode_1 = require("../../../../shared/purchaseDocumentCode");
+const standardOrderTemplate_1 = require("../../../../shared/standardOrderTemplate");
 const EMAIL = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]{2,}$/;
 const cleanEmail = (value) => {
     const text = String(value ?? '').replace(/^mailto:/i, '').trim();
@@ -26,6 +27,11 @@ const systemActorOf = (actor) => ({
     canSeeCosting: false,
 });
 exports.systemActorOf = systemActorOf;
+/** Der Wert einer eigenen Spalte der Position (`extras[{key, value}]`) — leer = null. */
+const extraText = (item, key) => {
+    const entry = Array.isArray(item?.extras) ? item.extras.find((extra) => extra?.key === key) : null;
+    return String(entry?.value ?? '').trim() || null;
+};
 const linesOf = (document) => (Array.isArray(document.items) ? document.items : [])
     .filter((item) => String(item?.name ?? '').trim())
     .map((item) => ({
@@ -33,6 +39,8 @@ const linesOf = (document) => (Array.isArray(document.items) ? document.items : 
     quantity: Number(item.quantity) || 0,
     unit: String(item.unit ?? '').trim() || null,
     lineTotal: Number(item.lineTotal) || null,
+    articleNumber: extraText(item, standardOrderTemplate_1.PRODUCTION_ARTICLE_NO_KEY),
+    orderNumber: extraText(item, standardOrderTemplate_1.PRODUCTION_ORDER_NO_KEY),
 }));
 class ProcurementDispatchUseCase {
     deps;

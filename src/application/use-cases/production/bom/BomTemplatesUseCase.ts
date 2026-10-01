@@ -15,6 +15,7 @@ import type {
 } from '../../../../domain/repositories/IWarehouseRepository';
 import type { WarehouseProductFields } from '../../../../domain/entities/Warehouse';
 import {
+    areaFrom,
     bomError,
     lineDraftsFrom,
     templateHeadFrom,
@@ -127,11 +128,14 @@ export class BomTemplatesUseCase {
         return { removed: true };
     }
 
-    /** «erp kodu, model numarası, ürün adına göre aratma» — auch Marke und Barcode. */
-    async searchProducts(tenantId: string, query: unknown): Promise<{ items: BomProductDto[] }> {
+    /**
+     * «erp kodu, model numarası, ürün adına göre aratma» — auch Marke und Barcode.
+     * `area` (01.10.2026): nur Karten der Kod türleri dieses Bereichs (Depo › Ayarlar).
+     */
+    async searchProducts(tenantId: string, query: unknown, area?: unknown): Promise<{ items: BomProductDto[] }> {
         const needle = String(query ?? '').trim();
         if (needle.length < 1) return { items: [] };
-        const found = await this.stock.search(tenantId, needle, 20);
+        const found = await this.stock.search(tenantId, needle, 20, areaFrom(area));
         if (!found.length) return { items: [] };
         const facts = await this.reservations.facts(tenantId, found.map((product) => product.productId));
         return { items: found.map((product) => productDto(product, facts.coverage.free.get(product.productId))) };

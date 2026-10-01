@@ -5,12 +5,13 @@ import type {
     IWarehouseSettingsRepository,
 } from '../../../domain/repositories/IWarehouseRepository';
 import type {
+    WarehouseBomArea,
     WarehouseCategory,
     WarehouseDeviceOption,
     WarehouseProjectOption,
     WarehouseSupplierOption,
 } from '../../../domain/entities/Warehouse';
-import { cleanLine, searchFrom, warehouseError, WAREHOUSE_LIMITS } from '../../../domain/services/warehouse';
+import { bomAreaFrom, cleanLine, searchFrom, warehouseError, WAREHOUSE_LIMITS } from '../../../domain/services/warehouse';
 import {
     ABBREVIATION_MAX,
     ABBREVIATION_MIN,
@@ -71,9 +72,10 @@ export class WarehouseCatalogUseCase {
         const input = objectOf(body);
         const name = this.categoryName(input.name);
         const code = this.abbreviation(input.code, 'CATEGORY_CODE_INVALID');
+        const bomArea = bomAreaFrom(input.bomArea) ?? undefined;
         await this.assertCategoryFree(tenantId, { name, code });
         try {
-            return await this.groups.createCategory(tenantId, { name, code });
+            return await this.groups.createCategory(tenantId, { name, code, ...(bomArea ? { bomArea } : {}) });
         } catch (error) {
             throw this.categoryUnique(error, { name, code });
         }
@@ -84,7 +86,12 @@ export class WarehouseCatalogUseCase {
         const current = await this.groups.getCategory(tenantId, id);
         if (!current) throw warehouseError('CATEGORY_NOT_FOUND', 'Hauptkategorie nicht gefunden.', { status: 404 });
 
-        const patch: { name?: string; code?: string } = {};
+        const patch: { name?: string; code?: string; bomArea?: WarehouseBomArea } = {};
+        // «Her kod türü, bu kod türlerine de alan atama olacak» (01.10.2026) — frei änderbar, auch mit Codes.
+        if (has(input, 'bomArea')) {
+            const bomArea = bomAreaFrom(input.bomArea) ?? 'BOTH';
+            if (bomArea !== current.bomArea) patch.bomArea = bomArea;
+        }
         if (has(input, 'name')) {
             const name = this.categoryName(input.name);
             if (name !== current.name) patch.name = name;

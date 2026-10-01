@@ -15,7 +15,7 @@
  * Wahl des Modells, und sie ist als solche gekennzeichnet. Reine Funktionen.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.settleComparison = exports.currencyCode = exports.languageCode = exports.COMPARE_MAX_SUPPLIERS = void 0;
+exports.settleComparison = exports.currencyCode = exports.languageCode = exports.vatRateOf = exports.COMPARE_MAX_SUPPLIERS = void 0;
 /**
  * Höchstzahl der Angebote eines Vergleichs. 29.09.2026: vier; seit dem
  * 30.09.2026 fragt die Automatik JEDEN Lieferanten der Karten an (A: X,Y ·
@@ -28,6 +28,15 @@ const round = (value, digits) => {
 };
 const clip = (value, max) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 /** «de», «Deutsch», «fr» → de/tr/en (Französisch/Italienisch → de, wie die Schweiz schreibt). */
+/** «8,1 %» → 8.1; nichts Lesbares oder ausserhalb 0–30 → null. */
+const vatRateOf = (raw) => {
+    const match = String(raw ?? '').replace(',', '.').match(/\d+(?:\.\d+)?/);
+    if (!match)
+        return null;
+    const value = Number(match[0]);
+    return Number.isFinite(value) && value >= 0 && value <= 30 ? Math.round(value * 100) / 100 : null;
+};
+exports.vatRateOf = vatRateOf;
 const languageCode = (raw) => {
     const value = clip(raw, 20).toLowerCase();
     if (value.startsWith('tr') || value.startsWith('tür') || value.startsWith('tur'))
@@ -77,6 +86,7 @@ const settleComparison = (rows, suppliersIn, raw) => {
             contactName: clip(read?.contactName, 120),
             contactEmail: clip(read?.contactEmail, 191),
             language: (0, exports.languageCode)(read?.language),
+            vatRate: (0, exports.vatRateOf)(read?.vatRate),
         };
     });
     const askedBy = suppliersIn.map((supplier) => (supplier.askedLineIds ? new Set(supplier.askedLineIds) : null));

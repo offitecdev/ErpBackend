@@ -128,8 +128,12 @@ export interface IBomRepository {
 export interface IBomStockReader {
     products(tenantId: string, productIds: string[]): Promise<Map<string, BomStockProduct>>;
     serials(tenantId: string, productIds: string[]): Promise<BomSerialFact[]>;
-    /** Suche nach ERP-Code, Modellnummer, Name, Marke oder einem Barcode. */
-    search(tenantId: string, query: string, limit: number): Promise<BomStockProduct[]>;
+    /**
+     * Suche nach ERP-Code, Modellnummer, Name, Marke oder einem Barcode.
+     * Mit `area` (01.10.2026) nur Karten, deren Hauptkategorie diesem
+     * Bereich oder beiden zugeordnet ist — Karten ohne Gruppe immer.
+     */
+    search(tenantId: string, query: string, limit: number, area?: BomArea | null): Promise<BomStockProduct[]>;
     assignSerials(
         tenantId: string,
         assignments: Array<{
