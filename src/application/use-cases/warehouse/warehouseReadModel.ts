@@ -52,7 +52,15 @@ export interface WarehouseProductDto {
      * Alle Lieferanten, jeder mit seinem Barcode des Produkts (dritter und
      * vierter Durchgang). `id` fehlt bei einem frei geschriebenen Namen.
      */
-    suppliers: Array<{ id: string | null; name: string; barcode: string | null; email: string | null }>;
+    suppliers: Array<{
+        id: string | null;
+        name: string;
+        barcode: string | null;
+        email: string | null;
+        /** Artikel- und Bestellnummer DIESES Lieferanten (01.10.2026). */
+        articleNumber: string | null;
+        orderNumber: string | null;
+    }>;
     description: string | null;
     quantity: number;
     purchasePrice: number | null;
@@ -129,7 +137,14 @@ export const productDto = (product: WarehouseProduct, options: { preview?: boole
         supplier: product.suppliers[0]
             ? { id: product.suppliers[0].supplierId, name: product.suppliers[0].name }
             : product.supplierName ? { id: product.supplierId, name: product.supplierName } : null,
-        suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, barcode: entry.barcode, email: entry.email })),
+        suppliers: product.suppliers.map((entry) => ({
+            id: entry.supplierId,
+            name: entry.name,
+            barcode: entry.barcode,
+            email: entry.email,
+            articleNumber: entry.articleNumber ?? null,
+            orderNumber: entry.orderNumber ?? null,
+        })),
         description,
         quantity: product.quantity,
         purchasePrice: product.purchasePrice,

@@ -74,6 +74,9 @@ export interface WarehouseSupplierEntry {
     barcode: string | null;
     /** Seine E-Mail für diese Karte (30.09.2026) — an sie geht die Preisanfrage. */
     email: string | null;
+    /** Seine Artikel- und Bestellnummer für das Produkt (01.10.2026) — stehen in seiner Anfrage/Bestellung. */
+    articleNumber?: string | null;
+    orderNumber?: string | null;
 }
 
 export interface WarehouseProduct {
@@ -281,6 +284,9 @@ export interface WarehouseImportRow {
     supplierName: string | null;
     /** E-Mail des Lieferanten (30.09.2026) — fehlt in älteren Dateien. */
     supplierEmail?: string | null;
+    /** Artikel- und Bestellnummer DES Lieferanten der Zeile (01.10.2026). */
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
     description: string | null;
     quantity: number;
     purchasePrice: number | null;

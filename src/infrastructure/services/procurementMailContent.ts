@@ -34,7 +34,15 @@ export interface ProcurementMailFacts {
     revision: number;
     /** Datum der ersten Sendung (Revision: «ersetzt unsere Bestellung vom …»). */
     firstSentAt: Date | null;
-    lines: Array<{ name: string; quantity: number; unit: string | null; lineTotal: number | null }>;
+    /** `articleNumber`/`orderNumber`: die Nummern DIESES Lieferanten von der Depo-Karte (01.10.2026). */
+    lines: Array<{
+        name: string;
+        quantity: number;
+        unit: string | null;
+        lineTotal: number | null;
+        articleNumber?: string | null;
+        orderNumber?: string | null;
+    }>;
     senderName: string;
     senderEmail: string;
     companyName: string;
@@ -47,7 +55,7 @@ const W = {
     de: {
         rfq: 'Preisanfrage', order: 'Bestellung', revision: 'Geänderte Bestellung', revisionBadge: 'Revision',
         highlight: 'Bitte senden Sie Ihr Angebot als Antwort auf diese E-Mail – nicht als neue, separate E-Mail.',
-        requestNo: 'Anfrage-Nr.', orderNo: 'Bestell-Nr.', project: 'Projekt-Nr.', positions: 'Positionen', quote: 'Ihre Offerte',
+        requestNo: 'Anfrage-Nr.', orderNo: 'Bestell-Nr.', lineArticleNo: 'Produkttyp-Nr.', lineOrderNo: 'Bestell-Nr.', project: 'Projekt-Nr.', positions: 'Positionen', quote: 'Ihre Offerte',
         total: 'Gesamtbetrag', contact: 'Ansprechpartner', orderedBy: 'Besteller', replyTo: 'Antwort an',
         askedLines: 'Angefragte Positionen', orderedLines: 'Bestellte Positionen', more: (n: number) => `… und ${n} weitere Positionen im PDF`,
         noticeTitle: 'Diese Fassung ersetzt die bisherige Bestellung',
@@ -58,7 +66,7 @@ const W = {
     tr: {
         rfq: 'Fiyat talebi', order: 'Sipariş', revision: 'Revize sipariş', revisionBadge: 'Revizyon',
         highlight: 'Lütfen fiyat teklifinizi bu e-postaya yanıt olarak gönderiniz – ayrı, yeni bir e-posta olarak göndermeyiniz.',
-        requestNo: 'Talep no.', orderNo: 'Sipariş no.', project: 'Proje no.', positions: 'Kalem', quote: 'Teklif numaranız',
+        requestNo: 'Talep no.', orderNo: 'Sipariş no.', lineArticleNo: 'Ürün tip no.', lineOrderNo: 'Ürün sip. no.', project: 'Proje no.', positions: 'Kalem', quote: 'Teklif numaranız',
         total: 'Toplam tutar', contact: 'İlgili kişi', orderedBy: 'Sipariş veren', replyTo: 'Yanıt adresi',
         askedLines: 'Talep edilen kalemler', orderedLines: 'Sipariş edilen kalemler', more: (n: number) => `… ve PDF'te ${n} kalem daha`,
         noticeTitle: 'Bu sürüm önceki siparişin yerine geçer',
@@ -69,7 +77,7 @@ const W = {
     en: {
         rfq: 'Request for quotation', order: 'Purchase order', revision: 'Revised purchase order', revisionBadge: 'Revision',
         highlight: 'Please send your quotation as a reply to this e-mail – not as a new, separate e-mail.',
-        requestNo: 'Request no.', orderNo: 'Order no.', project: 'Project no.', positions: 'Items', quote: 'Your quotation',
+        requestNo: 'Request no.', orderNo: 'Order no.', lineArticleNo: 'Product type no.', lineOrderNo: 'Product order no.', project: 'Project no.', positions: 'Items', quote: 'Your quotation',
         total: 'Total amount', contact: 'Contact', orderedBy: 'Ordered by', replyTo: 'Reply to',
         askedLines: 'Requested items', orderedLines: 'Ordered items', more: (n: number) => `… and ${n} more items in the PDF`,
         noticeTitle: 'This version replaces our previous order',
@@ -202,7 +210,12 @@ export const buildProcurementMail = (facts: ProcurementMailFacts): DocumentMail 
     const kind = rfq ? words.rfq : facts.type === 'REVISION' ? words.revision : words.order;
     const shown = facts.lines.slice(0, LINES_SHOWN);
     const rows: Array<[string, string]> = shown.map((line) => [
-        line.name,
+        // Der Name mit SEINER Artikel-/Bestellnummer, damit der Lieferant die Position sofort findet.
+        [
+            line.name,
+            line.articleNumber ? `${words.lineArticleNo} ${line.articleNumber}` : null,
+            line.orderNumber ? `${words.lineOrderNo} ${line.orderNumber}` : null,
+        ].filter(Boolean).join(' · '),
         [qtyText(line.quantity, line.unit, words.locale), !rfq && line.lineTotal && line.lineTotal > 0 ? money(line.lineTotal, facts.currency, words.locale) : null]
             .filter(Boolean).join(' · '),
     ]);

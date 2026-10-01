@@ -133,6 +133,9 @@ export const WAREHOUSE_LIMITS = {
     productCode: 120,
     supplierName: 191,
     supplierEmail: 191,
+    /** Artikel- und Bestellnummer je Lieferant (01.10.2026). */
+    supplierArticleNumber: 120,
+    supplierOrderNumber: 120,
     description: 20_000,
     barcode: 128,
     /** Auch der Barcode je Lieferant. */
@@ -392,7 +395,14 @@ export const suppliersFromInput = (raw: unknown): WarehouseSupplierEntry[] => {
         }
         const idRaw = input.supplierId ?? input.id;
         const supplierId = idRaw === null || idRaw === undefined ? null : String(idRaw).trim().slice(0, 191) || null;
-        entries.push({ supplierId, name, barcode, email: parseSupplierEmail(input.email, name) });
+        entries.push({
+            supplierId,
+            name,
+            barcode,
+            email: parseSupplierEmail(input.email, name),
+            articleNumber: cleanCode(input.articleNumber, 'supplierArticleNumber', L.supplierArticleNumber),
+            orderNumber: cleanCode(input.orderNumber, 'supplierOrderNumber', L.supplierOrderNumber),
+        });
     }
     if (entries.length > L.suppliers) {
         throw warehouseError('TOO_MANY_SUPPLIERS', 'Zu viele Lieferanten auf einer Karte.', { params: { max: L.suppliers } });

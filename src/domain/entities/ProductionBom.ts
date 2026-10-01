@@ -188,8 +188,18 @@ export interface BomStockProduct {
     /** «minimum alış» — die Bestellung geht nie darunter. */
     minimumOrderQuantity: number | null;
     materialGroupId: string | null;
-    /** Die Lieferanten der Karte in ihrer Reihenfolge — mit ihrer E-Mail (30.09.2026). */
-    suppliers: Array<{ supplierId: string | null; name: string; email?: string | null }>;
+    /**
+     * Die Lieferanten der Karte in ihrer Reihenfolge — mit ihrer E-Mail
+     * (30.09.2026) und ihrer Artikel- und Bestellnummer für das Produkt
+     * (01.10.2026; stehen in IHRER Anfrage und Bestellung).
+     */
+    suppliers: Array<{
+        supplierId: string | null;
+        name: string;
+        email?: string | null;
+        articleNumber?: string | null;
+        orderNumber?: string | null;
+    }>;
     purchasePrice: number | null;
     currency: string | null;
 }

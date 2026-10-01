@@ -41,6 +41,7 @@ import {
     sameSupplier,
     supplierKey,
 } from '../../../../domain/services/productionBom';
+import { cardSupplierNumbersOf } from '../../../../domain/services/supplierEmails';
 import type { BomPurchaseOrderWriter } from '../../../../infrastructure/services/productionBomPurchaseWriter';
 import type { BomReservationService, CoverageFacts } from './BomReservationService';
 import {
@@ -816,7 +817,7 @@ export class DeviceBomsUseCase {
                         unit: line.unit,
                         quantity: entry.quantity,
                         materialGroup: product?.materialGroupName ?? null,
-                        productCode: product?.productCode ?? null,
+                        ...cardSupplierNumbersOf(group.supplier, product),
                     };
                 });
                 const records: BomPurchaseLineRecord[] = group.lines.map((entry) => {
@@ -1023,7 +1024,7 @@ export class DeviceBomsUseCase {
                             unit: line.unit,
                             quantity: entry.quantity,
                             materialGroup: product?.materialGroupName ?? null,
-                            productCode: product?.productCode ?? null,
+                            ...cardSupplierNumbersOf(group.supplier, product),
                         };
                     }),
                 });

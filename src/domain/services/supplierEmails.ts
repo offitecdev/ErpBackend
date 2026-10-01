@@ -39,3 +39,22 @@ export const cardEmailOf = (
     }
     return null;
 };
+
+/**
+ * Die Artikel- und Bestellnummer, die die Karte für DIESEN Lieferanten trägt
+ * (01.10.2026, Samet: «her tedarikçiye özel … ürün numarası ve sipariş
+ * numarası … ilgili tedarikçilere kendi maillerine gitmeli»). Erst per
+ * Kennung, dann per Name; die Karte kennt ihn nicht → beide leer.
+ */
+export const cardSupplierNumbersOf = (
+    supplier: { supplierId: string | null; supplierName: string },
+    product: { suppliers?: Array<{ supplierId: string | null; name: string; articleNumber?: string | null; orderNumber?: string | null }> } | null | undefined,
+): { supplierArticleNumber: string | null; supplierOrderNumber: string | null } => {
+    const cards = product?.suppliers ?? [];
+    const card = cards.find((entry) => same(entry, supplier))
+        ?? cards.find((entry) => fold(entry.name) === fold(supplier.supplierName));
+    return {
+        supplierArticleNumber: card?.articleNumber?.trim() || null,
+        supplierOrderNumber: card?.orderNumber?.trim() || null,
+    };
+};

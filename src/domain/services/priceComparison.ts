@@ -62,6 +62,8 @@ export interface RawComparison {
         contactName?: string;
         contactEmail?: string;
         language?: string;
+        /** 01.10.2026: die MwSt in %, wie das Angebot sie druckt («8.1») — leer = keine. */
+        vatRate?: string;
     }>;
     rows: Array<{
         index: number;
@@ -108,6 +110,12 @@ export interface ComparisonSupplier extends ComparisonSupplierInput {
     contactEmail?: string;
     /** de | tr | en — die Sprache der Bestellung an diesen Lieferanten. */
     language?: string;
+    /**
+     * Die MwSt in %, die das Angebot druckt (01.10.2026, Samet: «KDV eğer
+     * PDF'de yakalarsa en sona») — die Bestellung trägt sie dann unten als
+     * eigene Zeile; null = das Angebot nennt keine.
+     */
+    vatRate?: number | null;
     /** So viele Zeilen wurden bei ihm angefragt. */
     askedLines?: number;
     /** Summe der Zeilenbeträge, die dieses Angebot nennt. */
@@ -147,6 +155,14 @@ const round = (value: number, digits: number): number => {
 const clip = (value: unknown, max: number): string => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 /** «de», «Deutsch», «fr» → de/tr/en (Französisch/Italienisch → de, wie die Schweiz schreibt). */
+/** «8,1 %» → 8.1; nichts Lesbares oder ausserhalb 0–30 → null. */
+export const vatRateOf = (raw: unknown): number | null => {
+    const match = String(raw ?? '').replace(',', '.').match(/\d+(?:\.\d+)?/);
+    if (!match) return null;
+    const value = Number(match[0]);
+    return Number.isFinite(value) && value >= 0 && value <= 30 ? Math.round(value * 100) / 100 : null;
+};
+
 export const languageCode = (raw: unknown): string => {
     const value = clip(raw, 20).toLowerCase();
     if (value.startsWith('tr') || value.startsWith('tür') || value.startsWith('tur')) return 'tr';
@@ -199,6 +215,7 @@ export const settleComparison = (
             contactName: clip(read?.contactName, 120),
             contactEmail: clip(read?.contactEmail, 191),
             language: languageCode(read?.language),
+            vatRate: vatRateOf(read?.vatRate),
         };
     });
     const askedBy = suppliersIn.map((supplier) => (supplier.askedLineIds ? new Set(supplier.askedLineIds) : null));

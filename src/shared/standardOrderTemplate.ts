@@ -60,13 +60,30 @@ export const STANDARD_TEMPLATE_TITLE = 'Standard';
  * (`utils/standardOrderColumns.ts`), die Einheit ebenso.
  */
 export const PRODUCTION_GROUP_KEY = 'stdGroup';
+/** «Ürün kodu» der Karte — seit dem 01.10.2026 nur noch in älteren Belegen (er ist jetzt die Artikelnummer JE Lieferant). */
 export const PRODUCTION_CODE_KEY = 'stdProductCode';
 export const PRODUCTION_UNIT_KEY = 'stdUnit';
+/**
+ * Artikel- und Bestellnummer DES Lieferanten, an den der Beleg geht (01.10.2026,
+ * Samet: «her tedarikçiye özel ürün numarası ve sipariş numarası … fiyat
+ * taleplerine ve siparişlere de bu sütunlar eklenmeli, otomatik şablonlarla
+ * da») — aus seiner Zeile auf der Depo-Karte. Schlüssel ≤ 16 Zeichen
+ * (`normalizePurchaseOrderItems` kürzt Extras-Schlüssel darauf).
+ */
+export const PRODUCTION_ARTICLE_NO_KEY = 'stdArticleNo';
+export const PRODUCTION_ORDER_NO_KEY = 'stdOrderNo';
 
+/*
+ * Reihenfolge seit dem 01.10.2026 (Samet): «Malzeme Grubu, Malzeme Adı, Ürün
+ * Tip Numarası, Ürün Sip. Numarası, Birim, Miktar» — Bestellung dazu «Birim
+ * Fiyat, İndirim (boşsa ekleme), Satır Fiyatı; KDV … en sona». Eine Spalte,
+ * deren Zellen ALLE leer sind, druckt das PDF nicht (supplierPdfColumns.ts).
+ */
 export const PRODUCTION_REQUEST_COLUMNS: StandardColumn[] = [
     { key: PRODUCTION_GROUP_KEY, name: 'Materialgruppe', type: 'text', label: null, width: 150 },
-    { key: PRODUCTION_CODE_KEY, name: 'Produktcode', type: 'text', label: null, width: 150 },
-    { key: 'stdName', name: 'Produktname', type: 'text', label: 'productName', width: 260 },
+    { key: 'stdName', name: 'Materialbezeichnung', type: 'text', label: 'productName', width: 260 },
+    { key: PRODUCTION_ARTICLE_NO_KEY, name: 'Produkttypnummer', type: 'text', label: null, width: 140 },
+    { key: PRODUCTION_ORDER_NO_KEY, name: 'Bestellnummer', type: 'text', label: null, width: 140 },
     { key: PRODUCTION_UNIT_KEY, name: 'Einheit', type: 'text', label: null, width: 90 },
     { key: 'stdQty', name: 'Menge', type: 'number', label: 'quantity', width: 100 },
 ];

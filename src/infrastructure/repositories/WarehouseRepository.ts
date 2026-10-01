@@ -117,6 +117,8 @@ const suppliersOf = (raw: unknown): WarehouseSupplierEntry[] => {
             name: String(entry.name),
             barcode: textOrNull(entry.barcode),
             email: textOrNull(entry.email),
+            articleNumber: textOrNull(entry.articleNumber),
+            orderNumber: textOrNull(entry.orderNumber),
         }));
 };
 
@@ -189,7 +191,8 @@ const PRODUCT_SELECT = Prisma.sql`
     SELECT p.id, p.tenantId, p.erpCode, p.materialGroupId, g.name AS materialGroupName, g.code AS materialGroupCode,
            c.id AS categoryId, c.name AS categoryName, c.code AS categoryCode, p.name, p.brand,
            p.modelNumber, p.productCode, p.unit, p.isDraft, p.supplierId, p.supplierName,
-           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode, 'email', s.email)
+           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode, 'email', s.email,
+                                      'articleNumber', s.articleNumber, 'orderNumber', s.orderNumber)
                    ORDER BY s.sortOrder, s.supplierName)
               FROM depo_urun_tedarikcileri s WHERE s.productId = p.id) AS suppliersJson,
            p.description, p.quantity,
@@ -276,6 +279,8 @@ export const supplierRows = (tenantId: string, productId: string, suppliers: War
         supplierName: entry.name,
         barcode: entry.barcode,
         email: entry.email,
+        articleNumber: entry.articleNumber ?? null,
+        orderNumber: entry.orderNumber ?? null,
         sortOrder: index,
     }));
 

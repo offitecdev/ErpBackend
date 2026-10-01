@@ -156,6 +156,11 @@ model WarehouseProductSupplier {
   /// Die E-Mail des Lieferanten für diese Karte (30.09.2026) — Empfänger der
   /// automatischen Preisanfrage.
   email          String?  @db.VarChar(191)
+  /// Die Artikelnummer DIESES Lieferanten für das Produkt (01.10.2026) —
+  /// steht in seiner Preisanfrage und Bestellung.
+  articleNumber  String?  @db.VarChar(120)
+  /// Seine Bestellnummer für das Produkt (01.10.2026) — ebenso.
+  orderNumber    String?  @db.VarChar(120)
   sortOrder      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

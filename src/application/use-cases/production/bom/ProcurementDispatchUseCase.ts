@@ -16,6 +16,7 @@ import { buildProcurementMail, procurementMailSubject, type ProcurementMailFacts
 import { newMessageId, type MailSettings, type SendMailInput } from '../../../../infrastructure/services/SmtpMailService';
 import type { SupplierPdfLang } from '../../../../infrastructure/services/supplierPdfRenderer';
 import { localizePurchaseCode } from '../../../../shared/purchaseDocumentCode';
+import { PRODUCTION_ARTICLE_NO_KEY, PRODUCTION_ORDER_NO_KEY } from '../../../../shared/standardOrderTemplate';
 import type { BomProcurementUseCase } from './BomProcurementUseCase';
 import type { BomDocumentStore } from './BomPurchasesUseCase';
 import type { BomActor } from './BomTemplatesUseCase';
@@ -101,6 +102,12 @@ export const systemActorOf = (actor: BomActor | null): BomActor => ({
     canSeeCosting: false,
 });
 
+/** Der Wert einer eigenen Spalte der Position (`extras[{key, value}]`) — leer = null. */
+const extraText = (item: any, key: string): string | null => {
+    const entry = Array.isArray(item?.extras) ? item.extras.find((extra: any) => extra?.key === key) : null;
+    return String(entry?.value ?? '').trim() || null;
+};
+
 const linesOf = (document: Record<string, any>): ProcurementMailFacts['lines'] => (Array.isArray(document.items) ? document.items : [])
     .filter((item: any) => String(item?.name ?? '').trim())
     .map((item: any) => ({
@@ -108,6 +115,8 @@ const linesOf = (document: Record<string, any>): ProcurementMailFacts['lines'] =
         quantity: Number(item.quantity) || 0,
         unit: String(item.unit ?? '').trim() || null,
         lineTotal: Number(item.lineTotal) || null,
+        articleNumber: extraText(item, PRODUCTION_ARTICLE_NO_KEY),
+        orderNumber: extraText(item, PRODUCTION_ORDER_NO_KEY),
     }));
 
 export class ProcurementDispatchUseCase {

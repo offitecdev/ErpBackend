@@ -11,7 +11,8 @@ import {
     round3,
 } from '../../domain/services/productionBom';
 import {
-    PRODUCTION_CODE_KEY,
+    PRODUCTION_ARTICLE_NO_KEY,
+    PRODUCTION_ORDER_NO_KEY,
     PRODUCTION_GROUP_KEY,
     PRODUCTION_UNIT_KEY,
     productionColumnsJson,
@@ -68,7 +69,9 @@ export interface BomOrderDraftLine {
     quantity: number;
     /** Materialgruppe und «Ürün kodu» der Karte — Spalten der Produktionsvorlage (30.09.2026). */
     materialGroup?: string | null;
-    productCode?: string | null;
+    /** Artikel-/Bestellnummer DIESES Lieferanten von der Depo-Karte (01.10.2026). */
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
     /** Aus dem Vergleich der Angebote: Einzelpreis (vor Rabatt) und Rabatt in % (30.09.2026). */
     unitPrice?: number | null;
     discount?: number | null;
@@ -83,17 +86,25 @@ export interface BomRequestDraftLine {
     unit: BomUnit;
     quantity: number;
     materialGroup?: string | null;
-    productCode?: string | null;
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
 }
 
 /**
  * Die eigenen Angaben der Produktionsvorlage an einer Position: Gruppe,
- * «Ürün kodu» (leer, bis ihn jemand an der Karte einträgt) und die Einheit
+ * Produkttyp- und Bestellnummer DES Lieferanten (von seiner Zeile auf der
+ * Depo-Karte, 01.10.2026; leer → die Spalte fällt im PDF weg) und die Einheit
  * als Wort («Adet» — das PDF schreibt sie in seiner Sprache).
  */
-const productionExtras = (line: { materialGroup?: string | null; productCode?: string | null; unit: BomUnit }) => [
+const productionExtras = (line: {
+    materialGroup?: string | null;
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
+    unit: BomUnit;
+}) => [
     { key: PRODUCTION_GROUP_KEY, name: 'Materialgruppe', value: (line.materialGroup ?? '').trim(), width: 150 },
-    { key: PRODUCTION_CODE_KEY, name: 'Produktcode', value: (line.productCode ?? '').trim(), width: 150 },
+    { key: PRODUCTION_ARTICLE_NO_KEY, name: 'Produkttypnummer', value: (line.supplierArticleNumber ?? '').trim(), width: 140 },
+    { key: PRODUCTION_ORDER_NO_KEY, name: 'Bestellnummer', value: (line.supplierOrderNumber ?? '').trim(), width: 140 },
     { key: PRODUCTION_UNIT_KEY, name: 'Einheit', value: UNIT_LABELS[line.unit] ?? 'Adet', width: 90 },
 ];
 
@@ -188,6 +199,8 @@ export class BomPurchaseOrderWriter {
         currency?: string | null;
         quoteNumber?: string | null;
         recipientName?: string | null;
+        /** Die MwSt, die das Angebot druckt (01.10.2026) — steht dann unten als eigene Zeile. */
+        vatRate?: number | null;
     }): Promise<{ id: string; referenceNumber: string; supplierName: string }> {
         const { tenantId, userId } = input;
         const supplier = await resolvePurchaseOrderSupplier(tenantId, {
@@ -206,9 +219,14 @@ export class BomPurchaseOrderWriter {
         const normalized = normalizePurchaseOrderItems(input.lines.map((line) => itemOf(line, input.productionItemId)));
         // KDV: wie jede neue Bestellung — Angabe des Lieferanten, sonst die der letzten Bestellung.
         const vatLiable = record?.vatLiable;
-        const vat = typeof vatLiable === 'boolean'
-            ? { vatMode: 'TOTAL', orderVatRate: vatLiable ? Number(record?.vatRate) || 0 : 0 }
-            : { vatMode: last?.vatMode === 'TOTAL' ? 'TOTAL' : 'LINE', orderVatRate: Number(last?.orderVatRate) || 0 };
+        const offerVat = typeof input.vatRate === 'number' && Number.isFinite(input.vatRate) ? input.vatRate : null;
+        /* Druckt das Angebot eine MwSt, gilt SIE — als Gesamt-MwSt ganz unten
+           («KDV eğer PDF'de yakalarsa en sona», Samet 01.10.2026), nie je Zeile. */
+        const vat = offerVat !== null
+            ? { vatMode: 'TOTAL', orderVatRate: offerVat }
+            : typeof vatLiable === 'boolean'
+                ? { vatMode: 'TOTAL', orderVatRate: vatLiable ? Number(record?.vatRate) || 0 : 0 }
+                : { vatMode: last?.vatMode === 'TOTAL' ? 'TOTAL' : 'LINE', orderVatRate: Number(last?.orderVatRate) || 0 };
         const vatCountry = typeof vatLiable === 'boolean'
             ? (vatLiable ? record?.vatCountry ?? null : last?.orderVatCountry ?? null)
             : last?.orderVatCountry ?? null;

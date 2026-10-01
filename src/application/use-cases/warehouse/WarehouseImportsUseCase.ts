@@ -133,6 +133,8 @@ export class WarehouseImportsUseCase {
             unit: row.unit ?? null,
             supplierName: row.supplierName,
             supplierEmail: row.supplierEmail ?? null,
+            supplierArticleNumber: row.supplierArticleNumber ?? null,
+            supplierOrderNumber: row.supplierOrderNumber ?? null,
             description: row.description,
             quantity: row.quantity,
             purchasePrice: row.purchasePrice,
@@ -209,9 +211,17 @@ export class WarehouseImportsUseCase {
                 brand: row.brand,
                 modelNumber: row.modelNumber,
                 suppliers: row.supplierName
-                    ? [{ supplierId: supplier?.id ?? null, name: supplier?.name ?? row.supplierName, barcode: row.manufacturerBarcode, email: row.supplierEmail ?? null }]
+                    ? [{
+                        supplierId: supplier?.id ?? null,
+                        name: supplier?.name ?? row.supplierName,
+                        barcode: row.manufacturerBarcode,
+                        email: row.supplierEmail ?? null,
+                        // Ältere Einreichungen trugen die Nummer noch als «Ürün kodu» der Karte.
+                        articleNumber: row.supplierArticleNumber ?? row.productCode ?? null,
+                        orderNumber: row.supplierOrderNumber ?? null,
+                    }]
                     : [],
-                productCode: row.productCode ?? null,
+                productCode: row.supplierName ? null : row.productCode ?? null,
                 unit: row.unit ?? null,
                 isDraft: false,
                 description: row.description,

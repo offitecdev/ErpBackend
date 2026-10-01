@@ -658,15 +658,29 @@ const cardUnitOf = (value: unknown): BomUnit | null => {
 
 const withSuppliers = async (tenantId: string, rows: StockRow[]): Promise<BomStockProduct[]> => {
     if (!rows.length) return [];
-    const suppliers = await prisma.warehouseProductSupplier.findMany({
-        where: { tenantId, productId: { in: rows.map((row) => row.id) } },
-        select: { productId: true, supplierId: true, supplierName: true, email: true, sortOrder: true },
-        orderBy: { sortOrder: 'asc' },
-    });
-    const byProduct = new Map<string, Array<{ supplierId: string | null; name: string; email: string | null }>>();
+    // Roh gelesen: Artikel-/Bestellnummer (01.10.2026) kennt ein älterer Prisma-Client nicht.
+    const suppliers = await prisma.$queryRaw<Array<{
+        productId: string;
+        supplierId: string | null;
+        supplierName: string;
+        email: string | null;
+        articleNumber: string | null;
+        orderNumber: string | null;
+    }>>`
+        SELECT s.productId, s.supplierId, s.supplierName, s.email, s.articleNumber, s.orderNumber
+          FROM depo_urun_tedarikcileri s
+         WHERE s.tenantId = ${tenantId} AND s.productId IN (${Prisma.join(rows.map((row) => row.id))})
+         ORDER BY s.sortOrder`;
+    const byProduct = new Map<string, BomStockProduct['suppliers']>();
     for (const supplier of suppliers) {
         const list = byProduct.get(supplier.productId) ?? [];
-        list.push({ supplierId: supplier.supplierId, name: supplier.supplierName, email: supplier.email ?? null });
+        list.push({
+            supplierId: supplier.supplierId,
+            name: supplier.supplierName,
+            email: supplier.email ?? null,
+            articleNumber: supplier.articleNumber ?? null,
+            orderNumber: supplier.orderNumber ?? null,
+        });
         byProduct.set(supplier.productId, list);
     }
     return rows.map((row) => ({
