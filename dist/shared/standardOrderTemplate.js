@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ensureStandardTemplateOnce = exports.ensureStandardTemplate = exports.isStandardColumns = exports.standardHiddenKeysJson = exports.standardTableColumnsJson = exports.standardColumnsOf = exports.productionHiddenKeysJson = exports.productionColumnsJson = exports.PRODUCTION_ORDER_COLUMNS = exports.PRODUCTION_REQUEST_COLUMNS = exports.PRODUCTION_UNIT_KEY = exports.PRODUCTION_CODE_KEY = exports.PRODUCTION_GROUP_KEY = exports.STANDARD_TEMPLATE_TITLE = exports.STANDARD_REQUEST_COLUMNS = exports.STANDARD_ORDER_COLUMNS = void 0;
+exports.ensureStandardTemplateOnce = exports.ensureStandardTemplate = exports.isStandardColumns = exports.standardHiddenKeysJson = exports.standardTableColumnsJson = exports.standardColumnsOf = exports.productionHiddenKeysJson = exports.productionColumnsJson = exports.PRODUCTION_ORDER_COLUMNS = exports.PRODUCTION_REQUEST_COLUMNS = exports.PRODUCTION_ORDER_NO_KEY = exports.PRODUCTION_ARTICLE_NO_KEY = exports.PRODUCTION_UNIT_KEY = exports.PRODUCTION_CODE_KEY = exports.PRODUCTION_GROUP_KEY = exports.STANDARD_TEMPLATE_TITLE = exports.STANDARD_REQUEST_COLUMNS = exports.STANDARD_ORDER_COLUMNS = void 0;
 /**
  * ── STANDART ŞABLON (Vorgabe Samet, 24.09.2026) ─────────────────────────────
  *
@@ -49,12 +49,29 @@ exports.STANDARD_TEMPLATE_TITLE = 'Standard';
  * (`utils/standardOrderColumns.ts`), die Einheit ebenso.
  */
 exports.PRODUCTION_GROUP_KEY = 'stdGroup';
+/** «Ürün kodu» der Karte — seit dem 01.10.2026 nur noch in älteren Belegen (er ist jetzt die Artikelnummer JE Lieferant). */
 exports.PRODUCTION_CODE_KEY = 'stdProductCode';
 exports.PRODUCTION_UNIT_KEY = 'stdUnit';
+/**
+ * Artikel- und Bestellnummer DES Lieferanten, an den der Beleg geht (01.10.2026,
+ * Samet: «her tedarikçiye özel ürün numarası ve sipariş numarası … fiyat
+ * taleplerine ve siparişlere de bu sütunlar eklenmeli, otomatik şablonlarla
+ * da») — aus seiner Zeile auf der Depo-Karte. Schlüssel ≤ 16 Zeichen
+ * (`normalizePurchaseOrderItems` kürzt Extras-Schlüssel darauf).
+ */
+exports.PRODUCTION_ARTICLE_NO_KEY = 'stdArticleNo';
+exports.PRODUCTION_ORDER_NO_KEY = 'stdOrderNo';
+/*
+ * Reihenfolge seit dem 01.10.2026 (Samet): «Malzeme Grubu, Malzeme Adı, Ürün
+ * Tip Numarası, Ürün Sip. Numarası, Birim, Miktar» — Bestellung dazu «Birim
+ * Fiyat, İndirim (boşsa ekleme), Satır Fiyatı; KDV … en sona». Eine Spalte,
+ * deren Zellen ALLE leer sind, druckt das PDF nicht (supplierPdfColumns.ts).
+ */
 exports.PRODUCTION_REQUEST_COLUMNS = [
     { key: exports.PRODUCTION_GROUP_KEY, name: 'Materialgruppe', type: 'text', label: null, width: 150 },
-    { key: exports.PRODUCTION_CODE_KEY, name: 'Produktcode', type: 'text', label: null, width: 150 },
-    { key: 'stdName', name: 'Produktname', type: 'text', label: 'productName', width: 260 },
+    { key: 'stdName', name: 'Materialbezeichnung', type: 'text', label: 'productName', width: 260 },
+    { key: exports.PRODUCTION_ARTICLE_NO_KEY, name: 'Produkttypnummer', type: 'text', label: null, width: 140 },
+    { key: exports.PRODUCTION_ORDER_NO_KEY, name: 'Bestellnummer', type: 'text', label: null, width: 140 },
     { key: exports.PRODUCTION_UNIT_KEY, name: 'Einheit', type: 'text', label: null, width: 90 },
     { key: 'stdQty', name: 'Menge', type: 'number', label: 'quantity', width: 100 },
 ];

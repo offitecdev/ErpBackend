@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProcurementOrderingUseCase = void 0;
 const productionBom_1 = require("../../../../domain/services/productionBom");
+const supplierEmails_1 = require("../../../../domain/services/supplierEmails");
 const ProcurementDispatchUseCase_1 = require("./ProcurementDispatchUseCase");
 const locks = new Map();
 const withLock = async (key, run) => {
@@ -80,6 +81,8 @@ class ProcurementOrderingUseCase {
             const typedQuotes = quoteNumbersFrom(body);
             const proposed = new Map(proposal.lines.map((line) => [line.lineId, line]));
             const byLine = new Map(bom.lines.map((line) => [line.id, line]));
+            // Die Depo-Karten der Zeilen — für die Artikel-/Bestellnummer je Lieferant (01.10.2026).
+            const cards = await deps.stock.products(tenantId, bom.lines.map((line) => line.productId));
             const skipped = [];
             const groups = new Map();
             for (const { line, supplier } of picks) {
@@ -125,7 +128,8 @@ class ProcurementOrderingUseCase {
                         unit: bomLine?.unit ?? 'PCS',
                         quantity,
                         materialGroup: product?.materialGroupName ?? null,
-                        productCode: product?.productCode ?? null,
+                        // Seine Artikel-/Bestellnummer von der Karte (01.10.2026).
+                        ...(0, supplierEmails_1.cardSupplierNumbersOf)({ supplierId: pa.supplierId, supplierName: pa.supplierName }, bomLine ? cards.get(bomLine.productId) : null),
                         unitPrice: price.unitPrice,
                         discount: price.discount,
                     };
@@ -142,6 +146,7 @@ class ProcurementOrderingUseCase {
                     currency: supplier.currency || pa.currency,
                     quoteNumber,
                     recipientName: contact.name,
+                    vatRate: supplier.vatRate ?? null,
                 });
                 await deps.purchases.createLink(tenantId, {
                     purchaseOrderId: order.id,

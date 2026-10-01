@@ -4,6 +4,7 @@ exports.DeviceBomsUseCase = void 0;
 const nanoid_1 = require("nanoid");
 const ProductionBom_1 = require("../../../../domain/entities/ProductionBom");
 const productionBom_1 = require("../../../../domain/services/productionBom");
+const supplierEmails_1 = require("../../../../domain/services/supplierEmails");
 const bomReadModel_1 = require("./bomReadModel");
 const EPS = 1e-9;
 /** `procurementRequestId` im Körper — der Talep, aus dem der Einkauf gerade Belege macht. */
@@ -685,7 +686,7 @@ class DeviceBomsUseCase {
                         unit: line.unit,
                         quantity: entry.quantity,
                         materialGroup: product?.materialGroupName ?? null,
-                        productCode: product?.productCode ?? null,
+                        ...(0, supplierEmails_1.cardSupplierNumbersOf)(group.supplier, product),
                     };
                 });
                 const records = group.lines.map((entry) => {
@@ -888,7 +889,7 @@ class DeviceBomsUseCase {
                             unit: line.unit,
                             quantity: entry.quantity,
                             materialGroup: product?.materialGroupName ?? null,
-                            productCode: product?.productCode ?? null,
+                            ...(0, supplierEmails_1.cardSupplierNumbersOf)(group.supplier, product),
                         };
                     }),
                 });

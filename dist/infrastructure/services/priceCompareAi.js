@@ -42,6 +42,7 @@ const SYSTEM_PROMPT = [
     'For every supplier also read the header: the offer/quotation/confirmation number, its date as yyyy-mm-dd, the currency as a 3-letter ISO code',
     '(EUR, CHF, USD, TRY ...), the general delivery time, the payment terms and how long the offer is valid; "" when a value is not printed.',
     'Also read the contact person of the supplier (contactName, a person) with his e-mail (contactEmail) and the language of the document (language: de, tr, en, fr, it ...).',
+    'vatRate is the VAT / MwSt / KDV percentage the document prints for the offer (e.g. "8.1"); "" when the document prints no VAT rate.',
     'In "notes" name what matters for the decision in one short sentence (freight, minimum order value, positions the supplier did not offer).',
     'STEP 3 - DECIDE. For every request line set "best" to the supplier index with the lowest unit price for the SAME article (-1 when no supplier',
     'offers it); with different currencies judge the value sensibly and say so in "reason". "reason" is one short sentence.',
@@ -75,8 +76,9 @@ const SCHEMA = {
                     contactName: { ...TEXT, description: 'The contact person at the supplier; "" when none is printed' },
                     contactEmail: { ...TEXT, description: 'E-mail of that contact (or the sales address); "" when none is printed' },
                     language: { ...TEXT, description: 'Language of the document as a 2-letter code' },
+                    vatRate: { ...TEXT, description: 'VAT percentage printed on the document, e.g. "8.1"; "" when none is printed' },
                 },
-                required: ['supplier', 'offerNumber', 'offerDate', 'currency', 'deliveryTime', 'paymentTerms', 'validity', 'notes', 'contactName', 'contactEmail', 'language'],
+                required: ['supplier', 'offerNumber', 'offerDate', 'currency', 'deliveryTime', 'paymentTerms', 'validity', 'notes', 'contactName', 'contactEmail', 'language', 'vatRate'],
             },
         },
         rows: {
@@ -223,6 +225,7 @@ const compareOffersWithAi = async (input) => {
             contactName: oneLine(entry?.contactName),
             contactEmail: oneLine(entry?.contactEmail),
             language: oneLine(entry?.language),
+            vatRate: oneLine(entry?.vatRate),
         })),
         rows: rows.map((entry) => ({
             index: Number(entry?.index),

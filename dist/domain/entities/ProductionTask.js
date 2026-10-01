@@ -11,6 +11,13 @@
  * innerhalb des Bereichs, der Bereich trägt seinen Anteil zur
  * Gesamtfertigstellung bei (Chiller: 60 / 40).
  *
+ * EIGENE BEREICHE UND STUFEN (28.09.2026): «when the user creates new template
+ * they should create the sections manually, but keep the existing templates …
+ * also stages should be created dynamically.» Eine Vorlage bringt ihre Bereiche
+ * mit — Name, Anteil und die Stufen in der Reihenfolge des Weges. Mekanik und
+ * Elektrik bleiben als FESTE Bereiche der Vorlagen von vorher: nur sie kennen
+ * die BOM-Stufe und tragen ihre Namen aus der Übersetzung.
+ *
  * Die Zuweisungen selbst sind keine Stufe mit Aufgaben — sie stehen vor dem
  * Weg («görevlendirme en başta»), darum kommen hier nur die Arbeitsstufen vor.
  */

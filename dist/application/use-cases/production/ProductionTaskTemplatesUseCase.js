@@ -98,14 +98,14 @@ class ProductionTaskTemplatesUseCase {
     }
     async inputFrom(tenantId, body) {
         const input = (0, productionTasks_1.templateInputFrom)(body);
-        return { ...input, tasks: (0, productionTasks_1.orderTasks)(await this.keepActivePeople(tenantId, input.tasks)) };
+        return { ...input, tasks: (0, productionTasks_1.orderTasks)(await this.keepActivePeople(tenantId, input.tasks), input.sections) };
     }
     async keepActivePeople(tenantId, tasks) {
         const ids = (0, productionTaskReadModel_1.assigneesOf)(tasks);
         if (!ids.length)
             return tasks;
         const active = await this.directory.activePeople(tenantId, ids);
-        return tasks.map((task) => ({ ...task, assigneeIds: task.assigneeIds.filter((id) => active.has(id)) }));
+        return tasks.map((task) => (0, productionTasks_1.withActiveAssignees)(task, active));
     }
     async dto(tenantId, template) {
         const [people, updatedByName] = await Promise.all([
