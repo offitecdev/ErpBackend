@@ -169,7 +169,8 @@ class ProcurementDispatchUseCase {
         try {
             const result = await deps.sendMail((0, ProductionMailboxRepository_1.mailSettingsOf)(box), {
                 fromEmail: box.fromEmail,
-                fromName: box.fromName || companyName || 'Offitec Control Center',
+                // Tedarikçinin gördüğü gönderen adı hep «OCC» (01.10.2026, Samet).
+                fromName: 'OCC',
                 to,
                 subject,
                 text: mail.text,
