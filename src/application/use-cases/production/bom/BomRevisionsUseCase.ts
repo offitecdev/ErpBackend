@@ -23,6 +23,8 @@ import {
     round3,
     type RevisionPlanOrder,
 } from '../../../../domain/services/productionBom';
+import type { IBomRevisionApprovals, IBomRevisionNotifier } from '../../../../domain/repositories/IBomRevisionApprovals';
+import { assertErpCodes } from '../../../../domain/services/productionBom';
 import type { BomDocumentStore } from './BomPurchasesUseCase';
 import type { BomReservationService } from './BomReservationService';
 import type { BomActor } from './BomTemplatesUseCase';
@@ -126,7 +128,98 @@ export class BomRevisionsUseCase {
         private devices: DeviceBomsUseCase,
         private writer: IBomRevisionWriter,
         private documents: BomDocumentStore,
+        /** Freigaben durch die Administratorrolle (30.09.2026) und die Glocke dazu. */
+        private approvals: IBomRevisionApprovals | null = null,
+        private notifier: IBomRevisionNotifier | null = null,
     ) {}
+
+    /** Der Weg zur BOM (Geräteseite, Reiter BOM) — für die Glocke. */
+    private linkOf(bom: Bom): string {
+        const query = new URLSearchParams();
+        if (bom.area === 'ELECTRICAL') query.set('area', 'electrical');
+        query.set('stage', 'bom');
+        query.set('bom', bom.id);
+        return `/production/orders/${encodeURIComponent(bom.productionProjectId)}/devices/${encodeURIComponent(bom.productionItemId)}?${query.toString()}`;
+    }
+
+    /** Jede Zeile der neuen Fassung braucht einen ERP-Code («ERP kodları olmadan BOM onaylanamasın»). */
+    private async assertDraftErpCodes(tenantId: string, draft: BomRevision): Promise<void> {
+        const products = await this.devices.productsOf(tenantId, draft.lines.map((line) => line.productId));
+        assertErpCodes(draft.lines, products);
+    }
+
+    /**
+     * «Onaya gönder» (30.09.2026): wer die Revision bearbeitet, reicht sie bei der
+     * Administratorrolle ein — die Glocke meldet es ihr. Bis zur Freigabe gilt die
+     * BOM unverändert, keine Bestellung ändert sich.
+     */
+    async submit(tenantId: string, actor: BomActor, bomId: string): Promise<{ bom: BomDto }> {
+        const bom = await this.devices.requireBom(tenantId, bomId);
+        await this.devices.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
+        this.assertRevisable(bom);
+        const draft = await this.requireDraft(tenantId, bom);
+        const plan = await this.plan(tenantId, bom, draft, new Set());
+        if (!plan.changes.length) {
+            throw bomError('REVISION_NO_CHANGES', 'Die Revision ändert nichts — verwerfen oder erst Zeilen ändern.', { status: 409 });
+        }
+        await this.assertDraftErpCodes(tenantId, draft);
+        if (this.approvals) {
+            await this.approvals.record(tenantId, {
+                revisionId: draft.id,
+                bomId: bom.id,
+                bomNumber: bom.bomNumber,
+                revision: draft.revision,
+                action: 'SUBMITTED',
+                actorId: actor.id,
+                actorName: actor.name,
+                note: draft.reason,
+            });
+        }
+        await this.notifier?.submitted({
+            tenantId,
+            bomId: bom.id,
+            bomNumber: bom.bomNumber,
+            revision: draft.revision,
+            link: this.linkOf(bom),
+            actorId: actor.id,
+            actorName: actor.name,
+            reason: draft.reason,
+        });
+        return { bom: await this.devices.get(tenantId, bomId, true) };
+    }
+
+    /** «Reddet» — nur die Administratorrolle; die Revision bleibt im Entwurf, die Glocke sagt es der einreichenden Person. */
+    async reject(tenantId: string, actor: BomActor, bomId: string, body: unknown): Promise<{ bom: BomDto }> {
+        if (!actor.isAdmin) throw bomError('REVISION_NEEDS_ADMIN', 'Eine Revision gibt die Administratorrolle frei.', { status: 403 });
+        const bom = await this.devices.requireBom(tenantId, bomId);
+        const draft = await this.requireDraft(tenantId, bom);
+        const note = String((body as Record<string, unknown> | null)?.note ?? '').replace(/\r\n?/g, '\n').trim().slice(0, REASON_MAX) || null;
+        const submitter = this.approvals ? await this.approvals.submitter(tenantId, draft.id) : null;
+        if (this.approvals) {
+            await this.approvals.record(tenantId, {
+                revisionId: draft.id,
+                bomId: bom.id,
+                bomNumber: bom.bomNumber,
+                revision: draft.revision,
+                action: 'REJECTED',
+                actorId: actor.id,
+                actorName: actor.name,
+                note,
+            });
+        }
+        await this.notifier?.decided({
+            tenantId,
+            bomNumber: bom.bomNumber,
+            revision: draft.revision,
+            link: this.linkOf(bom),
+            recipientId: submitter?.actorId ?? draft.createdById ?? null,
+            approved: false,
+            actorId: actor.id,
+            actorName: actor.name,
+            note,
+        });
+        return { bom: await this.devices.get(tenantId, bomId, true) };
+    }
 
     /* ── Beginnen, Verwerfen ─────────────────────────────────────────────── */
 
@@ -149,7 +242,7 @@ export class BomRevisionsUseCase {
                 params: { number: bom.bomNumber, revision: bom.revision + 1 },
             });
         }
-        return { bom: await this.devices.get(tenantId, bomId) };
+        return { bom: await this.devices.get(tenantId, bomId, true) };
     }
 
     async discard(tenantId: string, actor: BomActor, bomId: string): Promise<{ bom: BomDto }> {
@@ -157,28 +250,33 @@ export class BomRevisionsUseCase {
         await this.devices.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
         const removed = await this.revisions.deleteDraft(tenantId, bom.id);
         if (!removed) throw bomError('REVISION_NONE', 'Es gibt keine Revision im Entwurf.', { status: 409 });
-        return { bom: await this.devices.get(tenantId, bomId) };
+        return { bom: await this.devices.get(tenantId, bomId, true) };
     }
 
     /* ── Vorschau und Freigabe ───────────────────────────────────────────── */
 
     async preview(tenantId: string, actor: BomActor, bomId: string, rawKeep: unknown): Promise<BomRevisionPreviewDto> {
         const bom = await this.devices.requireBom(tenantId, bomId);
-        await this.devices.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
+        if (!actor.isAdmin) await this.devices.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
         this.assertRevisable(bom);
         const draft = await this.requireDraft(tenantId, bom);
         return this.plan(tenantId, bom, draft, keepFrom(rawKeep));
     }
 
     async approve(tenantId: string, actor: BomActor, bomId: string, body: unknown): Promise<{ bom: BomDto; preview: BomRevisionPreviewDto }> {
+        /* «Admin onaylayabilsin — sadece onaylarsa sipariş direkt otomatik revize gitsin»
+           (Samet, 30.09.2026): freigeben darf nur die Administratorrolle; die anderen
+           reichen ein («Onaya gönder»). */
+        if (!actor.isAdmin) throw bomError('REVISION_NEEDS_ADMIN', 'Eine Revision gibt die Administratorrolle frei.', { status: 403 });
         const bom = await this.devices.requireBom(tenantId, bomId);
-        await this.devices.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
         this.assertRevisable(bom);
         const draft = await this.requireDraft(tenantId, bom);
         const plan = await this.plan(tenantId, bom, draft, keepFrom((body as Record<string, unknown> | null)?.keep));
         if (!plan.changes.length) {
             throw bomError('REVISION_NO_CHANGES', 'Die Revision ändert nichts — verwerfen oder erst Zeilen ändern.', { status: 409 });
         }
+        await this.assertDraftErpCodes(tenantId, draft);
+        const submitter = this.approvals ? await this.approvals.submitter(tenantId, draft.id).catch(() => null) : null;
         const writes: BomRevisionOrderWrite[] = plan.orders.flatMap((action): BomRevisionOrderWrite[] => {
             if (action.action !== 'UPDATE' && action.action !== 'REVISE' && action.action !== 'DELETE') return [];
             return [{
@@ -220,7 +318,45 @@ export class BomRevisionsUseCase {
         }).catch((error: unknown) => {
             console.warn('[production-bom] serial release after revision failed', bom.id, (error as Error)?.message);
         });
-        return { bom: await this.devices.get(tenantId, bomId), preview: plan };
+        /* «Revize edilince de otomatik» (30.09.2026): jede Bestellung, die schon beim
+           Lieferanten war und sich geändert hat, geht mit dem geänderten PDF hinaus —
+           im Hintergrund; ein Entwurf ändert sich still. */
+        const revised = plan.orders.filter((action) => action.action === 'REVISE').map((action) => action.purchaseOrderId);
+        if (revised.length && this.onRevised) {
+            const listener = this.onRevised;
+            setImmediate(() => { void Promise.resolve(listener(tenantId, actor, revised)).catch(() => undefined); });
+        }
+        if (this.approvals) {
+            await this.approvals.record(tenantId, {
+                revisionId: draft.id,
+                bomId: bom.id,
+                bomNumber: bom.bomNumber,
+                revision: draft.revision,
+                action: 'APPROVED',
+                actorId: actor.id,
+                actorName: actor.name,
+                note: null,
+            }).catch(() => undefined);
+        }
+        await this.notifier?.decided({
+            tenantId,
+            bomNumber: bom.bomNumber,
+            revision: draft.revision,
+            link: this.linkOf(bom),
+            recipientId: submitter?.actorId ?? draft.createdById ?? null,
+            approved: true,
+            actorId: actor.id,
+            actorName: actor.name,
+            note: null,
+        });
+        return { bom: await this.devices.get(tenantId, bomId, true), preview: plan };
+    }
+
+    /** Die Automatik des Einkaufs (ProcurementDispatchUseCase) — nach dem Bau angeschlossen. */
+    private onRevised: ((tenantId: string, actor: BomActor, purchaseOrderIds: string[]) => unknown) | null = null;
+
+    attachRevisionDispatch(listener: (tenantId: string, actor: BomActor, purchaseOrderIds: string[]) => unknown): void {
+        this.onRevised = listener;
     }
 
     /**

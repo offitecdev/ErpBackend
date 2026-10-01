@@ -23,6 +23,13 @@ class GetProductionOverviewUseCase {
         this.settings = settings;
         this.tenants = tenants;
     }
+    async list(tenantId, filter) {
+        const [page, settings] = await Promise.all([
+            this.projects.listOrderPage(tenantId, filter),
+            this.settings.get(tenantId),
+        ]);
+        return { ...page, lastSyncedAt: settings?.lastSyncedAt?.toISOString() ?? null };
+    }
     async execute(tenantId) {
         const [projects, settings, tenants] = await Promise.all([
             this.projects.listProjects(tenantId),

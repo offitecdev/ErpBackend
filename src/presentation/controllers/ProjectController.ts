@@ -41,6 +41,9 @@ import {
 } from '../../shared/documentLifecycle';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { dispatchMail } from '../../infrastructure/services/outlook/MailDispatchService';
+import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
+import { documentMailLang, renderDocumentMail } from '../../infrastructure/services/documentMailLayout';
+import { documentMailWords } from '../../infrastructure/services/documentMailWords';
 import {
     buildAppointmentCancellation,
     queueAppointmentCancellation,
@@ -2003,13 +2006,23 @@ export class ProjectController {
             if (!to) return res.status(400).json({ error: "Alıcı e-posta adresi zorunludur." });
             if (!fromEmail) return res.status(400).json({ error: "Gönderici e-posta adresi zorunludur." });
 
-            const html = `
-                <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
-                    <p>${message}</p>
-                    <p><a href="${bookingLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Randevu saatini seç</a></p>
-                    <p style="font-size:12px;color:#64748b">${bookingLink}</p>
-                </div>
-            `;
+            /* DIE BELEGMAIL (29.09.2026): Karte mit Logo, «Montaj randevusu» + Projekt,
+               ein Knopf zur Terminwahl — documentMailLayout.ts. Die Karte folgt `lang`;
+               ohne Angabe Türkisch wie der bisherige Standardtext. Der Text wird jetzt
+               maskiert (vorher ging er roh ins HTML). */
+            const mailLang = documentMailLang(req.body.lang ?? 'tr');
+            const words = documentMailWords(mailLang);
+            const signature = buildSignatureParts(settings);
+            const mail = renderDocumentMail({
+                lang: mailLang,
+                senderName: String(fromName),
+                senderEmail: fromEmail,
+                eyebrow: words.installation,
+                heading: String(project.projectName || ''),
+                message: String(message),
+                action: { label: words.chooseTime, href: bookingLink },
+                signatureHtml: signature.html,
+            });
 
             // Kundenmail → über das Outlook-Postfach des Benutzers (sonst SMTP),
             // festgehalten in der Kundenkommunikation (MailMessage).
@@ -2021,9 +2034,10 @@ export class ProjectController {
                     fromName,
                     to,
                     subject,
-                    text: `${message}\n\n${bookingLink}`,
-                    html,
-                    replyTo: req.body.replyTo || settings?.replyTo || null
+                    text: `${mail.text}${signature.text}`,
+                    html: mail.html,
+                    replyTo: req.body.replyTo || settings?.replyTo || null,
+                    inlineImages: [...mail.inlineImages, ...signature.inlineImages],
                 },
                 {
                     record: (project as any).customerId
@@ -2662,14 +2676,29 @@ export class ProjectController {
                 const message = String(req.body.message || "Saha raporunuz imza için hazır. Lütfen Offitec ekibiyle birlikte raporu kontrol edip imzalayın.").trim();
                 if (!to) return res.status(400).json({ error: "Müşteri e-posta adresi bulunamadı." });
                 if (!fromEmail) return res.status(400).json({ error: "Gönderici e-posta adresi zorunludur." });
+                // Belegkarte (29.09.2026) — «Saha raporu» + Projekt, Knopf zum Rapport.
+                const mailLang = documentMailLang(req.body.lang ?? "tr");
+                const words = documentMailWords(mailLang);
+                const signature = buildSignatureParts(settings);
+                const mail = renderDocumentMail({
+                    lang: mailLang,
+                    senderName: String(fromName),
+                    senderEmail: fromEmail,
+                    eyebrow: words.fieldReport,
+                    heading: String(report.project?.projectName || report.salesOrder?.orderNumber || ""),
+                    message,
+                    action: { label: words.viewReport, href: reportLink },
+                    signatureHtml: signature.html,
+                });
                 await smtp.send(settings || {}, {
                     fromEmail,
                     fromName,
                     to,
                     subject,
-                    text: `${message}\n\n${reportLink}`,
-                    html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6"><p>${message}</p><p><a href="${reportLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Raporu goruntule</a></p><p style="font-size:12px;color:#64748b">${reportLink}</p></div>`,
+                    text: `${mail.text}${signature.text}`,
+                    html: mail.html,
                     replyTo: req.body.replyTo || settings?.replyTo || null,
+                    inlineImages: [...mail.inlineImages, ...signature.inlineImages],
                 }, { asEmployeeId: req.user!.id });
                 sent.push("mail");
             }

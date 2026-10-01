@@ -123,7 +123,7 @@ const columnWidth = (value: unknown): number => Math.round(Math.min(240, Math.ma
  * die eigenen Angaben werden freie Spalten und behalten ihren Schluessel,
  * damit die Werte gespeicherter Bestellungen ihre Spalte wiederfinden.
  */
-const legacyColumns = (raw: any, _documentType: TemplateDocumentType): StoredTemplateColumn[] => {
+const legacyColumns = (raw: any, documentType: TemplateDocumentType): StoredTemplateColumn[] => {
     const hidden = new Set<string>(Array.isArray(raw?.hiddenColumnKeys) ? raw.hiddenColumnKeys.map(String) : []);
     const fixed: Array<{ key: string; name: string; type: 'text' | 'number'; label: TemplateLabel }> = [
         { key: 'name', name: 'Produktname', type: 'text', label: 'productName' },
@@ -137,6 +137,8 @@ const legacyColumns = (raw: any, _documentType: TemplateDocumentType): StoredTem
     const columns: StoredTemplateColumn[] = fixed
         // Die Pflichtzuordnungen bleiben auch dann, wenn das Auge sie ausblendete.
         .filter((column) => !hidden.has(column.key) || column.label === 'productName' || column.label === 'quantity')
+        // Eine Preisanfrage kannte nie Preise — sie bekommt auch jetzt keine.
+        .filter((column) => documentType !== 'PRICE_REQUEST' || column.label === 'productName' || column.label === 'quantity')
         .map((column) => ({ ...column, width: 120 }));
     for (const extra of normalizeColumns(raw?.extraColumns)) {
         if (hidden.has(extra.key)) continue;
@@ -171,9 +173,18 @@ export const normalizeTemplateConfig = (raw: any, documentType: TemplateDocument
 /**
  * Was eine Vorlage erfuellen muss, bevor sie gespeichert wird (Vorgabe
  * Samet: «wird eine Zuordnung nicht gewaehlt, zeigt das System einen
- * Fehler»). Price fields are available for both orders and price requests.
+ * Fehler»). Eine Preisanfrage kennt keine Preise (wieder seit dem 29.09.2026:
+ * «birim fiyat, tutar olmayacak») — dort werden die Preiszuordnungen still
+ * abgelegt statt abgewiesen.
  */
-export const validateTemplateConfig = (config: SupplierCalcConfig, _documentType: TemplateDocumentType): string | null => {
+const PRICE_REQUEST_LABELS = new Set<TemplateLabel>(['productName', 'quantity']);
+
+export const validateTemplateConfig = (config: SupplierCalcConfig, documentType: TemplateDocumentType): string | null => {
+    if (documentType === 'PRICE_REQUEST') {
+        config.columns.forEach((column) => {
+            if (column.label && !PRICE_REQUEST_LABELS.has(column.label)) column.label = null;
+        });
+    }
     if (!config.columns.length) return 'Die Vorlage braucht mindestens eine Spalte.';
     const missing = missingTemplateLabels(config.columns);
     if (missing.length) {

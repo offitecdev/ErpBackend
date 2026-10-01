@@ -79,7 +79,14 @@ model WarehouseProduct {
   materialGroupId     String?
   name                String   @db.VarChar(255)
   brand               String?  @db.VarChar(120)
+  /// Seit dem 30.09.2026 in der Oberfläche «Üretici kodu» (Samet: «model
+  /// numarasını kaldırın … zaten o direkt barkod, basılmayacak») — der Wert bleibt.
   modelNumber         String?  @db.VarChar(120)
+  /// «Ürün kodu» (30.09.2026): eigenes Feld, steht im PDF der Preisanfrage und
+  /// der Bestellung — anfangs leer, «talepler geldikçe dolduracağız».
+  productCode         String?  @db.VarChar(120)
+  /// Einheit der Karte (PCS | M | KG | SET | PACK) — die BOM-Zeile übernimmt sie.
+  unit                String?  @db.VarChar(8)
   /// Der ERSTE Lieferant der Karte, abgeschrieben aus `depo_urun_tedarikcileri`
   /// (Liste, Sortierung, Export lesen ihn ohne zweite Abfrage). Seit dem
   /// dritten Durchgang (26.09.2026) darf eine Karte mehrere Lieferanten haben;
@@ -107,6 +114,9 @@ model WarehouseProduct {
   /// hier steht nur einer, dessen Lieferant (noch) nicht gewählt ist.
   manufacturerBarcode String?  @db.VarChar(128)
   serialRequired      Boolean  @default(false)
+  /// Taslak (30.09.2026): Name, Einheit, ein Lieferant und seine E-Mail fehlen
+  /// noch — «bunlar girilmeden ürün kartı sadece taslak olarak kayıt edilebilir».
+  isDraft             Boolean  @default(false)
   createdById         String?
   updatedById         String?
   createdAt           DateTime @default(now())
@@ -143,6 +153,14 @@ model WarehouseProductSupplier {
   /// Nicht mehr beschrieben: die frühere «Tedarikçi ürün kodu» (ihr Wert
   /// wurde beim vierten Durchgang als Barcode übernommen).
   supplierNumber String?  @db.VarChar(120)
+  /// Die E-Mail des Lieferanten für diese Karte (30.09.2026) — Empfänger der
+  /// automatischen Preisanfrage.
+  email          String?  @db.VarChar(191)
+  /// Die Artikelnummer DIESES Lieferanten für das Produkt (01.10.2026) —
+  /// steht in seiner Preisanfrage und Bestellung.
+  articleNumber  String?  @db.VarChar(120)
+  /// Seine Bestellnummer für das Produkt (01.10.2026) — ebenso.
+  orderNumber    String?  @db.VarChar(120)
   sortOrder      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

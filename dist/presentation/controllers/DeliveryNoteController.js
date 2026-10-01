@@ -160,15 +160,32 @@ class DeliveryNoteController {
                 .filter(Boolean)
                 .slice(0, 500);
             if (ids.length === 0)
-                return res.json({ codes: {} });
-            const rows = await db.article.findMany({
-                where: { tenantId, id: { in: ids } },
-                select: { id: true, articleCode: true },
-            });
+                return res.json({ codes: {}, stock: {} });
+            const [rows, balances] = await Promise.all([
+                db.article.findMany({
+                    where: { tenantId, id: { in: ids } },
+                    select: { id: true, articleCode: true },
+                }),
+                // Lagerbestand (29.09.2026, Samet): nur für die Erfassungsmaske —
+                // Summe über alle Lagerorte, wie die Artikelliste sie zeigt.
+                db.stockBalance.groupBy({
+                    by: ['articleId'],
+                    where: { tenantId, articleId: { in: ids } },
+                    _sum: { currentQuantity: true },
+                }),
+            ]);
             const codes = {};
-            rows.forEach((row) => { if (row.articleCode)
-                codes[row.id] = row.articleCode; });
-            res.json({ codes });
+            const stock = {};
+            rows.forEach((row) => {
+                if (row.articleCode)
+                    codes[row.id] = row.articleCode;
+                stock[row.id] = 0;
+            });
+            balances.forEach((row) => {
+                if (row.articleId in stock)
+                    stock[row.articleId] = Math.round((Number(row._sum.currentQuantity) || 0) * 1000) / 1000;
+            });
+            res.json({ codes, stock });
         }
         catch (error) {
             fail(res, error);

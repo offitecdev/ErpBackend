@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProcurementDeskUseCase = void 0;
+const supplierEmails_1 = require("../../../../domain/services/supplierEmails");
 const productionBom_1 = require("../../../../domain/services/productionBom");
 const procurementFlow_1 = require("../../../../domain/services/procurementFlow");
 const purchaseDocumentCode_1 = require("../../../../shared/purchaseDocumentCode");
@@ -12,6 +13,8 @@ const eventDto = (event) => ({
     actorName: event.actorName,
     data: event.data,
 });
+/** Wann die jüngste Revision einer Bestellung entstand. */
+const latestRevisionAt = (rows) => (rows ?? []).reduce((latest, row) => (!latest || row.createdAt > latest ? row.createdAt : latest), null);
 /** Ein Beleg, wie der Stand eines Talep ihn braucht. */
 const factsOf = (input) => ({
     purchaseOrderId: input.purchaseOrderId,
@@ -44,7 +47,13 @@ class ProcurementDeskUseCase {
     directory;
     stock;
     writer;
-    constructor(requests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer) {
+    revisions;
+    emails;
+    constructor(requests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer, 
+    /** Die Archivzeilen revidierter Bestellungen — sie erscheinen als «revize edildi» (29.09.2026). */
+    revisions = null, 
+    /** Die Lieferantenliste als Adressbuch — an wen ein Beleg ginge (30.09.2026). */
+    emails = null) {
         this.requests = requests;
         this.goodsIn = goodsIn;
         this.purchases = purchases;
@@ -54,6 +63,8 @@ class ProcurementDeskUseCase {
         this.directory = directory;
         this.stock = stock;
         this.writer = writer;
+        this.revisions = revisions;
+        this.emails = emails;
     }
     /* ── Die Liste ─────────────────────────────────────────────────────── */
     async feed(tenantId, actor, query = {}) {
@@ -63,14 +74,19 @@ class ProcurementDeskUseCase {
         if (!all.length)
             return { items: [], total: 0, page: 1, pageSize: PAGE_SIZE, canProcure };
         const bomIds = [...new Set(all.map((request) => request.bomId))];
-        const [purchases, receipts, latest, boms, projects, devices] = await Promise.all([
+        const [purchases, receipts, latest, boms, projects, devices, revised] = await Promise.all([
             this.devices.purchasesOf(tenantId, bomIds),
             this.goodsIn.forBoms(tenantId, bomIds),
             this.journal.latest(tenantId, all.map((request) => request.id)),
             this.devices.bomsByIds(tenantId, bomIds),
             this.directory.projects(tenantId, all.map((request) => request.productionProjectId)),
             this.directory.devices(tenantId, all.map((request) => request.productionItemId)),
+            this.revisions ? this.revisions.purchaseRevisionsForBoms(tenantId, bomIds).catch(() => []) : Promise.resolve([]),
         ]);
+        const orderFacts = new Map(purchases.map(({ order }) => [order.id, { code: order.referenceNumber, supplier: order.supplierName }]));
+        const revisedByOrder = new Map();
+        for (const row of revised)
+            revisedByOrder.set(row.purchaseOrderId, [...(revisedByOrder.get(row.purchaseOrderId) ?? []), row]);
         const docById = new Map(purchases.map((entry) => [entry.order.id, entry]));
         const bomNumber = new Map(boms.map((bom) => [bom.id, bom.bomNumber]));
         const receiptsByOrder = new Map();
@@ -80,8 +96,15 @@ class ProcurementDeskUseCase {
             receiptsByOrder.set(row.purchaseOrderId, [...(receiptsByOrder.get(row.purchaseOrderId) ?? []), row]);
         }
         const needle = fold(query.search).trim().slice(0, 80);
+        // «Fiyat talebi hangisi, satın alma hangisi» (29.09.2026): die Liste lässt sich nach Art filtern.
+        const kind = query.kind === 'PRICE' || query.kind === 'ORDER' ? query.kind : null;
         const rows = all.flatMap((request) => {
             const mine = request.purchaseOrderIds.flatMap((id) => docById.get(id) ?? []);
+            // «Siparişlere girdiğimizde … siparişler çıkması lazım»: ein Preistalep mit Bestellungen zählt als Bestellung.
+            const ordered = mine.some(({ link }) => link.kind === 'ORDER');
+            const shownKind = request.kind === 'ORDER' || ordered ? 'ORDER' : 'PRICE';
+            if (kind && shownKind !== kind)
+                return [];
             const project = projects.get(request.productionProjectId) ?? null;
             const device = devices.get(request.productionItemId) ?? null;
             if (needle) {
@@ -98,7 +121,10 @@ class ProcurementDeskUseCase {
                     return [];
             }
             // Der letzte Handgriff: Verlauf, Wareneingang (auch vom Depo) oder der Talep selbst.
-            const derived = request.purchaseOrderIds.flatMap((id) => (0, procurementFlow_1.receiptEvents)(receiptsByOrder.get(id) ?? []));
+            const derived = request.purchaseOrderIds.flatMap((id) => [
+                ...(0, procurementFlow_1.receiptEvents)(receiptsByOrder.get(id) ?? []),
+                ...(0, procurementFlow_1.revisionEvents)(revisedByOrder.get(id) ?? [], orderFacts),
+            ]);
             const created = {
                 action: 'REQUEST_CREATED',
                 at: request.createdAt,
@@ -108,7 +134,7 @@ class ProcurementDeskUseCase {
             };
             const stored = latest.get(request.id);
             const last = (0, procurementFlow_1.newestFirst)([...(stored ? [stored] : []), ...derived, created])[0];
-            return [{ request, mine, project, device, last }];
+            return [{ request, mine, project, device, last, ordered }];
         });
         rows.sort((a, b) => b.last.at.getTime() - a.last.at.getTime());
         const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
@@ -121,13 +147,14 @@ class ProcurementDeskUseCase {
             personIds.length ? this.directory.personNames(personIds) : Promise.resolve(new Map()),
             this.directory.deliveryDates(tenantId, shown.map((row) => row.request.productionProjectId)),
         ]);
-        const items = shown.map(({ request, mine, project, device, last }) => {
+        const items = shown.map(({ request, mine, project, device, last, ordered }) => {
             const facts = mine.map(({ link, order }) => factsOf({
                 purchaseOrderId: order.id,
                 kind: link.kind,
                 status: order.status,
                 emailSentAt: order.emailSentAt,
                 orderRevision: link.orderRevision,
+                revisedAt: latestRevisionAt(revisedByOrder.get(order.id)),
                 hasQuoteFile: Boolean(link.quoteFileRef),
                 quoteNumber: order.quoteNumber,
                 items: order.items,
@@ -138,6 +165,7 @@ class ProcurementDeskUseCase {
                 id: request.id,
                 requestNumber: request.requestNumber,
                 kind: request.kind,
+                ordered,
                 status: request.status,
                 project: project ? { number: project.projectNumber, name: project.projectName } : null,
                 device: device ? { name: device.name, position: device.positionNumber } : null,
@@ -161,6 +189,10 @@ class ProcurementDeskUseCase {
     async detail(tenantId, actor, requestId) {
         const base = await this.procurement.get(tenantId, actor, requestId);
         const purchaseById = new Map(base.bom.purchases.map((purchase) => [purchase.purchaseOrderId, purchase]));
+        const revised = base.bom.purchases.some((purchase) => purchase.orderRevision > 0) && this.revisions
+            ? await this.revisions.purchaseRevisionsForBoms(tenantId, [base.bom.id]).catch(() => [])
+            : [];
+        const recipients = base.canProcure ? await this.recipientsOf(tenantId, requestId, base.request.documents) : new Map();
         const docs = base.request.documents.map((doc) => {
             const purchase = purchaseById.get(doc.purchaseOrderId);
             const items = (purchase?.lines ?? []).map((line) => ({
@@ -176,6 +208,7 @@ class ProcurementDeskUseCase {
                 status: doc.status,
                 emailSentAt: purchase?.emailSentAt ? new Date(purchase.emailSentAt) : null,
                 orderRevision: purchase?.orderRevision ?? 0,
+                revisedAt: latestRevisionAt(revised.filter((row) => row.purchaseOrderId === doc.purchaseOrderId)),
                 hasQuoteFile: Boolean(purchase?.quoteFile),
                 quoteNumber: purchase?.quoteNumber ?? null,
                 items,
@@ -187,12 +220,18 @@ class ProcurementDeskUseCase {
                     code: doc.referenceNumber,
                     kind: doc.kind,
                     state: facts.state,
+                    supplierId: doc.supplierId,
                     supplierName: doc.supplierName,
                     currency: doc.currency,
                     totalNet: doc.totalNet,
                     lineCount: purchase?.lineCount ?? items.length,
                     quoteNumber: purchase?.quoteNumber ?? null,
                     hasQuoteFile: Boolean(purchase?.quoteFile),
+                    quoteFile: purchase?.quoteFile ? { name: purchase.quoteFile.name, type: purchase.quoteFile.type } : null,
+                    sentAt: purchase?.emailSentAt ?? null,
+                    sourcePurchaseOrderId: purchase?.sourcePurchaseOrderId ?? null,
+                    orderRevision: purchase?.orderRevision ?? 0,
+                    supplierEmail: recipients.get(doc.purchaseOrderId) ?? null,
                 },
             };
         });
@@ -216,6 +255,38 @@ class ProcurementDeskUseCase {
             docs: docs.map((doc) => doc.view),
             history: (0, procurementFlow_1.newestFirst)([...stored, ...receipts, created]).map(eventDto),
         };
+    }
+    /**
+     * An wen jeder Beleg des Talep ginge — dieselbe Reihenfolge wie beim Senden
+     * (ProcurementDispatchUseCase): die Adresse des Belegs, die der Karten der
+     * Zeilen (Preisanfrage), die der Lieferantenliste.
+     */
+    async recipientsOf(tenantId, requestId, documents) {
+        const result = new Map();
+        if (!documents.length)
+            return result;
+        try {
+            const [rows, request] = await Promise.all([
+                this.purchases.orders(tenantId, documents.map((doc) => doc.purchaseOrderId)),
+                this.requests.get(tenantId, requestId),
+            ]);
+            const productIds = request?.lines.map((line) => line.productId) ?? [];
+            const products = productIds.length ? await this.stock.products(tenantId, productIds) : new Map();
+            for (const doc of documents) {
+                const row = rows.find((entry) => entry.id === doc.purchaseOrderId);
+                const supplier = { supplierId: row?.supplierId ?? doc.supplierId, supplierName: row?.supplierName ?? doc.supplierName };
+                let email = (0, supplierEmails_1.cleanSupplierEmail)(row?.supplierEmail);
+                if (!email && doc.kind === 'REQUEST')
+                    email = (0, supplierEmails_1.cardEmailOf)(supplier, productIds, products);
+                if (!email && this.emails)
+                    email = await this.emails.emailOf(tenantId, { supplierId: supplier.supplierId, name: supplier.supplierName });
+                result.set(doc.purchaseOrderId, email);
+            }
+        }
+        catch (error) {
+            console.warn('[satın alma] Empfänger nicht gelesen:', requestId, error?.message);
+        }
+        return result;
     }
     /* ── Handgriffe ────────────────────────────────────────────────────── */
     /**

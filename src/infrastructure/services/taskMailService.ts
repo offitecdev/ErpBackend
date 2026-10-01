@@ -1,8 +1,7 @@
 import prisma from "../database/prisma.client";
 import { dispatchMail } from "./outlook/MailDispatchService";
 import { buildInviteHtml, buildInviteText, inviteWords, type InviteDetail } from "./calendarInviteMail";
-import { brandLogoInline, brandWaveInline } from "./mailBrand";
-import { kindIconInline } from "./mailKindIcons";
+import { mailInlineImages } from "./mailCardKit";
 import { getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
 
 /**
@@ -143,7 +142,7 @@ const sendOne = async (
             text: buildInviteText(card),
             html: buildInviteHtml(card),
             replyTo: settings.replyTo || null,
-            inlineImages: [brandLogoInline(), brandWaveInline(), kindIconInline("TASK")],
+            inlineImages: mailInlineImages("TASK"),
             // KEIN iCalendar und KEIN ICS-Anhang: eine Aufgabe ist kein Termin.
         },
         /* Interne Post — sie gehört nicht in den Schriftverkehr des Kunden,

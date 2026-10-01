@@ -19,6 +19,8 @@ import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { dispatchMail } from '../../infrastructure/services/outlook/MailDispatchService';
 import { getArticleThumbnails, getPositionThumbnails } from '../../infrastructure/services/PdfImageThumbnailService';
 import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
+import { documentMailLang, renderDocumentMail } from '../../infrastructure/services/documentMailLayout';
+import { documentMailWords, mailDate, mailDateRange } from '../../infrastructure/services/documentMailWords';
 import { findTechnicianScheduleConflict, validateTechnicians, listTechnicianOptions } from './technicianSchedule';
 import { MAX_TOTAL_DISCOUNTS, normalizeDiscountList, resolveLineDiscount } from './tender.discounts';
 import { findTenantRootIdCached } from '../../shared/tenantTree';
@@ -3272,32 +3274,37 @@ export class TenderController {
                 return res.status(400).json({ error: "Ek dosya 5 MB sınırını aşıyor." });
             }
 
-            const scheduleText = slots.map((slot: any) => {
-                const start = new Date(slot.startTime);
-                const end = new Date(slot.endTime);
-                return `- ${start.toLocaleDateString('tr-TR')} ${start.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })} - ${end.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}`;
-            }).join("\n");
-
-            const scheduleHtml = slots.length > 0
-                ? `<p><strong>Planlanan tarih ve saatler</strong></p>
-                    <ul>${slots.map((slot: any) => `<li>${new Date(slot.startTime).toLocaleString('tr-TR')} - ${new Date(slot.endTime).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</li>`).join("")}</ul>`
-                : "";
-
-            // Tenant e-posta imzası (Mail Ayarları'nda tanımlanır) gövdenin sonuna
+            // Tenant e-posta imzası (Mail Ayarları'nda tanımlanır) kartın sonuna
             // eklenir; imza görseli CID'li inline ek olarak taşınır.
             const signature = buildSignatureParts(settings);
 
-            const html = `
-                <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
-                    <p>${messageHtml}</p>
-                    ${scheduleHtml}
-                    ${signature.html}
-                </div>
-            `;
-
-            const plainText = slots.length > 0
-                ? `${messageText}\n\nPlanlanan tarih ve saatler:\n${scheduleText}`
-                : messageText;
+            /* DIE BELEGMAIL (29.09.2026, Samet: «mailler çok daha temiz … Adobe
+               maillerine benzeyebilir ama bizim renklerde»): Karte mit Logo, «Offerte»
+               und Nummer, Eckdaten, die geplanten Termine als Liste (Zeit der Schweiz),
+               das PDF als Dateikachel — documentMailLayout.ts. Die Karte spricht
+               Deutsch wie das PDF, ausser die Oberfläche schickt `lang`. */
+            const mailLang = documentMailLang(req.body.lang);
+            const words = documentMailWords(mailLang);
+            const mail = renderDocumentMail({
+                lang: mailLang,
+                senderName: fromName,
+                senderEmail: fromEmail,
+                eyebrow: words.offer,
+                heading: String(tender.tenderNumber || ""),
+                message: messageText,
+                messageHtml: isHtmlMessage ? messageHtml : null,
+                facts: [
+                    [words.commission, tender.commissionNumber],
+                    [words.reference, tender.customerReference],
+                    [words.validUntil, mailDate(tender.validUntil, mailLang)],
+                ],
+                groups: [{
+                    title: words.plannedDates,
+                    rows: slots.map((slot: any) => mailDateRange(slot.startTime, slot.endTime, mailLang)),
+                }],
+                attachments: attachments.map((file) => ({ name: file.filename, bytes: Math.floor(file.contentBase64.replace(/\s+/g, "").length * 3 / 4) })),
+                signatureHtml: signature.html,
+            });
 
             // CC istekten DEĞİL, teklifin kayıtlı listesinden gelir: alıcı
             // tarafındaki açık relay koruması CC için de geçerli olsun diye
@@ -3314,11 +3321,11 @@ export class TenderController {
                     to,
                     cc,
                     subject,
-                    text: `${plainText}${signature.text}`,
-                    html,
+                    text: `${mail.text}${signature.text}`,
+                    html: mail.html,
                     replyTo: settings?.replyTo || null,
                     attachments,
-                    inlineImages: signature.inlineImages
+                    inlineImages: [...mail.inlineImages, ...signature.inlineImages]
                 },
                 { record: { customerId: tender.customerId, entityType: "TENDER", entityId: tender.id, entityLabel: tender.tenderNumber } },
             );
@@ -3546,34 +3553,28 @@ export class TenderController {
                 return res.status(400).json({ error: "Ek dosya 5 MB sınırını aşıyor." });
             }
 
-            // Belgenin kimliğini taşıyan satırlar — mailin gövdesinde küçük bir
-            // liste olarak; hepsi kaçışlanır (mesajın kendisi düz metindir).
-            const detailRows: Array<[string, string]> = [
-                ["Auftrag", String(salesOrder.orderNumber || "")],
-                ["Offerte", String(tender.tenderNumber || "")],
-            ];
-            if (tender.commissionNumber) detailRows.push(["Kommission", String(tender.commissionNumber)]);
-            if (tender.customerReference) detailRows.push(["Referenz", String(tender.customerReference)]);
-            const orderDate = salesOrder.orderDate || salesOrder.createdAt;
-            if (orderDate) detailRows.push(["Datum", new Date(orderDate).toLocaleDateString("de-CH")]);
-
+            /* DIE BELEGMAIL (29.09.2026): «Auftragsbestätigung» und die AB-Nummer als
+               Überschrift, darunter Offerte · Kommission · Referenz · Datum als Eckdaten
+               und das PDF als Dateikachel — documentMailLayout.ts. */
+            const mailLang = documentMailLang(req.body.lang);
+            const words = documentMailWords(mailLang);
             const signature = buildSignatureParts(settings);
-            const detailsHtml = `
-                <table style="border-collapse:collapse;margin:12px 0">
-                    ${detailRows.map(([label, value]) => `
-                        <tr>
-                            <td style="padding:2px 16px 2px 0;color:#64748b">${escapeHtml(label)}</td>
-                            <td style="padding:2px 0;font-weight:600">${escapeHtml(value)}</td>
-                        </tr>`).join("")}
-                </table>`;
-            const html = `
-                <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
-                    <p>${escapeHtml(message).replace(/\n/g, "<br />")}</p>
-                    ${detailsHtml}
-                    ${signature.html}
-                </div>
-            `;
-            const detailsText = detailRows.map(([label, value]) => `${label}: ${value}`).join("\n");
+            const mail = renderDocumentMail({
+                lang: mailLang,
+                senderName: fromName,
+                senderEmail: fromEmail,
+                eyebrow: words.orderConfirmation,
+                heading: String(salesOrder.orderNumber || ""),
+                message,
+                facts: [
+                    [words.quote, tender.tenderNumber],
+                    [words.commission, tender.commissionNumber],
+                    [words.reference, tender.customerReference],
+                    [words.date, mailDate(salesOrder.orderDate || salesOrder.createdAt, mailLang)],
+                ],
+                attachments: attachments.map((file) => ({ name: file.filename, bytes: Math.floor(file.contentBase64.replace(/\s+/g, "").length * 3 / 4) })),
+                signatureHtml: signature.html,
+            });
 
             const result = await dispatchMail(
                 { tenantId: tender.tenantId, employeeId: (req as any).user!.id },
@@ -3584,11 +3585,11 @@ export class TenderController {
                     to,
                     cc,
                     subject,
-                    text: `${message}\n\n${detailsText}${signature.text}`,
-                    html,
+                    text: `${mail.text}${signature.text}`,
+                    html: mail.html,
                     replyTo: settings?.replyTo || null,
                     attachments,
-                    inlineImages: signature.inlineImages,
+                    inlineImages: [...mail.inlineImages, ...signature.inlineImages],
                 },
                 { record: { customerId: tender.customerId, entityType: "ORDER", entityId: tender.id, entityLabel: salesOrder.orderNumber } },
             );

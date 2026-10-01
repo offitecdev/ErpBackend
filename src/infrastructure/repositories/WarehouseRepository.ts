@@ -21,7 +21,9 @@ import type {
     WarehouseSortKey,
     WarehouseSupplierEntry,
     WarehouseSupplierOption,
+    WarehouseUnit,
 } from '../../domain/entities/Warehouse';
+import { WAREHOUSE_UNITS } from '../../domain/entities/Warehouse';
 import { codeVariants } from '../../domain/services/warehouseCodes';
 import { CARD_TX_OPTIONS, CODE_TX_OPTIONS, reserveBarcodes, reserveErpCodes, type WarehouseTx } from './WarehouseCodeIssuer';
 
@@ -82,6 +84,9 @@ type ProductRow = {
     name: string;
     brand: string | null;
     modelNumber: string | null;
+    productCode: string | null;
+    unit: string | null;
+    isDraft: unknown;
     supplierId: string | null;
     supplierName: string | null;
     suppliersJson: unknown;
@@ -111,7 +116,16 @@ const suppliersOf = (raw: unknown): WarehouseSupplierEntry[] => {
             supplierId: textOrNull(entry.supplierId),
             name: String(entry.name),
             barcode: textOrNull(entry.barcode),
+            email: textOrNull(entry.email),
+            articleNumber: textOrNull(entry.articleNumber),
+            orderNumber: textOrNull(entry.orderNumber),
         }));
+};
+
+/** Eine gespeicherte Einheit — nur, was die Liste kennt (ältere Karten: keine). */
+const unitOf = (value: unknown): WarehouseUnit | null => {
+    const text = String(value ?? '').trim().toUpperCase();
+    return (WAREHOUSE_UNITS as readonly string[]).includes(text) ? text as WarehouseUnit : null;
 };
 
 const toProduct = (row: ProductRow): WarehouseProduct => ({
@@ -127,6 +141,9 @@ const toProduct = (row: ProductRow): WarehouseProduct => ({
     name: String(row.name ?? ''),
     brand: textOrNull(row.brand),
     modelNumber: textOrNull(row.modelNumber),
+    productCode: textOrNull(row.productCode),
+    unit: unitOf(row.unit),
+    isDraft: Boolean(Number(row.isDraft)),
     supplierId: textOrNull(row.supplierId),
     supplierName: textOrNull(row.supplierName),
     suppliers: suppliersOf(row.suppliersJson),
@@ -173,8 +190,9 @@ const toSerial = (row: SerialRow): WarehouseSerial => ({
 const PRODUCT_SELECT = Prisma.sql`
     SELECT p.id, p.tenantId, p.erpCode, p.materialGroupId, g.name AS materialGroupName, g.code AS materialGroupCode,
            c.id AS categoryId, c.name AS categoryName, c.code AS categoryCode, p.name, p.brand,
-           p.modelNumber, p.supplierId, p.supplierName,
-           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode)
+           p.modelNumber, p.productCode, p.unit, p.isDraft, p.supplierId, p.supplierName,
+           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode, 'email', s.email,
+                                      'articleNumber', s.articleNumber, 'orderNumber', s.orderNumber)
                    ORDER BY s.sortOrder, s.supplierName)
               FROM depo_urun_tedarikcileri s WHERE s.productId = p.id) AS suppliersJson,
            p.description, p.quantity,
@@ -233,6 +251,9 @@ export const productData = (fields: WarehouseProductFields) => ({
     name: fields.name,
     brand: fields.brand,
     modelNumber: fields.modelNumber,
+    productCode: fields.productCode,
+    unit: fields.unit,
+    isDraft: fields.isDraft,
     supplierId: fields.suppliers[0]?.supplierId ?? null,
     supplierName: fields.suppliers[0]?.name ?? null,
     // Nicht mehr geführt (vierter Durchgang) — ein alter Abzug wird geleert.
@@ -257,6 +278,9 @@ export const supplierRows = (tenantId: string, productId: string, suppliers: War
         supplierId: entry.supplierId,
         supplierName: entry.name,
         barcode: entry.barcode,
+        email: entry.email,
+        articleNumber: entry.articleNumber ?? null,
+        orderNumber: entry.orderNumber ?? null,
         sortOrder: index,
     }));
 
@@ -740,7 +764,7 @@ export class PrismaWarehouseDirectory implements IWarehouseDirectory {
         const [suppliers, written] = await Promise.all([
             prisma.supplier.findMany({
                 where: { tenantId, isActive: true, ...(query ? { companyName: { contains: query } } : {}) },
-                select: { id: true, companyName: true },
+                select: { id: true, companyName: true, email: true },
                 orderBy: { companyName: 'asc' },
                 take: limit,
             }),
@@ -756,7 +780,7 @@ export class PrismaWarehouseDirectory implements IWarehouseDirectory {
                 take: limit,
             }),
         ]);
-        const options: WarehouseSupplierOption[] = suppliers.map((row) => ({ id: row.id, name: row.companyName }));
+        const options: WarehouseSupplierOption[] = suppliers.map((row) => ({ id: row.id, name: row.companyName, email: row.email?.trim() || null }));
         for (const row of written) {
             const name = row.supplierName?.trim();
             if (!name || options.some((option) => sameCode(option.name, name))) continue;

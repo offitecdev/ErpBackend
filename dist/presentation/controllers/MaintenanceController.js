@@ -7,6 +7,9 @@ exports.MaintenanceController = void 0;
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
+const mailSignature_1 = require("../../infrastructure/services/mailSignature");
+const documentMailLayout_1 = require("../../infrastructure/services/documentMailLayout");
+const documentMailWords_1 = require("../../infrastructure/services/documentMailWords");
 const serviceTenantScope_1 = require("./serviceTenantScope");
 const publicToken_1 = require("../utils/publicToken");
 const AuthErrors_1 = require("../../application/errors/AuthErrors");
@@ -646,23 +649,36 @@ class MaintenanceController {
                 return res.status(400).json({ error: "Alici e-posta adresi zorunludur." });
             if (!fromEmail)
                 return res.status(400).json({ error: "Gonderici e-posta adresi zorunludur." });
-            const optionList = createdOptions.map((option) => `<li>${option.startTime.toLocaleString("tr-TR")} - ${option.endTime.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</li>`).join("");
-            const html = `
-                <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
-                    <p>${message}</p>
-                    <ul>${optionList}</ul>
-                    <p><a href="${bookingLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Randevu sec</a></p>
-                    <p style="font-size:12px;color:#64748b">${bookingLink}</p>
-                </div>
-            `;
+            /* DIE BELEGMAIL (29.09.2026): Karte mit Logo, «Bakım randevusu» + Vertrag,
+               die vorgeschlagenen Zeiten als Liste (Zeit der Schweiz), ein Knopf zur
+               Wahl — documentMailLayout.ts. Die Karte folgt `lang`, sonst Türkisch
+               wie der bisherige Standardtext. */
+            const mailLang = (0, documentMailLayout_1.documentMailLang)(req.body.lang ?? "tr");
+            const words = (0, documentMailWords_1.documentMailWords)(mailLang);
+            const signature = (0, mailSignature_1.buildSignatureParts)(settings);
+            const mail = (0, documentMailLayout_1.renderDocumentMail)({
+                lang: mailLang,
+                senderName: String(fromName),
+                senderEmail: fromEmail,
+                eyebrow: words.maintenance,
+                heading: String(task.contract?.contractCode || task.contract?.customer?.companyName || words.maintenance),
+                message,
+                groups: [{
+                        title: words.proposedDates,
+                        rows: createdOptions.map((option) => (0, documentMailWords_1.mailDateRange)(option.startTime, option.endTime, mailLang)),
+                    }],
+                action: { label: words.chooseTime, href: bookingLink },
+                signatureHtml: signature.html,
+            });
             const result = await smtp.send(settings || {}, {
                 fromEmail,
                 fromName,
                 to,
                 subject,
-                text: `${message}\n\n${bookingLink}`,
-                html,
+                text: `${mail.text}${signature.text}`,
+                html: mail.html,
                 replyTo: req.body.replyTo || settings?.replyTo || null,
+                inlineImages: [...mail.inlineImages, ...signature.inlineImages],
             }, { asEmployeeId: req.user?.id });
             await this.notify({
                 tenantId: task.contract.tenantId,
@@ -949,14 +965,29 @@ class MaintenanceController {
                     res.status(400).json({ error: "Gonderici e-posta adresi zorunludur." });
                     return;
                 }
+                // Belegkarte (29.09.2026) — «Bakım raporu» + Vertrag, Knopf zum Rapport.
+                const mailLang = (0, documentMailLayout_1.documentMailLang)(req.body.lang ?? "tr");
+                const words = (0, documentMailWords_1.documentMailWords)(mailLang);
+                const signature = (0, mailSignature_1.buildSignatureParts)(settings);
+                const mail = (0, documentMailLayout_1.renderDocumentMail)({
+                    lang: mailLang,
+                    senderName: String(fromName),
+                    senderEmail: fromEmail,
+                    eyebrow: words.maintenanceReport,
+                    heading: String(report.task?.contract?.contractCode || report.task?.contract?.customer?.companyName || words.maintenanceReport),
+                    message,
+                    action: { label: words.viewReport, href: reportLink },
+                    signatureHtml: signature.html,
+                });
                 await smtp.send(settings || {}, {
                     fromEmail,
                     fromName,
                     to,
                     subject,
-                    text: `${message}\n\n${reportLink}`,
-                    html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6"><p>${message}</p><p><a href="${reportLink}" style="display:inline-block;background:#1d4ed8;color:white;padding:10px 14px;border-radius:6px;text-decoration:none">Raporu goruntule</a></p><p style="font-size:12px;color:#64748b">${reportLink}</p></div>`,
+                    text: `${mail.text}${signature.text}`,
+                    html: mail.html,
                     replyTo: req.body.replyTo || settings?.replyTo || null,
+                    inlineImages: [...mail.inlineImages, ...signature.inlineImages],
                 }, { asEmployeeId: req.user?.id });
                 sent.push("mail");
             }

@@ -11,10 +11,12 @@ import {
     round3,
 } from '../../domain/services/productionBom';
 import {
-    STANDARD_ORDER_COLUMNS,
-    STANDARD_REQUEST_COLUMNS,
-    ensureStandardTemplate,
-    standardHiddenKeysJson,
+    PRODUCTION_ARTICLE_NO_KEY,
+    PRODUCTION_ORDER_NO_KEY,
+    PRODUCTION_GROUP_KEY,
+    PRODUCTION_UNIT_KEY,
+    productionColumnsJson,
+    productionHiddenKeysJson,
 } from '../../shared/standardOrderTemplate';
 /* Die Lieferantenbestellung hat EINE Rechenstelle — die Hilfen stehen in
    inventory.routes.ts und werden hier nur zur Laufzeit gerufen (wie in
@@ -36,16 +38,17 @@ import { productionModule } from '../../presentation/composition/productionModul
  *  fiyatı.»
  *
  * Eine BOM-Bestellung ist eine gewöhnliche Lieferantenbestellung
- * (ORDER_DRAFT, Standardvorlage, eigene BE-Nummer) mit drei Besonderheiten:
- *   · vorn eine Spalte «ERP-Code» (`stdErp`, eine eigene Angabe der Zeile) —
- *     so steht der Code in Tabelle UND PDF, ohne das PDF anzufassen;
+ * (ORDER_DRAFT, Standardvorlage, eigene BE-Nummer) mit zwei Besonderheiten:
  *   · jede Position trägt ihre BOM-Zeile (`bomLineId`) und ihr Gerät;
  *   · die Bestellung ist dem Produktionsprojekt und Gerät zugeordnet
  *     (uretim_siparis_atamalari) — sie erscheint dort wie jede andere.
+ *
+ * KEIN ERP-CODE AUF DEM BELEG (29.09.2026, Samet: «sipariş PDF'lerinde ERP
+ * kodları gözükmesin, satırlarda da gözükmesin — sipariş, hani aktarım
+ * yapıyoruz»): die frühere Spalte «ERP-Code» vorn (`stdErp`) wird nicht mehr
+ * geschrieben. Der Code reist nur noch im Feld `code` der Position mit — das
+ * zeigt weder die Tabelle noch ein PDF; der Wareneingang braucht ihn.
  */
-
-export const ERP_COLUMN_KEY = 'stdErp';
-const ERP_COLUMN_NAME = 'ERP-Code';
 /* Die Preisanfrage trägt statt des ERP-Codes das MODELL des Produkts (Samet,
    27.09.2026: «fiyat talebinde sadece ürün adı, miktarı, modeli ile aktarım
    yapılsın») — eine eigene Spalte gleich nach dem Namen. Der Name steht in
@@ -64,19 +67,15 @@ export interface BomOrderDraftLine {
     modelNumber: string | null;
     unit: BomUnit;
     quantity: number;
+    /** Materialgruppe und «Ürün kodu» der Karte — Spalten der Produktionsvorlage (30.09.2026). */
+    materialGroup?: string | null;
+    /** Artikel-/Bestellnummer DIESES Lieferanten von der Depo-Karte (01.10.2026). */
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
+    /** Aus dem Vergleich der Angebote: Einzelpreis (vor Rabatt) und Rabatt in % (30.09.2026). */
+    unitPrice?: number | null;
+    discount?: number | null;
 }
-
-/** Bestellung: ERP-Code vorn, dann die Standardvorlage. */
-const orderColumnsJson = (): string => JSON.stringify([
-    { key: ERP_COLUMN_KEY, name: ERP_COLUMN_NAME, label: null, type: 'text' },
-    ...STANDARD_ORDER_COLUMNS.map(({ key, name, label, type }) => ({ key, name, label, type })),
-]);
-
-/** Preisanfrage: Produkt · Modell · Menge — kein ERP-Code, keine Preise. */
-const requestColumnsJson = (): string => JSON.stringify(STANDARD_REQUEST_COLUMNS.flatMap(({ key, name, label, type }) => [
-    { key, name, label, type },
-    ...(label === 'productName' ? [{ key: MODEL_COLUMN_KEY, name: MODEL_COLUMN_NAME, label: null, type: 'text' }] : []),
-]));
 
 /** Eine Zeile der Preisanfrage — ohne Hersteller, ohne ERP-Spalte. */
 export interface BomRequestDraftLine {
@@ -86,33 +85,67 @@ export interface BomRequestDraftLine {
     modelNumber: string | null;
     unit: BomUnit;
     quantity: number;
+    materialGroup?: string | null;
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
 }
 
-/** Name + Hersteller und Modellnummer — das braucht der Lieferant, um zu verstehen, was gemeint ist. */
-const lineName = (line: BomOrderDraftLine): string => {
-    const maker = [line.brand, line.modelNumber].filter((part) => part && part.trim()).join(' ');
-    return (maker && !line.name.includes(line.modelNumber ?? '\u0000') ? `${line.name} · ${maker}` : line.name).slice(0, 500);
+/**
+ * Die eigenen Angaben der Produktionsvorlage an einer Position: Gruppe,
+ * Produkttyp- und Bestellnummer DES Lieferanten (von seiner Zeile auf der
+ * Depo-Karte, 01.10.2026; leer → die Spalte fällt im PDF weg) und die Einheit
+ * als Wort («Adet» — das PDF schreibt sie in seiner Sprache).
+ */
+const productionExtras = (line: {
+    materialGroup?: string | null;
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
+    unit: BomUnit;
+}) => [
+    { key: PRODUCTION_GROUP_KEY, name: 'Materialgruppe', value: (line.materialGroup ?? '').trim(), width: 150 },
+    { key: PRODUCTION_ARTICLE_NO_KEY, name: 'Produkttypnummer', value: (line.supplierArticleNumber ?? '').trim(), width: 140 },
+    { key: PRODUCTION_ORDER_NO_KEY, name: 'Bestellnummer', value: (line.supplierOrderNumber ?? '').trim(), width: 140 },
+    { key: PRODUCTION_UNIT_KEY, name: 'Einheit', value: UNIT_LABELS[line.unit] ?? 'Adet', width: 90 },
+];
+
+/**
+ * Der Name der Position. Seit dem 30.09.2026 schlicht der Produktname — der
+ * Hersteller-/Modellcode steht nicht mehr auf dem Beleg (Samet: «model
+ * numarasını kaldırın … basılmayacak»); den Code für den Lieferanten trägt
+ * die Spalte «Ürün kodu».
+ */
+const lineName = (line: { name: string }): string => line.name.slice(0, 500);
+
+const priceOf = (value: unknown): number => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? Math.round(number * 10_000) / 10_000 : 0;
 };
 
-const itemOf = (line: BomOrderDraftLine, productionItemId: string) => ({
-    itemType: 'PRODUCT',
-    articleId: null,
-    code: line.erpCode,
-    name: lineName(line),
-    quantity: round3(line.quantity),
-    unit: UNIT_LABELS[line.unit] ?? 'Adet',
-    grossPrice: 0,
-    netPrice: 0,
-    discount: 0,
-    discount2: 0,
-    vatRate: 0,
-    calcMode: 'DIRECT',
-    directCopy: true,
-    lineTotal: 0,
-    extras: [{ key: ERP_COLUMN_KEY, name: ERP_COLUMN_NAME, value: line.erpCode ?? '', width: 130 }],
-    bomLineId: line.bomLineId,
-    productionItemId,
-});
+const itemOf = (line: BomOrderDraftLine, productionItemId: string) => {
+    const quantity = round3(line.quantity);
+    const gross = priceOf(line.unitPrice);
+    const discount = Math.min(100, Math.max(0, Number(line.discount) || 0));
+    const net = Math.round(gross * (1 - discount / 100) * 10_000) / 10_000;
+    return {
+        itemType: 'PRODUCT',
+        articleId: null,
+        code: line.erpCode,
+        name: lineName(line),
+        quantity,
+        unit: UNIT_LABELS[line.unit] ?? 'Adet',
+        grossPrice: gross,
+        netPrice: net,
+        discount,
+        discount2: 0,
+        vatRate: 0,
+        calcMode: 'DIRECT',
+        directCopy: true,
+        lineTotal: Math.round(quantity * net * 100) / 100,
+        extras: productionExtras(line),
+        bomLineId: line.bomLineId,
+        productionItemId,
+    };
+};
 
 const employeeName = async (userId: string): Promise<string | null> => {
     const employee = await prisma.employee.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } }).catch(() => null);
@@ -162,9 +195,14 @@ export class BomPurchaseOrderWriter {
         productionProjectId: string;
         productionItemId: string;
         lines: BomOrderDraftLine[];
+        /** Aus dem Angebot (Vergleich, 30.09.2026): Währung, Angebotsnummer, «z. Hd.». */
+        currency?: string | null;
+        quoteNumber?: string | null;
+        recipientName?: string | null;
+        /** Die MwSt, die das Angebot druckt (01.10.2026) — steht dann unten als eigene Zeile. */
+        vatRate?: number | null;
     }): Promise<{ id: string; referenceNumber: string; supplierName: string }> {
         const { tenantId, userId } = input;
-        await ensureStandardTemplate(tenantId, 'ORDER');
         const supplier = await resolvePurchaseOrderSupplier(tenantId, {
             supplierId: input.supplier.supplierId,
             supplierName: input.supplier.supplierName,
@@ -181,9 +219,14 @@ export class BomPurchaseOrderWriter {
         const normalized = normalizePurchaseOrderItems(input.lines.map((line) => itemOf(line, input.productionItemId)));
         // KDV: wie jede neue Bestellung — Angabe des Lieferanten, sonst die der letzten Bestellung.
         const vatLiable = record?.vatLiable;
-        const vat = typeof vatLiable === 'boolean'
-            ? { vatMode: 'TOTAL', orderVatRate: vatLiable ? Number(record?.vatRate) || 0 : 0 }
-            : { vatMode: last?.vatMode === 'TOTAL' ? 'TOTAL' : 'LINE', orderVatRate: Number(last?.orderVatRate) || 0 };
+        const offerVat = typeof input.vatRate === 'number' && Number.isFinite(input.vatRate) ? input.vatRate : null;
+        /* Druckt das Angebot eine MwSt, gilt SIE — als Gesamt-MwSt ganz unten
+           («KDV eğer PDF'de yakalarsa en sona», Samet 01.10.2026), nie je Zeile. */
+        const vat = offerVat !== null
+            ? { vatMode: 'TOTAL', orderVatRate: offerVat }
+            : typeof vatLiable === 'boolean'
+                ? { vatMode: 'TOTAL', orderVatRate: vatLiable ? Number(record?.vatRate) || 0 : 0 }
+                : { vatMode: last?.vatMode === 'TOTAL' ? 'TOTAL' : 'LINE', orderVatRate: Number(last?.orderVatRate) || 0 };
         const vatCountry = typeof vatLiable === 'boolean'
             ? (vatLiable ? record?.vatCountry ?? null : last?.orderVatCountry ?? null)
             : last?.orderVatCountry ?? null;
@@ -201,8 +244,8 @@ export class BomPurchaseOrderWriter {
                         status: 'ORDER_DRAFT',
                         orderedByName: orderedBy,
                         projectName: input.projectLabel.slice(0, 190) || null,
-                        tableColumns: orderColumnsJson(),
-                        hiddenColumnKeys: standardHiddenKeysJson('ORDER'),
+                        tableColumns: productionColumnsJson('ORDER'),
+                        hiddenColumnKeys: productionHiddenKeysJson('ORDER'),
                         vatMode: vat.vatMode,
                         orderVatRate: vat.orderVatRate,
                         orderVatCountry: vatCountry,
@@ -212,7 +255,9 @@ export class BomPurchaseOrderWriter {
                         supplierAddress: supplier.supplierAddress,
                         items: JSON.stringify(normalized.items),
                         additionalFees: '[]',
-                        currency: last?.currency || 'CHF',
+                        currency: input.currency || last?.currency || 'CHF',
+                        quoteNumber: input.quoteNumber?.trim().slice(0, 120) || null,
+                        recipientName: input.recipientName?.trim().slice(0, 120) || null,
                         totalNet: normalized.totalNet,
                         totalGross: normalized.totalGross,
                         totalVat: purchaseOrderTotalVat(vat, normalized.totalNet, 0, normalized.totalVat, normalized.items.map((item: { lineTotal: number }) => item.lineTotal)),
@@ -334,7 +379,6 @@ export class BomPurchaseOrderWriter {
         lines: BomRequestDraftLine[];
     }): Promise<{ id: string; referenceNumber: string; supplierName: string }> {
         const { tenantId, userId } = input;
-        await ensureStandardTemplate(tenantId, 'PRICE_REQUEST');
         const supplier = await resolvePurchaseOrderSupplier(tenantId, {
             supplierId: input.supplier.supplierId,
             supplierName: input.supplier.supplierName,
@@ -348,7 +392,7 @@ export class BomPurchaseOrderWriter {
             articleId: null,
             // Der ERP-Code reist still mit (Suche, Zuordnung) — gedruckt wird er nie.
             code: line.erpCode,
-            name: line.name.slice(0, 500),
+            name: lineName(line),
             quantity: round3(line.quantity),
             unit: UNIT_LABELS[line.unit] ?? 'Adet',
             grossPrice: 0,
@@ -359,9 +403,7 @@ export class BomPurchaseOrderWriter {
             calcMode: 'DIRECT',
             directCopy: true,
             lineTotal: 0,
-            extras: line.modelNumber?.trim()
-                ? [{ key: MODEL_COLUMN_KEY, name: MODEL_COLUMN_NAME, value: line.modelNumber.trim(), width: 180 }]
-                : [],
+            extras: productionExtras(line),
             bomLineId: line.bomLineId,
             productionItemId: input.productionItemId,
         })));
@@ -378,8 +420,8 @@ export class BomPurchaseOrderWriter {
                         status: 'DRAFT',
                         orderedByName: orderedBy,
                         projectName: input.projectLabel.slice(0, 190) || null,
-                        tableColumns: requestColumnsJson(),
-                        hiddenColumnKeys: standardHiddenKeysJson('PRICE_REQUEST'),
+                        tableColumns: productionColumnsJson('PRICE_REQUEST'),
+                        hiddenColumnKeys: productionHiddenKeysJson('PRICE_REQUEST'),
                         supplierId: supplier.supplierId,
                         supplierName: supplier.supplierName,
                         supplierEmail: supplier.supplierEmail,

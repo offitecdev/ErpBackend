@@ -207,6 +207,11 @@ model ProductionBomPurchase {
   /// Wie oft eine BOM-Revision die Bestellung beim Lieferanten geändert hat
   /// (0 = die Bestellung, wie sie zuerst hinausging).
   orderRevision         Int       @default(0)
+  /// Sprache des Belegs (de | tr | en) — PDF und Mail (30.09.2026: «pdf de hangi
+  /// dildeyse sistem o dile ayarlasın kendini»); aus dem Angebot gelesen.
+  documentLanguage      String?   @db.VarChar(2)
+  /// Ansprechpartner des Lieferanten aus seinem Angebot: { name, email }.
+  supplierContact       Json?
   createdById           String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt

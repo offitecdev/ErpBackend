@@ -19,12 +19,20 @@ export const INVOICE_SORTS: InvoiceSort[] = ["activity", "invoiceDate", "dueDate
 
 /** Eine Seite der Liste: die Zeilen, wie viele es insgesamt sind, und die Zähler der Reiter. */
 export interface InvoicePage {
-    items: InvoiceListItem[];
+    items: InvoiceListSummary[];
     total: number;
     page: number;
     pageSize: number;
     counts: Record<"ALL" | InvoiceStateKey, number>;
 }
+
+/* Optionale Felder dürfen hier auch ausdrücklich `undefined` tragen
+   (exactOptionalPropertyTypes): die Liste reicht sie weiter, wie `mapRows` sie liefert. */
+export type InvoiceListSummary = {
+    [K in 'id' | 'invoiceNumber' | 'kind' | 'category' | 'status' | 'invoiceDate' | 'dueDate'
+    | 'createdAt' | 'activityAt' | 'amount' | 'billedPercent' | 'paidAmount' | 'openAmount'
+    | 'recipientName' | 'customer' | 'project' | 'salesOrder' | 'reversesInvoice']: InvoiceListItem[K];
+};
 
 export interface IInvoiceFilter {
     tenantId: string;
@@ -77,6 +85,14 @@ export interface InvoiceListItem extends Invoice {
         paymentStages?: string | null;
     } | null;
     issuedBy?: { id: string; firstName: string; lastName: string } | null;
+    /** Die Rechnung, die dieser Beleg (Gutschrift/Storno) umkehrt — aus demselben SELECT. */
+    reversesInvoice?: {
+        id: string;
+        invoiceNumber: string;
+        invoiceDate: Date | string | null;
+        kind: string;
+        amount: number;
+    } | null;
     /** Letzter Vorgang am Beleg: Änderung oder Zahlungseingang (Sortierung der Liste). */
     activityAt?: Date | string | null;
     /** Zahlungsstand (Schritt 7). */

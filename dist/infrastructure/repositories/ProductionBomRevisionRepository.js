@@ -160,15 +160,16 @@ const toPurchaseRevisionLight = (row) => ({
 });
 const isUniqueViolation = (error) => error?.code === 'P2002';
 class PrismaBomRevisionRepository {
-    async listForBoms(tenantId, bomIds) {
+    async listForBoms(tenantId, bomIds, options = {}) {
         const unique = [...new Set(bomIds.filter(Boolean))];
         if (!unique.length)
             return [];
         const rows = await prisma_client_1.default.productionBomRevision.findMany({
-            where: { tenantId, bomId: { in: unique } },
+            where: { tenantId, bomId: { in: unique }, ...(options.draftOnly ? { status: 'DRAFT' } : {}) },
+            ...(options.omitLines ? { omit: { lines: true } } : {}),
             orderBy: [{ bomId: 'asc' }, { revision: 'asc' }],
         });
-        return rows.map(toRevision);
+        return rows.map((row) => toRevision({ ...row, lines: 'lines' in row ? row.lines : null }));
     }
     async listApproved(tenantId, limit) {
         const rows = await prisma_client_1.default.productionBomRevision.findMany({

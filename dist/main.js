@@ -141,6 +141,7 @@ const tasksReminderEngine_1 = require("./infrastructure/services/tasks/tasksRemi
 const MaintenanceReminderService_1 = require("./infrastructure/services/MaintenanceReminderService");
 const ReminderEngine_1 = require("./infrastructure/services/ReminderEngine");
 const ImapCaptureService_1 = require("./infrastructure/services/ImapCaptureService");
+const procurementAutomationModule_1 = require("./presentation/composition/procurementAutomationModule");
 const RefreshSessionService_1 = require("./infrastructure/services/RefreshSessionService");
 const caldavCalendarService_1 = require("./infrastructure/services/caldavCalendarService");
 const ErrorHandlerMiddleware_1 = require("./presentation/middlewares/ErrorHandlerMiddleware");
@@ -374,6 +375,8 @@ const server = app.listen(PORT, () => {
     // je Person und Termin genau einmal (TaskNotifyDispatch).
     (0, tasksReminderEngine_1.startTasksReminderEngine)();
     (0, ImapCaptureService_1.startImapCaptureService)();
+    // Antworten der Lieferanten im Postfach der Produktion (rfq@…) — 30.09.2026.
+    procurementAutomationModule_1.procurementAutomationModule.inbox.start();
     // Abgelaufene Anmeldezeilen abräumen (entwertete bleiben bis zum Ablauf
     // stehen — nur so ist ein wiedereingespieltes Token erkennbar).
     (0, RefreshSessionService_1.startRefreshSessionCleanup)();

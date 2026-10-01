@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.bomDto = exports.purchaseDto = exports.templateDto = exports.productDto = exports.templateSummaryDto = void 0;
+exports.revisionHistory = exports.bomDto = exports.purchaseDto = exports.bomLinesDto = exports.bomSummaryDto = exports.bomActivity = exports.templateDto = exports.productDto = exports.templateSummaryDto = void 0;
 const productionBom_1 = require("../../../../domain/services/productionBom");
 /**
  * ── WAS DIE OBERFLÄCHE SIEHT (27.09.2026) ────────────────────────────────────
@@ -25,9 +25,13 @@ const productDto = (product, free) => ({
     name: product.name,
     brand: product.brand,
     modelNumber: product.modelNumber,
+    productCode: product.productCode ?? null,
+    unit: product.unit ?? null,
+    isDraft: Boolean(product.isDraft),
+    materialGroupName: product.materialGroupName ?? null,
     description: product.description,
     supplierName: product.suppliers[0]?.name ?? null,
-    suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name })),
+    suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, hasEmail: Boolean(entry.email) })),
     quantity: product.quantity,
     free: (0, productionBom_1.round3)(free ?? product.quantity),
     serialRequired: product.serialRequired,
@@ -62,6 +66,41 @@ const templateDto = (template, products, free, usedBy) => ({
     }),
 });
 exports.templateDto = templateDto;
+const bomActivity = (bom) => {
+    if (bom.activity)
+        return bom.activity;
+    const priceRequests = {};
+    for (const request of bom.procurement) {
+        if (request.kind !== 'PRICE' || request.status === 'CANCELLED')
+            continue;
+        for (const line of request.lines)
+            priceRequests[line.bomLineId] ??= request.requestNumber;
+    }
+    const received = {};
+    for (const entry of bom.goodsIn) {
+        if (entry.lineId)
+            received[entry.lineId] = (received[entry.lineId] ?? 0) + entry.quantity;
+    }
+    const orders = bom.purchases.filter((order) => order.kind === 'ORDER');
+    const needing = bom.status === 'DRAFT' && !bom.consumedAt ? bom.lines : bom.lines.filter((line) => line.coverage.missing > 1e-9);
+    return {
+        requestsCount: bom.procurement.length, goodsCount: bom.goodsIn.length, priceRequests, received,
+        orderCount: orders.length, confirmedOrders: orders.filter((order) => order.checks.confirmed).length,
+        needing: needing.length, requestedNeeding: needing.filter((line) => Boolean(priceRequests[line.id])).length,
+    };
+};
+exports.bomActivity = bomActivity;
+const bomSummaryDto = (bom) => ({
+    id: bom.id, bomNumber: bom.bomNumber, kind: bom.kind, parentBomId: bom.parentBomId,
+    templateName: bom.templateName, area: bom.area, status: bom.status, consumedAt: bom.consumedAt,
+    revision: bom.revision, updatedAt: bom.updatedAt, completion: bom.completion, counts: bom.counts,
+    activity: { ...(0, exports.bomActivity)(bom), priceRequests: {}, received: {} },
+});
+exports.bomSummaryDto = bomSummaryDto;
+const bomLinesDto = (bom) => ({
+    ...bom, activity: (0, exports.bomActivity)(bom), purchases: [], revisions: [], procurement: [], goodsIn: [],
+});
+exports.bomLinesDto = bomLinesDto;
 const itemNumber = (value) => {
     const parsed = Number(value ?? 0);
     return Number.isFinite(parsed) ? parsed : 0;
@@ -239,6 +278,12 @@ const bomDto = (bom, context) => {
                 createdAt: draft.createdAt.toISOString(),
                 createdByName: nameOf(draft.createdById),
                 updatedAt: draft.updatedAt.toISOString(),
+                approval: (() => {
+                    const entry = context.approvals?.get(draft.id);
+                    return entry && entry.action !== 'APPROVED'
+                        ? { state: entry.action, at: entry.at.toISOString(), byName: entry.actorName, note: entry.note }
+                        : null;
+                })(),
                 lines: draft.lines.map((line) => {
                     const product = context.products.get(line.productId) ?? null;
                     return {
@@ -256,7 +301,7 @@ const bomDto = (bom, context) => {
                 }),
             }
             : null,
-        revisions: revisionHistory(bom, revisions, nameOf),
+        revisions: (0, exports.revisionHistory)(bom, revisions, nameOf),
         procurement: context.procurement ?? [],
         goodsIn: context.goodsIn ?? [],
     };
@@ -291,4 +336,5 @@ const revisionHistory = (bom, revisions, nameOf) => {
     }
     return history;
 };
+exports.revisionHistory = revisionHistory;
 //# sourceMappingURL=bomReadModel.js.map

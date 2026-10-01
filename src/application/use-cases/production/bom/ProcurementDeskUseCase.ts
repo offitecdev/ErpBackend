@@ -2,17 +2,21 @@ import type { BomProcurementRequest } from '../../../../domain/entities/Producti
 import type {
     BomPurchaseOrderRow,
     IBomGoodsInRepository,
+    IBomRevisionRepository,
     IBomProcurementRepository,
     IBomProductionDirectory,
     IBomPurchaseRepository,
     IBomStockReader,
 } from '../../../../domain/repositories/IProductionBomRepository';
 import type { IProcurementJournal } from '../../../../domain/repositories/IProcurementJournal';
+import type { ISupplierEmailBook } from '../../../../domain/repositories/ISupplierEmailBook';
+import { cardEmailOf, cleanSupplierEmail } from '../../../../domain/services/supplierEmails';
 import { bomError, CONFIRMED_ORDER_STATUSES, round3 } from '../../../../domain/services/productionBom';
 import {
     docStateOf,
     newestFirst,
     receiptEvents,
+    revisionEvents,
     stageOf,
     type ProcurementDocFacts,
     type ProcurementDocState,
@@ -39,6 +43,12 @@ export interface ProcurementFeedRow {
     id: string;
     requestNumber: string;
     kind: BomProcurementRequest['kind'];
+    /**
+     * Ein Preistalep, aus dem schon bestellt wurde (30.09.2026: «fiyat
+     * talebinden satın almaya dönüşünce direkt labelı o oluyor») — die Liste
+     * zeigt ihn als Bestellung und öffnet die Bestellung.
+     */
+    ordered: boolean;
     status: BomProcurementRequest['status'];
     project: { number: string; name: string } | null;
     device: { name: string; position: string | null } | null;
@@ -54,12 +64,27 @@ export interface ProcurementDocView {
     code: string;
     kind: 'ORDER' | 'REQUEST';
     state: ProcurementDocState;
+    supplierId: string | null;
     supplierName: string;
     currency: string;
     totalNet: number;
     lineCount: number;
     quoteNumber: string | null;
     hasQuoteFile: boolean;
+    /** Das Angebot des Lieferanten (29.09.2026: nur ein PDF zählt für den Vergleich). */
+    quoteFile: { name: string; type: string | null } | null;
+    /** Wann der Beleg zuletzt hinausging (30.09.2026: die Automatik sendet selbst). */
+    sentAt: string | null;
+    /** Die Preisanfrage, aus deren Angebot diese Bestellung entstand. */
+    sourcePurchaseOrderId: string | null;
+    /** Wie oft eine BOM-Revision die Bestellung geändert hat — «Revizyon 8 onayla». */
+    orderRevision: number;
+    /**
+     * An wen der Beleg geht (30.09.2026): seine Adresse, sonst die der Karten
+     * der Zeilen, sonst die der Lieferantenliste — null = keine bekannt (die
+     * Seite fragt danach).
+     */
+    supplierEmail: string | null;
 }
 
 const fold = (value: unknown): string => String(value ?? '').toLocaleLowerCase('tr-TR');
@@ -70,6 +95,10 @@ const eventDto = (event: ProcurementEvent): ProcurementEventDto => ({
     data: event.data,
 });
 
+/** Wann die jüngste Revision einer Bestellung entstand. */
+const latestRevisionAt = (rows: Array<{ createdAt: Date }> | undefined): Date | null =>
+    (rows ?? []).reduce<Date | null>((latest, row) => (!latest || row.createdAt > latest ? row.createdAt : latest), null);
+
 /** Ein Beleg, wie der Stand eines Talep ihn braucht. */
 const factsOf = (input: {
     purchaseOrderId: string;
@@ -77,6 +106,7 @@ const factsOf = (input: {
     status: string;
     emailSentAt: Date | null;
     orderRevision: number;
+    revisedAt?: Date | null;
     hasQuoteFile: boolean;
     quoteNumber: string | null;
     items: Array<Record<string, unknown>>;
@@ -113,6 +143,10 @@ export class ProcurementDeskUseCase {
         private directory: IBomProductionDirectory,
         private stock: IBomStockReader,
         private writer: BomPurchaseOrderWriter,
+        /** Die Archivzeilen revidierter Bestellungen — sie erscheinen als «revize edildi» (29.09.2026). */
+        private revisions: IBomRevisionRepository | null = null,
+        /** Die Lieferantenliste als Adressbuch — an wen ein Beleg ginge (30.09.2026). */
+        private emails: ISupplierEmailBook | null = null,
     ) {}
 
     /* ── Die Liste ─────────────────────────────────────────────────────── */
@@ -129,14 +163,18 @@ export class ProcurementDeskUseCase {
         const all = await this.requests.list(tenantId);
         if (!all.length) return { items: [], total: 0, page: 1, pageSize: PAGE_SIZE, canProcure };
         const bomIds = [...new Set(all.map((request) => request.bomId))];
-        const [purchases, receipts, latest, boms, projects, devices] = await Promise.all([
+        const [purchases, receipts, latest, boms, projects, devices, revised] = await Promise.all([
             this.devices.purchasesOf(tenantId, bomIds),
             this.goodsIn.forBoms(tenantId, bomIds),
             this.journal.latest(tenantId, all.map((request) => request.id)),
             this.devices.bomsByIds(tenantId, bomIds),
             this.directory.projects(tenantId, all.map((request) => request.productionProjectId)),
             this.directory.devices(tenantId, all.map((request) => request.productionItemId)),
+            this.revisions ? this.revisions.purchaseRevisionsForBoms(tenantId, bomIds).catch(() => []) : Promise.resolve([]),
         ]);
+        const orderFacts = new Map(purchases.map(({ order }) => [order.id, { code: order.referenceNumber, supplier: order.supplierName }]));
+        const revisedByOrder = new Map<string, typeof revised>();
+        for (const row of revised) revisedByOrder.set(row.purchaseOrderId, [...(revisedByOrder.get(row.purchaseOrderId) ?? []), row]);
         const docById = new Map(purchases.map((entry) => [entry.order.id, entry]));
         const bomNumber = new Map(boms.map((bom) => [bom.id, bom.bomNumber]));
         const receiptsByOrder = new Map<string, typeof receipts>();
@@ -146,8 +184,14 @@ export class ProcurementDeskUseCase {
         }
 
         const needle = fold(query.search).trim().slice(0, 80);
+        // «Fiyat talebi hangisi, satın alma hangisi» (29.09.2026): die Liste lässt sich nach Art filtern.
+        const kind = query.kind === 'PRICE' || query.kind === 'ORDER' ? query.kind : null;
         const rows = all.flatMap((request) => {
             const mine = request.purchaseOrderIds.flatMap((id) => docById.get(id) ?? []);
+            // «Siparişlere girdiğimizde … siparişler çıkması lazım»: ein Preistalep mit Bestellungen zählt als Bestellung.
+            const ordered = mine.some(({ link }) => link.kind === 'ORDER');
+            const shownKind = request.kind === 'ORDER' || ordered ? 'ORDER' : 'PRICE';
+            if (kind && shownKind !== kind) return [];
             const project = projects.get(request.productionProjectId) ?? null;
             const device = devices.get(request.productionItemId) ?? null;
             if (needle) {
@@ -163,7 +207,10 @@ export class ProcurementDeskUseCase {
                 if (!haystack.some((value) => value.includes(needle))) return [];
             }
             // Der letzte Handgriff: Verlauf, Wareneingang (auch vom Depo) oder der Talep selbst.
-            const derived = request.purchaseOrderIds.flatMap((id) => receiptEvents(receiptsByOrder.get(id) ?? []));
+            const derived = request.purchaseOrderIds.flatMap((id) => [
+                ...receiptEvents(receiptsByOrder.get(id) ?? []),
+                ...revisionEvents(revisedByOrder.get(id) ?? [], orderFacts),
+            ]);
             const created: ProcurementEvent = {
                 action: 'REQUEST_CREATED',
                 at: request.createdAt,
@@ -173,7 +220,7 @@ export class ProcurementDeskUseCase {
             };
             const stored = latest.get(request.id);
             const last = newestFirst([...(stored ? [stored] : []), ...derived, created])[0]!;
-            return [{ request, mine, project, device, last }];
+            return [{ request, mine, project, device, last, ordered }];
         });
         rows.sort((a, b) => b.last.at.getTime() - a.last.at.getTime());
 
@@ -188,13 +235,14 @@ export class ProcurementDeskUseCase {
             this.directory.deliveryDates(tenantId, shown.map((row) => row.request.productionProjectId)),
         ]);
 
-        const items = shown.map(({ request, mine, project, device, last }): ProcurementFeedRow => {
+        const items = shown.map(({ request, mine, project, device, last, ordered }): ProcurementFeedRow => {
             const facts = mine.map(({ link, order }) => factsOf({
                 purchaseOrderId: order.id,
                 kind: link.kind,
                 status: order.status,
                 emailSentAt: order.emailSentAt,
                 orderRevision: link.orderRevision,
+                revisedAt: latestRevisionAt(revisedByOrder.get(order.id)),
                 hasQuoteFile: Boolean(link.quoteFileRef),
                 quoteNumber: order.quoteNumber,
                 items: order.items,
@@ -205,6 +253,7 @@ export class ProcurementDeskUseCase {
                 id: request.id,
                 requestNumber: request.requestNumber,
                 kind: request.kind,
+                ordered,
                 status: request.status,
                 project: project ? { number: project.projectNumber, name: project.projectName } : null,
                 device: device ? { name: device.name, position: device.positionNumber } : null,
@@ -237,6 +286,10 @@ export class ProcurementDeskUseCase {
     }> {
         const base = await this.procurement.get(tenantId, actor, requestId);
         const purchaseById = new Map(base.bom.purchases.map((purchase) => [purchase.purchaseOrderId, purchase]));
+        const revised = base.bom.purchases.some((purchase) => purchase.orderRevision > 0) && this.revisions
+            ? await this.revisions.purchaseRevisionsForBoms(tenantId, [base.bom.id]).catch(() => [])
+            : [];
+        const recipients = base.canProcure ? await this.recipientsOf(tenantId, requestId, base.request.documents) : new Map<string, string | null>();
         const docs = base.request.documents.map((doc): { view: ProcurementDocView; facts: ProcurementDocFacts } => {
             const purchase = purchaseById.get(doc.purchaseOrderId);
             const items = (purchase?.lines ?? []).map((line) => ({
@@ -252,6 +305,7 @@ export class ProcurementDeskUseCase {
                 status: doc.status,
                 emailSentAt: purchase?.emailSentAt ? new Date(purchase.emailSentAt) : null,
                 orderRevision: purchase?.orderRevision ?? 0,
+                revisedAt: latestRevisionAt(revised.filter((row) => row.purchaseOrderId === doc.purchaseOrderId)),
                 hasQuoteFile: Boolean(purchase?.quoteFile),
                 quoteNumber: purchase?.quoteNumber ?? null,
                 items,
@@ -263,12 +317,18 @@ export class ProcurementDeskUseCase {
                     code: doc.referenceNumber,
                     kind: doc.kind,
                     state: facts.state,
+                    supplierId: doc.supplierId,
                     supplierName: doc.supplierName,
                     currency: doc.currency,
                     totalNet: doc.totalNet,
                     lineCount: purchase?.lineCount ?? items.length,
                     quoteNumber: purchase?.quoteNumber ?? null,
                     hasQuoteFile: Boolean(purchase?.quoteFile),
+                    quoteFile: purchase?.quoteFile ? { name: purchase.quoteFile.name, type: purchase.quoteFile.type } : null,
+                    sentAt: purchase?.emailSentAt ?? null,
+                    sourcePurchaseOrderId: purchase?.sourcePurchaseOrderId ?? null,
+                    orderRevision: purchase?.orderRevision ?? 0,
+                    supplierEmail: recipients.get(doc.purchaseOrderId) ?? null,
                 },
             };
         });
@@ -293,6 +353,39 @@ export class ProcurementDeskUseCase {
             docs: docs.map((doc) => doc.view),
             history: newestFirst([...stored, ...receipts, created]).map(eventDto),
         };
+    }
+
+    /**
+     * An wen jeder Beleg des Talep ginge — dieselbe Reihenfolge wie beim Senden
+     * (ProcurementDispatchUseCase): die Adresse des Belegs, die der Karten der
+     * Zeilen (Preisanfrage), die der Lieferantenliste.
+     */
+    private async recipientsOf(
+        tenantId: string,
+        requestId: string,
+        documents: Array<{ purchaseOrderId: string; kind: 'ORDER' | 'REQUEST'; supplierId: string | null; supplierName: string }>,
+    ): Promise<Map<string, string | null>> {
+        const result = new Map<string, string | null>();
+        if (!documents.length) return result;
+        try {
+            const [rows, request] = await Promise.all([
+                this.purchases.orders(tenantId, documents.map((doc) => doc.purchaseOrderId)),
+                this.requests.get(tenantId, requestId),
+            ]);
+            const productIds = request?.lines.map((line) => line.productId) ?? [];
+            const products = productIds.length ? await this.stock.products(tenantId, productIds) : new Map();
+            for (const doc of documents) {
+                const row = rows.find((entry) => entry.id === doc.purchaseOrderId);
+                const supplier = { supplierId: row?.supplierId ?? doc.supplierId, supplierName: row?.supplierName ?? doc.supplierName };
+                let email = cleanSupplierEmail(row?.supplierEmail);
+                if (!email && doc.kind === 'REQUEST') email = cardEmailOf(supplier, productIds, products);
+                if (!email && this.emails) email = await this.emails.emailOf(tenantId, { supplierId: supplier.supplierId, name: supplier.supplierName });
+                result.set(doc.purchaseOrderId, email);
+            }
+        } catch (error) {
+            console.warn('[satın alma] Empfänger nicht gelesen:', requestId, (error as Error)?.message);
+        }
+        return result;
     }
 
     /* ── Handgriffe ────────────────────────────────────────────────────── */

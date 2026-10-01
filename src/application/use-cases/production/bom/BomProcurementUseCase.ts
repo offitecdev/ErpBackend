@@ -17,15 +17,16 @@ import type { IProcurementJournal } from '../../../../domain/repositories/IProcu
 import { bomError, CONFIRMED_ORDER_STATUSES, round3 } from '../../../../domain/services/productionBom';
 import type { ProcurementEventAction } from '../../../../domain/services/procurementFlow';
 import {
+    priceRequestedLineIds,
     procurementKindFrom,
     procurementLinesFrom,
-    remainingPriceRequestQuantities,
     procurementProgress,
     procurementStatusAfter,
     type ProcurementDocFact,
     type ProcurementProgress,
 } from '../../../../domain/services/productionBomProcurement';
 import type { BomReservationService } from './BomReservationService';
+import type { BomActivityDto } from './bomReadModel';
 import type { BomActor } from './BomTemplatesUseCase';
 import type { DeviceBomsUseCase } from './DeviceBomsUseCase';
 import type { BomDto } from './bomReadModel';
@@ -40,6 +41,7 @@ export interface ProcurementDocumentDto {
     /** REQUEST = Preisanfrage, ORDER = Bestellung. */
     kind: 'ORDER' | 'REQUEST';
     status: string;
+    supplierId: string | null;
     supplierName: string;
     currency: string;
     totalNet: number;
@@ -129,6 +131,7 @@ const docDto = (kind: 'ORDER' | 'REQUEST', order: BomPurchaseOrderRow): Procurem
         referenceNumber: order.referenceNumber,
         kind,
         status,
+        supplierId: order.supplierId,
         supplierName: order.supplierName,
         currency: order.currency,
         totalNet: order.totalNet,
@@ -213,37 +216,28 @@ export class BomProcurementUseCase {
         const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
         const kind = procurementKindFrom(input.kind);
         if (!kind) throw bomError('KIND_INVALID', 'PRICE oder ORDER.');
+        /* «Bomda artık sipariş talebi yok, sadece fiyat talebi var» (Samet,
+           30.09.2026): bestellt wird aus dem Fiyat talebi (Vergleich → Bestellung). */
+        if (kind !== 'PRICE') throw bomError('ORDER_REQUEST_RETIRED', 'Die BOM stellt nur noch Fiyat talepleri.', { status: 409 });
         const bom = await this.devices.requireBom(tenantId, bomId);
         await this.devices.assertCanEdit(tenantId, actor, bom.productionItemId, bom.area);
         if (bom.consumedAt) throw bomError('STATUS_INVALID', 'Die BOM ist abgebucht.', { status: 409 });
-
-        const open = (await this.requests.list(tenantId, { bomIds: [bom.id] }))
-            .filter((entry) => entry.kind === kind && OPEN_STATUSES.has(entry.status));
-        const pending = new Set(open.flatMap((entry) => entry.lines.map((line) => line.bomLineId)));
-
-        let lines: Bom['lines'];
-        let revision = bom.revision;
-        const allowed = new Map<string, number>();
-        if (kind === 'PRICE') {
-            const working = await this.devices.workingLinesOf(tenantId, bom);
-            if (!working.draft) {
-                throw bomError('REQUEST_DRAFT_ONLY', 'Preise fragt die BOM im Entwurf an — oder in einer Revision im Entwurf.', { status: 409 });
-            }
-            lines = working.lines;
-            revision = working.revision;
-            const remaining = remainingPriceRequestQuantities(lines, revision, open);
-            for (const line of lines) if ((remaining.get(line.id) ?? 0) > EPS) allowed.set(line.id, 0);
-        } else {
-            if (bom.status !== 'APPROVED') {
-                throw bomError('STATUS_INVALID', 'Bestellt wird aus einer freigegebenen BOM.', { status: 409 });
-            }
-            lines = bom.lines;
-            const facts = await this.reservations.facts(tenantId, lines.map((line) => line.productId));
-            for (const line of lines) {
-                const missing = facts.coverage.lines.get(line.id)?.missing ?? 0;
-                if (missing > EPS && !pending.has(line.id)) allowed.set(line.id, round3(missing));
-            }
+        /* «BOM liste onaylanmadan fiyat talep edilemesin» (Samet, 30.09.2026): angefragt
+           wird aus der freigegebenen BOM — und aus ihren freigegebenen Zeilen, nicht aus
+           einer Revision im Entwurf (die gibt erst die Administratorrolle frei). */
+        if (bom.status !== 'APPROVED') {
+            throw bomError('BOM_NOT_APPROVED', 'Preisanfragen gibt es nur aus einer freigegebenen BOM.', {
+                status: 409,
+                params: { bom: bom.bomNumber ?? '' },
+            });
         }
+
+        const all = await this.requests.list(tenantId, { bomIds: [bom.id] });
+        const lines: Bom['lines'] = bom.lines;
+        const revision = bom.revision;
+        const asked = priceRequestedLineIds(all);
+        const allowed = new Map<string, number>();
+        for (const line of lines) if (!asked.has(line.id) && line.quantity > EPS) allowed.set(line.id, 0);
         if (!lines.length) throw bomError('REQUEST_EMPTY', 'Die BOM hat keine Zeilen.');
         const picked = procurementLinesFrom(input.lines, allowed);
         const byId = new Map(lines.map((line) => [line.id, line]));
@@ -274,7 +268,18 @@ export class BomProcurementUseCase {
             }),
         }, actor.id);
         const [dto] = await this.summaries(tenantId, [request], [], new Map([[actor.id, actor.name ?? '']]));
+        /* «Fiyat talepleri artık otomatik gönderiliyor» (30.09.2026): je Lieferant
+           der Karten eine Preisanfrage, als PDF aus dem Postfach der Produktion —
+           im Hintergrund; die BOM wartet nicht darauf und sieht keinen Lieferanten. */
+        this.onRequestCreated?.(tenantId, request.id, actor);
         return { request: dto!, bom: await this.devices.get(tenantId, bom.id) };
+    }
+
+    /** Die Automatik des Einkaufs (ProcurementAutomationUseCase) — nach dem Bau angeschlossen. */
+    private onRequestCreated: ((tenantId: string, requestId: string, actor: BomActor) => void) | null = null;
+
+    attachAutomation(listener: (tenantId: string, requestId: string, actor: BomActor) => void): void {
+        this.onRequestCreated = listener;
     }
 
     /** Die BOM zieht einen Talep zurück, solange der Einkauf nichts daraus gemacht hat. */
@@ -292,11 +297,41 @@ export class BomProcurementUseCase {
 
     /* ── Was die BOM vom Talep und vom Wareneingang sieht ───────────────── */
 
+    /** Counters and per-line facts used by the material list; no receipt serials or document details. */
+    async activityForBoms(tenantId: string, bomIds: string[]) {
+        type Activity = Pick<BomActivityDto, 'requestsCount' | 'goodsCount' | 'priceRequests' | 'received'>;
+        const result = new Map<string, Activity>(bomIds.map((id) => [id, { requestsCount: 0, goodsCount: 0, priceRequests: {}, received: {} }]));
+        const tolerant = <T>(promise: Promise<T[]>): Promise<T[]> => promise.catch((error: unknown) => {
+            if (/doesn't exist|does not exist|P2021/i.test((error as Error)?.message ?? '')) return [];
+            throw error;
+        });
+        const [requests, goods] = await Promise.all([
+            tolerant(this.requests.activityForBoms(tenantId, bomIds)),
+            tolerant(this.goodsIn.totalsForBoms(tenantId, bomIds)),
+        ]);
+        for (const request of requests) {
+            const entry = result.get(request.bomId);
+            if (!entry) continue;
+            entry.requestsCount++;
+            if (request.kind === 'PRICE' && request.status !== 'CANCELLED') {
+                for (const id of request.lineIds) entry.priceRequests[id] ??= request.requestNumber;
+            }
+        }
+        for (const goodsRow of goods) {
+            const entry = result.get(goodsRow.bomId);
+            if (!entry) continue;
+            entry.goodsCount += goodsRow.count;
+            if (goodsRow.lineId) entry.received[goodsRow.lineId] = (entry.received[goodsRow.lineId] ?? 0) + goodsRow.quantity;
+        }
+        return result;
+    }
+
     /** Talepler und eingegangene Ware der BOMs — für die DTOs der BOM (ohne Lieferant, ohne Preis). */
     async forBoms(
         tenantId: string,
         bomIds: string[],
         docs: Array<{ kind: 'ORDER' | 'REQUEST'; order: BomPurchaseOrderRow }>,
+        options: { section?: 'requests' | 'goods'; compact?: boolean } = {},
     ): Promise<{ requests: Map<string, BomProcurementSummaryDto[]>; goodsIn: Map<string, BomGoodsInDto[]> }> {
         // Solange die Tabellen fehlen (Migration noch nicht aufgespielt), bleibt die BOM lesbar.
         const tolerant = <T>(promise: Promise<T[]>): Promise<T[]> => promise.catch((error: unknown) => {
@@ -304,14 +339,14 @@ export class BomProcurementUseCase {
             throw error;
         });
         const [requests, goods] = await Promise.all([
-            tolerant(this.requests.list(tenantId, { bomIds })),
-            tolerant(this.goodsIn.forBoms(tenantId, bomIds)),
+            options.section === 'goods' ? Promise.resolve([]) : tolerant(this.requests.list(tenantId, { bomIds })),
+            options.section === 'requests' ? Promise.resolve([]) : tolerant(this.goodsIn.forBoms(tenantId, bomIds)),
         ]);
         const personIds = [...new Set([
             ...requests.map((entry) => entry.createdById),
             ...goods.map((entry) => entry.receivedById),
         ].filter((id): id is string => Boolean(id)))];
-        const names = personIds.length ? await this.directory.personNames(personIds) : new Map<string, string>();
+        const names = personIds.length && !options.compact ? await this.directory.personNames(personIds) : new Map<string, string>();
         const summaries = await this.summaries(tenantId, requests, docs, names);
         const byBom = new Map<string, BomProcurementSummaryDto[]>();
         requests.forEach((request, index) => {
@@ -399,7 +434,7 @@ export class BomProcurementUseCase {
             await this.note(tenantId, actor, request, 'REQUEST_CANCELLED');
         } else if (action === 'reopen') {
             const docs = await this.docFacts(tenantId, [request.bomId]);
-            const status = procurementStatusAfter('OPEN', procurementProgress(request, docs));
+            const status = procurementStatusAfter('OPEN', procurementProgress(request, docs), request.kind);
             await this.requests.update(tenantId, request.id, { status: status === 'DONE' ? 'IN_PROGRESS' : status, closedById: null, closedAt: null });
             await this.note(tenantId, actor, request, 'REQUEST_REOPENED');
         } else {
@@ -414,15 +449,24 @@ export class BomProcurementUseCase {
      * / «Fiyat talebi» mit `procurementRequestId`): an den Talep hängen und
      * seinen Stand nachziehen — alle Zeilen in einem Beleg = erledigt.
      */
-    async attachDocuments(tenantId: string, requestId: string, bomId: string, purchaseOrderIds: string[], actor: BomActor | null = null): Promise<void> {
+    async attachDocuments(
+        tenantId: string,
+        requestId: string,
+        bomId: string,
+        purchaseOrderIds: string[],
+        actor: BomActor | null = null,
+        /** Bestellungen aus dem Vergleich eines Preistalep (30.09.2026) — sonst die Art des Talep. */
+        documentKind: 'ORDER' | 'REQUEST' | null = null,
+    ): Promise<void> {
         const request = await this.requests.get(tenantId, requestId);
         if (!request || request.bomId !== bomId || !purchaseOrderIds.length) return;
         const ids = [...new Set([...request.purchaseOrderIds, ...purchaseOrderIds])];
         const docs = await this.docFacts(tenantId, [bomId]);
-        const status = procurementStatusAfter(request.status, procurementProgress({ ...request, purchaseOrderIds: ids }, docs));
+        const status = procurementStatusAfter(request.status, procurementProgress({ ...request, purchaseOrderIds: ids }, docs), request.kind);
         await this.requests.update(tenantId, request.id, { purchaseOrderIds: ids, status });
         const orders = await this.purchases.orders(tenantId, purchaseOrderIds);
-        await this.note(tenantId, actor, request, request.kind === 'PRICE' ? 'PRICE_REQUESTS_CREATED' : 'ORDERS_CREATED', {
+        const kind = documentKind ?? (request.kind === 'PRICE' ? 'REQUEST' : 'ORDER');
+        await this.note(tenantId, actor, request, kind === 'REQUEST' ? 'PRICE_REQUESTS_CREATED' : 'ORDERS_CREATED', {
             codes: orders.map((order) => order.referenceNumber),
         });
     }

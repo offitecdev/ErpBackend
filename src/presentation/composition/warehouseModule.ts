@@ -7,6 +7,7 @@ import {
     PrismaWarehouseSettingsRepository,
 } from '../../infrastructure/repositories/WarehouseCatalogRepository';
 import { PrismaWarehouseImportRepository } from '../../infrastructure/repositories/WarehouseImportRepository';
+import { PrismaSupplierEmailBook } from '../../infrastructure/repositories/SupplierEmailBook';
 import { WarehouseImportNotifier } from '../../infrastructure/services/warehouseImportNotifications';
 import { WarehouseProductsUseCase } from '../../application/use-cases/warehouse/WarehouseProductsUseCase';
 import { WarehouseSerialsUseCase } from '../../application/use-cases/warehouse/WarehouseSerialsUseCase';
@@ -34,12 +35,14 @@ const settings = new PrismaWarehouseSettingsRepository();
 const imports = new PrismaWarehouseImportRepository();
 const directory = new PrismaWarehouseDirectory();
 const notifier = new WarehouseImportNotifier();
+/* Eine an einer Karte eingetragene Lieferanten-E-Mail wird die des Lieferanten (30.09.2026). */
+const supplierEmails = new PrismaSupplierEmailBook();
 
 export const warehouseModule = {
-    products: new WarehouseProductsUseCase(products, groups, directory),
+    products: new WarehouseProductsUseCase(products, groups, directory, supplierEmails),
     serials: new WarehouseSerialsUseCase(products, directory),
     catalog: new WarehouseCatalogUseCase(groups, directory, products, settings),
-    imports: new WarehouseImportsUseCase(imports, groups, products, directory, notifier),
+    imports: new WarehouseImportsUseCase(imports, groups, products, directory, notifier, supplierEmails),
     directory,
 };
 

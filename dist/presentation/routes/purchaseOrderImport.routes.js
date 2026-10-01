@@ -87,7 +87,7 @@ const columnWidth = (value) => Math.round(Math.min(240, Math.max(80, Number(valu
  * die eigenen Angaben werden freie Spalten und behalten ihren Schluessel,
  * damit die Werte gespeicherter Bestellungen ihre Spalte wiederfinden.
  */
-const legacyColumns = (raw, _documentType) => {
+const legacyColumns = (raw, documentType) => {
     const hidden = new Set(Array.isArray(raw?.hiddenColumnKeys) ? raw.hiddenColumnKeys.map(String) : []);
     const fixed = [
         { key: 'name', name: 'Produktname', type: 'text', label: 'productName' },
@@ -101,6 +101,8 @@ const legacyColumns = (raw, _documentType) => {
     const columns = fixed
         // Die Pflichtzuordnungen bleiben auch dann, wenn das Auge sie ausblendete.
         .filter((column) => !hidden.has(column.key) || column.label === 'productName' || column.label === 'quantity')
+        // Eine Preisanfrage kannte nie Preise — sie bekommt auch jetzt keine.
+        .filter((column) => documentType !== 'PRICE_REQUEST' || column.label === 'productName' || column.label === 'quantity')
         .map((column) => ({ ...column, width: 120 }));
     for (const extra of (0, gptExtract_1.normalizeColumns)(raw?.extraColumns)) {
         if (hidden.has(extra.key))
@@ -134,9 +136,18 @@ exports.normalizeTemplateConfig = normalizeTemplateConfig;
 /**
  * Was eine Vorlage erfuellen muss, bevor sie gespeichert wird (Vorgabe
  * Samet: «wird eine Zuordnung nicht gewaehlt, zeigt das System einen
- * Fehler»). Price fields are available for both orders and price requests.
+ * Fehler»). Eine Preisanfrage kennt keine Preise (wieder seit dem 29.09.2026:
+ * «birim fiyat, tutar olmayacak») — dort werden die Preiszuordnungen still
+ * abgelegt statt abgewiesen.
  */
-const validateTemplateConfig = (config, _documentType) => {
+const PRICE_REQUEST_LABELS = new Set(['productName', 'quantity']);
+const validateTemplateConfig = (config, documentType) => {
+    if (documentType === 'PRICE_REQUEST') {
+        config.columns.forEach((column) => {
+            if (column.label && !PRICE_REQUEST_LABELS.has(column.label))
+                column.label = null;
+        });
+    }
     if (!config.columns.length)
         return 'Die Vorlage braucht mindestens eine Spalte.';
     const missing = (0, gptExtract_1.missingTemplateLabels)(config.columns);

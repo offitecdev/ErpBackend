@@ -20,6 +20,15 @@
 export const WAREHOUSE_CURRENCIES = ['CHF', 'EUR', 'USD', 'GBP', 'TRY'] as const;
 export type WarehouseCurrency = typeof WAREHOUSE_CURRENCIES[number];
 
+/**
+ * Die Einheit einer Karte (30.09.2026, Samet: «her ürünün de birim türü
+ * olmalıdır — adet, uzunluk … bom listede vardı, oraya otomatik gelmesi
+ * gerekmektedir»). Dieselbe Liste wie die BOM-Zeile (BOM_UNITS) — das Depo
+ * importiert die BOM nicht, darum hier gespiegelt.
+ */
+export const WAREHOUSE_UNITS = ['PCS', 'M', 'KG', 'SET', 'PACK'] as const;
+export type WarehouseUnit = typeof WAREHOUSE_UNITS[number];
+
 /** Hauptkategorie (erste Zelle des ERP-Codes). */
 export interface WarehouseCategory {
     id: string;
@@ -63,6 +72,11 @@ export interface WarehouseSupplierEntry {
     supplierId: string | null;
     name: string;
     barcode: string | null;
+    /** Seine E-Mail für diese Karte (30.09.2026) — an sie geht die Preisanfrage. */
+    email: string | null;
+    /** Seine Artikel- und Bestellnummer für das Produkt (01.10.2026) — stehen in seiner Anfrage/Bestellung. */
+    articleNumber?: string | null;
+    orderNumber?: string | null;
 }
 
 export interface WarehouseProduct {
@@ -77,7 +91,14 @@ export interface WarehouseProduct {
     categoryCode: string | null;
     name: string;
     brand: string | null;
+    /** In der Oberfläche seit dem 30.09.2026 «Üretici kodu» (nie gedruckt). */
     modelNumber: string | null;
+    /** «Ürün kodu» (30.09.2026) — steht im PDF der Preisanfrage und der Bestellung. */
+    productCode: string | null;
+    /** Einheit der Karte; leer bei älteren Karten. */
+    unit: WarehouseUnit | null;
+    /** Taslak: es fehlt noch, was eine fertige Karte braucht (Einheit, Lieferant, E-Mail). */
+    isDraft: boolean;
     /** Der erste Lieferant (Abzug auf der Karte, für Liste und Sortierung). */
     supplierId: string | null;
     supplierName: string | null;
@@ -125,6 +146,8 @@ export interface WarehouseProductFields {
     name: string;
     brand: string | null;
     modelNumber: string | null;
+    productCode: string | null;
+    unit: WarehouseUnit | null;
     suppliers: WarehouseSupplierEntry[];
     description: string | null;
     quantity: number;
@@ -134,6 +157,7 @@ export interface WarehouseProductFields {
     barcode: string | null;
     manufacturerBarcode: string | null;
     serialRequired: boolean;
+    isDraft: boolean;
 }
 
 /** Wem ein Stück zugeordnet ist — Produktionsprojekt und (freiwillig) Gerät. */
@@ -215,6 +239,8 @@ export interface WarehouseDeviceOption {
 export interface WarehouseSupplierOption {
     id: string | null;
     name: string;
+    /** Die E-Mail aus der Lieferantenliste (30.09.2026) — die Karte schlägt sie vor. */
+    email?: string | null;
 }
 
 /* ── Etikett ─────────────────────────────────────────────────────────────── */
@@ -251,7 +277,16 @@ export interface WarehouseImportRow {
     name: string;
     brand: string | null;
     modelNumber: string | null;
+    /** «Ürün kodu» (30.09.2026) — fehlt in älteren Dateien. */
+    productCode?: string | null;
+    /** Einheit (30.09.2026) — fehlt in älteren Dateien. */
+    unit?: WarehouseUnit | null;
     supplierName: string | null;
+    /** E-Mail des Lieferanten (30.09.2026) — fehlt in älteren Dateien. */
+    supplierEmail?: string | null;
+    /** Artikel- und Bestellnummer DES Lieferanten der Zeile (01.10.2026). */
+    supplierArticleNumber?: string | null;
+    supplierOrderNumber?: string | null;
     description: string | null;
     quantity: number;
     purchasePrice: number | null;

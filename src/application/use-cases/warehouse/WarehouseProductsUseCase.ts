@@ -4,16 +4,20 @@ import type {
     IWarehouseProductRepository,
     WarehouseCodeAction,
 } from '../../../domain/repositories/IWarehouseRepository';
+import type { ISupplierEmailBook } from '../../../domain/repositories/ISupplierEmailBook';
 import type {
     WarehouseMaterialGroup,
     WarehouseProduct,
     WarehouseProductFields,
     WarehouseProductFilter,
     WarehouseSerialDraft,
+    WarehouseSupplierEntry,
 } from '../../../domain/entities/Warehouse';
 import {
     assertSuppliersUnique,
     cleanCode,
+    draftRequestOf,
+    draftStateOf,
     fieldsOfProduct,
     firstDuplicate,
     makerBarcodesOf,
@@ -137,6 +141,8 @@ export class WarehouseProductsUseCase {
         private products: IWarehouseProductRepository,
         private groups: IWarehouseGroupRepository,
         private directory: IWarehouseDirectory,
+        /** Die Lieferantenliste als Adressbuch (30.09.2026) — ohne: die Adressen bleiben an der Karte. */
+        private emails: ISupplierEmailBook | null = null,
     ) {
         this.targets = new WarehouseTargetResolver(directory);
     }
@@ -173,6 +179,8 @@ export class WarehouseProductsUseCase {
     async create(tenantId: string, userId: string, body: unknown): Promise<WarehouseProductDetailDto> {
         const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
         const fields = productFieldsFromInput(input);
+        // «Bunlar girilmeden ürün kartı sadece taslak olarak kayıt edilebilir» (30.09.2026).
+        fields.isDraft = draftStateOf(fields, draftRequestOf(input), null);
         const group = await this.resolveReferences(tenantId, fields, null, true);
         if (group && !group.code) throw this.codeMissing(group);
         const serials = fields.serialRequired ? await this.serialDrafts(tenantId, input.serials) : [];
@@ -182,6 +190,7 @@ export class WarehouseProductsUseCase {
             const product = await this.products.create(tenantId, fields, serials, userId, { issueCode: Boolean(group) });
             // Neue Seriennummern: die BOM der Produktion reserviert sie (27.09.2026).
             if (serials.length) emitWarehouseStockChanged({ tenantId, productIds: [product.id] });
+            await this.rememberEmails(tenantId, product.suppliers, null);
             return this.detail(tenantId, product);
         } catch (error) {
             throw this.mapUnique(error, fields);
@@ -193,6 +202,7 @@ export class WarehouseProductsUseCase {
         if (!current) throw warehouseError('NOT_FOUND', 'Produktkarte nicht gefunden.', { status: 404 });
 
         const fields = productFieldsFromInput(body, fieldsOfProduct(current));
+        fields.isDraft = draftStateOf(fields, draftRequestOf(body), current.isDraft);
         const suppliersChanged = JSON.stringify(fields.suppliers) !== JSON.stringify(current.suppliers);
         const group = await this.resolveReferences(tenantId, fields, current, suppliersChanged);
         // Dritter Durchgang: das Häkchen «Seri numarası gereklidir» eben gesetzt
@@ -231,10 +241,29 @@ export class WarehouseProductsUseCase {
             const updated = await this.products.update(tenantId, id, fields, userId, action, { writeSuppliers: suppliersChanged, serials });
             if (!updated) throw warehouseError('NOT_FOUND', 'Produktkarte nicht gefunden.', { status: 404 });
             if (serials.length) emitWarehouseStockChanged({ tenantId, productIds: [id] });
+            await this.rememberEmails(tenantId, updated.suppliers, current.suppliers);
             return this.detail(tenantId, updated);
         } catch (error) {
             throw this.mapUnique(error, fields);
         }
+    }
+
+    /**
+     * «Tedarikçi e-postası eklenirse direkt tedarikçi e-postası olarak
+     * kaydetmeli» (30.09.2026): eine an der Karte NEU eingetragene oder
+     * geänderte Adresse wird die E-Mail des Lieferanten in der Liste. Eine
+     * unveränderte schreibt nichts — sonst überschriebe ein späteres Speichern
+     * dieser Karte die neuere Adresse aus einer anderen. Scheitert es, bleibt
+     * die Karte trotzdem gespeichert.
+     */
+    private async rememberEmails(tenantId: string, now: WarehouseSupplierEntry[], before: WarehouseSupplierEntry[] | null): Promise<void> {
+        if (!this.emails) return;
+        const keyOf = (entry: WarehouseSupplierEntry) => entry.supplierId ?? `name:${entry.name.trim().toLocaleLowerCase('tr-TR')}`;
+        const old = new Map((before ?? []).map((entry) => [keyOf(entry), (entry.email ?? '').trim().toLowerCase()]));
+        const changed = now.filter((entry) => entry.email && old.get(keyOf(entry)) !== entry.email.trim().toLowerCase());
+        if (!changed.length) return;
+        await this.emails.remember(tenantId, changed.map((entry) => ({ supplierId: entry.supplierId, name: entry.name, email: entry.email })))
+            .catch((error: unknown) => console.warn('[depo] Lieferanten-E-Mail nicht gemerkt:', (error as Error)?.message));
     }
 
     async delete(tenantId: string, id: string): Promise<{ ok: true }> {

@@ -21,6 +21,8 @@ export interface ProcurementDocInput {
     emailSentAt: Date | null;
     /** Wie oft eine BOM-Revision die Bestellung beim Lieferanten geändert hat. */
     orderRevision: number;
+    /** Wann die jüngste Revision der Bestellung entstand (null = unbekannt). */
+    revisedAt?: Date | null;
     hasQuoteFile: boolean;
     items: Array<Record<string, unknown>>;
 }
@@ -48,7 +50,12 @@ export const docStateOf = (doc: ProcurementDocInput): ProcurementDocState => {
     if (status === 'COMPLETED') return 'RECEIVED';
     if (CONFIRMED_ORDER_STATUSES.has(status)) return receivedShareOf(doc.items) >= 1 - EPS ? 'RECEIVED' : 'CONFIRMED';
     // Die Bestätigung galt der alten Fassung: nach einer Revision geht sie neu hinaus.
-    if (doc.orderRevision > 0) return 'REVISED';
+    // Ging die geänderte Fassung schon hinaus (automatisch oder von Hand), wartet
+    // sie auf die Bestätigung des Lieferanten wie jede gesendete (30.09.2026).
+    if (doc.orderRevision > 0) {
+        const resent = doc.emailSentAt && doc.revisedAt && doc.emailSentAt.getTime() >= doc.revisedAt.getTime();
+        return resent ? 'SENT' : 'REVISED';
+    }
     return doc.emailSentAt || status === 'ORDERED' ? 'SENT' : 'DRAFT';
 };
 
@@ -57,6 +64,8 @@ export const docStateOf = (doc: ProcurementDocInput): ProcurementDocState => {
 export type ProcurementStageKey =
     | 'ORDER_NEEDED'
     | 'QUOTE_NEEDED'
+    /** Die Bestellung ist beim Lieferanten, seine Bestätigung fehlt («Onay bekliyor», 30.09.2026). */
+    | 'CONFIRMATION_EXPECTED'
     | 'GOODS_EXPECTED'
     | 'PRICE_NEEDED'
     | 'REPLIES_EXPECTED'
@@ -64,8 +73,12 @@ export type ProcurementStageKey =
     | 'DONE'
     | 'CANCELLED';
 
-/** Der eine Knopf der Zeile: was jetzt zu tun ist. */
-export type ProcurementNextAction = 'ORDER' | 'QUOTE' | 'CONFIRM' | 'RESEND' | 'RECEIVE' | 'ASK' | 'REPLY' | 'COMPARE';
+/**
+ * Der eine Knopf der Zeile: was jetzt zu tun ist. `SEND` = «Onayla ve gönder»
+ * (Bestellung im Entwurf), `AWAIT` = «Onay bekliyor» (beim Lieferanten, seine
+ * Bestätigung fehlt) — beide öffnen die Bestellung (30.09.2026).
+ */
+export type ProcurementNextAction = 'ORDER' | 'QUOTE' | 'CONFIRM' | 'RESEND' | 'RECEIVE' | 'ASK' | 'REPLY' | 'COMPARE' | 'SEND' | 'AWAIT';
 
 export interface ProcurementDocFacts {
     purchaseOrderId: string;
@@ -108,6 +121,13 @@ export const stageOf = (
     const open = request.status !== 'DONE';
     const live = docs.filter((doc) => doc.state !== 'CANCELLED');
 
+    /* «Fiyat talebinden satın almaya dönüşünce direkt labelı o oluyor»
+       (30.09.2026): hat ein Preistalep Bestellungen (aus dem Vergleich), folgt
+       sein Stand diesen Bestellungen — gesendet, bestätigt, geliefert. */
+    if (request.kind === 'PRICE' && live.some((doc) => doc.kind === 'ORDER')) {
+        return ordersStage(request, live.filter((doc) => doc.kind === 'ORDER'), false);
+    }
+
     if (request.kind === 'PRICE') {
         const asks = live.filter((doc) => doc.kind === 'REQUEST');
         const replied = asks.filter((doc) => doc.state === 'REPLIED').length;
@@ -124,16 +144,35 @@ export const stageOf = (
     const orders = live.filter((doc) => doc.kind === 'ORDER');
     const covered = request.lines.filter((line) => orders.some((doc) => holds(doc, line.bomLineId))).length;
     if (open && covered < request.lines.length) return stage('ORDER_NEEDED', covered, request.lines.length, 'ORDER');
+    return ordersStage(request, orders, true);
+};
 
+/**
+ * Der Stand der Bestellungen eines Talep. `legacy` = ein Satın alma talebi
+ * von vor dem 30.09.2026 (Knopf «Teklif ekle»/«Onayla»); ein Preistalep mit
+ * Bestellungen kennt die Automatik: Entwurf → «Onayla ve gönder», beim
+ * Lieferanten → «Onay bekliyor».
+ */
+const ordersStage = (
+    request: { lines: Array<{ bomLineId: string }> },
+    orders: ProcurementDocFacts[],
+    legacy: boolean,
+): ProcurementStage => {
     const pending = orders.find((doc) => doc.state === 'DRAFT' || doc.state === 'SENT' || doc.state === 'REVISED');
     if (pending) {
         const confirmed = orders.filter((doc) => doc.state === 'CONFIRMED' || doc.state === 'RECEIVED').length;
-        const action: ProcurementNextAction = pending.state === 'REVISED' ? 'RESEND' : pending.hasQuote ? 'CONFIRM' : 'QUOTE';
-        return stage('QUOTE_NEEDED', confirmed, orders.length, action, pending.purchaseOrderId);
+        const action: ProcurementNextAction = pending.state === 'REVISED'
+            ? 'RESEND'
+            : legacy
+                ? (pending.hasQuote ? 'CONFIRM' : 'QUOTE')
+                : pending.state === 'DRAFT' ? 'SEND' : 'AWAIT';
+        return stage(!legacy && pending.state === 'SENT' ? 'CONFIRMATION_EXPECTED' : 'QUOTE_NEEDED', confirmed, orders.length, action, pending.purchaseOrderId);
     }
 
     // Eine Zeile ist da, wenn ihre bestellte Menge vollständig eingegangen ist.
-    const arrived = request.lines.filter((line) => {
+    // Beim Preistalep zählen nur die bestellten Zeilen (was im Lager war, wird nicht bestellt).
+    const lines = legacy ? request.lines : request.lines.filter((line) => orders.some((doc) => holds(doc, line.bomLineId)));
+    const arrived = lines.filter((line) => {
         let ordered = 0;
         let received = 0;
         for (const doc of orders) {
@@ -146,8 +185,8 @@ export const stageOf = (
         return ordered > EPS && received + EPS >= ordered;
     }).length;
     const expecting = orders.find((doc) => doc.state === 'CONFIRMED');
-    if (expecting) return stage('GOODS_EXPECTED', arrived, request.lines.length, 'RECEIVE', expecting.purchaseOrderId);
-    return stage('DONE', arrived, request.lines.length);
+    if (expecting) return stage('GOODS_EXPECTED', arrived, lines.length, 'RECEIVE', expecting.purchaseOrderId);
+    return stage('DONE', arrived, lines.length);
 };
 
 /* ── Der Verlauf ────────────────────────────────────────────────────────── */
@@ -161,14 +200,23 @@ export type ProcurementEventAction =
     | 'ORDER_CONFIRMED'
     | 'REPLY_ADDED'
     | 'SELECTION_SAVED'
+    | 'COMPARISON_SAVED'
+    | 'ORDER_REVISED'
     | 'GOODS_RECEIVED'
     | 'REQUEST_CLOSED'
     | 'REQUEST_CANCELLED'
-    | 'REQUEST_REOPENED';
+    | 'REQUEST_REOPENED'
+    // Die Automatik (30.09.2026): Sendungen, Antworten, Bestätigung.
+    | 'ORDER_SENT'
+    | 'REVISION_SENT'
+    | 'SEND_FAILED'
+    | 'REPLY_RECEIVED'
+    | 'SUPPLIER_CONFIRMED';
 
 export const PROCUREMENT_EVENT_ACTIONS: readonly ProcurementEventAction[] = [
     'REQUEST_CREATED', 'REQUEST_WITHDRAWN', 'ORDERS_CREATED', 'PRICE_REQUESTS_CREATED', 'PRICE_REQUESTS_SENT',
-    'ORDER_CONFIRMED', 'REPLY_ADDED', 'SELECTION_SAVED', 'GOODS_RECEIVED', 'REQUEST_CLOSED', 'REQUEST_CANCELLED', 'REQUEST_REOPENED',
+    'ORDER_CONFIRMED', 'REPLY_ADDED', 'SELECTION_SAVED', 'COMPARISON_SAVED', 'ORDER_REVISED', 'GOODS_RECEIVED', 'REQUEST_CLOSED', 'REQUEST_CANCELLED', 'REQUEST_REOPENED',
+    'ORDER_SENT', 'REVISION_SENT', 'SEND_FAILED', 'REPLY_RECEIVED', 'SUPPLIER_CONFIRMED',
 ];
 
 export interface ProcurementEvent {
@@ -216,6 +264,22 @@ export const receiptEvents = (
     }
     return [...groups.values()];
 };
+
+/**
+ * Eine BOM-Revision änderte eine Bestellung beim Lieferanten (Archivzeile je
+ * Revision der Bestellung): ein Handgriff im Verlauf — die Satın alma muss die
+ * Änderung dem Lieferanten schicken (29.09.2026, Samet: «siparişte revize
+ * olması gerekmez mi … tedarikçiyi PDF ile bilgilendirmemiz lazım»).
+ */
+export const revisionEvents = (
+    rows: Array<{ purchaseOrderId: string; number: number; createdAt: Date; createdById: string | null }>,
+    orders: Map<string, { code: string; supplier: string }>,
+): ProcurementEvent[] => rows.flatMap((row) => {
+    const order = orders.get(row.purchaseOrderId);
+    return order
+        ? [{ action: 'ORDER_REVISED' as const, at: row.createdAt, actorId: row.createdById, actorName: null, data: { code: order.code, supplier: order.supplier, revision: row.number } }]
+        : [];
+});
 
 /** Neueste zuerst. */
 export const newestFirst = (events: ProcurementEvent[]): ProcurementEvent[] =>

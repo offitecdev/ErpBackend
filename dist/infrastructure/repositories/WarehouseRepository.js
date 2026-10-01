@@ -7,6 +7,7 @@ exports.PrismaWarehouseDirectory = exports.PrismaWarehouseProductRepository = ex
 const client_1 = require("@prisma/client");
 const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const Warehouse_1 = require("../../domain/entities/Warehouse");
 const warehouseCodes_1 = require("../../domain/services/warehouseCodes");
 const WarehouseCodeIssuer_1 = require("./WarehouseCodeIssuer");
 /**
@@ -64,7 +65,13 @@ const suppliersOf = (raw) => {
         supplierId: textOrNull(entry.supplierId),
         name: String(entry.name),
         barcode: textOrNull(entry.barcode),
+        email: textOrNull(entry.email),
     }));
+};
+/** Eine gespeicherte Einheit — nur, was die Liste kennt (ältere Karten: keine). */
+const unitOf = (value) => {
+    const text = String(value ?? '').trim().toUpperCase();
+    return Warehouse_1.WAREHOUSE_UNITS.includes(text) ? text : null;
 };
 const toProduct = (row) => ({
     id: String(row.id),
@@ -79,6 +86,9 @@ const toProduct = (row) => ({
     name: String(row.name ?? ''),
     brand: textOrNull(row.brand),
     modelNumber: textOrNull(row.modelNumber),
+    productCode: textOrNull(row.productCode),
+    unit: unitOf(row.unit),
+    isDraft: Boolean(Number(row.isDraft)),
     supplierId: textOrNull(row.supplierId),
     supplierName: textOrNull(row.supplierName),
     suppliers: suppliersOf(row.suppliersJson),
@@ -109,8 +119,8 @@ const toSerial = (row) => ({
 const PRODUCT_SELECT = client_1.Prisma.sql `
     SELECT p.id, p.tenantId, p.erpCode, p.materialGroupId, g.name AS materialGroupName, g.code AS materialGroupCode,
            c.id AS categoryId, c.name AS categoryName, c.code AS categoryCode, p.name, p.brand,
-           p.modelNumber, p.supplierId, p.supplierName,
-           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode)
+           p.modelNumber, p.productCode, p.unit, p.isDraft, p.supplierId, p.supplierName,
+           (SELECT JSON_ARRAYAGG(JSON_OBJECT('supplierId', s.supplierId, 'name', s.supplierName, 'barcode', s.barcode, 'email', s.email)
                    ORDER BY s.sortOrder, s.supplierName)
               FROM depo_urun_tedarikcileri s WHERE s.productId = p.id) AS suppliersJson,
            p.description, p.quantity,
@@ -167,6 +177,9 @@ const productData = (fields) => ({
     name: fields.name,
     brand: fields.brand,
     modelNumber: fields.modelNumber,
+    productCode: fields.productCode,
+    unit: fields.unit,
+    isDraft: fields.isDraft,
     supplierId: fields.suppliers[0]?.supplierId ?? null,
     supplierName: fields.suppliers[0]?.name ?? null,
     // Nicht mehr geführt (vierter Durchgang) — ein alter Abzug wird geleert.
@@ -188,6 +201,7 @@ const supplierRows = (tenantId, productId, suppliers) => suppliers.map((entry, i
     supplierId: entry.supplierId,
     supplierName: entry.name,
     barcode: entry.barcode,
+    email: entry.email,
     sortOrder: index,
 }));
 exports.supplierRows = supplierRows;
@@ -651,7 +665,7 @@ class PrismaWarehouseDirectory {
         const [suppliers, written] = await Promise.all([
             prisma_client_1.default.supplier.findMany({
                 where: { tenantId, isActive: true, ...(query ? { companyName: { contains: query } } : {}) },
-                select: { id: true, companyName: true },
+                select: { id: true, companyName: true, email: true },
                 orderBy: { companyName: 'asc' },
                 take: limit,
             }),
@@ -667,7 +681,7 @@ class PrismaWarehouseDirectory {
                 take: limit,
             }),
         ]);
-        const options = suppliers.map((row) => ({ id: row.id, name: row.companyName }));
+        const options = suppliers.map((row) => ({ id: row.id, name: row.companyName, email: row.email?.trim() || null }));
         for (const row of written) {
             const name = row.supplierName?.trim();
             if (!name || options.some((option) => sameCode(option.name, name)))

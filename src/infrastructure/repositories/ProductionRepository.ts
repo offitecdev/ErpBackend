@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { listProductionOrderPage } from './productionOrderList';
 import prisma from '../database/prisma.client';
 import type {
     IProductionProjectRepository,
@@ -165,6 +166,7 @@ const toItem = (row: any): ProductionItem => ({
 });
 
 export class PrismaProductionProjectRepository implements IProductionProjectRepository {
+    listOrderPage = listProductionOrderPage;
     async existingIds(tenantId: string): Promise<ExistingProductionIds> {
         const [projects, orders, items] = await Promise.all([
             prisma.productionProject.findMany({ where: { tenantId }, select: { id: true, sourceKey: true } }),

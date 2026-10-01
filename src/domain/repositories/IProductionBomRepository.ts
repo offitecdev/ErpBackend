@@ -78,7 +78,8 @@ export interface BomConsumePlan {
 }
 
 export interface IBomRepository {
-    listForDevice(tenantId: string, productionItemId: string): Promise<Bom[]>;
+    listForDevice(tenantId: string, productionItemId: string, lineArea?: BomArea): Promise<Bom[]>;
+    getHeader(tenantId: string, id: string): Promise<Omit<Bom, 'lines'> | null>;
     /** Die BOMs der Projekte (null = aller Projekte der Firma) — für die Kalkulation. */
     listForProjects(tenantId: string, productionProjectIds: string[] | null): Promise<Bom[]>;
     get(tenantId: string, id: string): Promise<Bom | null>;
@@ -159,6 +160,8 @@ export interface BomPurchaseOrderRow {
     status: string;
     supplierId: string | null;
     supplierName: string;
+    /** Die Empfänger-Adresse des Belegs (30.09.2026) — nur der Einkauf liest sie. */
+    supplierEmail?: string | null;
     quoteNumber: string | null;
     currency: string;
     totalNet: number;
@@ -248,7 +251,7 @@ export interface IBomSettingsRepository {
  */
 export interface IBomRevisionRepository {
     /** Alle Revisionen dieser BOMs (älteste zuerst). */
-    listForBoms(tenantId: string, bomIds: string[]): Promise<BomRevision[]>;
+    listForBoms(tenantId: string, bomIds: string[], options?: { draftOnly?: boolean; omitLines?: boolean }): Promise<BomRevision[]>;
     /** Die freigegebenen Revisionen (ab Rev.1) der Firma, neueste zuerst — für den Einkauf. */
     listApproved(tenantId: string, limit: number): Promise<BomRevision[]>;
     get(tenantId: string, bomId: string, revision: number): Promise<BomRevision | null>;
@@ -327,6 +330,9 @@ export interface BomProcurementCreateInput {
 }
 
 export interface IBomProcurementRepository {
+    activityForBoms(tenantId: string, bomIds: string[]): Promise<Array<{
+        bomId: string; requestNumber: string; kind: string; status: string; lineIds: string[];
+    }>>;
     /** Legt den Talep an und vergibt seine Nummer (TLP-2026-00001) in einem Zug. */
     create(tenantId: string, input: BomProcurementCreateInput, userId: string): Promise<BomProcurementRequest>;
     get(tenantId: string, id: string): Promise<BomProcurementRequest | null>;
@@ -345,6 +351,9 @@ export interface IBomProcurementRepository {
 }
 
 export interface IBomGoodsInRepository {
+    totalsForBoms(tenantId: string, bomIds: string[]): Promise<Array<{
+        bomId: string; lineId: string | null; quantity: number; count: number;
+    }>>;
     add(tenantId: string, rows: Array<Omit<BomGoodsIn, 'id' | 'tenantId'>>): Promise<void>;
     forBoms(tenantId: string, bomIds: string[]): Promise<Array<BomGoodsIn>>;
     recent(tenantId: string, limit: number): Promise<Array<BomGoodsIn>>;

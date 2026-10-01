@@ -1,3 +1,4 @@
+import type { ISupplierEmailBook } from '../../../domain/repositories/ISupplierEmailBook';
 import type {
     IWarehouseDirectory,
     IWarehouseGroupRepository,
@@ -12,7 +13,7 @@ import type {
     WarehouseMaterialGroup,
     WarehouseProductFields,
 } from '../../../domain/entities/Warehouse';
-import { cleanLine, warehouseError } from '../../../domain/services/warehouse';
+import { cleanLine, draftStateOf, warehouseError } from '../../../domain/services/warehouse';
 import {
     codeVariants,
     groupTextKey,
@@ -98,6 +99,8 @@ export class WarehouseImportsUseCase {
         private products: IWarehouseProductRepository,
         private directory: IWarehouseDirectory,
         private notifier: IWarehouseNotifier,
+        /** Die Lieferantenliste als Adressbuch (30.09.2026): Adressen aus dem Import werden die der Lieferanten. */
+        private emails: ISupplierEmailBook | null = null,
     ) {}
 
     /** Zeilen prüfen, ohne etwas zu speichern. */
@@ -126,7 +129,12 @@ export class WarehouseImportsUseCase {
             name: row.name,
             brand: row.brand,
             modelNumber: row.modelNumber,
+            productCode: row.productCode ?? null,
+            unit: row.unit ?? null,
             supplierName: row.supplierName,
+            supplierEmail: row.supplierEmail ?? null,
+            supplierArticleNumber: row.supplierArticleNumber ?? null,
+            supplierOrderNumber: row.supplierOrderNumber ?? null,
             description: row.description,
             quantity: row.quantity,
             purchasePrice: row.purchasePrice,
@@ -203,8 +211,19 @@ export class WarehouseImportsUseCase {
                 brand: row.brand,
                 modelNumber: row.modelNumber,
                 suppliers: row.supplierName
-                    ? [{ supplierId: supplier?.id ?? null, name: supplier?.name ?? row.supplierName, barcode: row.manufacturerBarcode }]
+                    ? [{
+                        supplierId: supplier?.id ?? null,
+                        name: supplier?.name ?? row.supplierName,
+                        barcode: row.manufacturerBarcode,
+                        email: row.supplierEmail ?? null,
+                        // Ältere Einreichungen trugen die Nummer noch als «Ürün kodu» der Karte.
+                        articleNumber: row.supplierArticleNumber ?? row.productCode ?? null,
+                        orderNumber: row.supplierOrderNumber ?? null,
+                    }]
                     : [],
+                productCode: row.supplierName ? null : row.productCode ?? null,
+                unit: row.unit ?? null,
+                isDraft: false,
                 description: row.description,
                 quantity: row.serialRequired ? 0 : row.quantity,
                 purchasePrice: row.purchasePrice,
@@ -214,6 +233,8 @@ export class WarehouseImportsUseCase {
                 manufacturerBarcode: row.supplierName ? null : row.manufacturerBarcode,
                 serialRequired: row.serialRequired,
             };
+            // Was einer fertigen Karte fehlt (Einheit, E-Mail des Lieferanten), macht sie zum Taslak (30.09.2026).
+            fields.isDraft = draftStateOf(fields, undefined, null);
             creates.push({ row: row.row, fields });
         }
         if (!creates.length) {
@@ -230,6 +251,11 @@ export class WarehouseImportsUseCase {
         if (!result) {
             const now = await this.imports.get(tenantId, id);
             throw this.notPending(now?.status ?? 'DONE');
+        }
+        if (this.emails) {
+            await this.emails.remember(tenantId, creates.flatMap((create) => create.fields.suppliers
+                .map((entry) => ({ supplierId: entry.supplierId, name: entry.name, email: entry.email }))))
+                .catch((error: unknown) => console.warn('[depo] Lieferanten-E-Mail (Import) nicht gemerkt:', (error as Error)?.message));
         }
         await this.notifier.importDecided({
             tenantId,

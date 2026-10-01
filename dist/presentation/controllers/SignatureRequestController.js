@@ -6,6 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SignatureRequestController = void 0;
 const prisma_client_1 = __importDefault(require("../../infrastructure/database/prisma.client"));
 const SmtpMailService_1 = require("../../infrastructure/services/SmtpMailService");
+const mailSignature_1 = require("../../infrastructure/services/mailSignature");
+const documentMailLayout_1 = require("../../infrastructure/services/documentMailLayout");
+const documentMailWords_1 = require("../../infrastructure/services/documentMailWords");
 const nanoid_1 = require("nanoid");
 const projectEventNotifications_1 = require("../../infrastructure/services/projectEventNotifications");
 const serviceTenantScope_1 = require("./serviceTenantScope");
@@ -148,14 +151,29 @@ class SignatureRequestController {
                     const subject = String(body.subject || `${request.title || "Rapor"} - imza talebi`).trim();
                     const message = String(body.message || "Raporunuz imza için hazır. Aşağıdaki bağlantıdan görüntüleyip imzalayabilirsiniz.").trim();
                     if (fromEmail) {
+                        // Belegkarte (29.09.2026) — «İmza talebi» + Titel, Knopf zum Unterschreiben.
+                        const mailLang = (0, documentMailLayout_1.documentMailLang)(body.lang ?? "tr");
+                        const words = (0, documentMailWords_1.documentMailWords)(mailLang);
+                        const signature = (0, mailSignature_1.buildSignatureParts)(settings);
+                        const mail = (0, documentMailLayout_1.renderDocumentMail)({
+                            lang: mailLang,
+                            senderName: String(fromName),
+                            senderEmail: fromEmail,
+                            eyebrow: words.signature,
+                            heading: String(request.title || words.fieldReport),
+                            message,
+                            action: { label: words.viewAndSign, href: link },
+                            signatureHtml: signature.html,
+                        });
                         await smtp.send(settings || {}, {
                             fromEmail,
                             fromName,
                             to: request.customerEmail,
                             subject,
-                            text: `${message}\n\n${link}`,
-                            html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#1f2937"><p>${message}</p><p><a href="${link}" style="display:inline-block;padding:10px 18px;background:#272f67;color:#fff;border-radius:8px;text-decoration:none">Raporu Görüntüle ve İmzala</a></p><p style="color:#6b7280;font-size:12px">${link}</p></div>`,
+                            text: `${mail.text}${signature.text}`,
+                            html: mail.html,
                             replyTo: body.replyTo || settings?.replyTo || null,
+                            inlineImages: [...mail.inlineImages, ...signature.inlineImages],
                         }, { asEmployeeId: req.user.id });
                         emailed = true;
                     }

@@ -1,3 +1,6 @@
+import { PrismaBomRevisionApprovals } from '../../infrastructure/repositories/BomRevisionApprovalRepository';
+import { BomRevisionNotifier } from '../../infrastructure/services/bomRevisionNotifications';
+import { PrismaSupplierEmailBook } from '../../infrastructure/repositories/SupplierEmailBook';
 import {
     PrismaBomProductionDirectory,
     PrismaBomPurchaseRepository,
@@ -20,6 +23,9 @@ import { BomProcurementUseCase } from '../../application/use-cases/production/bo
 import { BomCostingUseCase } from '../../application/use-cases/production/bom/BomCostingUseCase';
 import { ProcurementDeskUseCase } from '../../application/use-cases/production/bom/ProcurementDeskUseCase';
 import { PrismaProcurementJournal } from '../../infrastructure/repositories/ProcurementJournalRepository';
+import { PriceComparisonUseCase } from '../../application/use-cases/production/bom/PriceComparisonUseCase';
+import { PrismaPriceComparisonStore } from '../../infrastructure/repositories/PriceComparisonRepository';
+import { compareOffersWithAi } from '../../infrastructure/services/priceCompareAi';
 import { PrismaBomGoodsInRepository, PrismaBomProcurementRepository } from '../../infrastructure/repositories/ProductionBomProcurementRepository';
 import type { BomDemand, BomGoodsIn } from '../../domain/entities/ProductionBom';
 import { nextPurchaseReference } from '../routes/inventory.routes';
@@ -73,6 +79,9 @@ const devices = new DeviceBomsUseCase(
 /* «Satın alma» (27.09.2026 abends): der Einkauf macht aus den Taleplern der BOM die Belege. */
 const procurement = new BomProcurementUseCase(procurementRequests, goodsIn, purchases, stock, directory, reservations, devices, journal);
 devices.attachProcurement(procurement);
+/* Die Freigaben der Revisionen (eingereicht / zurückgewiesen) stehen an der BOM (30.09.2026). */
+const revisionApprovals = new PrismaBomRevisionApprovals();
+devices.attachRevisionApprovals(revisionApprovals);
 
 export const productionBomModule = {
     templates: templateUseCase,
@@ -93,7 +102,18 @@ export const productionBomModule = {
     ),
     procurement,
     /* «Satın alma» (28.09.2026): Liste seitenweise, Stand + nächster Schritt, Verlauf, Handgriffe. */
-    desk: new ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer),
+    desk: new ProcurementDeskUseCase(procurementRequests, goodsIn, purchases, journal, procurement, devices, directory, stock, writer, revisions, new PrismaSupplierEmailBook()),
+    /* «Fiyat karşılaştırma» (29.09.2026): bis zu vier Angebots-PDFs per KI vergleichen, gespeichert. */
+    comparisons: new PriceComparisonUseCase(
+        procurementRequests,
+        devices,
+        procurement,
+        productionBomDocumentStorage,
+        compareOffersWithAi,
+        new PrismaPriceComparisonStore(),
+        journal,
+        directory,
+    ),
     /* «Kalkülasyon» (27.09.2026 abends): geplante gegen tatsächliche Materialkosten. */
     costing: new BomCostingUseCase(boms, stock, directory, devices),
     /* «Bom onaylanırsa geri dönüş yok, revize olması lazım» (27.09.2026). */
@@ -105,6 +125,9 @@ export const productionBomModule = {
         devices,
         new PrismaBomRevisionWriter(),
         productionBomDocumentStorage,
+        // Eine Revision gibt die Administratorrolle frei (30.09.2026).
+        revisionApprovals,
+        new BomRevisionNotifier(),
     ),
     settings: new BomSettingsUseCase(settings),
     reservations,

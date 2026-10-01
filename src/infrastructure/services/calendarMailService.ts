@@ -11,8 +11,7 @@ import {
     type InviteKind,
     type InviteLanguage,
 } from "./calendarInviteMail";
-import { brandLogoInline, brandWaveInline } from "./mailBrand";
-import { kindIconInline } from "./mailKindIcons";
+import { mailInlineImages } from "./mailCardKit";
 import { getMailTenantId } from "../../presentation/controllers/serviceTenantScope";
 
 /**
@@ -280,7 +279,7 @@ const sendInvite = async (context: InviteContext): Promise<InviteSendResult> => 
             replyTo: settings.replyTo || null,
             // Logo, Welle und das Zeichen der Karte (Kalenderblatt bzw. Haken)
             // im Briefkopf — als Inline-Bilder, nicht als Anhang.
-            inlineImages: [brandLogoInline(), brandWaveInline(), kindIconInline("APPOINTMENT")],
+            inlineImages: mailInlineImages(card.kind === "TASK" ? "TASK" : "APPOINTMENT"),
             calendar: { method: context.method, content: ics },
             // Zusätzlich als Datei — Programme, die den Alternativteil ignorieren,
             // können den Termin so trotzdem übernehmen. Danach die Checklisten,

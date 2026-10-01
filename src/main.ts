@@ -105,6 +105,7 @@ import { startTasksReminderEngine } from './infrastructure/services/tasks/tasksR
 import { startMaintenanceReminderService } from './infrastructure/services/MaintenanceReminderService';
 import { startReminderEngine } from './infrastructure/services/ReminderEngine';
 import { startImapCaptureService } from './infrastructure/services/ImapCaptureService';
+import { procurementAutomationModule } from './presentation/composition/procurementAutomationModule';
 import { startRefreshSessionCleanup } from './infrastructure/services/RefreshSessionService';
 import { startCaldavCaptureService } from './infrastructure/services/caldavCalendarService';
 import { globalErrorHandler } from './presentation/middlewares/ErrorHandlerMiddleware';
@@ -359,6 +360,8 @@ const server = app.listen(PORT, () => {
     // je Person und Termin genau einmal (TaskNotifyDispatch).
     startTasksReminderEngine();
     startImapCaptureService();
+    // Antworten der Lieferanten im Postfach der Produktion (rfq@…) — 30.09.2026.
+    procurementAutomationModule.inbox.start();
     // Abgelaufene Anmeldezeilen abräumen (entwertete bleiben bis zum Ablauf
     // stehen — nur so ist ein wiedereingespieltes Token erkennbar).
     startRefreshSessionCleanup();

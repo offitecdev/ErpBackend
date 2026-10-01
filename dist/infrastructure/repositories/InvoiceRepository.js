@@ -196,6 +196,20 @@ const ROW_COLUMNS_SQL = client_1.Prisma.sql `
     e.firstName AS issuerFirstName,
     e.lastName AS issuerLastName
 `;
+// The accounting table needs no document body, positions or payment schedules.
+const SUMMARY_COLUMNS_SQL = client_1.Prisma.sql `
+    i.id, i.customerId, i.projectId, i.salesOrderId, i.invoiceNumber,
+    i.kind, i.status, i.invoiceDate, i.dueDate, i.createdAt, i.updatedAt,
+    i.amount, i.billedPercent, i.recipientName, ${ACTIVITY_SQL} AS activityAt,
+    i.reversesInvoiceId, rv.invoiceNumber AS reversesNumber,
+    rv.invoiceDate AS reversesDate, rv.kind AS reversesKind, rv.amount AS reversesAmount,
+    c.companyName AS customerCompanyName, pr.projectName, pr.projectNumber,
+    so.orderNumber, so.orderType,
+    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id) AS paidSum,
+    (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayment p WHERE p.invoiceId = i.id AND p.kind = 'PAYMENT') AS paidMoney,
+    (SELECT COALESCE(SUM(g.amount), 0) FROM Invoice g
+        WHERE g.reversesInvoiceId = i.id AND g.kind = 'GUTSCHRIFT' AND g.status <> 'DRAFT') AS creditSum
+`;
 const LINE_ITEM_COLUMNS_SQL = client_1.Prisma.sql `
     li.id, li.invoiceId, li.description, li.sourceType, li.sourceId,
     li.quantity, li.unitAmount, li.lineTotal, li.unit, li.sortOrder,
@@ -335,13 +349,12 @@ class InvoiceRepository {
      * EINE SEITE der Buchhaltungsliste (22.09.2026) — 20 Zeilen, sortiert nach
      * dem letzten Vorgang, dazu die Gesamtzahl und die Zähler aller Reiter.
      *
-     * Positionen und Gegenbelege werden NACH den Zeilen geholt: MySQL lässt
-     * kein `LIMIT` in einer `IN`-Unterabfrage zu — und für zwanzig Belege ist
-     * die zweite Runde ohnehin billiger als die Positionen aller Rechnungen.
+     * Nur Tabellenfelder und Zahlungsstand. Positionen und Dokumenttexte
+     * lädt die Detailansicht über `list({ id })`.
      */
     async listPage(filter) {
-        const page = Math.max(1, Math.floor(Number(filter.page) || 1));
-        const pageSize = Math.min(200, Math.max(1, Math.floor(Number(filter.pageSize) || 20)));
+        const page = Number.isFinite(filter.page) ? Math.max(1, Math.floor(filter.page)) : 1;
+        const pageSize = Number.isFinite(filter.pageSize) ? Math.min(200, Math.max(1, Math.floor(filter.pageSize))) : 20;
         const today = filter.today || todayString();
         const whereSql = this.whereOf(filter);
         // Die Zähler gelten für dieselbe Suche und Herkunft, aber für JEDEN
@@ -349,7 +362,7 @@ class InvoiceRepository {
         const countWhereSql = this.whereOf(filter, false);
         const [rows, totalRows, countRows] = await Promise.all([
             prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
-                SELECT ${ROW_COLUMNS_SQL}
+                SELECT ${SUMMARY_COLUMNS_SQL}
                 ${ROWS_FROM_SQL}
                 WHERE ${whereSql}
                 ${orderBySql(filter.sort)}
@@ -373,28 +386,17 @@ class InvoiceRepository {
                 WHERE ${countWhereSql}
             `),
         ]);
-        const ids = rows.map((row) => String(row.id));
-        const [lineItems, reversals] = ids.length === 0
-            ? [[], []]
-            : await Promise.all([
-                prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
-                    SELECT ${LINE_ITEM_COLUMNS_SQL}
-                    FROM InvoiceLineItem li
-                    WHERE li.invoiceId IN (${client_1.Prisma.join(ids)})
-                    ORDER BY li.sortOrder ASC
-                `),
-                prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
-                    SELECT ${REVERSAL_COLUMNS_SQL}
-                    FROM Invoice r
-                    WHERE r.reversesInvoiceId IN (${client_1.Prisma.join(ids)})
-                      AND r.status <> 'DRAFT'
-                    ORDER BY r.createdAt ASC
-                `),
-            ]);
         const counts = countRows[0] ?? {};
         const number = (value) => Number(value ?? 0) || 0;
         return {
-            items: this.mapRows(rows, lineItems, reversals),
+            items: this.mapRows(rows, [], []).map((row) => ({
+                id: row.id, invoiceNumber: row.invoiceNumber, kind: row.kind, category: row.category,
+                status: row.status, invoiceDate: row.invoiceDate, dueDate: row.dueDate,
+                createdAt: row.createdAt, activityAt: row.activityAt, amount: row.amount,
+                billedPercent: row.billedPercent, paidAmount: row.paidAmount, openAmount: row.openAmount,
+                recipientName: row.recipientName, customer: row.customer, project: row.project,
+                salesOrder: row.salesOrder, reversesInvoice: row.reversesInvoice,
+            })),
             total: number(totalRows[0]?.total),
             page,
             pageSize,

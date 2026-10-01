@@ -1,10 +1,12 @@
 """
-DIE ZWEI KENNZEICHEN DER KALENDER-MAILS (19.08.2026).
+DIE KENNZEICHEN DER MAIL-KARTEN (19.08.2026, Beleg seit 30.09.2026).
 
 Jede Karte traegt oben ein Zeichen, das SOFORT sagt, worum es geht:
   * Termin   — ein Kalenderblatt
   * Aufgabe  — ein Haken im Kreis (dasselbe Zeichen, das die Aufgabe im
                Kalender als Merker traegt, siehe ChipLabel im Frontend)
+  * Beleg    — ein Blatt mit Eselsohr und drei Zeilen (Bestellung, Offerte,
+               Rapport … — die Belegmail, documentMailLayout.ts)
 
 Beide sind WEISS auf durchsichtigem Grund. Die Farbe kommt nicht aus dem Bild,
 sondern aus der Flaeche darunter (`background-color` einer Tabellenzelle) — so
@@ -91,13 +93,47 @@ def task() -> str:
     return finish(image)
 
 
-HEADER = '''import { BRAND_ICON_APPOINTMENT_CID, BRAND_ICON_TASK_CID } from "./mailBrand";
+def document() -> str:
+    """Blatt mit Eselsohr und drei Zeilen — der Beleg."""
+    image, draw = canvas()
+    stroke = 9 * SS
+    half = stroke // 2
+    left, top, right, bottom = 24 * SS, 10 * SS, 104 * SS, 118 * SS
+    fold = 28 * SS
+    radius = 12 * SS
+
+    # Blattrand.
+    draw.rounded_rectangle([left, top, right, bottom], radius=radius, outline=WHITE, width=stroke)
+    # Eselsohr: die Ecke oben rechts wegnehmen (durchsichtig uebermalen) ...
+    draw.polygon(
+        [(right - fold, top - 2 * SS), (right + 2 * SS, top - 2 * SS), (right + 2 * SS, top + fold)],
+        fill=CLEAR,
+    )
+    # ... die Schnittkante als Strich schliessen ...
+    draw.line([(right - fold, top + half), (right - half, top + fold)], fill=WHITE, width=stroke)
+    # ... und das umgeschlagene Dreieck voll zeichnen.
+    draw.polygon(
+        [(right - fold, top + half), (right - fold, top + fold), (right - half, top + fold)],
+        fill=WHITE,
+    )
+    # Drei Zeilen Text, die letzte kuerzer.
+    for y, x2 in ((62, 84), (80, 84), (98, 68)):
+        draw.rounded_rectangle(
+            [44 * SS, (y - 4) * SS, x2 * SS, (y + 4) * SS],
+            radius=4 * SS,
+            fill=WHITE,
+        )
+    return finish(image)
+
+
+HEADER = '''import { BRAND_ICON_APPOINTMENT_CID, BRAND_ICON_DOCUMENT_CID, BRAND_ICON_TASK_CID } from "./mailBrand";
 
 /**
- * DIE ZWEI KENNZEICHEN DER KALENDER-MAILS (19.08.2026) — als Base64.
+ * DIE KENNZEICHEN DER MAIL-KARTEN (19.08.2026, Beleg seit 30.09.2026) — als
+ * Base64.
  *
  * ERZEUGT von `scripts/mail-kind-icons.py`; von Hand geaendert wird hier
- * nichts. Beide Bilder sind WEISS auf durchsichtigem Grund: die Farbe kommt
+ * nichts. Alle Bilder sind WEISS auf durchsichtigem Grund: die Farbe kommt
  * aus der Flaeche darunter (Marineblau beim Termin, Gruen bei der Aufgabe,
  * Rot bei der Absage), damit ein Bild fuer alle Faelle reicht.
  */
@@ -111,11 +147,18 @@ const APPOINTMENT_PNG_BASE64 =
 const TASK_PNG_BASE64 =
 {task};
 
+const DOCUMENT_PNG_BASE64 =
+{document};
+
+export type MailIconKind = "APPOINTMENT" | "TASK" | "DOCUMENT";
+
 /** Inline-Bild fuer `SendMailInput.inlineImages`; im HTML per `cid:` einsetzen. */
-export const kindIconInline = (kind: "APPOINTMENT" | "TASK") => (
+export const kindIconInline = (kind: MailIconKind) => (
     kind === "TASK"
         ? {{ cid: BRAND_ICON_TASK_CID, contentType: "image/png", contentBase64: TASK_PNG_BASE64 }}
-        : {{ cid: BRAND_ICON_APPOINTMENT_CID, contentType: "image/png", contentBase64: APPOINTMENT_PNG_BASE64 }}
+        : kind === "DOCUMENT"
+            ? {{ cid: BRAND_ICON_DOCUMENT_CID, contentType: "image/png", contentBase64: DOCUMENT_PNG_BASE64 }}
+            : {{ cid: BRAND_ICON_APPOINTMENT_CID, contentType: "image/png", contentBase64: APPOINTMENT_PNG_BASE64 }}
 );
 '''
 
@@ -135,6 +178,7 @@ def main() -> None:
         header=HEADER,
         appointment=literal(appointment()),
         task=literal(task()),
+        document=literal(document()),
     )
     with open(out, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(body.lstrip("\n"))

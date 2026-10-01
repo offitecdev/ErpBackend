@@ -29,6 +29,20 @@ export const procurementKindFrom = (value: unknown): BomProcurementKind | null =
     return raw === 'PRICE' || raw === 'ORDER' ? raw : null;
 };
 
+/**
+ * «Fiyat talebi alınan üründen bir daha fiyat talebi istenemeyecek» (Samet,
+ * 30.09.2026): eine BOM-Zeile, die schon in einem Fiyat talebi steht (egal in
+ * welcher Revision, nur ein verworfener zählt nicht), kommt in keinen zweiten.
+ * Mehr Lieferanten fragt der Einkauf im SELBEN Talep an; eine Mehrmenge einer
+ * Revision folgt der Bestellung (Revision der Bestellung), nicht einer neuen
+ * Anfrage.
+ */
+export const priceRequestedLineIds = (
+    requests: Array<Pick<BomProcurementRequest, 'kind' | 'status' | 'lines'>>,
+): Set<string> => new Set(requests
+    .filter((request) => request.kind === 'PRICE' && request.status !== 'CANCELLED')
+    .flatMap((request) => request.lines.map((line) => line.bomLineId)));
+
 /** Only the requested quantity is pending; another request can cover the remainder. */
 export const remainingPriceRequestQuantities = (
     lines: Array<{ id: string; quantity: number }>,
@@ -117,13 +131,20 @@ export const procurementProgress = (
     };
 };
 
-/** Der Stand, den ein offener Talep nach neuen Belegen hat (geschlossene bleiben). */
+/**
+ * Der Stand, den ein offener Talep nach neuen Belegen hat (geschlossene bleiben).
+ * Ein Satın alma talebi ist erledigt, wenn jede Zeile bestellt ist. Ein Fiyat
+ * talebi NIE von selbst (29.09.2026, Samet: «fiyat taleplerinin hepsinde
+ * tamamlandı diyor, ne alaka? … başka tedarikçilere de danışabilelim») — es
+ * bleibt offen für weitere Lieferanten, bis der Einkauf es schliesst.
+ */
 export const procurementStatusAfter = (
     current: BomProcurementStatus,
     progress: ProcurementProgress,
+    kind: BomProcurementKind = 'ORDER',
 ): BomProcurementStatus => {
     if (current === 'CANCELLED' || current === 'DONE') return current;
-    if (progress.total > 0 && progress.covered >= progress.total) return 'DONE';
+    if (kind === 'ORDER' && progress.total > 0 && progress.covered >= progress.total) return 'DONE';
     return progress.covered > 0 || progress.requests + progress.orders > 0 ? 'IN_PROGRESS' : 'OPEN';
 };
 

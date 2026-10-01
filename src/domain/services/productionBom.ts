@@ -124,7 +124,47 @@ export type BomErrorCode =
     | 'REQUEST_MISMATCH'
     // Satın alma, der Schreibtisch (28.09.2026)
     | 'PRICES_REQUIRED'
-    | 'PRICE_MISSING';
+    | 'PRICE_MISSING'
+    // Fiyat karşılaştırması (29.09.2026)
+    | 'COMPARE_COUNT'
+    | 'COMPARE_PDF_REQUIRED'
+    | 'COMPARE_PDF_UNREADABLE'
+    | 'COMPARISON_NOT_FOUND'
+    // Satın alma otomasyonu (30.09.2026)
+    | 'ORDER_REQUEST_RETIRED'
+    | 'MAILBOX_MISSING'
+    | 'MAILBOX_INVALID'
+    | 'NO_SUPPLIER_EMAIL'
+    | 'PDF_RENDER_FAILED'
+    | 'MAIL_FAILED'
+    | 'SELECTION_INVALID'
+    | 'ORDER_NOT_SENDABLE'
+    /** Preisanfragen und Bestellungen gibt es nur aus einer freigegebenen BOM (30.09.2026). */
+    | 'BOM_NOT_APPROVED'
+    /** Freigegeben wird nur, wenn jede Zeile einen ERP-Code trägt (30.09.2026). */
+    | 'ERP_CODE_MISSING'
+    /** Eine Revision gibt die Administratorrolle frei (30.09.2026). */
+    | 'REVISION_NEEDS_ADMIN'
+    | 'REVISION_NOT_SUBMITTED';
+
+/**
+ * «ERP kodları olmadan BOM onaylanamasın» (Samet, 30.09.2026): die Zeilen,
+ * deren Depo-Karte (noch) keinen ERP-Code trägt — z. B. ohne Materialgruppe.
+ */
+export const assertErpCodes = (
+    lines: Array<{ productId: string; name: string }>,
+    products: Map<string, { erpCode: string | null; name: string }>,
+): void => {
+    const missing = lines.filter((line) => !String(products.get(line.productId)?.erpCode ?? '').trim());
+    if (!missing.length) return;
+    throw bomError('ERP_CODE_MISSING', 'Ohne ERP-Code lässt sich die BOM nicht freigeben.', {
+        status: 409,
+        params: {
+            count: missing.length,
+            names: missing.slice(0, 3).map((line) => products.get(line.productId)?.name ?? line.name).join(', ') + (missing.length > 3 ? ' …' : ''),
+        },
+    });
+};
 
 export type BomError = Error & {
     code: BomErrorCode;
@@ -867,11 +907,13 @@ export const PRICE_REQUEST_STATUSES = new Set(['DRAFT', 'PRICE_REQUEST']);
  */
 export const confirmProblems = (
     order: { quoteNumber?: string | null },
-    link: { quoteFileRef: string | null } | null,
+    link: { quoteFileRef: string | null; orderRevision?: number } | null,
 ): Array<'QUOTE_NUMBER' | 'QUOTE_FILE'> => {
     const problems: Array<'QUOTE_NUMBER' | 'QUOTE_FILE'> = [];
     if (!String(order.quoteNumber ?? '').trim()) problems.push('QUOTE_NUMBER');
-    if (!link?.quoteFileRef) problems.push('QUOTE_FILE');
+    /* Das Angebots-PDF braucht nur die ERSTE Bestätigung (30.09.2026, Samet: «revizyonda teklif
+       PDF'ini istemeye gerek yok, o ilk onay için») — eine revidierte Bestellung bestätigt man ohne. */
+    if (!link?.quoteFileRef && !((link?.orderRevision ?? 0) > 0)) problems.push('QUOTE_FILE');
     return problems;
 };
 

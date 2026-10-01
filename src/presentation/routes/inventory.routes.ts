@@ -15,6 +15,9 @@ import { auditLog } from '../../infrastructure/services/AuditLogService';
 import prisma from '../../infrastructure/database/prisma.client';
 import { SmtpMailService } from '../../infrastructure/services/SmtpMailService';
 import { buildSignatureParts } from '../../infrastructure/services/mailSignature';
+import { buildPurchaseOrderMail } from '../../infrastructure/services/purchaseOrderMail';
+import { documentMailLang, renderDocumentMail } from '../../infrastructure/services/documentMailLayout';
+import { documentMailWords } from '../../infrastructure/services/documentMailWords';
 import { composeAddressSnapshot } from '../../shared/postalAddress';
 import {
     canonicalPurchaseCode,
@@ -49,7 +52,8 @@ import { issueCodes, issueTemporaryReceiptCodes } from '../../application/servic
 import { itemTypeForArticleKind, parseArticleKind } from '../../shared/articleKind';
 import { companyRequiresArticleKindAndSupplier, readTenantCompanyType } from '../../shared/companyType';
 import { nanoid } from 'nanoid';
-import { getMailTenantId } from "../controllers/serviceTenantScope";
+import { employeeScopeWhere, getCompanyTreeTenantIds, getMailTenantId } from "../controllers/serviceTenantScope";
+import { buildPurchaseRequestForwardMail } from '../../infrastructure/services/purchaseRequestForwardMail';
 import { purchaseOrderImportRouter } from './purchaseOrderImport.routes';
 // Produktion (19.09.2026): Pflichtauswahl Projekt + Gerät, bestätigte Zeilen.
 import { productionModule } from '../composition/productionModule';
@@ -1901,6 +1905,9 @@ const bulkUpdateArticlePurchases = async (
  *         name: dateTo
  *         schema: { type: string, format: date }
  */
+/** `kinds` süzgecinin bildiği türler — DEFINITION = miktarı 0 olan giriş. */
+const MOVEMENT_KIND_FILTERS = new Set(['IN', 'OUT', 'TRANSFER', 'RETURN', 'ADJUSTMENT', 'DEFINITION']);
+
 router.get(
     '/movements',
     requireAuth,
@@ -1961,6 +1968,25 @@ router.get(
             else if (type) and.push({ movementType: type });
             if (origin === 'MANUAL') and.push({ OR: [{ origin: null }, { origin: 'MANUAL' }] });
             else if (origin) and.push({ origin });
+            /* ÇOKLU SEÇİM (29.09.2026, Stok Hareketleri'nin cam filtresi):
+               `kinds=IN,OUT` ve `origins=ORDER_RECEIPT,QUICK_ADD` — virgüllü
+               liste, bir listenin içi VEYA, iki liste birbiriyle VE. Bilinmeyen
+               değer sessizce düşer (Prisma enum'u onu reddederdi). */
+            const listOf = (value: unknown) => toStr(value).toUpperCase().split(',').map((part) => part.trim()).filter(Boolean);
+            const kinds = listOf(req.query.kinds).filter((kind) => MOVEMENT_KIND_FILTERS.has(kind));
+            if (kinds.length) {
+                and.push({
+                    OR: kinds.map((kind) => (kind === 'DEFINITION'
+                        ? { movementType: 'IN', quantity: 0 }
+                        : kind === 'IN' ? { movementType: 'IN', quantity: { gt: 0 } } : { movementType: kind })),
+                });
+            }
+            const origins = listOf(req.query.origins).filter((entry) => (MOVEMENT_ORIGINS as readonly string[]).includes(entry));
+            if (origins.length) {
+                and.push({
+                    OR: origins.flatMap((entry) => (entry === 'MANUAL' ? [{ origin: null }, { origin: 'MANUAL' }] : [{ origin: entry }])),
+                });
+            }
             if (dateFrom) and.push({ transactionDate: { gte: dateFrom } });
             if (dateTo) and.push({ transactionDate: { lte: dateTo } });
 
@@ -1984,7 +2010,8 @@ router.get(
                         scannedBarcode: true,
                         serialNumber: true,
                         ...(!articleId ? {
-                            article: { select: { articleCode: true, name: true, modelNumber: true, serialNumber: true, supplierBarcode: true, systemBarcode: true } },
+                            // `unit`: Stok Hareketleri'nin Giriş/Çıkış sütunu «24 m» yazar (29.09.2026).
+                            article: { select: { articleCode: true, name: true, unit: true, modelNumber: true, serialNumber: true, supplierBarcode: true, systemBarcode: true } },
                         } : {}),
                         supplier: { select: { companyName: true } },
                         employee: { select: { firstName: true, lastName: true } },
@@ -3780,15 +3807,35 @@ router.post(
             let emailSent = false;
             if (sendEmail && supplierEmail) {
                 const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
+                const fromEmail = settings?.fromEmail || req.user!.email;
+                const fromName = settings?.fromName || 'Offitec Control Center';
+                // Belegkarte (29.09.2026) — «Tedarik talebi» + Artikel, Menge und Code als Eckdaten.
+                const mailLang = documentMailLang(b.lang ?? 'tr');
+                const words = documentMailWords(mailLang);
+                const signature = buildSignatureParts(settings);
+                const mail = renderDocumentMail({
+                    lang: mailLang,
+                    senderName: fromName,
+                    senderEmail: fromEmail,
+                    eyebrow: words.supplyRequest,
+                    heading: itemName,
+                    message: bodyText,
+                    facts: [
+                        [words.quantity, `${requestedQuantity}${b.unit ? ` ${String(b.unit)}` : ''}`],
+                        [words.articleCode, b.itemCode ? String(b.itemCode) : ''],
+                    ],
+                    signatureHtml: signature.html,
+                });
                 const result = await smtp.send(settings || {}, {
-                    fromEmail: settings?.fromEmail || req.user!.email,
-                    fromName: settings?.fromName || 'Offitec Control Center',
+                    fromEmail,
+                    fromName,
                     to: supplierEmail,
                     subject,
-                    text: bodyText,
-                    html: bodyText ? `<pre style="font-family:inherit;white-space:pre-wrap">${bodyText.replace(/</g, '&lt;')}</pre>` : null,
+                    text: `${mail.text}${signature.text}`,
+                    html: mail.html,
                     replyTo: settings?.replyTo || null,
                     attachments: [],
+                    inlineImages: [...mail.inlineImages, ...signature.inlineImages],
                 }, { asEmployeeId: req.user!.id });
                 emailSent = !result.preview;
             }
@@ -3926,13 +3973,48 @@ const PO_CALC_MODES = new Set(['AUTO', 'DIRECT', 'SUPPLIER']);
 const PO_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // CR/LF temizliği: SMTP başlığına yerleşen değer ek başlık enjekte edemesin.
 const poStripHeader = (value: string) => value.replace(/[\r\n]+/g, ' ').trim();
-const poEscapeHtml = (value: string) =>
-    value
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+
+/**
+ * DAS PRODUKTIONSPROJEKT JE BESTELLUNG (29.09.2026, Samet: «proje kodu ayrı yerde,
+ * komisyonu ayrı yerde»): Nummer und Name aus der Zuordnung
+ * (uretim_siparis_atamalari → uretim_projeler) — für eine ganze Listenseite in
+ * EINER Abfrage. Ohne Produktionsmodul bleibt die Karte leer.
+ */
+const poProjectsOf = async (tenantId: string, ids: string[]): Promise<Map<string, { number: string; name: string }>> => {
+    if (!ids.length) return new Map();
+    const rows: Array<{ purchaseOrderId: string; projectNumber: string; projectName: string }> = await (prisma as any).$queryRawUnsafe(
+        `SELECT a.\`purchaseOrderId\` AS purchaseOrderId, p.\`projectNumber\` AS projectNumber, p.\`projectName\` AS projectName
+         FROM \`uretim_siparis_atamalari\` a
+         JOIN \`uretim_projeler\` p ON p.\`id\` = a.\`productionProjectId\`
+         WHERE a.\`tenantId\` = ? AND a.\`purchaseOrderId\` IN (${ids.map(() => '?').join(', ')})`,
+        tenantId,
+        ...ids,
+    ).catch((error: any) => {
+        console.warn('[purchase-orders] project lookup failed', error?.message);
+        return [];
+    });
+    return new Map(rows.map((row) => [row.purchaseOrderId, { number: String(row.projectNumber ?? ''), name: String(row.projectName ?? '') }]));
+};
+
+/**
+ * DER BELEG, WIE DIE SEITE «PDF» IHN SIEHT (30.09.2026): die Zeile, die
+ * Produktionszuordnung, die BOM-Herkunft (Revision!) und das Projekt — in
+ * genau der Form von GET /purchase-orders/:id. Die Automatik der Produktion
+ * baut daraus auf dem Server dasselbe PDF wie der Browser (supplierPdfRenderer).
+ * `null` = gibt es nicht.
+ */
+export const purchaseOrderDocument = async (tenantId: string, id: string): Promise<Record<string, any> | null> => {
+    const row = await (prisma as any).purchaseOrder.findFirst({ where: { id, tenantId } });
+    if (!row) return null;
+    const [production, bomOrigin, projects] = await Promise.all([
+        productionModule.purchaseLink.isEnabled(tenantId)
+            .then((enabled) => (enabled ? productionModule.picker.assignmentFor(tenantId, row.id) : null))
+            .catch(() => null),
+        productionBomGuard.originOf(tenantId, row.id, row).catch(() => null),
+        poProjectsOf(tenantId, [row.id]),
+    ]);
+    return { ...parsePurchaseOrderRow(row), production, bomOrigin, project: projects.get(row.id) ?? null };
+};
 
 /** Yüzde alanı: 0–100 aralığına kırpılır (geçersiz değer 0 sayılır). */
 const poPercent = (value: unknown): number => {
@@ -4529,7 +4611,10 @@ type PoRequestSupplier = {
     emailRecipient: string | null;
 };
 const PO_REQUEST_SUPPLIERS_MAX = 10;
-const PO_MULTI_SUPPLIER_ROLE_RE = /muhasebe|buchhalt|accounting/i;
+/* SATIN ALMA ROLÜ (29.09.2026, Samet): muhasebe = «Purser» rolü. Yalnızca bu
+   roller + Administrator talebin tedarikçilerini görür/seçer ve belgeyi
+   (PDF + e-posta) tedarikçiye gönderir. Frontend: `lib/access.ts`. */
+const PO_MULTI_SUPPLIER_ROLE_RE = /muhasebe|buchhalt|accounting|purser|purchas|einkauf|sat[ıi]n ?alma/i;
 const PO_NO_SUPPLIER = { supplierId: null, supplierName: '', supplierEmail: null, supplierAddress: null };
 
 /** Administrator ya da muhasebe rolü: fiyat talebine tedarikçi(ler) seçebilir. */
@@ -4538,11 +4623,171 @@ const poCanPickRequestSuppliers = async (employeeId: string): Promise<boolean> =
         SELECT r.roleName AS roleName, r.isSystemAdmin AS isSystemAdmin
         FROM EmployeeRole er JOIN Role r ON r.id = er.roleId
         WHERE er.employeeId = ${employeeId}
+        UNION ALL
+        SELECT e.roleName AS roleName, 0 AS isSystemAdmin FROM Employee e WHERE e.id = ${employeeId}
     ` as Array<{ roleName: string | null; isSystemAdmin: unknown }>;
     return rows.some((row) => Boolean(Number(row.isSystemAdmin)) || PO_MULTI_SUPPLIER_ROLE_RE.test(String(row.roleName || '')));
 };
 
-const poSameSupplier = (a: { supplierId: string | null; supplierName: string }, b: { supplierId: string | null; supplierName: string }) =>
+/** Satın alma rolü değilse belge tedarikçiye gönderilemez (PDF + e-posta). */
+const poPurchaserOnly = async (req: any, res: any): Promise<boolean> => {
+    if (await poCanPickRequestSuppliers(req.user!.id)) return true;
+    res.status(403).json({
+        error: 'Belgeyi tedarikçiye yalnızca satın alma (muhasebe) ya da yönetici gönderebilir.',
+        code: 'PURCHASER_ONLY',
+    });
+    return false;
+};
+
+/* «FİYAT TALEBİ … TARAFINDAN İLETİLDİ» (29.09.2026): talebi satın alma rolü
+   olmayan biri (ör. mühendis) açtıysa, satın almacı sayfanın başında kimden
+   geldiğini görür. */
+const poForwardedBy = async (row: any): Promise<{ name: string } | null> => {
+    if (!row?.createdByEmpId || !['DRAFT', 'PRICE_REQUEST'].includes(String(row.status))) return null;
+    if (await poCanPickRequestSuppliers(row.createdByEmpId)) return null;
+    const people = await (prisma as any).$queryRaw`
+        SELECT firstName, lastName FROM Employee WHERE id = ${row.createdByEmpId} AND tenantId = ${row.tenantId}
+    ` as Array<{ firstName: string | null; lastName: string | null }>;
+    const name = [people[0]?.firstName, people[0]?.lastName].filter(Boolean).join(' ').trim();
+    return name ? { name } : null;
+};
+
+/* «TALEP EDEN» (30.09.2026, Samet: «fiyat talebinin kimden geldiğini öğreneceğiz;
+   sipariş no, sipariş veren, alıcı, komisyon, teklif no olmayacak»): jede
+   Preisanfrage nennt ihren Anleger — in der Liste wie in der Maske, gleich
+   welche Rolle er hat. */
+const poRequesterNames = async (rows: any[]): Promise<Map<string, string>> => {
+    const result = new Map<string, string>();
+    const asks = rows.filter((row) => row?.createdByEmpId && PO_PRICE_REQUEST_STATUSES.has(row.status));
+    const ids = [...new Set(asks.map((row) => String(row.createdByEmpId)))];
+    if (!ids.length) return result;
+    const people = await (prisma as any).employee.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, firstName: true, lastName: true },
+    }) as Array<{ id: string; firstName: string | null; lastName: string | null }>;
+    const names = new Map(people.map((person) => [person.id, [person.firstName, person.lastName].filter(Boolean).join(' ').trim()]));
+    for (const row of asks) {
+        const name = names.get(String(row.createdByEmpId));
+        if (name) result.set(row.id, name);
+    }
+    return result;
+};
+
+/* ══ FİYAT TALEBİ → SATIN ALMA (29.09.2026, Vorgabe Samet) ══════════════════
+   «Purser veya admin dışında siparişler tabını kimse görmeyecek ve diğerlerinin
+    de mail ve PDF gönderme şansı olacak … mail gönderecek ve orada fiyat
+    talebinin linki olacak ve ‹fiyat talebi oluşturuldu› diye bildirim olacak
+    masaüstünde muhasebecinin ve adminin … talebin kimden geldiği de üstte
+    yazacak … kullanıcı tedarikçiden haberi olmayacak, ilerki bölümleri sadece
+    Purser ve admin görecek.»
+
+   • Satın alma rolü olmayan biri SİPARİŞLERİ görmez: liste ona yalnız fiyat
+     taleplerini döner, talebin tedarikçi alanları boş gelir.
+   • Talebi tedarikçiye değil SATIN ALMAYA gönderir (`/forward`): OCC belge
+     kartında bir mail (talebin bağlantısıyla, PDF ekte) + satın almacının ve
+     yöneticilerin zilinde / masaüstünde «Fiyat talebi oluşturuldu».
+   • İz `DocumentEvent`te durur (PURCHASE_ORDER · FORWARDED) — PurchaseOrder'a
+     sütun eklenmedi, uzak veritabanında göç gerekmez.
+   • Siparişe dönüştürmek ve talebi sipariş aşamasına almak satın almanındır. */
+const PO_FORWARD_ENTITY = 'PURCHASE_ORDER';
+const PO_FORWARD_ACTION = 'FORWARDED';
+const PO_APP_URL = () => (process.env.OFFITEC_APP_URL || 'https://demo.offitec.ch').replace(/\/$/, '');
+
+/** Satın alma rolü olmayana tedarikçi gösterilmez: talebin tedarikçi alanları boşalır. */
+const poWithoutSupplierFacts = <T extends Record<string, any>>(row: T): T => ({
+    ...row,
+    supplierId: null,
+    supplierName: '',
+    supplierEmail: null,
+    supplierAddress: null,
+    requestSuppliers: [],
+    emailRecipient: null,
+});
+
+/** Satın alma rolü değilse 403 — iş akışının satın almaya kalan adımları. */
+const poRequirePurchaser = async (req: any, res: any, error: string): Promise<boolean> => {
+    if (await poCanPickRequestSuppliers(req.user!.id)) return true;
+    res.status(403).json({ error, code: 'PURCHASER_ONLY' });
+    return false;
+};
+
+type PoForwardPerson = { id: string; name: string; email: string | null; kind: 'PURCHASER' | 'ADMIN' };
+
+/**
+ * Talebi alacak kişiler: firma ağacında satın alma rolündekiler (Purser,
+ * muhasebe …) ve Administrator rolündekiler — etkin, silinmemiş, yasaklanmamış;
+ * gönderen kişi hariç. İkisi birden olan satın almacı sayılır. Rol adı
+ * `PO_MULTI_SUPPLIER_ROLE_RE` ile, `Role.isPurser` bayrağıyla ya da çalışanın
+ * eski `roleName` alanıyla tanınır — `poCanPickRequestSuppliers` ile aynı kural.
+ */
+const poForwardPeople = async (tenantId: string, excludeId: string): Promise<PoForwardPerson[]> => {
+    const treeIds = await getCompanyTreeTenantIds(tenantId);
+    const rows = await (prisma as any).employee.findMany({
+        where: {
+            ...employeeScopeWhere(treeIds.length ? treeIds : [tenantId]),
+            deletedAt: null,
+            bannedAt: null,
+            isActive: true,
+        },
+        select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            roleName: true,
+            employeeRoles: { select: { role: { select: { roleName: true, isSystemAdmin: true, isPurser: true } } } },
+        },
+    }) as Array<{
+        id: string;
+        firstName: string | null;
+        lastName: string | null;
+        email: string | null;
+        roleName: string | null;
+        employeeRoles: Array<{ role: { roleName: string | null; isSystemAdmin: boolean; isPurser: boolean | null } | null }>;
+    }>;
+    const people: PoForwardPerson[] = [];
+    for (const row of rows) {
+        if (row.id === excludeId) continue;
+        const roles = row.employeeRoles.map((link) => link.role).filter(Boolean) as Array<{ roleName: string | null; isSystemAdmin: boolean; isPurser: boolean | null }>;
+        const purchaser = roles.some((role) => Boolean(role.isPurser) || PO_MULTI_SUPPLIER_ROLE_RE.test(String(role.roleName || '')))
+            || PO_MULTI_SUPPLIER_ROLE_RE.test(String(row.roleName || ''));
+        const admin = roles.some((role) => Boolean(role.isSystemAdmin));
+        if (!purchaser && !admin) continue;
+        const email = String(row.email || '').trim();
+        people.push({
+            id: row.id,
+            name: [row.firstName, row.lastName].filter(Boolean).join(' ').trim() || email,
+            email: PO_EMAIL_RE.test(email) ? email : null,
+            kind: purchaser ? 'PURCHASER' : 'ADMIN',
+        });
+    }
+    // Satın alma önce, sonra yöneticiler; kendi içinde ada göre.
+    return people.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, 'tr') : a.kind === 'PURCHASER' ? -1 : 1));
+};
+
+type PoForwarding = { at: string; byName: string | null; recipients: string[] };
+
+/** Kayıtların SON gönderimi (satın almaya) — liste ve detay için tek sorgu. */
+const poLatestForwardings = async (tenantId: string, ids: string[]): Promise<Map<string, PoForwarding>> => {
+    const result = new Map<string, PoForwarding>();
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!unique.length) return result;
+    const rows = await (prisma as any).documentEvent.findMany({
+        where: { tenantId, entityType: PO_FORWARD_ENTITY, entityId: { in: unique }, action: PO_FORWARD_ACTION },
+        orderBy: { createdAt: 'desc' },
+        select: { entityId: true, actorName: true, snapshot: true, createdAt: true },
+    }) as Array<{ entityId: string; actorName: string | null; snapshot: any; createdAt: Date }>;
+    for (const row of rows) {
+        if (result.has(row.entityId)) continue;
+        const recipients = Array.isArray(row.snapshot?.recipients)
+            ? row.snapshot.recipients.map((entry: any) => String(entry?.name ?? '')).filter(Boolean)
+            : [];
+        result.set(row.entityId, { at: row.createdAt.toISOString(), byName: row.actorName ?? null, recipients });
+    }
+    return result;
+};
+
+const poSameSupplier =(a: { supplierId: string | null; supplierName: string }, b: { supplierId: string | null; supplierName: string }) =>
     (a.supplierId && a.supplierId === b.supplierId)
     || (!a.supplierId && !b.supplierId && a.supplierName.trim().toLowerCase() === b.supplierName.trim().toLowerCase());
 
@@ -4627,7 +4872,7 @@ router.get(
     '/purchase-orders',
     requireAuth,
     requirePermission('inventory.view'),
-    responseCache({ namespaces: ['catalog'], ttlSec: 30 }),
+    responseCache({ namespaces: ['catalog', 'production'], ttlSec: 30 }),
     async (req, res) => {
         try {
             const tenantId = req.user!.tenantId;
@@ -4644,7 +4889,17 @@ router.get(
             if (!where.status && (kind === 'PRICE_REQUEST' || kind === 'ORDER')) {
                 where.status = { in: [...(kind === 'PRICE_REQUEST' ? PO_PRICE_REQUEST_STATUSES : PO_ORDER_STATUSES)] };
             }
-            if (req.query.supplierId) where.supplierId = String(req.query.supplierId);
+            /* SİPARİŞLER SATIN ALMANINDIR (29.09.2026, Samet: «Purser veya admin
+               dışında siparişler tabını kimse görmeyecek»): diğer rollere liste
+               yalnız fiyat taleplerini döner — adres elle değiştirilse de. */
+            const purchaser = await poCanPickRequestSuppliers(req.user!.id);
+            if (!purchaser) {
+                where.status = typeof where.status === 'string' && PO_PRICE_REQUEST_STATUSES.has(where.status)
+                    ? where.status
+                    : { in: [...PO_PRICE_REQUEST_STATUSES] };
+            }
+            // Tedarikçi süzgeci ve tedarikçi adıyla arama yalnız satın almada — başkası tedarikçiyi hiç görmez.
+            if (req.query.supplierId && purchaser) where.supplierId = String(req.query.supplierId);
             const search = String(req.query.search || '').trim();
             if (search) {
                 // ARAMA DİLDEN BAĞIMSIZ: `FT-2026-001` de `PA-2026-001` de aynı
@@ -4657,7 +4912,7 @@ router.get(
                     { orderNumber: { contains: codeSearch } },
                     { quoteNumber: { contains: search } },
                     { projectName: { contains: search } },
-                    { supplierName: { contains: search } },
+                    ...(purchaser ? [{ supplierName: { contains: search } }] : []),
                 ];
             }
             const reference = String(req.query.reference || '').trim();
@@ -4679,7 +4934,7 @@ router.get(
             const project = String(req.query.project || '').trim();
             if (project) where.projectName = { contains: project };
             const supplier = String(req.query.supplier || '').trim();
-            if (supplier) where.supplierName = { contains: supplier };
+            if (supplier && purchaser) where.supplierName = { contains: supplier };
             const dateFrom = req.query.dateFrom ? new Date(String(req.query.dateFrom)) : null;
             const dateTo = req.query.dateTo ? new Date(String(req.query.dateTo)) : null;
             if ((dateFrom && !isNaN(dateFrom.getTime())) || (dateTo && !isNaN(dateTo.getTime()))) {
@@ -4701,7 +4956,28 @@ router.get(
                     take: pageSize,
                 }),
             ]);
-            res.status(200).json({ items: rows.map(parsePurchaseOrderRow), total, page, pageSize });
+            // Projektnummer und -name getrennt von der Kommission (29.09.2026).
+            const [projects, forwardings, requesters] = await Promise.all([
+                poProjectsOf(tenantId, rows.map((row: any) => row.id)),
+                // «Satın almaya iletildi» — die letzte Sendung an den Einkauf je Zeile (29.09.2026).
+                poLatestForwardings(tenantId, rows.map((row: any) => row.id)).catch(() => new Map<string, PoForwarding>()),
+                poRequesterNames(rows).catch(() => new Map<string, string>()),
+            ]);
+            res.status(200).json({
+                items: rows.map((row: any) => {
+                    const requester = requesters.get(row.id);
+                    const parsed = {
+                        ...parsePurchaseOrderRow(row),
+                        project: projects.get(row.id) ?? null,
+                        forwarding: forwardings.get(row.id) ?? null,
+                        requestedBy: requester ? { name: requester } : null,
+                    };
+                    return purchaser ? parsed : poWithoutSupplierFacts(parsed);
+                }),
+                total,
+                page,
+                pageSize,
+            });
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -4965,7 +5241,25 @@ router.get(
                 console.warn('[production-bom] origin unreadable', row.id, error?.message);
                 return null;
             });
-            res.status(200).json({ ...parsePurchaseOrderRow(row), production, bomOrigin });
+            const [forwardedBy, forwardings, purchaser, requesters] = await Promise.all([
+                poForwardedBy(row).catch(() => null),
+                // Die letzte Sendung an den Einkauf (29.09.2026): wann, von wem, an wen.
+                poLatestForwardings(tenantId, [row.id]).catch(() => new Map<string, PoForwarding>()),
+                poCanPickRequestSuppliers(req.user!.id),
+                poRequesterNames([row]).catch(() => new Map<string, string>()),
+            ]);
+            const requester = requesters.get(row.id);
+            const detail = {
+                ...parsePurchaseOrderRow(row),
+                production,
+                bomOrigin,
+                forwardedBy,
+                forwarding: forwardings.get(row.id) ?? null,
+                requestedBy: requester ? { name: requester } : null,
+            };
+            /* Ohne Einkaufsrolle kein Lieferant (29.09.2026: «kullanıcı tedarikçiden
+               haberi olmayacak»). Eine Bestellung aus dem Projekt bleibt, wie sie ist. */
+            res.status(200).json(!purchaser && PO_PRICE_REQUEST_STATUSES.has(row.status) ? poWithoutSupplierFacts(detail) : detail);
         } catch (error: any) {
             res.status(400).json({ error: error.message });
         }
@@ -5472,7 +5766,11 @@ router.patch(
                     refreshProducerProduction(existing);
                     refreshProducerProduction(updated);
                 }
-                res.status(200).json(parsePurchaseOrderRow(updated));
+                // Ohne Einkaufsrolle kommt die Anfrage ohne Lieferanten zurück (29.09.2026).
+                const saved = parsePurchaseOrderRow(updated);
+                res.status(200).json(PO_PRICE_REQUEST_STATUSES.has(updated.status) && !(await poCanPickRequestSuppliers(req.user!.id))
+                    ? poWithoutSupplierFacts(saved)
+                    : saved);
             } catch (err: any) {
                 if (err?.code === 'P2002') {
                     return res.status(400).json({ error: `"${data.referenceNumber}" sipariş kodu zaten kullanılıyor.` });
@@ -5494,6 +5792,153 @@ router.patch(
  *     security:
  *       - bearerAuth: []
  */
+/* ══ ONAYLANAN SİPARİŞİN ÜRÜNLERİ STOKTA 0 İLE DURUR (Samet, 29.09.2026) ══
+ *
+ * «Sipariş onaylanınca ürünler 0 ile geçmeli, mal kabulde yüklendikçe
+ *  miktarlara göre artmalı … ürünler yoksa bile stoğa eklenmesini istiyorum.»
+ *
+ * 14.09'daki «mal kabulden önce stokta hiçbir şey olmaz, tanım bile» kuralı
+ * burada BİLİNÇLİ olarak değişti: «Siparişi onayla» (→ TO_BE_STOCKED) her
+ * satırın ürününü stok kartı olarak açar — ADEDİ 0 (DEFINITION = miktarı 0
+ * olan IN hareketi, bakiye satırı yok). Mal kabul (`/receive`) sonra aynı
+ * ürünü `articleId` ile bulur ve yalnızca miktar ekler.
+ *
+ *   • Satırın `articleId`'si ya da kodu stokta varsa DOKUNULMAZ (çöpteyse
+ *     geri alınır — sipariş, ürünün yaşadığını söylüyor).
+ *   • Kodsuz satır kodunu burada alır: seçilen kod aralığından, yoksa geçici
+ *     AA-BB-NNNNNN (mal kabuldeki kuralın aynısı).
+ *   • Aynı kod iki satırda geçiyorsa TEK ürün açılır.
+ *   • BOM siparişleri buraya girmez: onların malı Depo'ya gider.
+ * Dönen `apply(tx)` durum güncellemesiyle aynı işlemde çalışır. */
+const definePurchaseOrderArticles = async (
+    tenantId: string,
+    order: any,
+    items: any[],
+    employeeId: string,
+    codeSchemeId: string,
+): Promise<((tx: any) => Promise<void>) | null> => {
+    const lineIndexes = items
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => String(item?.name || '').trim() || String(item?.code || '').trim() || item?.articleId)
+        .map(({ index }) => index);
+    if (!lineIndexes.length) return null;
+
+    const wantedIds = lineIndexes.map((index) => items[index].articleId).filter(Boolean).map(String);
+    const wantedCodes = lineIndexes.map((index) => String(items[index].code || '').trim()).filter(Boolean);
+    const articleRows: any[] = wantedIds.length || wantedCodes.length
+        ? await (prisma as any).article.findMany({
+            where: {
+                tenantId,
+                OR: [
+                    ...(wantedIds.length ? [{ id: { in: wantedIds } }] : []),
+                    ...(wantedCodes.length ? [{ articleCode: { in: wantedCodes } }] : []),
+                ],
+            },
+            select: { id: true, articleCode: true, deletedAt: true },
+        })
+        : [];
+    const byId = new Map<string, any>(articleRows.map((row) => [row.id, row]));
+    const byCode = new Map<string, any>(articleRows.map((row) => [row.articleCode, row]));
+
+    // Stokta karşılığı olmayan kodsuz satırlar önce kodlarını alır.
+    const codeless = lineIndexes.filter((index) => {
+        const item = items[index];
+        return !(item.articleId && byId.has(String(item.articleId))) && !String(item.code || '').trim();
+    });
+    if (codeless.length) {
+        const codes = codeSchemeId
+            ? (await issueCodes(tenantId, codeSchemeId, codeless.length)).codes
+            : await issueTemporaryReceiptCodes(tenantId, codeless.length);
+        codeless.forEach((index, position) => { items[index].code = codes[position]; });
+    }
+
+    const supplierRow = order.supplierId
+        ? await (prisma as any).supplier.findFirst({ where: { id: order.supplierId, tenantId }, select: { id: true } })
+        : null;
+    const supplierId: string | null = supplierRow?.id || null;
+    const articleCreates: any[] = [];
+    const movementCreates: any[] = [];
+    const lotCreates: any[] = [];
+    const reviveIds = new Set<string>();
+    let locationId: string | null = null;
+
+    for (const index of lineIndexes) {
+        const item = items[index];
+        const code = String(item.code || '').trim();
+        let article = item.articleId ? byId.get(String(item.articleId)) : undefined;
+        if (!article && code) article = byCode.get(code);
+        if (article) {
+            if (article.deletedAt) reviveIds.add(String(article.id));
+            item.articleId = article.id;
+            continue;
+        }
+        if (!code) continue;
+        if (!locationId && supplierId) locationId = (await repository.ensureDefaultLocation(tenantId)).id;
+        const netPrice = Number(item.netPrice) > 0 ? Number(item.netPrice) : 0;
+        article = { id: nanoid(10), articleCode: code, deletedAt: null };
+        articleCreates.push({
+            id: article.id,
+            tenantId,
+            articleCode: code,
+            name: String(item.name || code),
+            unit: item.unit ? String(item.unit) : 'Adet',
+            baseCost: netPrice,
+            salePrice: 0,
+            defaultSupplierId: supplierId,
+            itemType: 'PRODUCT',
+            status: 'ACTIVE',
+            isActive: true,
+        });
+        // Tanım hareketi: IN, miktar 0 — hareket dökümünde «Tanım» olarak görünür.
+        movementCreates.push({
+            id: nanoid(12),
+            tenantId,
+            articleId: article.id,
+            movementType: 'IN',
+            quantity: 0,
+            unitCost: null,
+            sourceLocationId: null,
+            destinationLocationId: null,
+            employeeId,
+            supplierId,
+            origin: 'ORDER_RECEIPT',
+            referenceId: order.id,
+            description: order.supplierName ? String(order.supplierName).trim() || null : null,
+            transactionDate: new Date(),
+        });
+        if (supplierId) {
+            lotCreates.push({
+                id: nanoid(10),
+                tenantId,
+                articleId: article.id,
+                supplierId,
+                locationId,
+                purchasePrice: netPrice,
+                quantity: 0,
+                remainingQuantity: 0,
+                lastPurchaseDate: null,
+                stockMovementId: null,
+                isPreferred: true,
+            });
+        }
+        byCode.set(code, article);
+        item.articleId = article.id;
+    }
+
+    if (!articleCreates.length && !reviveIds.size) return null;
+    return async (tx: any) => {
+        if (articleCreates.length) await tx.article.createMany({ data: articleCreates });
+        if (reviveIds.size) {
+            await tx.article.updateMany({
+                where: { tenantId, id: { in: Array.from(reviveIds) } },
+                data: { deletedAt: null, isActive: true },
+            });
+        }
+        if (movementCreates.length) await tx.stockMovement.createMany({ data: movementCreates });
+        if (lotCreates.length) await tx.articleSupplier.createMany({ data: lotCreates });
+    };
+};
+
 router.patch(
     '/purchase-orders/:id/status',
     requireAuth,
@@ -5523,6 +5968,9 @@ router.patch(
                     error: 'Fiyat talebi doğrudan siparişe çevrilemez: önce sipariş taslağına dönüştürün ve fiyatları girin.',
                 });
             }
+            // Talepten sipariş aşamasına yalnız satın alma geçer (29.09.2026: «ilerki bölümleri sadece Purser ve admin görecek»).
+            if (PO_PRICE_REQUEST_STATUSES.has(existing.status) && PO_ORDER_STATUSES.has(status)
+                && !(await poRequirePurchaser(req, res, 'Fiyat talebini siparişe yalnızca satın alma (muhasebe) ya da yönetici çevirebilir.'))) return;
             /* BOM (27.09.2026, Samet): «sipariş numarasını eşleştirmeden ve
                sipariş teklifi tedarikçinin pdf yüklemeden sipariş onaylayamazsınız
                … fiyat talebi proje siparişine dönüşemez». Nur für BOM-Belege. */
@@ -5557,10 +6005,30 @@ router.patch(
                Fiyat talebi ile sipariş ayrı kayıtlardır, mal kabul de siparişin
                kendi satırları üzerinde çalışır — takas edilecek ikinci bir liste
                yoktur ve olsaydı mal kabulde girilen miktarları silerdi. */
-            const updated = await (prisma as any).purchaseOrder.update({
-                where: { id: existing.id },
-                data: { status, ...codePatch },
-            });
+            /* Onay (→ MAL KABULDE): satırların ürünleri stokta 0 ile açılır
+               (29.09.2026). BOM siparişi hariç — onun malı Depo'ya gider. */
+            let defineArticles: ((tx: any) => Promise<void>) | null = null;
+            if (status === 'TO_BE_STOCKED' && existing.status !== 'TO_BE_STOCKED' && !bomLink) {
+                defineArticles = await definePurchaseOrderArticles(
+                    tenantId,
+                    existing,
+                    storedItems,
+                    req.user!.id,
+                    String(req.body?.codeSchemeId ?? '').trim(),
+                );
+            }
+            const updated = defineArticles
+                ? await (prisma as any).$transaction(async (tx: any) => {
+                    await defineArticles!(tx);
+                    return tx.purchaseOrder.update({
+                        where: { id: existing.id },
+                        data: { status, items: JSON.stringify(storedItems), ...codePatch },
+                    });
+                })
+                : await (prisma as any).purchaseOrder.update({
+                    where: { id: existing.id },
+                    data: { status, ...codePatch },
+                });
             // Bestätigt → die Zeilen stehen bei der Produktion; zurück in den
             // Entwurf → sie verschwinden dort wieder.
             if (productionOn) await productionModule.purchaseLink.syncConfirmedLines(tenantId, updated, req.user!.id);
@@ -5615,6 +6083,8 @@ router.post(
             if (!PO_PRICE_REQUEST_STATUSES.has(source.status)) {
                 return res.status(400).json({ error: 'Yalnızca fiyat talebi siparişe dönüştürülebilir.' });
             }
+            // Siparişe dönüştürmek satın almanındır (29.09.2026: «ilerki bölümleri sadece Purser ve admin görecek»).
+            if (!(await poRequirePurchaser(req, res, 'Fiyat talebini siparişe yalnızca satın alma (muhasebe) ya da yönetici dönüştürebilir.'))) return;
             // BOM (27.09.2026): «fiyat talebi proje siparişine dönüşemez».
             productionBomGuard.assertConvertToOrder(await productionBomGuard.linkOf(tenantId, source.id));
             /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): sipariş TEK tedarikçilidir —
@@ -6799,6 +7269,227 @@ router.post(
 
 /**
  * @swagger
+ * /inventory/purchase-orders/{id}/forward:
+ *   get:
+ *     tags: [Inventory]
+ *     summary: "Fiyat talebi → satın alma: alıcılar ve son gönderimler"
+ *     security:
+ *       - bearerAuth: []
+ *   post:
+ *     tags: [Inventory]
+ *     summary: "Fiyat talebini satın almaya gönder (mail + bildirim)"
+ *     security:
+ *       - bearerAuth: []
+ */
+/* Wer die Anfrage bekäme — Namen und Art, keine Adressen — und die letzten Sendungen. */
+router.get(
+    '/purchase-orders/:id/forward',
+    requireAuth,
+    requirePermission('inventory.view'),
+    async (req, res) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const row = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId }, select: { id: true } });
+            if (!row) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            const [people, history] = await Promise.all([
+                poForwardPeople(tenantId, req.user!.id),
+                (prisma as any).documentEvent.findMany({
+                    where: { tenantId, entityType: PO_FORWARD_ENTITY, entityId: row.id, action: PO_FORWARD_ACTION },
+                    orderBy: { createdAt: 'desc' },
+                    take: 20,
+                    select: { id: true, actorName: true, snapshot: true, createdAt: true },
+                }) as Promise<Array<{ id: string; actorName: string | null; snapshot: any; createdAt: Date }>>,
+            ]);
+            res.status(200).json({
+                recipients: people.map((person) => ({ id: person.id, name: person.name, kind: person.kind, hasEmail: Boolean(person.email) })),
+                history: history.map((entry) => ({
+                    id: entry.id,
+                    at: entry.createdAt.toISOString(),
+                    byName: entry.actorName ?? null,
+                    recipients: Array.isArray(entry.snapshot?.recipients)
+                        ? entry.snapshot.recipients.map((person: any) => String(person?.name ?? '')).filter(Boolean)
+                        : [],
+                    mailed: Boolean(entry.snapshot?.mailed),
+                    subject: typeof entry.snapshot?.subject === 'string' ? entry.snapshot.subject : null,
+                })),
+            });
+        } catch (error: any) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+);
+
+/* ══ DIE ANFRAGE AN DEN EINKAUF (29.09.2026) ═════════════════════════════════
+   Eine Mail in der OCC-Belegkarte an Purser + Administration (An = Einkauf,
+   Cc = Administration), mit dem Link zur Anfrage und dem PDF ohne Lieferanten,
+   dazu die Glocke «Preisanfrage erstellt» bei denselben Personen. Die
+   Empfänger bestimmt der SERVER — die Oberfläche kann niemanden hinzufügen,
+   also kein offenes Relais. Ohne Mailserver (Vorschau) geht nur die Glocke. */
+router.post(
+    '/purchase-orders/:id/forward',
+    requireAuth,
+    requirePermission('inventory.transfer'),
+    async (req, res) => {
+        try {
+            const tenantId = req.user!.tenantId;
+            const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
+            if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (!PO_PRICE_REQUEST_STATUSES.has(existing.status)) {
+                return res.status(400).json({ error: 'Satın almaya yalnızca fiyat talebi gönderilebilir.', code: 'NOT_A_REQUEST' });
+            }
+            // Ein Doppelklick schickt nicht zweimal Post und Glocke.
+            const last = await (prisma as any).documentEvent.findFirst({
+                where: { tenantId, entityType: PO_FORWARD_ENTITY, entityId: existing.id, action: PO_FORWARD_ACTION },
+                orderBy: { createdAt: 'desc' },
+                select: { createdAt: true },
+            });
+            if (last && Date.now() - new Date(last.createdAt).getTime() < 30_000) {
+                return res.status(429).json({ error: 'Bu talep az önce gönderildi.', code: 'TOO_SOON' });
+            }
+            const people = await poForwardPeople(tenantId, req.user!.id);
+            if (!people.length) {
+                return res.status(409).json({ error: 'Satın alma (Purser / muhasebe) ya da yönetici rolünde kimse bulunamadı.', code: 'NO_PURCHASING' });
+            }
+
+            const subject = poStripHeader(String(req.body?.subject || `Preisanfrage ${existing.referenceNumber}`));
+            if (!subject) return res.status(400).json({ error: 'Konu boş olamaz.' });
+            if (subject.length > 200) return res.status(400).json({ error: 'Konu 200 karakteri aşamaz.' });
+            const message = String(req.body?.message || '').trim();
+            if (message.length > 5000) return res.status(400).json({ error: 'Mesaj çok uzun.' });
+
+            // Anhänge: nur das PDF der Anfrage (höchstens zwei, zusammen ≤ 15 MB).
+            const rawAttachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+            if (rawAttachments.length > 2) return res.status(400).json({ error: 'En fazla 2 ek dosya gönderilebilir.' });
+            let totalAttachmentBytes = 0;
+            const attachments: Array<{ filename: string; contentType: string; contentBase64: string }> = [];
+            for (const item of rawAttachments) {
+                const contentType = String((item as any)?.contentType || '').trim().toLowerCase();
+                const contentBase64 = typeof (item as any)?.contentBase64 === 'string' ? (item as any).contentBase64 : '';
+                const rawName = String((item as any)?.filename || '').trim();
+                if (!rawName || !contentBase64 || contentType !== 'application/pdf') {
+                    return res.status(400).json({ error: 'Yalnızca PDF eki gönderilebilir.' });
+                }
+                totalAttachmentBytes += Math.floor(contentBase64.replace(/\s+/g, '').length * 3 / 4);
+                attachments.push({ filename: rawName.replace(/[\\/\r\n"]+/g, '_').slice(0, 120), contentType, contentBase64 });
+            }
+            if (totalAttachmentBytes > 15 * 1024 * 1024) {
+                return res.status(400).json({ error: 'Eklerin toplam boyutu 15 MB sınırını aşıyor.' });
+            }
+
+            const actor = await (prisma as any).employee.findFirst({
+                where: { id: req.user!.id },
+                select: { firstName: true, lastName: true, email: true },
+            }) as { firstName: string | null; lastName: string | null; email: string | null } | null;
+            const actorName = [actor?.firstName, actor?.lastName].filter(Boolean).join(' ').trim() || String(req.user!.email || '');
+            const actorEmail = String(actor?.email || req.user!.email || '').trim();
+            const linkPath = `/inventory/orders/${encodeURIComponent(existing.id)}?kind=request`;
+
+            // ── Die Mail (wenn es Adressen und einen Mailserver gibt) ───────────
+            const mailTo = people.filter((person) => person.email);
+            let mailed = false;
+            let preview = mailTo.length === 0;
+            if (mailTo.length) {
+                const [settings, projects] = await Promise.all([
+                    getMailTenantId(tenantId).then((mailTenantId) => prisma.mailSetting.findUnique({ where: { tenantId: mailTenantId } })),
+                    poProjectsOf(tenantId, [existing.id]),
+                ]);
+                const fromEmail = poStripHeader(String(settings?.fromEmail || req.user!.email || ''));
+                if (!fromEmail || !PO_EMAIL_RE.test(fromEmail)) {
+                    preview = true;
+                } else {
+                    const fromName = poStripHeader(String(settings?.fromName || 'Offitec Control Center')).slice(0, 100) || 'Offitec Control Center';
+                    // An: der Einkauf (sonst die erste Person der Administration); Cc: alle übrigen.
+                    const to = (mailTo.find((person) => person.kind === 'PURCHASER') ?? mailTo[0])!.email!;
+                    const cc = [...new Set(mailTo.map((person) => person.email!).filter((email) => email.toLowerCase() !== to.toLowerCase()))].slice(0, 10);
+                    const mail = buildPurchaseRequestForwardMail({
+                        order: existing,
+                        lang: req.body?.lang,
+                        project: projects.get(existing.id) ?? null,
+                        requesterName: actorName,
+                        message,
+                        attachments: attachments.map((file) => ({
+                            name: file.filename,
+                            bytes: Math.floor(file.contentBase64.replace(/\s+/g, '').length * 3 / 4),
+                        })),
+                        link: `${PO_APP_URL()}${linkPath}`,
+                        senderName: fromName,
+                        senderEmail: fromEmail,
+                    });
+                    const result = await smtp.send(settings || {}, {
+                        fromEmail,
+                        fromName,
+                        to,
+                        cc,
+                        subject,
+                        text: mail.text,
+                        html: mail.html,
+                        // Antworten gehen an die Person, die anfragt — nicht an den Firmenkasten.
+                        replyTo: PO_EMAIL_RE.test(actorEmail) ? actorEmail : (settings?.replyTo || null),
+                        attachments,
+                        inlineImages: mail.inlineImages,
+                    }, { asEmployeeId: req.user!.id });
+                    mailed = !result.preview;
+                    preview = result.preview;
+                }
+            }
+
+            // ── Die Glocke / der Banner rechts oben bei Einkauf und Administration ──
+            const code = String(existing.referenceNumber || '');
+            await (prisma as any).notification.createMany({
+                data: people.map((person) => ({
+                    id: nanoid(12),
+                    tenantId,
+                    recipientEmployeeId: person.id,
+                    type: 'PURCHASE_REQUEST_FORWARDED',
+                    title: 'Preisanfrage erstellt',
+                    message: `${actorName || 'Jemand'} hat die Preisanfrage ${code} erstellt und an den Einkauf gesendet.`,
+                    linkUrl: linkPath,
+                    metadata: {
+                        i18n: { key: 'notify.purchaseRequestForwarded', params: { actor: actorName, number: { $purchaseCode: code } } },
+                        purchaseOrderId: existing.id,
+                    },
+                })),
+            });
+
+            const now = new Date();
+            await (prisma as any).documentEvent.create({
+                data: {
+                    id: nanoid(14),
+                    tenantId,
+                    entityType: PO_FORWARD_ENTITY,
+                    entityId: existing.id,
+                    documentNumber: code.slice(0, 191) || null,
+                    action: PO_FORWARD_ACTION,
+                    snapshot: {
+                        recipients: people.map((person) => ({ id: person.id, name: person.name, kind: person.kind })),
+                        mailed,
+                        preview,
+                        subject,
+                    },
+                    actorId: req.user!.id,
+                    actorName: actorName.slice(0, 191) || null,
+                    createdAt: now,
+                },
+            });
+
+            res.status(200).json({
+                mailed,
+                preview,
+                notified: people.length,
+                recipients: people.map((person) => ({ id: person.id, name: person.name, kind: person.kind, hasEmail: Boolean(person.email) })),
+                forwarding: { at: now.toISOString(), byName: actorName || null, recipients: people.map((person) => person.name) },
+            });
+        } catch (error: any) {
+            if (typeof error?.message === 'string' && error.message.startsWith('SMTP')) {
+                return res.status(502).json({ error: 'E-posta gönderilemedi: SMTP sunucusuna bağlanılamadı veya kullanıcı adı/parola hatalı. Lütfen mail ayarlarını kontrol edin.' });
+            }
+            res.status(400).json({ error: error.message });
+        }
+    }
+);
+
+/**
+ * @swagger
  * /inventory/purchase-orders/{id}/send-mail:
  *   post:
  *     tags: [Inventory]
@@ -6815,6 +7506,7 @@ router.post(
             const tenantId = req.user!.tenantId;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (!(await poPurchaserOnly(req, res))) return;
             /* BOM (27.09.2026, Samet): «tedarikçi sipariş numarasını yazmadan asla
                ne PDF gönderebiliyoruz ne de siparişi onaylayabiliyoruz». */
             try {
@@ -6823,7 +7515,10 @@ router.post(
                 return sendPurchaseOrderError(res, bomRule);
             }
 
-            const settings = await prisma.mailSetting.findUnique({ where: { tenantId: await getMailTenantId(tenantId) } });
+            const [settings, projects] = await Promise.all([
+                getMailTenantId(tenantId).then((mailTenantId) => prisma.mailSetting.findUnique({ where: { tenantId: mailTenantId } })),
+                poProjectsOf(tenantId, [existing.id]),
+            ]);
 
             /* ÇOK TEDARİKÇİLİ TALEP (25.09.2026): mail listedeki BİR tedarikçiye
                gider (`supplierIndex`), ekindeki PDF de onun adını taşır; damga
@@ -6930,12 +7625,27 @@ router.post(
             }
 
             const signature = buildSignatureParts(settings);
-            const html = `
-                <div style="font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6">
-                    <p>${poEscapeHtml(message).replace(/\n/g, '<br />')}</p>
-                    ${signature.html}
-                </div>
-            `;
+            /* DIE BELEGMAIL (29.09.2026, Samet: «mailler çok daha temiz … Adobe
+               maillerine benzeyebilir ama bizim renklerde»): Karte mit Logo, der Code
+               des PDF als Überschrift, Text, Eckdaten, das PDF als Dateikachel —
+               `purchaseOrderMail.ts`. `lang` = Sprache des Textes, `documentLang` =
+               Sprache des PDF, `revision` = die Revision, die das PDF trägt. */
+            const mail = buildPurchaseOrderMail({
+                order: existing,
+                priceRequest: isPriceRequestMail,
+                lang: req.body?.lang,
+                documentLang: req.body?.documentLang,
+                revision: req.body?.revision,
+                project: projects.get(existing.id) ?? null,
+                message,
+                attachments: attachments.map((file) => ({
+                    name: file.filename,
+                    bytes: Math.floor(file.contentBase64.replace(/\s+/g, '').length * 3 / 4),
+                })),
+                senderName: fromName,
+                senderEmail: fromEmail,
+                signatureHtml: signature.html,
+            });
 
             const result = await smtp.send(settings || {}, {
                 fromEmail,
@@ -6943,11 +7653,11 @@ router.post(
                 to,
                 cc: ccEmails,
                 subject,
-                text: `${message}${signature.text}`,
-                html,
+                text: `${mail.text}${signature.text}`,
+                html: mail.html,
                 replyTo: settings?.replyTo || null,
                 attachments,
-                inlineImages: signature.inlineImages,
+                inlineImages: [...mail.inlineImages, ...signature.inlineImages],
             }, { asEmployeeId: req.user!.id });
 
             // preview = SMTP yapılandırılmamış, gerçek gönderim yok → emailSentAt
@@ -7022,6 +7732,7 @@ router.post(
             const tenantId = req.user!.tenantId;
             const existing = await (prisma as any).purchaseOrder.findFirst({ where: { id: req.params.id, tenantId } });
             if (!existing) return res.status(404).json({ error: 'Sipariş bulunamadı.' });
+            if (!(await poPurchaserOnly(req, res))) return;
             // BOM (27.09.2026): auch «von Hand gesendet» nie ohne die Angebotsnummer des Lieferanten.
             if (req.body?.sent === true) {
                 try {

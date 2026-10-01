@@ -7,7 +7,7 @@ exports.queueTaskIssueMail = void 0;
 const prisma_client_1 = __importDefault(require("../../database/prisma.client"));
 const MailDispatchService_1 = require("../outlook/MailDispatchService");
 const calendarInviteMail_1 = require("../calendarInviteMail");
-const mailBrand_1 = require("../mailBrand");
+const mailCardKit_1 = require("../mailCardKit");
 const taskMailCard_1 = require("./taskMailCard");
 const serviceTenantScope_1 = require("../../../presentation/controllers/serviceTenantScope");
 /**
@@ -164,7 +164,7 @@ const queueTaskIssueMail = (input) => {
             text: (0, taskMailCard_1.buildTaskMailText)(issueCard(input, to.name, askedBy, link)),
             html: (0, taskMailCard_1.buildTaskMailHtml)(issueCard(input, to.name, askedBy, link)),
             replyTo: settings.replyTo || null,
-            inlineImages: [(0, mailBrand_1.brandLogoInline)()],
+            inlineImages: (0, mailCardKit_1.mailInlineImages)("TASK"),
             importance: input.important ? "high" : null,
         }, 
         // Interne Post — sie gehört nicht in den Schriftverkehr eines Kunden.

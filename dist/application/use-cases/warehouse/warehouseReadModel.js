@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.importSummaryDto = exports.settingsDto = exports.groupLabel = exports.plainGroupDto = exports.catalogDto = exports.groupDto = exports.targetIdsOf = exports.serialDto = exports.productDto = void 0;
+const warehouse_1 = require("../../../domain/services/warehouse");
 const warehouseCodes_1 = require("../../../domain/services/warehouseCodes");
 /** Die Liste zeigt die Beschreibung einzeilig — mehr als ein Satz reist nicht mit. */
 const LIST_DESCRIPTION_CHARS = 280;
@@ -26,10 +27,14 @@ const productDto = (product, options = {}) => {
         name: product.name,
         brand: product.brand,
         modelNumber: product.modelNumber,
+        productCode: product.productCode,
+        unit: product.unit,
+        isDraft: product.isDraft,
+        missing: (0, warehouse_1.missingForComplete)(product),
         supplier: product.suppliers[0]
             ? { id: product.suppliers[0].supplierId, name: product.suppliers[0].name }
             : product.supplierName ? { id: product.supplierId, name: product.supplierName } : null,
-        suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, barcode: entry.barcode })),
+        suppliers: product.suppliers.map((entry) => ({ id: entry.supplierId, name: entry.name, barcode: entry.barcode, email: entry.email })),
         description,
         quantity: product.quantity,
         purchasePrice: product.purchasePrice,

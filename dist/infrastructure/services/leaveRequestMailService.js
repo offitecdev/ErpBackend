@@ -8,8 +8,7 @@ const nanoid_1 = require("nanoid");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
 const MailDispatchService_1 = require("./outlook/MailDispatchService");
 const calendarInviteMail_1 = require("./calendarInviteMail");
-const mailBrand_1 = require("./mailBrand");
-const mailKindIcons_1 = require("./mailKindIcons");
+const mailCardKit_1 = require("./mailCardKit");
 const serviceTenantScope_1 = require("../../presentation/controllers/serviceTenantScope");
 const personnel_1 = require("../../shared/personnel");
 /**
@@ -221,7 +220,7 @@ const sendOne = async (request, recipient, stage) => {
         text: (0, calendarInviteMail_1.buildInviteText)(card),
         html: (0, calendarInviteMail_1.buildInviteHtml)(card),
         replyTo: settings.replyTo || null,
-        inlineImages: [(0, mailBrand_1.brandLogoInline)(), (0, mailBrand_1.brandWaveInline)(), (0, mailKindIcons_1.kindIconInline)("TASK")],
+        inlineImages: (0, mailCardKit_1.mailInlineImages)("TASK"),
     }, 
     // Interne Post — sie gehört nicht in den Schriftverkehr eines Kunden.
     { record: null });

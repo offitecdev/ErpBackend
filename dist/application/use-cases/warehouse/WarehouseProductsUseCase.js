@@ -98,11 +98,15 @@ class WarehouseProductsUseCase {
     products;
     groups;
     directory;
+    emails;
     targets;
-    constructor(products, groups, directory) {
+    constructor(products, groups, directory, 
+    /** Die Lieferantenliste als Adressbuch (30.09.2026) — ohne: die Adressen bleiben an der Karte. */
+    emails = null) {
         this.products = products;
         this.groups = groups;
         this.directory = directory;
+        this.emails = emails;
         this.targets = new warehouseTargets_1.WarehouseTargetResolver(directory);
     }
     async list(tenantId, filter) {
@@ -135,6 +139,8 @@ class WarehouseProductsUseCase {
     async create(tenantId, userId, body) {
         const input = (body && typeof body === 'object' ? body : {});
         const fields = (0, warehouse_1.productFieldsFromInput)(input);
+        // «Bunlar girilmeden ürün kartı sadece taslak olarak kayıt edilebilir» (30.09.2026).
+        fields.isDraft = (0, warehouse_1.draftStateOf)(fields, (0, warehouse_1.draftRequestOf)(input), null);
         const group = await this.resolveReferences(tenantId, fields, null, true);
         if (group && !group.code)
             throw this.codeMissing(group);
@@ -145,6 +151,7 @@ class WarehouseProductsUseCase {
             // Neue Seriennummern: die BOM der Produktion reserviert sie (27.09.2026).
             if (serials.length)
                 (0, warehouseStockEvents_1.emitWarehouseStockChanged)({ tenantId, productIds: [product.id] });
+            await this.rememberEmails(tenantId, product.suppliers, null);
             return this.detail(tenantId, product);
         }
         catch (error) {
@@ -156,6 +163,7 @@ class WarehouseProductsUseCase {
         if (!current)
             throw (0, warehouse_1.warehouseError)('NOT_FOUND', 'Produktkarte nicht gefunden.', { status: 404 });
         const fields = (0, warehouse_1.productFieldsFromInput)(body, (0, warehouse_1.fieldsOfProduct)(current));
+        fields.isDraft = (0, warehouse_1.draftStateOf)(fields, (0, warehouse_1.draftRequestOf)(body), current.isDraft);
         const suppliersChanged = JSON.stringify(fields.suppliers) !== JSON.stringify(current.suppliers);
         const group = await this.resolveReferences(tenantId, fields, current, suppliersChanged);
         // Dritter Durchgang: das Häkchen «Seri numarası gereklidir» eben gesetzt
@@ -199,11 +207,31 @@ class WarehouseProductsUseCase {
                 throw (0, warehouse_1.warehouseError)('NOT_FOUND', 'Produktkarte nicht gefunden.', { status: 404 });
             if (serials.length)
                 (0, warehouseStockEvents_1.emitWarehouseStockChanged)({ tenantId, productIds: [id] });
+            await this.rememberEmails(tenantId, updated.suppliers, current.suppliers);
             return this.detail(tenantId, updated);
         }
         catch (error) {
             throw this.mapUnique(error, fields);
         }
+    }
+    /**
+     * «Tedarikçi e-postası eklenirse direkt tedarikçi e-postası olarak
+     * kaydetmeli» (30.09.2026): eine an der Karte NEU eingetragene oder
+     * geänderte Adresse wird die E-Mail des Lieferanten in der Liste. Eine
+     * unveränderte schreibt nichts — sonst überschriebe ein späteres Speichern
+     * dieser Karte die neuere Adresse aus einer anderen. Scheitert es, bleibt
+     * die Karte trotzdem gespeichert.
+     */
+    async rememberEmails(tenantId, now, before) {
+        if (!this.emails)
+            return;
+        const keyOf = (entry) => entry.supplierId ?? `name:${entry.name.trim().toLocaleLowerCase('tr-TR')}`;
+        const old = new Map((before ?? []).map((entry) => [keyOf(entry), (entry.email ?? '').trim().toLowerCase()]));
+        const changed = now.filter((entry) => entry.email && old.get(keyOf(entry)) !== entry.email.trim().toLowerCase());
+        if (!changed.length)
+            return;
+        await this.emails.remember(tenantId, changed.map((entry) => ({ supplierId: entry.supplierId, name: entry.name, email: entry.email })))
+            .catch((error) => console.warn('[depo] Lieferanten-E-Mail nicht gemerkt:', error?.message));
     }
     async delete(tenantId, id) {
         const removed = await this.products.delete(tenantId, id);

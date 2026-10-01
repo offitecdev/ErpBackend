@@ -51,6 +51,14 @@ const linesOf = (value) => {
     });
 };
 const idsOf = (value) => (Array.isArray(value) ? value : []).map((entry) => String(entry ?? '').trim()).filter(Boolean);
+/* Bis zum 29.09.2026 schloss sich ein Fiyat talebi von selbst, sobald jede Zeile
+   angefragt war (DONE ohne closedAt). Es bleibt seither offen, bis der Einkauf es
+   schliesst — die so geschlossenen gelten wieder als in Arbeit. Von Hand
+   geschlossene (closedAt gesetzt) bleiben erledigt. */
+const statusOf = (row) => {
+    const status = STATUSES.has(row.status) ? row.status : 'OPEN';
+    return row.kind === 'PRICE' && status === 'DONE' && !row.closedAt ? 'IN_PROGRESS' : status;
+};
 const toRequest = (row) => ({
     id: row.id,
     tenantId: row.tenantId,
@@ -60,7 +68,7 @@ const toRequest = (row) => ({
     productionItemId: row.productionItemId,
     area: (row.area === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL'),
     kind: KINDS.has(row.kind) ? row.kind : 'ORDER',
-    status: STATUSES.has(row.status) ? row.status : 'OPEN',
+    status: statusOf(row),
     bomRevision: Number(row.bomRevision) || 0,
     lines: linesOf(row.lines),
     note: row.note,
@@ -86,6 +94,16 @@ const bumpCounter = async (tx, tenantId, docType) => {
     return seq;
 };
 class PrismaBomProcurementRepository {
+    async activityForBoms(tenantId, bomIds) {
+        if (!bomIds.length)
+            return [];
+        const rows = await prisma_client_1.default.productionBomProcurementRequest.findMany({
+            where: { tenantId, bomId: { in: [...new Set(bomIds)] } },
+            select: { bomId: true, requestNumber: true, kind: true, status: true, lines: true },
+            orderBy: { createdAt: 'desc' },
+        });
+        return rows.map((row) => ({ bomId: row.bomId, requestNumber: row.requestNumber, kind: row.kind, status: row.status, lineIds: linesOf(row.lines).map((line) => line.bomLineId) }));
+    }
     async create(tenantId, input, userId) {
         const year = new Date().getFullYear();
         const row = await prisma_client_1.default.$transaction(async (tx) => {
@@ -170,6 +188,16 @@ const toGoods = (row) => ({
     receivedAt: row.receivedAt,
 });
 class PrismaBomGoodsInRepository {
+    async totalsForBoms(tenantId, bomIds) {
+        if (!bomIds.length)
+            return [];
+        const rows = await prisma_client_1.default.productionBomGoodsIn.groupBy({
+            by: ['bomId', 'lineId'],
+            where: { tenantId, bomId: { in: [...new Set(bomIds)] } },
+            _sum: { quantity: true }, _count: { _all: true },
+        });
+        return rows.map((row) => ({ bomId: row.bomId, lineId: row.lineId, quantity: (0, productionBom_1.round3)(num(row._sum.quantity)), count: row._count._all }));
+    }
     async add(tenantId, rows) {
         if (!rows.length)
             return;

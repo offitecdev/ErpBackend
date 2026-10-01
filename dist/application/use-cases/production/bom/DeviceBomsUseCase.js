@@ -76,14 +76,14 @@ class DeviceBomsUseCase {
      * Bereichs beim ersten Öffnen angelegt (BOM-MEK-00001); Lesende sehen sie,
      * sobald es sie gibt.
      */
-    async view(tenantId, actor, itemId, rawArea) {
+    async view(tenantId, actor, itemId, rawArea, compact = false) {
         const area = (0, productionBom_1.areaFrom)(rawArea) ?? 'MECHANICAL';
         const device = await this.requireDevice(tenantId, itemId);
         const [project, settings, listed, templates, assignees, deliveryDates] = await Promise.all([
             this.directory.project(tenantId, device.productionProjectId),
             this.settings.get(tenantId),
-            this.boms.listForDevice(tenantId, itemId),
-            this.templates.list(tenantId),
+            this.boms.listForDevice(tenantId, itemId, compact ? area : undefined),
+            compact ? Promise.resolve([]) : this.templates.list(tenantId),
             this.directory.bomStageAssignees(tenantId, itemId, area),
             this.directory.deliveryDates(tenantId, [device.productionProjectId]),
         ]);
@@ -98,7 +98,7 @@ class DeviceBomsUseCase {
         }
         const subs = main ? this.subsOf(main, all) : [];
         const shown = main ? [main, ...subs] : [];
-        const dtos = await this.dtos(tenantId, shown, all);
+        const dtos = await this.dtos(tenantId, shown, all, compact ? 'summary' : 'full');
         const category = ProductionBom_1.CATEGORY_OF_AREA[area];
         return {
             settings: { maxPerArea: settings.maxPerArea },
@@ -116,17 +116,35 @@ class DeviceBomsUseCase {
                 MECHANICAL: all.filter((bom) => bom.area === 'MECHANICAL').length,
                 ELECTRICAL: all.filter((bom) => bom.area === 'ELECTRICAL').length,
             },
-            main: dtos[0] ?? null,
-            subs: dtos.slice(1),
-            boms: dtos,
+            ...(compact ? {
+                main: dtos[0] ? (0, bomReadModel_1.bomSummaryDto)(dtos[0]) : null,
+                subs: dtos.slice(1).map(bomReadModel_1.bomSummaryDto),
+            } : { main: dtos[0] ?? null, subs: dtos.slice(1), boms: dtos }),
             codes: settings.codes[area],
             templates: templates.filter((template) => template.category === category).map(bomReadModel_1.templateSummaryDto),
         };
     }
-    async get(tenantId, bomId) {
+    async get(tenantId, bomId, linesOnly = false) {
         const bom = await this.requireBom(tenantId, bomId);
-        const [dto] = await this.dtos(tenantId, [bom]);
-        return dto;
+        const [dto] = await this.dtos(tenantId, [bom], undefined, linesOnly ? 'lines' : 'full');
+        return linesOnly ? (0, bomReadModel_1.bomLinesDto)(dto) : dto;
+    }
+    async history(tenantId, bomId) {
+        const [bom, revisions] = await Promise.all([
+            this.requireBomHeader(tenantId, bomId),
+            this.revisions.listForBoms(tenantId, [bomId], { omitLines: true }),
+        ]);
+        const ids = [bom.approvedById, ...revisions.map((entry) => entry.approvedById)].filter((id) => Boolean(id));
+        const names = ids.length ? await this.directory.personNames(ids) : new Map();
+        const draft = revisions.find((entry) => entry.status === 'DRAFT');
+        return { revisions: (0, bomReadModel_1.revisionHistory)(bom, revisions, (id) => id ? names.get(id) ?? null : null),
+            draft: draft ? { revision: draft.revision, reason: draft.reason } : null };
+    }
+    async section(tenantId, bomId, section) {
+        await this.requireBomHeader(tenantId, bomId);
+        const purchases = section === 'requests' ? await this.purchasesOf(tenantId, [bomId]) : [];
+        const data = await this.procurementOrFail().forBoms(tenantId, [bomId], purchases.map(({ link, order }) => ({ kind: link.kind, order })), { section });
+        return { procurement: data.requests.get(bomId) ?? [], goodsIn: data.goodsIn.get(bomId) ?? [] };
     }
     /**
      * Die Alt-BOMs einer Haupt-BOM, in ihrer Reihenfolge. Eine alte BOM ohne
@@ -144,7 +162,7 @@ class DeviceBomsUseCase {
      * `deviceBoms` = alle BOMs der Geräte (für die Alt-BOMs einer Haupt-BOM);
      * fehlt es, liest die Funktion sie nach.
      */
-    async dtos(tenantId, boms, deviceBoms) {
+    async dtos(tenantId, boms, deviceBoms, mode = 'full') {
         if (!boms.length)
             return [];
         const productIds = boms.flatMap((bom) => bom.lines.map((line) => line.productId));
@@ -156,12 +174,13 @@ class DeviceBomsUseCase {
             return (await Promise.all(items.map((itemId) => this.boms.listForDevice(tenantId, itemId)))).flat();
         };
         const bomIds = boms.map((bom) => bom.id);
-        const [facts, purchases, pool, revisions, purchaseRevisions] = await Promise.all([
+        const [facts, purchases, pool, revisions, purchaseRevisions, activity] = await Promise.all([
             this.reservations.facts(tenantId, productIds),
             this.purchasesOf(tenantId, bomIds),
             mains.length ? loadDevices() : Promise.resolve([]),
-            this.revisions.listForBoms(tenantId, bomIds),
-            this.revisions.purchaseRevisionsForBoms(tenantId, bomIds),
+            mode === 'summary' ? Promise.resolve([]) : this.revisions.listForBoms(tenantId, bomIds, { draftOnly: mode === 'lines' }),
+            mode === 'full' ? this.revisions.purchaseRevisionsForBoms(tenantId, bomIds) : Promise.resolve([]),
+            mode !== 'full' && this.procurement ? this.procurement.activityForBoms(tenantId, bomIds) : Promise.resolve(null),
         ]);
         // Die Karten der Arbeitskopie, die (noch) keine Zeile der BOM sind — mit ihrem freien Bestand.
         const draftProducts = [...new Set(revisions
@@ -171,28 +190,42 @@ class DeviceBomsUseCase {
         const personIds = [
             ...revisions.flatMap((entry) => [entry.createdById, entry.approvedById]),
             ...boms.filter((bom) => bom.status !== 'DRAFT').map((bom) => bom.approvedById),
-        ].filter((id) => Boolean(id));
-        const [extra, names] = await Promise.all([
+        ].filter((id) => mode !== 'summary' && Boolean(id));
+        const draftIds = revisions.filter((entry) => entry.status === 'DRAFT').map((entry) => entry.id);
+        const [extra, names, approvals] = await Promise.all([
             draftProducts.length ? this.reservations.facts(tenantId, draftProducts) : Promise.resolve(null),
             personIds.length ? this.directory.personNames(personIds) : Promise.resolve(new Map()),
+            draftIds.length && this.revisionApprovals
+                ? this.revisionApprovals.latest(tenantId, draftIds).catch(() => new Map())
+                : Promise.resolve(new Map()),
         ]);
         const products = extra ? new Map([...facts.products, ...extra.products]) : facts.products;
         const free = extra ? new Map([...facts.coverage.free, ...extra.coverage.free]) : facts.coverage.free;
-        const procurement = this.procurement
+        const procurement = this.procurement && mode === 'full'
             ? await this.procurement.forBoms(tenantId, bomIds, purchases.map(({ link, order }) => ({ kind: link.kind, order })))
             : null;
-        return boms.map((bom) => (0, bomReadModel_1.bomDto)(bom, {
-            procurement: procurement?.requests.get(bom.id) ?? [],
-            goodsIn: procurement?.goodsIn.get(bom.id) ?? [],
-            coverage: facts.coverage.lines,
-            products,
-            free,
-            purchases: purchases.filter((entry) => entry.link.bomId === bom.id),
-            ...(bom.kind === 'MAIN' ? { subs: this.subsOf(bom, pool) } : {}),
-            revisions,
-            purchaseRevisions,
-            names,
-        }));
+        return boms.map((bom) => {
+            const dto = (0, bomReadModel_1.bomDto)(bom, {
+                procurement: procurement?.requests.get(bom.id) ?? [],
+                goodsIn: procurement?.goodsIn.get(bom.id) ?? [],
+                coverage: facts.coverage.lines,
+                products,
+                free,
+                purchases: purchases.filter((entry) => entry.link.bomId === bom.id),
+                ...(bom.kind === 'MAIN' ? { subs: this.subsOf(bom, pool) } : {}),
+                revisions,
+                purchaseRevisions,
+                names,
+                approvals,
+            });
+            const compact = activity?.get(bom.id);
+            if (compact) {
+                const base = (0, bomReadModel_1.bomActivity)(dto);
+                const needing = dto.status === 'DRAFT' && !dto.consumedAt ? dto.lines : dto.lines.filter((line) => line.coverage.missing > EPS);
+                dto.activity = { ...base, ...compact, requestedNeeding: needing.filter((line) => Boolean(compact.priceRequests[line.id])).length };
+            }
+            return dto;
+        });
     }
     /** Bestellungen/Anfragen der BOMs — verwaiste Verknüpfungen heilen beim Lesen. */
     async purchasesOf(tenantId, bomIds) {
@@ -285,7 +318,7 @@ class DeviceBomsUseCase {
             codePrefix: code.prefix,
             lines: [],
         }, actor.id);
-        return { bom: await this.get(tenantId, bom.id) };
+        return { bom: await this.get(tenantId, bom.id, true) };
     }
     async saveLines(tenantId, actor, bomId, body) {
         const bom = await this.requireBom(tenantId, bomId);
@@ -294,13 +327,13 @@ class DeviceBomsUseCase {
             // «Bom onaylanırsa geri dönüş yok, revize olması lazım» (27.09.2026):
             // eine freigegebene BOM ändert nur ihre Revision im Entwurf.
             await this.saveRevisionLines(tenantId, actor, bom, body);
-            return { bom: await this.get(tenantId, bomId) };
+            return { bom: await this.get(tenantId, bomId, true) };
         }
         const lines = await this.templateUseCase.linesFrom(tenantId, body?.lines);
         const saved = await this.boms.replaceLines(tenantId, bomId, lines, actor.id);
         if (!saved)
             throw (0, productionBom_1.bomError)('STATUS_INVALID', 'Die BOM ist nicht mehr im Entwurf.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
     /**
      * Die Zeilen der Revision im Entwurf speichern. Jede Zeile behält ihre
@@ -396,6 +429,7 @@ class DeviceBomsUseCase {
                 params: { row: missingCard + 1 },
             });
         }
+        (0, productionBom_1.assertErpCodes)(bom.lines, products);
         const approved = await this.boms.setStatus(tenantId, bomId, ['DRAFT'], {
             status: 'APPROVED',
             approvedAt: new Date(),
@@ -409,7 +443,7 @@ class DeviceBomsUseCase {
             console.warn('[production-bom] baseline revision failed', bomId, error?.message);
         });
         await this.reservations.assignFreeSerials(tenantId, approved.lines.map((line) => line.productId));
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
     /**
      * «Bom onaylanırsa geri dönüş yok, revize olması lazım» (Samet, 27.09.2026):
@@ -442,7 +476,7 @@ class DeviceBomsUseCase {
         }, actor.id);
         if (!completed)
             throw (0, productionBom_1.bomError)('STATUS_INVALID', 'Die BOM ist nicht freigegeben.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
     async reopen(tenantId, actor, bomId) {
         const bom = await this.requireBom(tenantId, bomId);
@@ -461,7 +495,7 @@ class DeviceBomsUseCase {
         }, actor.id);
         if (!reopened)
             throw (0, productionBom_1.bomError)('STATUS_INVALID', 'Die BOM ist nicht abgeschlossen.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
     /**
      * «Proje bitince de rezerveler stoktan düşmeli tamamen» — die Reservierung
@@ -490,7 +524,7 @@ class DeviceBomsUseCase {
         const consumed = await this.consumeOne(tenantId, actor, bom);
         if (!consumed)
             throw (0, productionBom_1.bomError)('ALREADY_CONSUMED', 'Diese BOM ist schon abgebucht.', { status: 409 });
-        return { bom: await this.get(tenantId, bomId) };
+        return { bom: await this.get(tenantId, bomId, true) };
     }
     /** Eine BOM vom Bestand abbuchen (ihre Reservierungen, ihre Seriennummern). */
     async consumeOne(tenantId, actor, bom) {
@@ -641,6 +675,7 @@ class DeviceBomsUseCase {
                 const draftLines = group.lines.map((entry) => {
                     const line = byLine.get(entry.lineId);
                     const facts = proposed.get(entry.lineId);
+                    const product = proposal.facts.products.get(line.productId);
                     return {
                         bomLineId: line.id,
                         erpCode: facts?.erpCode ?? line.erpCode,
@@ -649,6 +684,8 @@ class DeviceBomsUseCase {
                         modelNumber: facts?.modelNumber ?? line.modelNumber,
                         unit: line.unit,
                         quantity: entry.quantity,
+                        materialGroup: product?.materialGroupName ?? null,
+                        productCode: product?.productCode ?? null,
                     };
                 });
                 const records = group.lines.map((entry) => {
@@ -850,6 +887,8 @@ class DeviceBomsUseCase {
                             modelNumber: product?.modelNumber ?? line.modelNumber,
                             unit: line.unit,
                             quantity: entry.quantity,
+                            materialGroup: product?.materialGroupName ?? null,
+                            productCode: product?.productCode ?? null,
                         };
                     }),
                 });
@@ -885,16 +924,12 @@ class DeviceBomsUseCase {
         return { created, failed, bom: await this.get(tenantId, bomId) };
     }
     /* ── Hilfen ────────────────────────────────────────────────────────── */
-    /** «Projekt · Name — Gerät (BOM-Nummer)» — so steht der Beleg beim Projekt. */
+    /** Die Kommission des Belegs: NUR der Projektname (29.09.2026, Samet: «komisyonda sadece
+        projenin adı yazsın; proje kodu ayrı yerde») — bis dahin «Projekt · Name — Gerät (BOM)».
+        Projektnummer, Gerät und BOM kennt der Beleg über seine Zuordnung. */
     async projectLabelOf(tenantId, bom) {
-        const [project, device] = await Promise.all([
-            this.directory.project(tenantId, bom.productionProjectId),
-            this.directory.device(tenantId, bom.productionItemId),
-        ]);
-        return [
-            project ? [project.projectNumber, project.projectName].filter(Boolean).join(' · ') : null,
-            device?.name ?? null,
-        ].filter(Boolean).join(' — ') + ` (${bom.bomNumber})`;
+        const project = await this.directory.project(tenantId, bom.productionProjectId);
+        return (project?.projectName || project?.projectNumber || '').trim();
     }
     /** Preisanfragen und Bestellungen macht der Einkauf (Buchhaltung, Administratorrolle — Seite «Satın alma»). */
     assertCanProcure(actor) {
@@ -906,6 +941,15 @@ class DeviceBomsUseCase {
     procurement = null;
     attachProcurement(procurement) {
         this.procurement = procurement;
+    }
+    /** Die Freigaben der Revisionen durch die Administratorrolle (30.09.2026) — nach dem Bau angeschlossen. */
+    revisionApprovals = null;
+    attachRevisionApprovals(store) {
+        this.revisionApprovals = store;
+    }
+    /** Die Depo-Karten (ERP-Code, Name …) — für die Prüfungen der Revision. */
+    productsOf(tenantId, productIds) {
+        return this.stock.products(tenantId, productIds);
     }
     procurementOrFail() {
         if (!this.procurement)
@@ -967,6 +1011,12 @@ class DeviceBomsUseCase {
     }
     async requireBom(tenantId, bomId) {
         const bom = await this.boms.get(tenantId, bomId);
+        if (!bom)
+            throw (0, productionBom_1.bomError)('BOM_NOT_FOUND', 'BOM nicht gefunden.', { status: 404 });
+        return bom;
+    }
+    async requireBomHeader(tenantId, bomId) {
+        const bom = await this.boms.getHeader(tenantId, bomId);
         if (!bom)
             throw (0, productionBom_1.bomError)('BOM_NOT_FOUND', 'BOM nicht gefunden.', { status: 404 });
         return bom;
