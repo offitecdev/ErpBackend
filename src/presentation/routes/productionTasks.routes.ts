@@ -35,6 +35,8 @@ import { ProductionTaskController } from '../controllers/ProductionTaskControlle
  *   DELETE /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId  … entfernen
  *   DELETE /devices/:itemId/tasks           Aufgaben vom Gerät nehmen           [Administratorrolle]
  *   POST   /devices/:itemId/stages          neue Stufe { area, name } — nur unter 100 % im Bereich [Administratorrolle]
+ *   GET    /devices/:itemId/activities?area=&stage=[&page=&pageSize=&kinds=&actorId=&from=&to=]
+ *                                           Verlauf einer Stufe: wer was wann tat, neueste zuerst (30.09.2026) [Administratorrolle]
  *
  * «Üretimde görevlere eğer administrator isek görevleri yükleyebiliyoruz» —
  * lesen darf, wer die Produktion sieht; schreiben nur die Administratorrolle
@@ -125,6 +127,40 @@ router.post('/devices/:itemId/stages', VIEW, MODULE, ADMIN, (req, res, next) => 
 
 /**
  * @swagger
+ * /production/devices/{itemId}/activities:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Verlauf einer Stufe — wer was wann tat (nur Administratorrolle)"
+ *     security:
+ *       - bearerAuth: []
+ */
+// Ohne Speicher: jede Handlung schreibt eine Zeile, der Verlauf zeigt sie sofort (30.09.2026).
+router.get('/devices/:itemId/activities', VIEW, MODULE, ADMIN, (req, res, next) => controller.deviceActivities(req, res, next));
+
+/**
+ * ── ANFRAGEN AN DIE VERWALTUNG (30.09.2026) ─────────────────────────────────
+ *   GET    /devices/:itemId/requests[?area=&stage=][&status=open|solved|all] Anfragen einer Stufe — ohne Stufe: des ganzen Geräts [Administratorrolle]
+ *   GET    /task-devices                                                     Projekte und Geräte mit Aufgaben (+ offene Anfragen) [Administratorrolle]
+ *   POST   /devices/:itemId/requests/:requestId/solve                        «Mark as solved» [Administratorrolle]
+ *   POST   /devices/:itemId/tasks/:taskId/subtasks/:subtaskId/unlock-request Bitte um Entsperren { note } [wer an der Unteraufgabe steht]
+ *   (dazu /my-tasks/…/unlock-request für die Startseite, ohne Produktionsrecht)
+ *
+ * @swagger
+ * /production/devices/{itemId}/requests:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: Anfragen einer Stufe — Freigaben und Entsperren (nur Administratorrolle)"
+ *     security:
+ *       - bearerAuth: []
+ */
+// Projekte und Geräte mit Aufgaben (30.09.2026) — Auswahl von Anfragen und Verlauf auf der Startseite.
+router.get('/task-devices', VIEW, MODULE, ADMIN, (req, res, next) => controller.taskDevices(req, res, next));
+router.get('/devices/:itemId/requests', VIEW, MODULE, ADMIN, (req, res, next) => controller.deviceRequests(req, res, next));
+router.post('/devices/:itemId/requests/:requestId/solve', VIEW, MODULE, ADMIN, (req, res, next) => controller.solveDeviceRequest(req, res, next));
+router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/unlock-request', VIEW, MODULE, (req, res, next) => controller.requestUnlock(req, res, next));
+
+/**
+ * @swagger
  * /production/devices/{itemId}/tasks/{taskId}/subtasks/{subtaskId}:
  *   patch:
  *     tags: [Production]
@@ -199,5 +235,47 @@ router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files', VIEW, MO
 });
 router.get('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId', VIEW, MODULE, (req, res, next) => controller.readDeviceSubtaskFile(req, res, next));
 router.delete('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId', VIEW, MODULE, (req, res, next) => controller.removeDeviceSubtaskFile(req, res, next));
+
+/**
+ * ── «GÖREVLERİM» — DIE EIGENEN AUFGABEN (30.09.2026, Vorgabe Samet) ─────────
+ *
+ * «On the homepage show a new section: tasks … they can start or stop a subtask, they can
+ *  send subtasks to approving.» Wer an Unteraufgaben steht, hat oft KEINE Produktionsrechte
+ * (keine Grundrechte für Mitarbeitende) — darum ohne `production.view`, nur mit Anmeldung
+ * (vom Produktionsrouter) und eingeschaltetem Modul. Alles hier gilt nur für das Eigene:
+ * die Anwendungsfälle prüfen je Unteraufgabe, dass die Person an ihr steht, und handeln
+ * nie als Verwaltung.
+ *
+ *   GET    /my-tasks                                           je Projekt die Geräte mit den eigenen Aufgaben
+ *   PATCH  /my-tasks/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/status        ▶ / ■ / zur Freigabe
+ *   POST   /my-tasks/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files         PDF hochladen (auch neue Fassung)
+ *   GET    /my-tasks/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId lesen
+ *   DELETE /my-tasks/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId eigene entfernen
+ *
+ * @swagger
+ * /production/my-tasks:
+ *   get:
+ *     tags: [Production]
+ *     summary: "Görevlendirme: die eigenen Aufgaben je Projekt und Gerät (ohne Produktionsrechte)"
+ *     security:
+ *       - bearerAuth: []
+ */
+const MY = '/my-tasks/devices/:itemId/tasks/:taskId/subtasks/:subtaskId';
+router.get('/my-tasks', MODULE, (req, res, next) => controller.myTasks(req, res, next));
+router.patch(`${MY}/status`, MODULE, (req, res, next) => controller.mySubtaskStatus(req, res, next));
+router.post(`${MY}/files`, MODULE, (req, res, next) => {
+    subtaskUpload.single('file')(req, res, (error: unknown) => {
+        if (!error) { controller.myUploadSubtaskFile(req, res, next); return; }
+        if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+            res.status(413).json({ error: 'Die Datei ist zu gross.', code: 'FILE_TOO_LARGE', params: { max: 25 } });
+            return;
+        }
+        res.status(400).json({ error: 'Keine Datei empfangen.', code: 'FILE_REQUIRED' });
+    });
+});
+router.get(`${MY}/files/:fileId`, MODULE, (req, res, next) => controller.myReadSubtaskFile(req, res, next));
+// Bitte um Entsperren (30.09.2026) — wer an der Unteraufgabe steht (prüft der Anwendungsfall).
+router.post(`${MY}/unlock-request`, MODULE, (req, res, next) => controller.requestUnlock(req, res, next));
+router.delete(`${MY}/files/:fileId`, MODULE, (req, res, next) => controller.myRemoveSubtaskFile(req, res, next));
 
 export default router;

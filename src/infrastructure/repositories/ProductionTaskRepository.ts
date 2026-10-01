@@ -4,9 +4,15 @@ import { Prisma } from '@prisma/client';
 import prisma from '../database/prisma.client';
 import type {
     ProductionSubtask,
-    ProductionAreaTotals,
     ProductionDeviceTask,
     ProductionDeviceTaskPlan,
+    ProductionTaskActivity,
+    ProductionTaskActivityDraft,
+    ProductionTaskActivityKind,
+    ProductionTaskRequest,
+    ProductionTaskRequestDraft,
+    ProductionTaskRequestKind,
+    ProductionTaskRequestResolution,
     ProductionTaskDevice,
     ProductionTaskDraft,
     ProductionTaskPerson,
@@ -19,16 +25,21 @@ import type {
 } from '../../domain/entities/ProductionTask';
 import type {
     IProductionDeviceTaskRepository,
+    IProductionTaskActivityLog,
     IProductionTaskDirectory,
+    IProductionTaskRequestRepository,
     IProductionTaskTemplateRepository,
     ProductionDevicePlanWrite,
+    ProductionTaskActivityQuery,
 } from '../../domain/repositories/IProductionTaskRepository';
 import {
     areaSharesOf,
-    areaTotals,
     placeTask,
-    roundPercent,
+    resolveTaskWeights,
+    sectionShareOf,
     sectionsFrom,
+    stageWeightIn,
+    storedStageWeightsComplete,
     statusFrom,
     statusOfSubtasks,
     subtasksFrom,
@@ -60,6 +71,7 @@ type TaskRow = {
     code: string;
     name: string;
     weight: number;
+    stageWeight: number | null;
     assigneeIds: Prisma.JsonValue;
     subtasks: Prisma.JsonValue;
     startDate: Date | null;
@@ -75,15 +87,16 @@ const dateOf = (day: string | null): Date | null => (day ? new Date(`${day}T00:0
 
 /* Eine Aufgabe liegt immer in einem Bereich und einer Stufe ihrer Vorlage —
    eine Stufe aus der Zeit vor den zwei Wegen (27.09.2026) am passenden Platz
-   des Weges, sonst am Anfang, damit keine Aufgabe unsichtbar wird. */
-const draftOf = (row: TaskRow, sections: readonly ProductionTaskSection[]): ProductionTaskDraft & { id: string; sortOrder: number } => {
+   des Weges, sonst am Anfang, damit keine Aufgabe unsichtbar wird.
+   `weight` ist das Gewicht in der Stufe (30.09.2026), aus `withWeights`. */
+const draftOf = (row: TaskRow, sections: readonly ProductionTaskSection[], weight: number): ProductionTaskDraft & { id: string; sortOrder: number } => {
     const subtasks = subtasksFrom(row.subtasks);
     return {
         id: row.id,
         ...placeTask(sections, row.area, row.stage),
         code: row.code,
         name: row.name,
-        weight: roundPercent(Number(row.weight) || 0),
+        weight,
         // Die Personen der Aufgabe sind die ihrer Unteraufgaben (29.09.2026). Die Spalte
         // `assigneeIds` hält nur noch diese Summe; früher an der Aufgabe gesetzte Personen fallen weg.
         assigneeIds: taskAssigneesOf(subtasks),
@@ -108,8 +121,35 @@ type TemplateRow = {
     updatedAt: Date;
 };
 
+/**
+ * Die Bereiche samt Gewichten der Stufen und je Zeile das Gewicht der Aufgabe in ihrer Stufe
+ * (30.09.2026) — gespeichert oder, bei Daten von vorher, aus den Anteilen am Bereich abgeleitet.
+ */
+const withWeights = (
+    storedSections: Prisma.JsonValue,
+    areaShares: Prisma.JsonValue,
+    rows: ReadonlyArray<Pick<TaskRow, 'area' | 'stage' | 'weight' | 'stageWeight'>>,
+): { sections: ProductionTaskSection[]; weights: number[] } => {
+    const base = sectionsFrom(storedSections, areaShares);
+    return resolveTaskWeights(base, storedStageWeightsComplete(storedSections), rows.map((row) => {
+        const place = placeTask(base, row.area, row.stage);
+        return {
+            area: place.area,
+            stage: place.stage,
+            sectionShare: Number(row.weight) || 0,
+            stageWeight: row.stageWeight === null || row.stageWeight === undefined ? null : Number(row.stageWeight),
+        };
+    }));
+};
+
+/** Was eine Aufgabe in die Zeile schreibt: Gewicht in der Stufe und — für ältere Stände — Anteil am Bereich. */
+const weightColumns = (sections: readonly ProductionTaskSection[], task: Pick<ProductionTaskDraft, 'area' | 'stage' | 'weight'>) => ({
+    weight: sectionShareOf(stageWeightIn(sections, task.area, task.stage), task.weight),
+    stageWeight: task.weight,
+});
+
 const templateOf = (row: TemplateRow, taskRows: readonly TaskRow[]): ProductionTaskTemplate => {
-    const sections = sectionsFrom(row.sections, row.areaShares);
+    const { sections, weights } = withWeights(row.sections, row.areaShares, taskRows);
     return {
         id: row.id,
         tenantId: row.tenantId,
@@ -121,7 +161,7 @@ const templateOf = (row: TemplateRow, taskRows: readonly TaskRow[]): ProductionT
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         tasks: taskRows
-            .map((task): ProductionTemplateTask => draftOf(task, sections))
+            .map((task, index): ProductionTemplateTask => draftOf(task, sections, weights[index] ?? 0))
             .sort((left, right) => left.sortOrder - right.sortOrder),
     };
 };
@@ -133,7 +173,7 @@ const sectionColumns = (sections: readonly ProductionTaskSection[]) => ({
 });
 
 /** Die Aufgaben einer Vorlage als Zeilen — die Reihenfolge der Eingabe bleibt. */
-const templateTaskRows = (tenantId: string, templateId: string, tasks: ProductionTaskDraft[]) =>
+const templateTaskRows = (tenantId: string, templateId: string, tasks: ProductionTaskDraft[], sections: readonly ProductionTaskSection[]) =>
     tasks.map((task, index) => ({
         id: newId(),
         tenantId,
@@ -142,7 +182,7 @@ const templateTaskRows = (tenantId: string, templateId: string, tasks: Productio
         stage: task.stage,
         code: task.code,
         name: task.name,
-        weight: task.weight,
+        ...weightColumns(sections, task),
         assigneeIds: task.assigneeIds as Prisma.InputJsonValue,
         subtasks: task.subtasks as unknown as Prisma.InputJsonValue,
         startDate: dateOf(task.startDate),
@@ -170,7 +210,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
             }),
             prisma.productionTaskTemplateTask.findMany({
                 where: { tenantId },
-                select: { templateId: true, area: true, weight: true },
+                select: { templateId: true, area: true, stage: true, weight: true, stageWeight: true },
             }),
             prisma.productionDeviceTaskPlan.groupBy({
                 by: ['templateId'],
@@ -181,20 +221,16 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
 
         const usage = new Map(planGroups.map((group) => [group.templateId ?? '', group._count._all]));
         return templates.map((template) => {
-            const sections = sectionsFrom(template.sections, template.areaShares);
             const own = taskRows.filter((row) => row.templateId === template.id);
-            // Wie beim Lesen der Vorlage: eine Aufgabe in einem unbekannten Bereich zählt zum ersten.
-            const areas: ProductionAreaTotals = areaTotals(sections, own.map((row) => ({
-                area: placeTask(sections, row.area, '').area,
-                weight: roundPercent(Number(row.weight) || 0),
-            })));
+            // Wie beim Lesen der Vorlage: Gewichte der Stufen und Aufgaben, eine unbekannte Stelle am Anfang des Weges.
+            const { sections, weights } = withWeights(template.sections, template.areaShares, own);
             const taskCount = own.length;
             return {
                 id: template.id,
                 name: template.name,
                 sections,
                 taskCount,
-                areas,
+                weights: own.map((row, index) => ({ ...placeTask(sections, row.area, row.stage), weight: weights[index] ?? 0 })),
                 usedBy: usage.get(template.id) ?? 0,
                 exampleKey: template.exampleKey,
                 updatedAt: template.updatedAt,
@@ -227,7 +263,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
         exampleKey?: string,
     ): Promise<ProductionTaskTemplate> {
         const id = newId();
-        const rows = templateTaskRows(tenantId, id, input.tasks);
+        const rows = templateTaskRows(tenantId, id, input.tasks, input.sections);
         const created = await prisma.$transaction(async (tx) => {
             const template = await tx.productionTaskTemplate.create({
                 data: {
@@ -252,7 +288,7 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
         actorId: string,
         input: ProductionTaskTemplateInput,
     ): Promise<ProductionTaskTemplate | null> {
-        const rows = templateTaskRows(tenantId, id, input.tasks);
+        const rows = templateTaskRows(tenantId, id, input.tasks, input.sections);
         const saved = await prisma.$transaction(async (tx) => {
             const updated = await tx.productionTaskTemplate.updateMany({
                 where: { id, tenantId, deletedAt: null },
@@ -281,8 +317,8 @@ export class PrismaProductionTaskTemplateRepository implements IProductionTaskTe
 
 type DeviceTaskRow = TaskRow & { planId: string; status: string; updatedById: string | null; updatedAt: Date };
 
-const deviceTaskOf = (row: DeviceTaskRow, sections: readonly ProductionTaskSection[]): ProductionDeviceTask => ({
-    ...draftOf(row, sections),
+const deviceTaskOf = (row: DeviceTaskRow, sections: readonly ProductionTaskSection[], weight: number): ProductionDeviceTask => ({
+    ...draftOf(row, sections, weight),
     planId: row.planId,
     status: statusFrom(row.status),
     updatedById: row.updatedById,
@@ -304,7 +340,7 @@ type PlanRow = {
 };
 
 const planOf = (plan: PlanRow, taskRows: readonly DeviceTaskRow[]): ProductionDeviceTaskPlan => {
-    const sections = sectionsFrom(plan.sections, plan.areaShares);
+    const { sections, weights } = withWeights(plan.sections, plan.areaShares, taskRows);
     return {
         id: plan.id,
         tenantId: plan.tenantId,
@@ -316,7 +352,7 @@ const planOf = (plan: PlanRow, taskRows: readonly DeviceTaskRow[]): ProductionDe
         loadedById: plan.loadedById,
         createdAt: plan.createdAt,
         updatedAt: plan.updatedAt,
-        tasks: taskRows.map((task) => deviceTaskOf(task, sections)),
+        tasks: taskRows.map((task, index) => deviceTaskOf(task, sections, weights[index] ?? 0)),
     };
 };
 
@@ -349,7 +385,7 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             stage: task.stage,
             code: task.code,
             name: task.name,
-            weight: task.weight,
+            ...weightColumns(write.sections, task),
             assigneeIds: task.assigneeIds as Prisma.InputJsonValue,
             subtasks: task.subtasks as unknown as Prisma.InputJsonValue,
             startDate: dateOf(task.startDate),
@@ -393,6 +429,7 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
         itemId: string,
         tasks: Array<ProductionTaskDraft & { id: string | null }>,
         actorId: string,
+        sections: readonly ProductionTaskSection[],
     ): Promise<ProductionDeviceTaskPlan | null> {
         const saved = await prisma.$transaction(async (tx) => {
             const plan = await tx.productionDeviceTaskPlan.findUnique({
@@ -425,7 +462,7 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
                     stage: task.stage,
                     code: task.code,
                     name: task.name,
-                    weight: task.weight,
+                    ...weightColumns(sections, task),
                     assigneeIds: task.assigneeIds as Prisma.InputJsonValue,
                     subtasks: subtasks as unknown as Prisma.InputJsonValue,
                     startDate: dateOf(task.startDate),
@@ -439,8 +476,9 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             });
             await tx.productionDeviceTask.deleteMany({ where: { planId: plan.id } });
             if (rows.length) await tx.productionDeviceTask.createMany({ data: rows });
-            await tx.productionDeviceTaskPlan.update({ where: { id: plan.id }, data: { updatedAt: now } });
-            return { plan, rows: writtenRows(rows).map((row) => ({ ...row, updatedAt: now })) };
+            // Die Gewichte der Stufen (30.09.2026) gehen mit — im selben Vorgang wie die Aufgaben.
+            const updated = await tx.productionDeviceTaskPlan.update({ where: { id: plan.id }, data: { updatedAt: now, ...sectionColumns(sections) } });
+            return { plan: updated, rows: writtenRows(rows).map((row) => ({ ...row, updatedAt: now })) };
         });
         return saved ? planOf(saved.plan, saved.rows) : null;
     }
@@ -454,11 +492,9 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
     }
 
     async getTask(tenantId: string, itemId: string, taskId: string): Promise<ProductionDeviceTask | null> {
-        const [row, sections] = await Promise.all([
-            prisma.productionDeviceTask.findFirst({ where: { id: taskId, tenantId, productionItemId: itemId } }),
-            this.sectionsOfPlan(tenantId, itemId),
-        ]);
-        return row ? deviceTaskOf(row, sections) : null;
+        // Das Gewicht in der Stufe kann von den übrigen Aufgaben abhängen (Daten von vorher) — darum der ganze Plan.
+        const plan = await this.getPlan(tenantId, itemId);
+        return plan?.tasks.find((task) => task.id === taskId) ?? null;
     }
 
     async setStatus(
@@ -492,7 +528,8 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             const subtasks = subtasksFrom(row.subtasks);
             const current = subtasks.find((subtask) => subtask.id === subtaskId);
             if (!current) return 'no-subtask' as const;
-            const changed = change(current, deviceTaskOf(row, sections));
+            // Der Rückruf braucht die Aufgabe nur zum Lesen von Stand und Personen — das Gewicht zählt hier nicht.
+            const changed = change(current, deviceTaskOf(row, sections, Number(row.stageWeight ?? 0)));
             const next = subtasks.map((subtask) => (subtask.id === subtaskId ? changed : subtask));
             await tx.productionDeviceTask.update({
                 where: { id: row.id },
@@ -513,6 +550,16 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
     async deletePlan(tenantId: string, itemId: string): Promise<boolean> {
         const result = await prisma.productionDeviceTaskPlan.deleteMany({ where: { tenantId, productionItemId: itemId } });
         return result.count > 0;
+    }
+
+    async itemIdsForAssignee(tenantId: string, employeeId: string): Promise<string[]> {
+        // `assigneeIds` hält die Personen aller Unteraufgaben der Aufgabe (JSON-Liste) — EIN Rundgang.
+        const rows = await prisma.$queryRaw<Array<{ productionItemId: string }>>(Prisma.sql`
+            SELECT DISTINCT productionItemId
+              FROM uretim_cihaz_gorevleri
+             WHERE tenantId = ${tenantId}
+               AND JSON_CONTAINS(assigneeIds, JSON_QUOTE(${employeeId}))`);
+        return rows.map((row) => row.productionItemId);
     }
 }
 
@@ -599,5 +646,251 @@ export class PrismaProductionTaskDirectory implements IProductionTaskDirectory {
     async personName(id: string): Promise<string | null> {
         const row = await prisma.employee.findUnique({ where: { id }, select: { firstName: true, lastName: true } });
         return row ? personName(row) || null : null;
+    }
+
+    async taskDevices(tenantId: string) {
+        // Die Geräte mit Aufgaben und ihre Projekte in EINER Abfrage (ein Rundgang).
+        const rows = await prisma.$queryRaw<Array<{
+            projectId: string;
+            projectNumber: string;
+            projectName: string;
+            deviceId: string;
+            deviceName: string;
+            positionNumber: string | null;
+            templateName: string;
+            taskCount: bigint | number;
+        }>>(Prisma.sql`
+            SELECT p.id AS projectId, p.projectNumber, p.projectName,
+                   i.id AS deviceId, i.name AS deviceName, i.positionNumber,
+                   g.templateName,
+                   (SELECT COUNT(*) FROM uretim_cihaz_gorevleri t WHERE t.planId = g.id) AS taskCount
+              FROM uretim_cihaz_gorev_planlari g
+              JOIN uretim_proje_kalemleri i ON i.id = g.productionItemId AND i.tenantId = g.tenantId
+              JOIN uretim_projeler p ON p.id = i.productionProjectId
+             WHERE g.tenantId = ${tenantId} AND i.isActive = 1`);
+        // COUNT(*) kommt als BigInt — für JSON eine Zahl.
+        return rows.map((row) => ({ ...row, positionNumber: row.positionNumber ?? null, taskCount: Number(row.taskCount) || 0 }));
+    }
+}
+
+/** Texte kürzen, wie die Spalten sie fassen — ein langer Name bricht den Verlauf nicht. */
+const clip = (value: string | null, max: number): string | null => (value ? value.slice(0, max) : null);
+
+/**
+ * ── DER VERLAUF JE STUFE (30.09.2026) ───────────────────────────────────────
+ * `uretim_cihaz_gorev_aktiviteleri`: nur angehängt. Gelesen wird eine Stufe
+ * samt den Zeilen ohne Bereich (das ganze Gerät), neueste zuerst.
+ */
+export class PrismaProductionTaskActivityLog implements IProductionTaskActivityLog {
+    async record(entries: ProductionTaskActivityDraft[]): Promise<void> {
+        if (!entries.length) return;
+        // Dieselbe Millisekunde für alle Zeilen EINER Handlung — die Reihenfolge der Eingabe bleibt über die Kennung.
+        const now = Date.now();
+        await prisma.productionDeviceTaskActivity.createMany({
+            data: entries.map((entry, index) => ({
+                id: `${now.toString(36)}${String(index).padStart(3, '0')}${newId()}`,
+                tenantId: entry.tenantId,
+                productionItemId: entry.productionItemId,
+                area: clip(entry.area, 16),
+                stage: clip(entry.stage, 24),
+                taskId: entry.taskId,
+                taskCode: clip(entry.taskCode, 16),
+                taskName: clip(entry.taskName, 200),
+                subtaskId: clip(entry.subtaskId, 40),
+                subtaskCode: clip(entry.subtaskCode, 24),
+                subtaskName: clip(entry.subtaskName, 200),
+                kind: entry.kind,
+                actorId: entry.actorId,
+                actorName: clip(entry.actorName, 160),
+                details: entry.details === null ? Prisma.DbNull : (entry.details as Prisma.InputJsonValue),
+                createdAt: new Date(now),
+            })),
+        });
+    }
+
+    async list(
+        tenantId: string,
+        itemId: string,
+        place: { area: string; stage: string } | null,
+        query: ProductionTaskActivityQuery,
+    ): Promise<{ rows: ProductionTaskActivity[]; total: number }> {
+        const where: Prisma.ProductionDeviceTaskActivityWhereInput = {
+            tenantId,
+            productionItemId: itemId,
+            // Eine Stufe samt den Zeilen am ganzen Gerät — oder ohne Stufe: alles des Geräts.
+            ...(place ? { OR: [{ area: place.area, stage: place.stage }, { area: null }] } : {}),
+            ...(query.kinds ? { kind: { in: query.kinds } } : {}),
+            ...(query.actorId ? { actorId: query.actorId } : {}),
+            ...(query.from || query.to
+                ? { createdAt: { ...(query.from ? { gte: query.from } : {}), ...(query.to ? { lt: query.to } : {}) } }
+                : {}),
+        };
+        // Seite und Summe gleichzeitig — ein Rundgang statt zwei.
+        const [rows, total] = await Promise.all([
+            prisma.productionDeviceTaskActivity.findMany({
+                where,
+                // Die Kennung hält die Reihenfolge EINER Handlung (dieselbe Millisekunde).
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+                skip: query.offset,
+                take: query.limit,
+            }),
+            prisma.productionDeviceTaskActivity.count({ where }),
+        ]);
+        return { rows: rows.map((row) => ({
+            id: row.id,
+            tenantId: row.tenantId,
+            productionItemId: row.productionItemId,
+            area: row.area,
+            stage: row.stage,
+            taskId: row.taskId,
+            taskCode: row.taskCode,
+            taskName: row.taskName,
+            subtaskId: row.subtaskId,
+            subtaskCode: row.subtaskCode,
+            subtaskName: row.subtaskName,
+            kind: row.kind as ProductionTaskActivityKind,
+            actorId: row.actorId,
+            actorName: row.actorName,
+            details: row.details && typeof row.details === 'object' && !Array.isArray(row.details)
+                ? row.details as Record<string, unknown>
+                : null,
+            createdAt: row.createdAt,
+        })), total };
+    }
+
+    async actors(tenantId: string, itemId: string, place: { area: string; stage: string } | null): Promise<Array<{ id: string; name: string }>> {
+        const rows = await prisma.productionDeviceTaskActivity.findMany({
+            where: {
+                tenantId,
+                productionItemId: itemId,
+                ...(place ? { OR: [{ area: place.area, stage: place.stage }, { area: null }] } : {}),
+                actorId: { not: null },
+            },
+            // Der jüngste Name gilt, falls jemand inzwischen anders heisst.
+            orderBy: { createdAt: 'desc' },
+            distinct: ['actorId'],
+            select: { actorId: true, actorName: true },
+        });
+        return rows
+            .map((row) => ({ id: row.actorId ?? '', name: row.actorName || '—' }))
+            .sort((left, right) => left.name.localeCompare(right.name, 'tr'));
+    }
+}
+
+type RequestRow = Awaited<ReturnType<typeof prisma.productionDeviceTaskRequest.findFirst>>;
+
+const requestOf = (row: NonNullable<RequestRow>): ProductionTaskRequest => ({
+    id: row.id,
+    tenantId: row.tenantId,
+    productionItemId: row.productionItemId,
+    area: row.area,
+    stage: row.stage,
+    taskId: row.taskId,
+    taskCode: row.taskCode,
+    taskName: row.taskName,
+    subtaskId: row.subtaskId,
+    subtaskCode: row.subtaskCode,
+    subtaskName: row.subtaskName,
+    kind: row.kind as ProductionTaskRequestKind,
+    note: row.note,
+    requestedById: row.requestedById,
+    requestedByName: row.requestedByName,
+    createdAt: row.createdAt,
+    solvedAt: row.solvedAt,
+    solvedById: row.solvedById,
+    solvedByName: row.solvedByName,
+    resolution: (row.resolution as ProductionTaskRequestResolution | null) ?? null,
+});
+
+/**
+ * ── ANFRAGEN AN DIE VERWALTUNG (30.09.2026) ─────────────────────────────────
+ * `uretim_cihaz_gorev_talepleri`: Freigabe- und Entsperr-Anfragen je Unteraufgabe.
+ */
+export class PrismaProductionTaskRequestRepository implements IProductionTaskRequestRepository {
+    async create(draft: ProductionTaskRequestDraft): Promise<ProductionTaskRequest> {
+        const row = await prisma.productionDeviceTaskRequest.create({
+            data: {
+                id: newId(),
+                ...draft,
+                area: clip(draft.area, 16) ?? '',
+                stage: clip(draft.stage, 24) ?? '',
+                taskCode: clip(draft.taskCode, 16) ?? '',
+                taskName: clip(draft.taskName, 200) ?? '',
+                subtaskId: clip(draft.subtaskId, 40) ?? '',
+                subtaskCode: clip(draft.subtaskCode, 24) ?? '',
+                subtaskName: clip(draft.subtaskName, 200) ?? '',
+                note: clip(draft.note, 500),
+                requestedByName: clip(draft.requestedByName, 160),
+            },
+        });
+        return requestOf(row);
+    }
+
+    async findOpen(tenantId: string, itemId: string, subtaskId: string, kind: ProductionTaskRequestKind): Promise<ProductionTaskRequest | null> {
+        const row = await prisma.productionDeviceTaskRequest.findFirst({
+            where: { tenantId, productionItemId: itemId, subtaskId, kind, solvedAt: null },
+            orderBy: { createdAt: 'desc' },
+        });
+        return row ? requestOf(row) : null;
+    }
+
+    async list(tenantId: string, itemId: string, place: { area: string; stage: string } | null, status: 'open' | 'solved' | 'all'): Promise<ProductionTaskRequest[]> {
+        const rows = await prisma.productionDeviceTaskRequest.findMany({
+            where: {
+                tenantId,
+                productionItemId: itemId,
+                ...(place ? { area: place.area, stage: place.stage } : {}),
+                ...(status === 'open' ? { solvedAt: null } : status === 'solved' ? { solvedAt: { not: null } } : {}),
+            },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: 200,
+        });
+        return rows.map(requestOf);
+    }
+
+    async countOpen(tenantId: string, itemId: string, place: { area: string; stage: string } | null): Promise<number> {
+        return prisma.productionDeviceTaskRequest.count({
+            where: { tenantId, productionItemId: itemId, ...(place ? { area: place.area, stage: place.stage } : {}), solvedAt: null },
+        });
+    }
+
+    async openByDevice(tenantId: string): Promise<Map<string, number>> {
+        const groups = await prisma.productionDeviceTaskRequest.groupBy({
+            by: ['productionItemId'],
+            where: { tenantId, solvedAt: null },
+            _count: { _all: true },
+        });
+        return new Map(groups.map((group) => [group.productionItemId, group._count._all]));
+    }
+
+    async solve(
+        tenantId: string,
+        itemId: string,
+        id: string,
+        by: { id: string; name: string | null },
+        resolution: ProductionTaskRequestResolution,
+    ): Promise<ProductionTaskRequest | null> {
+        const updated = await prisma.productionDeviceTaskRequest.updateMany({
+            where: { id, tenantId, productionItemId: itemId, solvedAt: null },
+            data: { solvedAt: new Date(), solvedById: by.id, solvedByName: clip(by.name, 160), resolution },
+        });
+        if (!updated.count) return null;
+        const row = await prisma.productionDeviceTaskRequest.findUnique({ where: { id } });
+        return row ? requestOf(row) : null;
+    }
+
+    async solveOpenFor(
+        tenantId: string,
+        itemId: string,
+        subtaskId: string,
+        kinds: readonly ProductionTaskRequestKind[],
+        by: { id: string; name: string | null },
+        resolution: ProductionTaskRequestResolution,
+    ): Promise<number> {
+        const updated = await prisma.productionDeviceTaskRequest.updateMany({
+            where: { tenantId, productionItemId: itemId, subtaskId, kind: { in: [...kinds] }, solvedAt: null },
+            data: { solvedAt: new Date(), solvedById: by.id, solvedByName: clip(by.name, 160), resolution },
+        });
+        return updated.count;
     }
 }

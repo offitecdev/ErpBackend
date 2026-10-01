@@ -13,7 +13,7 @@ import type {
     ProductionTaskTemplate,
     ProductionTaskTemplateSummary,
 } from '../../../domain/entities/ProductionTask';
-import { areaSharesOf, areaTotals, templateCheck, type ProductionTaskTemplateCheck } from '../../../domain/services/productionTasks';
+import { areaSharesOf, templateCheck, type ProductionTaskTemplateCheck } from '../../../domain/services/productionTasks';
 
 /**
  * ── GÖREVLENDİRME · WAS DIE OBERFLÄCHE BEKOMMT ──────────────────────────────
@@ -116,7 +116,7 @@ export const summaryDto = (row: ProductionTaskTemplateSummary): ProductionTaskTe
     sections: row.sections,
     areaShares: areaSharesOf(row.sections),
     taskCount: row.taskCount,
-    check: templateCheck(row.sections, row.areas),
+    check: templateCheck(row.sections, row.weights),
     usedBy: row.usedBy,
     isExample: Boolean(row.exampleKey),
     updatedAt: row.updatedAt.toISOString(),
@@ -133,7 +133,7 @@ export const templateDto = (
     areaShares: areaSharesOf(template.sections),
     tasks: template.tasks.map(taskDto),
     people,
-    check: templateCheck(template.sections, areaTotals(template.sections, template.tasks)),
+    check: templateCheck(template.sections, template.tasks),
     isExample: Boolean(template.exampleKey),
     createdAt: template.createdAt.toISOString(),
     updatedAt: template.updatedAt.toISOString(),

@@ -1,6 +1,9 @@
 import type {
     IProductionDeviceTaskRepository,
+    IProductionTaskActivityLog,
     IProductionTaskDirectory,
+    IProductionTaskRequestRepository,
+    ProductionTaskNotice,
     IProductionTaskNotifier,
     IProductionTaskTemplateRepository,
 } from '../../../domain/repositories/IProductionTaskRepository';
@@ -8,11 +11,16 @@ import type {
     ProductionDeviceTask,
     ProductionDeviceTaskPlan,
     ProductionSubtask,
+    ProductionSubtaskFile,
+    ProductionTaskActivity,
+    ProductionTaskActivityDraft,
     ProductionTaskDevice,
+    ProductionTaskRequest,
+    ProductionTaskRequestKind,
+    ProductionTaskRequestResolution,
     ProductionTaskPerson,
 } from '../../../domain/entities/ProductionTask';
 import {
-    areaTotals,
     assigneeIdsFrom,
     assignmentNews,
     fileVersionFor,
@@ -29,10 +37,23 @@ import {
     tasksInputFrom,
     withAddedStage,
     withChecklistItem,
+    withStageWeights,
     today,
     productionTaskError,
     templateCheck,
 } from '../../../domain/services/productionTasks';
+import {
+    activityAt,
+    assigneeChange,
+    deviceActivity,
+    fileDetails,
+    loadedAssignments,
+    planChangeActivities,
+    planChangeNotices,
+    subtaskNotice,
+    subtaskStepKind,
+    type ActivityScope,
+} from '../../../domain/services/productionTaskActivities';
 import {
     assigneesOf,
     deviceTasksDto,
@@ -122,6 +143,117 @@ const subtaskStatusChange = (subtask: ProductionSubtask, status: ProductionSubta
     return { ...subtask, status };
 };
 
+/** Eine Zeile des Verlaufs, wie die Oberfläche sie bekommt (30.09.2026). */
+export interface ProductionTaskActivityDto {
+    id: string;
+    kind: ProductionTaskActivity['kind'];
+    /** Zeitpunkt (ISO). */
+    at: string;
+    actorId: string | null;
+    actorName: string | null;
+    area: string | null;
+    stage: string | null;
+    taskId: string | null;
+    taskCode: string | null;
+    taskName: string | null;
+    subtaskId: string | null;
+    subtaskCode: string | null;
+    subtaskName: string | null;
+    details: Record<string, unknown> | null;
+}
+
+/** «Görevlerim» (30.09.2026): je Projekt die Geräte mit den eigenen Aufgaben. */
+export interface MyProductionTasksDto {
+    projects: Array<{
+        id: string;
+        projectNumber: string;
+        projectName: string;
+        devices: Array<{
+            device: ProductionDeviceTasksDto['device'];
+            plan: { templateName: string; sections: ProductionDeviceTaskPlan['sections'] };
+            tasks: ProductionTaskDto[];
+        }>;
+    }>;
+    people: ProductionTaskPerson[];
+}
+
+/** Eine Anfrage an die Verwaltung, wie die Oberfläche sie bekommt (30.09.2026). */
+export interface ProductionTaskRequestDto {
+    id: string;
+    kind: ProductionTaskRequestKind;
+    /** Bereich und Stufe — die Liste des ganzen Geräts nennt sie. */
+    area: string;
+    stage: string;
+    taskId: string;
+    taskCode: string;
+    taskName: string;
+    subtaskId: string;
+    subtaskCode: string;
+    subtaskName: string;
+    note: string | null;
+    requestedById: string | null;
+    requestedByName: string | null;
+    /** Zeitpunkte (ISO). */
+    createdAt: string;
+    solvedAt: string | null;
+    solvedByName: string | null;
+    resolution: ProductionTaskRequestResolution | null;
+}
+
+const requestDto = (row: ProductionTaskRequest): ProductionTaskRequestDto => ({
+    id: row.id,
+    kind: row.kind,
+    area: row.area,
+    stage: row.stage,
+    taskId: row.taskId,
+    taskCode: row.taskCode,
+    taskName: row.taskName,
+    subtaskId: row.subtaskId,
+    subtaskCode: row.subtaskCode,
+    subtaskName: row.subtaskName,
+    note: row.note,
+    requestedById: row.requestedById,
+    requestedByName: row.requestedByName,
+    createdAt: row.createdAt.toISOString(),
+    solvedAt: row.solvedAt ? row.solvedAt.toISOString() : null,
+    solvedByName: row.solvedByName,
+    resolution: row.resolution,
+});
+
+/** So viele Zeilen je Seite des Verlaufs — und höchstens. */
+const ACTIVITY_PAGE = 25;
+const ACTIVITY_PAGE_MAX = 100;
+
+/** Die Arten, nach denen der Verlauf filtern darf (alles andere fällt weg). */
+const ACTIVITY_KINDS: ReadonlySet<string> = new Set<ProductionTaskActivity['kind']>([
+    'SUBTASK_STARTED', 'SUBTASK_STOPPED', 'SUBTASK_SUBMITTED', 'SUBTASK_DONE',
+    'SUBTASK_APPROVED', 'REVISION_REQUESTED', 'SUBTASK_UNLOCKED', 'CHECKLIST_ITEM_ADDED',
+    'FILE_UPLOADED', 'FILE_DELETED', 'SUBTASK_ASSIGNED',
+    'TASK_CREATED', 'TASK_UPDATED', 'TASK_DELETED', 'TASK_MOVED', 'TASK_STATUS',
+    'SUBTASK_CREATED', 'SUBTASK_UPDATED', 'SUBTASK_DELETED', 'STAGE_ADDED',
+    'PLAN_LOADED', 'PLAN_REMOVED',
+]);
+
+const scopeOf = (tenantId: string, itemId: string, actor: ProductionTaskActor): ActivityScope => ({
+    tenantId,
+    productionItemId: itemId,
+    actorId: actor.id,
+    actorName: actor.name,
+});
+
+/** Die Stelle einer Aufgabe im Weg — Bereich und Stufe. */
+const stageKeyOf = (task: { area: string; stage: string }): string => `${task.area}|${task.stage}`;
+
+/** Die Stufen, in denen die Person an einer Unteraufgabe steht (30.09.2026). */
+const stagesOf = (tasks: readonly ProductionDeviceTask[], employeeId: string): Set<string> =>
+    new Set(tasks.filter((task) => task.subtasks.some((subtask) => worksOnSubtask(subtask, employeeId))).map(stageKeyOf));
+
+/** Wer die erste (noch vorhandene) Fassung einer Datei hochgeladen hat. */
+const originalUploaderOf = (files: readonly ProductionSubtaskFile[], groupId: string): string | null => {
+    const versions = files.filter((file) => file.groupId === groupId).sort((left, right) => left.version - right.version);
+    return versions[0]?.uploadedById ?? null;
+};
+
 const cleanFileName = (value: string): string =>
     (value || 'file').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 200) || 'file';
 
@@ -148,6 +280,8 @@ export class ProductionDeviceTasksUseCase {
         private readonly directory: IProductionTaskDirectory,
         private readonly notifier: IProductionTaskNotifier,
         private readonly files: ProductionTaskFileStore,
+        private readonly activities: IProductionTaskActivityLog,
+        private readonly requests: IProductionTaskRequestRepository,
     ) {}
 
     async get(tenantId: string, itemId: string): Promise<ProductionDeviceTasksDto> {
@@ -173,7 +307,7 @@ export class ProductionDeviceTasksUseCase {
         if (!device) throw this.deviceNotFound();
         if (!template) throw productionTaskError('TEMPLATE_NOT_FOUND', 'Vorlage nicht gefunden.', { status: 404 });
 
-        const check = templateCheck(template.sections, areaTotals(template.sections, template.tasks));
+        const check = templateCheck(template.sections, template.tasks);
         if (!check.valid) {
             throw productionTaskError('TEMPLATE_INCOMPLETE', `Die Vorlage «${template.name}» geht noch nicht auf (Anteile und Gewichte je 100 %).`, {
                 status: 409,
@@ -218,6 +352,17 @@ export class ProductionDeviceTasksUseCase {
 
         // Ein ersetzter Plan nimmt seine Dateien mit.
         if (existing) this.dropFiles(fileRefsOf(existing.tasks), fileRefsOf(plan.tasks));
+        // Der Verlauf: die geladene Vorlage — und wer aus ihr an welcher Unteraufgabe steht.
+        const loadedPeople = await this.directory.people(tenantId, assigneesOf(plan.tasks));
+        const loadedName = (id: string) => loadedPeople.find((person) => person.id === id)?.name ?? id;
+        await this.log([
+            deviceActivity(scopeOf(tenantId, itemId, actor), 'PLAN_LOADED', {
+                templateName: template.name,
+                previousTemplateName: existing?.templateName ?? null,
+                taskCount: plan.tasks.length,
+            }),
+            ...loadedAssignments(scopeOf(tenantId, itemId, actor), plan.tasks, loadedName),
+        ]);
 
         void this.notifier.assigned({
             tenantId,
@@ -226,6 +371,11 @@ export class ProductionDeviceTasksUseCase {
             actorName: actor.name,
             news: assignmentNews(existing?.tasks ?? [], plan.tasks),
         });
+        // Ersetzt: die Aufgaben des alten Plans sind weg — ihre Leute erfahren es (30.09.2026).
+        if (existing) {
+            const gone = planChangeNotices(existing.tasks, []);
+            if (gone.length) void this.notifier.changed({ tenantId, device, actorId: actor.id, actorName: actor.name, notices: gone });
+        }
         return this.dto(tenantId, device, plan);
     }
 
@@ -265,7 +415,25 @@ export class ProductionDeviceTasksUseCase {
         if (news.size) {
             void this.notifier.assigned({ tenantId, device, actorId: actor.id, actorName: actor.name, news });
         }
-        const people = await this.directory.people(tenantId, task.assigneeIds);
+        // Die Namen auch derer, die gingen — der Verlauf nennt sie.
+        const named = await this.directory.people(tenantId, [...new Set([...task.assigneeIds, ...previous])]);
+        const change = assigneeChange(previous, kept, (id) => named.find((person) => person.id === id)?.name ?? id);
+        const subtask = task.subtasks.find((entry) => entry.id === subtaskId) ?? null;
+        if (change && subtask) {
+            await this.log([activityAt(scopeOf(tenantId, itemId, actor), 'SUBTASK_ASSIGNED', task, subtask, change)]);
+            // Wer von der Unteraufgabe genommen wurde, erfährt es (30.09.2026).
+            if (change.removed.length) {
+                const index = task.subtasks.findIndex((entry) => entry.id === subtaskId);
+                void this.notifier.changed({
+                    tenantId,
+                    device,
+                    actorId: actor.id,
+                    actorName: actor.name,
+                    notices: [{ kind: 'REMOVED', recipients: change.removed.map((person) => person.id), code: `${task.code}.${index + 1}`, name: subtask.name, area: task.area, stage: task.stage }],
+                });
+            }
+        }
+        const people = named.filter((person) => task.assigneeIds.includes(person.id));
         return { task: taskDto(task), people };
     }
 
@@ -285,11 +453,13 @@ export class ProductionDeviceTasksUseCase {
         if (!device) throw this.deviceNotFound();
         if (!existing) throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
 
-        const input = tasksInputFrom(objectOf(body).tasks, existing.sections, true);
+        // Die Gewichte der Stufen (30.09.2026) kommen mit `sections`; ohne sie bleiben sie, wie sie sind.
+        const sections = withStageWeights(existing.sections, objectOf(body).sections);
+        const input = tasksInputFrom(objectOf(body).tasks, sections, true);
         const active = await this.directory.activePeople(tenantId, assigneesOf(input));
-        const tasks = orderTasks(input, existing.sections).map((task) => withActiveAssignees(task, active));
+        const tasks = orderTasks(input, sections).map((task) => withActiveAssignees(task, active));
 
-        const plan = await this.plans.replaceTasks(tenantId, itemId, tasks, actor.id);
+        const plan = await this.plans.replaceTasks(tenantId, itemId, tasks, actor.id, sections);
         if (!plan) throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
         // Entfernte Unteraufgaben nehmen ihre Dateien mit.
         this.dropFiles(fileRefsOf(existing.tasks), fileRefsOf(plan.tasks));
@@ -306,6 +476,16 @@ export class ProductionDeviceTasksUseCase {
         if (reopened.length) {
             void this.notifier.reopened({ tenantId, device, actorId: actor.id, actorName: actor.name, subtasks: reopened });
         }
+        // Der Verlauf: was angelegt, geändert, verschoben, gelöscht und wem zugewiesen wurde.
+        const named = await this.directory.people(tenantId, [...new Set([...assigneesOf(existing.tasks), ...assigneesOf(plan.tasks)])]);
+        const nameOf = (id: string) => named.find((person) => person.id === id)?.name ?? id;
+        await this.log(planChangeActivities(scopeOf(tenantId, itemId, actor), existing.tasks, plan.tasks, nameOf));
+        // Entfernt, gelöscht, geändert — die Leute der Unteraufgaben erfahren es (30.09.2026).
+        // Wieder geöffnete Unteraufgaben haben schon ihre Nachricht «neu prüfen» — keine zweite.
+        const reopenedCodes = new Set(reopened.map((entry) => entry.code));
+        const notices = planChangeNotices(existing.tasks, plan.tasks)
+            .filter((notice) => !(notice.kind === 'UPDATED' && reopenedCodes.has(notice.code)));
+        if (notices.length) void this.notifier.changed({ tenantId, device, actorId: actor.id, actorName: actor.name, notices });
         return this.dto(tenantId, device, plan);
     }
 
@@ -314,7 +494,7 @@ export class ProductionDeviceTasksUseCase {
      * der Weg sichert es mit ADMIN): nur solange die Aufgaben des Bereichs unter 100 % wiegen.
      * Die Vorlage bleibt, wie sie ist; Aufgaben, Stände und Dateien bleiben unberührt.
      */
-    async addStage(tenantId: string, itemId: string, body: unknown): Promise<ProductionDeviceTasksDto> {
+    async addStage(tenantId: string, actor: ProductionTaskActor, itemId: string, body: unknown): Promise<ProductionDeviceTasksDto> {
         const input = objectOf(body);
         const [device, existing] = await Promise.all([
             this.directory.device(tenantId, itemId),
@@ -322,9 +502,19 @@ export class ProductionDeviceTasksUseCase {
         ]);
         if (!device) throw this.deviceNotFound();
         if (!existing) throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
-        const sections = withAddedStage(existing.sections, input.area, input.name, existing.tasks);
+        const sections = withAddedStage(existing.sections, input.area, input.name);
         const plan = await this.plans.setSections(tenantId, itemId, sections);
         if (!plan) throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
+        // Die neue Stufe: die, die vorher im Bereich nicht war.
+        const known = new Set(existing.sections.flatMap((section) => section.stages.map((stage) => `${section.key}|${stage.key}`)));
+        const added = plan.sections.flatMap((section) => section.stages
+            .filter((stage) => !known.has(`${section.key}|${stage.key}`))
+            .map((stage) => ({ area: section.key, stage: stage.key, name: stage.name })));
+        await this.log(added.map((entry) => ({
+            ...deviceActivity(scopeOf(tenantId, itemId, actor), 'STAGE_ADDED', { name: entry.name }),
+            area: entry.area,
+            stage: entry.stage,
+        })));
         return this.dto(tenantId, device, plan);
     }
 
@@ -359,6 +549,9 @@ export class ProductionDeviceTasksUseCase {
         }
         const task = await this.plans.setStatus(tenantId, itemId, taskId, status, actor.id);
         if (!task) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
+        if (current.status !== status) {
+            await this.log([activityAt(scopeOf(tenantId, itemId, actor), 'TASK_STATUS', task, null, { from: current.status, to: status })]);
+        }
         return { task: taskDto(task) };
     }
 
@@ -383,13 +576,19 @@ export class ProductionDeviceTasksUseCase {
         if (!isProductionTaskStatus(status)) {
             throw productionTaskError('STATUS_INVALID', 'Unbekannter Stand.');
         }
-        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+        let from: ProductionSubtask['status'] = status;
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!worksOnSubtask(subtask, actor.id)) {
                 throw productionTaskError('STATUS_FORBIDDEN', 'Den Stand setzt nur, wer an der Unteraufgabe steht.', { status: 403 });
             }
+            from = subtask.status;
             return subtaskStatusChange(subtask, status);
-        }, actor.id);
-        return { task: taskDto(this.found(task)) };
+        }, actor.id));
+        const kind = subtaskStepKind(from, status);
+        if (kind) await this.logSubtask(tenantId, itemId, actor, kind, task, subtaskId, { from, to: status });
+        // Zur Freigabe geschickt: eine Anfrage an die Verwaltung (30.09.2026) — höchstens eine offene.
+        if (kind === 'SUBTASK_SUBMITTED') await this.openRequest(tenantId, itemId, actor, task, subtaskId, 'APPROVAL', null);
+        return { task: taskDto(task) };
     }
 
     /**
@@ -412,7 +611,9 @@ export class ProductionDeviceTasksUseCase {
         const note = typeof rawNote === 'string' ? rawNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
         // Die abgehakten Punkte der Freigabe-Checkliste — geprüft wird hier, nicht nur im Browser.
         const checked = new Set(Array.isArray(input.checked) ? input.checked.filter((id): id is string => typeof id === 'string') : []);
-        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+        let checklist: string[] = [];
+        let fileIds: string[] = [];
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!subtask.requiresApproval) {
                 throw productionTaskError('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
             }
@@ -428,6 +629,8 @@ export class ProductionDeviceTasksUseCase {
             if (subtask.approvalChecklist.some((item) => !checked.has(item.id))) {
                 throw productionTaskError('CHECKLIST_INCOMPLETE', 'Erst alle Punkte der Freigabe-Checkliste abhaken.', { status: 409 });
             }
+            checklist = subtask.approvalChecklist.map((item) => item.text);
+            fileIds = subtask.files.map((file) => file.id);
             return {
                 ...subtask,
                 status: 'DONE',
@@ -440,8 +643,12 @@ export class ProductionDeviceTasksUseCase {
                 revisionAt: null,
                 revisionNote: null,
             };
-        }, actor.id);
-        return { task: taskDto(this.found(task)) };
+        }, actor.id));
+        // Die Dateien, die freigegeben wurden — der Klick zeigt sie.
+        await this.logSubtask(tenantId, itemId, actor, 'SUBTASK_APPROVED', task, subtaskId, { note: note || null, checklist, fileIds });
+        await this.notifyChanged(tenantId, itemId, actor, subtaskNotice('APPROVED', task, subtaskId, note || null));
+        await this.closeRequests(tenantId, itemId, actor, subtaskId, ['APPROVAL'], 'APPROVED');
+        return { task: taskDto(task) };
     }
 
     /**
@@ -461,16 +668,21 @@ export class ProductionDeviceTasksUseCase {
     ): Promise<{ task: ProductionTaskDto }> {
         if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Die Checkliste ergänzt nur die Verwaltung.', { status: 403 });
         const rawText = objectOf(body).text;
-        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+        let text = '';
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!subtask.requiresApproval) {
                 throw productionTaskError('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
             }
             if (isCompleted(subtask)) {
                 throw productionTaskError('SUBTASK_LOCKED', 'Freigegeben und gesperrt — erst die Sperre aufheben.', { status: 409 });
             }
-            return withChecklistItem(subtask, rawText);
-        }, actor.id);
-        return { task: taskDto(this.found(task)) };
+            const next = withChecklistItem(subtask, rawText);
+            text = next.approvalChecklist[next.approvalChecklist.length - 1]?.text ?? '';
+            return next;
+        }, actor.id));
+        await this.logSubtask(tenantId, itemId, actor, 'CHECKLIST_ITEM_ADDED', task, subtaskId, { text });
+        await this.notifyChanged(tenantId, itemId, actor, subtaskNotice('UPDATED', task, subtaskId));
+        return { task: taskDto(task) };
     }
 
     /**
@@ -489,10 +701,12 @@ export class ProductionDeviceTasksUseCase {
         subtaskId: string,
     ): Promise<{ task: ProductionTaskDto }> {
         if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Die Sperre hebt nur die Verwaltung auf.', { status: 403 });
-        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+        let from: ProductionSubtask['status'] = 'PENDING';
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!isCompleted(subtask) && subtask.status !== 'PENDING') {
                 throw productionTaskError('NOT_LOCKED', 'Nicht gesperrt.', { status: 409 });
             }
+            from = subtask.status;
             return {
                 ...subtask,
                 status: 'IN_PROGRESS',
@@ -501,8 +715,12 @@ export class ProductionDeviceTasksUseCase {
                 completedAt: null,
                 completionNote: null,
             };
-        }, actor.id);
-        return { task: taskDto(this.found(task)) };
+        }, actor.id));
+        await this.logSubtask(tenantId, itemId, actor, 'SUBTASK_UNLOCKED', task, subtaskId, { from, to: 'IN_PROGRESS' });
+        await this.notifyChanged(tenantId, itemId, actor, subtaskNotice('UNLOCKED', task, subtaskId));
+        // Entsperrt: die Bitte darum ist erledigt — und eine wartende Freigabe auch (sie ist wieder in Arbeit).
+        await this.closeRequests(tenantId, itemId, actor, subtaskId, ['UNLOCK', 'APPROVAL'], 'UNLOCKED');
+        return { task: taskDto(task) };
     }
 
     /**
@@ -522,11 +740,13 @@ export class ProductionDeviceTasksUseCase {
         if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Zurückgeben darf nur die Verwaltung.', { status: 403 });
         const rawNote = objectOf(body).note;
         const note = typeof rawNote === 'string' ? rawNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
-        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+        let fileIds: string[] = [];
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!subtask.requiresApproval) {
                 throw productionTaskError('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
             }
             if (isCompleted(subtask)) throw productionTaskError('ALREADY_COMPLETED', 'Schon abgeschlossen.', { status: 409 });
+            fileIds = subtask.files.map((file) => file.id);
             // Zurückgeben lässt sich nur, was auf die Freigabe wartet.
             if (subtask.status !== 'PENDING') {
                 throw productionTaskError('NOT_PENDING', 'Nur eine wartende Unteraufgabe lässt sich zurückgeben.', { status: 409 });
@@ -543,8 +763,12 @@ export class ProductionDeviceTasksUseCase {
                 // … und im Verlauf, der auch nach der Freigabe bleibt (Prüfansicht).
                 revisionHistory: [...subtask.revisionHistory, { byId: actor.id, byName: actor.name, at, note: note || null }].slice(-50),
             };
-        }, actor.id);
-        return { task: taskDto(this.found(task)) };
+        }, actor.id));
+        // Die Dateien, die beim Zurückgeben vorlagen — der Klick zeigt, worauf die Notiz sich bezieht.
+        await this.logSubtask(tenantId, itemId, actor, 'REVISION_REQUESTED', task, subtaskId, { note: note || null, fileIds });
+        await this.notifyChanged(tenantId, itemId, actor, subtaskNotice('REVISION', task, subtaskId, note || null));
+        await this.closeRequests(tenantId, itemId, actor, subtaskId, ['APPROVAL'], 'REVISION');
+        return { task: taskDto(task) };
     }
 
     /**
@@ -578,8 +802,10 @@ export class ProductionDeviceTasksUseCase {
             throw productionTaskError('FILE_TOO_LARGE', 'Die Datei ist zu gross.', { status: 413, params: { max: 25 } });
         }
         const ref = await this.files.store(tenantId, file.body, contentType);
+        let added: ProductionSubtaskFile | null = null;
+        let task: ProductionDeviceTask;
         try {
-            const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+            task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
                 // Gesperrt heisst für ALLE gesperrt (28.09.2026) — auch solange sie auf die Freigabe wartet.
                 assertFilesOpen(subtask);
                 if (subtask.files.length >= SUBTASK_FILE_LIMITS.files) {
@@ -588,29 +814,35 @@ export class ProductionDeviceTasksUseCase {
                 const id = newSubtaskFileId();
                 // Neue Datei oder nächste Fassung einer vorhandenen (dieselbe groupId).
                 const { groupId, version } = fileVersionFor(subtask.files, id, revisionOf);
-                return {
-                    ...subtask,
-                    files: [...subtask.files, {
-                        id,
-                        ref,
-                        groupId,
-                        version,
-                        // Nur eine neue Fassung trägt eine Notiz; die erste Fassung keine.
-                        revisionNote: version > 1 ? revisionNote : null,
-                        name: cleanFileName(file.fileName),
-                        type: contentType,
-                        size: file.body.length,
-                        uploadedById: actor.id,
-                        uploadedByName: actor.name,
-                        uploadedAt: new Date().toISOString(),
-                    }],
+                /* Eine neue Fassung der Datei eines anderen ist eine Änderung an ihr (30.09.2026: «they
+                   can't delete or modify them») — ausser der Verwaltung nur, wer die Datei hochgeladen hat. */
+                if (revisionOf && !isAdmin && originalUploaderOf(subtask.files, groupId) !== actor.id) {
+                    throw productionTaskError('FILE_FORBIDDEN', 'Eine neue Fassung lädt nur hoch, wer die Datei hochgeladen hat.', { status: 403 });
+                }
+                const entry: ProductionSubtaskFile = {
+                    id,
+                    ref,
+                    groupId,
+                    version,
+                    // Nur eine neue Fassung trägt eine Notiz; die erste Fassung keine.
+                    revisionNote: version > 1 ? revisionNote : null,
+                    name: cleanFileName(file.fileName),
+                    type: contentType,
+                    size: file.body.length,
+                    uploadedById: actor.id,
+                    uploadedByName: actor.name,
+                    uploadedAt: new Date().toISOString(),
                 };
-            }, actor.id);
-            return { task: taskDto(this.found(task)) };
+                added = entry;
+                return { ...subtask, files: [...subtask.files, entry] };
+            }, actor.id));
         } catch (error) {
             await this.files.remove(ref).catch(() => undefined);
             throw error;
         }
+        const stored = added as ProductionSubtaskFile | null;
+        if (stored) await this.logSubtask(tenantId, itemId, actor, 'FILE_UPLOADED', task, subtaskId, fileDetails(stored));
+        return { task: taskDto(task) };
     }
 
     /** Eine Datei lesen — wer die Produktion sieht. */
@@ -644,32 +876,423 @@ export class ProductionDeviceTasksUseCase {
         fileId: string,
     ): Promise<{ task: ProductionTaskDto }> {
         await this.assertOnSubtask(tenantId, actor, isAdmin, itemId, taskId, subtaskId);
-        let removed: string | null = null;
-        const task = await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+        let removed: ProductionSubtaskFile | null = null;
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             const file = subtask.files.find((entry) => entry.id === fileId);
             if (!file) throw productionTaskError('FILE_NOT_FOUND', 'Datei nicht gefunden.', { status: 404 });
             assertFilesOpen(subtask);
             if (!isAdmin && file.uploadedById !== actor.id) {
                 throw productionTaskError('FILE_FORBIDDEN', 'Diese Datei entfernt nur die Verwaltung.', { status: 403 });
             }
-            removed = file.ref;
+            removed = file;
             return { ...subtask, files: subtask.files.filter((entry) => entry.id !== fileId) };
-        }, actor.id);
-        const result = { task: taskDto(this.found(task)) };
-        if (removed) await this.files.remove(removed).catch(() => undefined);
-        return result;
+        }, actor.id));
+        const gone = removed as ProductionSubtaskFile | null;
+        if (gone) {
+            await this.files.remove(gone.ref).catch(() => undefined);
+            await this.logSubtask(tenantId, itemId, actor, 'FILE_DELETED', task, subtaskId, fileDetails(gone));
+        }
+        return { task: taskDto(task) };
     }
 
-    async unload(tenantId: string, itemId: string): Promise<{ deleted: true }> {
+    async unload(tenantId: string, actor: ProductionTaskActor, itemId: string): Promise<{ deleted: true }> {
         const existing = await this.plans.getPlan(tenantId, itemId);
         if (!(await this.plans.deletePlan(tenantId, itemId))) {
             throw productionTaskError('PLAN_NOT_FOUND', 'Auf diesem Gerät liegen keine Aufgaben.', { status: 404 });
         }
         if (existing) this.dropFiles(fileRefsOf(existing.tasks), new Set());
+        await this.log([deviceActivity(scopeOf(tenantId, itemId, actor), 'PLAN_REMOVED', {
+            templateName: existing?.templateName ?? null,
+            taskCount: existing?.tasks.length ?? 0,
+        })]);
+        // Die Aufgaben sind weg — wer an ihnen stand, erfährt es (30.09.2026).
+        if (existing) await this.notifyChanged(tenantId, itemId, actor, planChangeNotices(existing.tasks, []));
         return { deleted: true };
     }
 
+    /**
+     * Der Verlauf einer Stufe (30.09.2026): wer was wann tat, neueste zuerst,
+     * samt den Handlungen am ganzen Gerät — seitenweise (`page`, `pageSize`),
+     * gefiltert nach Arten (`kinds`, durch Komma getrennt), Person (`actorId`)
+     * und Zeitraum (`from` einschliesslich, `to` ausschliesslich, je ISO).
+     */
+    async listActivities(
+        tenantId: string,
+        itemId: string,
+        query: Record<string, unknown>,
+    ): Promise<{
+        items: ProductionTaskActivityDto[];
+        total: number;
+        page: number;
+        pageSize: number;
+        actors: Array<{ id: string; name: string }>;
+    }> {
+        const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+        // Ohne Bereich und Stufe: der Verlauf des ganzen Geräts (30.09.2026, Startseite der Verwaltung).
+        const area = text(query.area);
+        const stage = text(query.stage);
+        if (Boolean(area) !== Boolean(stage)) throw productionTaskError('STAGE_REQUIRED', 'Bereich und Stufe fehlen.');
+        const place = area && stage ? { area, stage } : null;
+        const whole = (value: unknown, fallback: number, max: number) => {
+            const number = Math.floor(Number(value));
+            return Number.isFinite(number) && number > 0 ? Math.min(max, number) : fallback;
+        };
+        const pageSize = whole(query.pageSize, ACTIVITY_PAGE, ACTIVITY_PAGE_MAX);
+        const page = whole(query.page, 1, 100_000);
+        const instant = (value: unknown) => {
+            const date = text(value) ? new Date(text(value)) : null;
+            return date && !Number.isNaN(date.getTime()) ? date : null;
+        };
+        // Nur bekannte Arten; eine leere Auswahl heisst «alle».
+        const kinds = text(query.kinds).split(',').map((kind) => kind.trim()).filter((kind) => ACTIVITY_KINDS.has(kind));
+
+        const device = await this.directory.device(tenantId, itemId);
+        if (!device) throw this.deviceNotFound();
+        const [{ rows, total }, actors] = await Promise.all([
+            this.activities.list(tenantId, itemId, place, {
+                kinds: kinds.length ? kinds : null,
+                actorId: text(query.actorId) || null,
+                from: instant(query.from),
+                to: instant(query.to),
+                offset: (page - 1) * pageSize,
+                limit: pageSize,
+            }),
+            this.activities.actors(tenantId, itemId, place),
+        ]);
+        return {
+            total,
+            page,
+            pageSize,
+            actors,
+            items: rows.map((row) => ({
+                id: row.id,
+                kind: row.kind,
+                at: row.createdAt.toISOString(),
+                actorId: row.actorId,
+                actorName: row.actorName,
+                area: row.area,
+                stage: row.stage,
+                taskId: row.taskId,
+                taskCode: row.taskCode,
+                taskName: row.taskName,
+                subtaskId: row.subtaskId,
+                subtaskCode: row.subtaskCode,
+                subtaskName: row.subtaskName,
+                details: row.details,
+            })),
+        };
+    }
+
+    /**
+     * Bitte um das Aufheben der Sperre (30.09.2026, Vorgabe Samet: «the normal employees should be
+     * able to send unlock requests to the admins by clicking on the lock icon»). Nur wer an der
+     * Unteraufgabe steht, nur an einer gesperrten (freigegeben oder wartend), höchstens eine
+     * offene Bitte je Unteraufgabe. Die Verwaltung bekommt eine Nachricht.
+     */
+    async requestUnlock(
+        tenantId: string,
+        actor: ProductionTaskActor,
+        itemId: string,
+        taskId: string,
+        subtaskId: string,
+        body: unknown,
+    ): Promise<{ request: ProductionTaskRequestDto }> {
+        const rawNote = objectOf(body).note;
+        const note = typeof rawNote === 'string' ? rawNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
+        const task = await this.plans.getTask(tenantId, itemId, taskId);
+        if (!task) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
+        const subtask = task.subtasks.find((entry) => entry.id === subtaskId);
+        if (!subtask) throw productionTaskError('SUBTASK_NOT_FOUND', 'Unteraufgabe nicht gefunden.', { status: 404 });
+        if (!worksOnSubtask(subtask, actor.id)) {
+            throw productionTaskError('STATUS_FORBIDDEN', 'Um das Entsperren bittet nur, wer an der Unteraufgabe steht.', { status: 403 });
+        }
+        if (!isCompleted(subtask) && subtask.status !== 'PENDING') {
+            throw productionTaskError('NOT_LOCKED', 'Nicht gesperrt.', { status: 409 });
+        }
+        if (await this.requests.findOpen(tenantId, itemId, subtaskId, 'UNLOCK')) {
+            throw productionTaskError('UNLOCK_ALREADY_REQUESTED', 'Um das Entsperren wurde schon gebeten.', { status: 409 });
+        }
+        const index = task.subtasks.findIndex((entry) => entry.id === subtaskId);
+        const request = await this.requests.create({
+            tenantId,
+            productionItemId: itemId,
+            area: task.area,
+            stage: task.stage,
+            taskId: task.id,
+            taskCode: task.code,
+            taskName: task.name,
+            subtaskId,
+            subtaskCode: `${task.code}.${index + 1}`,
+            subtaskName: subtask.name,
+            kind: 'UNLOCK',
+            note: note || null,
+            requestedById: actor.id,
+            requestedByName: actor.name,
+        });
+        await this.logSubtask(tenantId, itemId, actor, 'UNLOCK_REQUESTED', task, subtaskId, { note: note || null, from: subtask.status });
+        const device = await this.directory.device(tenantId, itemId);
+        if (device) {
+            void this.notifier.unlockRequested({
+                tenantId,
+                device,
+                actorId: actor.id,
+                actorName: actor.name,
+                code: `${task.code}.${index + 1}`,
+                name: subtask.name,
+                area: task.area,
+                stage: task.stage,
+                note: note || null,
+            });
+        }
+        return { request: requestDto(request) };
+    }
+
+    /**
+     * Die Anfragen einer Stufe (30.09.2026) — Freigaben und Entsperren, neueste zuerst; `status`
+     * open (Vorgabe) · solved · all. Dazu, wie viele noch offen sind (die Zahl am Plättchen).
+     */
+    async listRequests(
+        tenantId: string,
+        itemId: string,
+        query: Record<string, unknown>,
+    ): Promise<{ items: ProductionTaskRequestDto[]; openCount: number }> {
+        const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+        // Ohne Bereich und Stufe: die Anfragen des ganzen Geräts (30.09.2026, Startseite der Verwaltung).
+        const area = text(query.area);
+        const stage = text(query.stage);
+        if (Boolean(area) !== Boolean(stage)) throw productionTaskError('STAGE_REQUIRED', 'Bereich und Stufe fehlen.');
+        const place = area && stage ? { area, stage } : null;
+        const wanted = text(query.status);
+        const status = wanted === 'solved' || wanted === 'all' ? wanted : 'open';
+        const [rows, openCount] = await Promise.all([
+            this.requests.list(tenantId, itemId, place, status),
+            this.requests.countOpen(tenantId, itemId, place),
+        ]);
+        return { items: rows.map(requestDto), openCount };
+    }
+
+    /**
+     * Projekte und Geräte mit Aufgaben (30.09.2026) — die Auswahl für Anfragen und Verlauf auf der
+     * Startseite der Verwaltung, samt offener Anfragen je Gerät und Projekt.
+     */
+    async taskDevices(tenantId: string): Promise<{
+        projects: Array<{
+            id: string;
+            projectNumber: string;
+            projectName: string;
+            openRequests: number;
+            devices: Array<{ id: string; name: string; positionNumber: string | null; templateName: string; taskCount: number; openRequests: number }>;
+        }>;
+    }> {
+        const [rows, open] = await Promise.all([this.directory.taskDevices(tenantId), this.requests.openByDevice(tenantId)]);
+        const projects = new Map<string, { id: string; projectNumber: string; projectName: string; openRequests: number; devices: Array<{ id: string; name: string; positionNumber: string | null; templateName: string; taskCount: number; openRequests: number }> }>();
+        for (const row of rows) {
+            const project = projects.get(row.projectId) ?? { id: row.projectId, projectNumber: row.projectNumber, projectName: row.projectName, openRequests: 0, devices: [] };
+            const openRequests = open.get(row.deviceId) ?? 0;
+            project.devices.push({ id: row.deviceId, name: row.deviceName, positionNumber: row.positionNumber, templateName: row.templateName, taskCount: row.taskCount, openRequests });
+            project.openRequests += openRequests;
+            projects.set(row.projectId, project);
+        }
+        const byText = (left: string, right: string) => left.localeCompare(right, 'tr', { numeric: true });
+        return {
+            projects: [...projects.values()]
+                .map((project) => ({
+                    ...project,
+                    devices: project.devices.sort((left, right) => byText(left.positionNumber ?? '', right.positionNumber ?? '') || byText(left.name, right.name)),
+                }))
+                .sort((left, right) => byText(right.projectNumber, left.projectNumber)),
+        };
+    }
+
+    /** «Mark as solved» (30.09.2026) — nur die Verwaltung (der Weg sichert es). */
+    async solveRequest(tenantId: string, actor: ProductionTaskActor, itemId: string, requestId: string): Promise<{ request: ProductionTaskRequestDto }> {
+        const solved = await this.requests.solve(tenantId, itemId, requestId, { id: actor.id, name: actor.name }, 'MANUAL');
+        if (!solved) throw productionTaskError('REQUEST_NOT_FOUND', 'Anfrage nicht gefunden oder schon erledigt.', { status: 404 });
+        await this.log([{
+            ...deviceActivity(scopeOf(tenantId, itemId, actor), 'REQUEST_SOLVED', {
+                kind: solved.kind,
+                requestedByName: solved.requestedByName,
+                requestedAt: solved.createdAt.toISOString(),
+                note: solved.note,
+            }),
+            area: solved.area,
+            stage: solved.stage,
+            taskId: solved.taskId,
+            taskCode: solved.taskCode,
+            taskName: solved.taskName,
+            subtaskId: solved.subtaskId,
+            subtaskCode: solved.subtaskCode,
+            subtaskName: solved.subtaskName,
+        }]);
+        return { request: requestDto(solved) };
+    }
+
+    /**
+     * «Görevlerim» auf der Startseite (30.09.2026, Vorgabe Samet): «the task tables that the
+     * employee is added will be shown … the employee should be able to switch between the
+     * project task tables». Je Projekt die Geräte, an denen die Person an einer Unteraufgabe
+     * steht, und dort NUR diese Aufgaben — samt Bereichen und Stufen, damit die Oberfläche die
+     * Tabellen der Stufen zeichnen kann. Keine Produktionsrechte nötig: es sind die eigenen.
+     */
+    async myTasks(tenantId: string, actor: ProductionTaskActor): Promise<MyProductionTasksDto> {
+        const itemIds = await this.plans.itemIdsForAssignee(tenantId, actor.id);
+        const found = await Promise.all(itemIds.map(async (itemId) => {
+            const [device, plan] = await Promise.all([this.directory.device(tenantId, itemId), this.plans.getPlan(tenantId, itemId)]);
+            if (!device || !device.isActive || !plan) return null;
+            /* Die GANZEN Stufen, in denen die Person an einer Unteraufgabe steht (30.09.2026: «employees
+               should be able to see all tasks and subtasks of the stages they are assigned»). Handeln
+               darf sie weiter nur an den eigenen — das prüfen die Wege je Unteraufgabe. */
+            const stages = stagesOf(plan.tasks, actor.id);
+            const tasks = plan.tasks.filter((task) => stages.has(stageKeyOf(task)));
+            return tasks.length ? { device, plan, tasks } : null;
+        }));
+        const entries = found.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+        const people = await this.directory.people(tenantId, assigneesOf(entries.flatMap((entry) => entry.tasks)));
+
+        const projects = new Map<string, MyProductionTasksDto['projects'][number]>();
+        for (const { device, plan, tasks } of entries) {
+            const project = projects.get(device.productionProjectId) ?? {
+                id: device.productionProjectId,
+                projectNumber: device.projectNumber,
+                projectName: device.projectName,
+                devices: [],
+            };
+            project.devices.push({
+                device: {
+                    id: device.id,
+                    projectId: device.productionProjectId,
+                    name: device.name,
+                    positionNumber: device.positionNumber,
+                    projectNumber: device.projectNumber,
+                    projectName: device.projectName,
+                },
+                plan: { templateName: plan.templateName, sections: plan.sections },
+                tasks: tasks.map(taskDto),
+            });
+            projects.set(project.id, project);
+        }
+        const byText = (left: string, right: string) => left.localeCompare(right, 'tr', { numeric: true });
+        return {
+            projects: [...projects.values()]
+                .map((project) => ({
+                    ...project,
+                    devices: project.devices.sort((left, right) =>
+                        byText(left.device.positionNumber ?? '', right.device.positionNumber ?? '') || byText(left.device.name, right.device.name)),
+                }))
+                .sort((left, right) => byText(left.projectNumber, right.projectNumber)),
+            people,
+        };
+    }
+
+    /**
+     * Eine Datei lesen — über «Görevlerim» (30.09.2026): wer in DERSELBEN STUFE des Geräts an einer
+     * Unteraufgabe steht, öffnet auch die Dateien der anderen («they should be able to open the
+     * files uploaded by other employees … but they can't delete or modify them»). Nur lesen.
+     */
+    async readSubtaskFileAsAssignee(
+        tenantId: string,
+        actor: ProductionTaskActor,
+        itemId: string,
+        taskId: string,
+        subtaskId: string,
+        fileId: string,
+    ): Promise<{ body: Buffer; contentType: string; fileName: string }> {
+        const plan = await this.plans.getPlan(tenantId, itemId);
+        const task = plan?.tasks.find((entry) => entry.id === taskId);
+        if (!plan || !task) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
+        if (!stagesOf(plan.tasks, actor.id).has(stageKeyOf(task))) {
+            throw productionTaskError('FILE_FORBIDDEN', 'Nur wer in dieser Stufe an einer Unteraufgabe steht.', { status: 403 });
+        }
+        return this.readSubtaskFile(tenantId, itemId, taskId, subtaskId, fileId);
+    }
+
     /* ── intern ─────────────────────────────────────────────────────── */
+
+    /**
+     * Den Verlauf schreiben (30.09.2026). Die Handlung ist schon geschehen —
+     * scheitert das Schreiben, bleibt sie gültig; nur die Zeile fehlt dann.
+     */
+    private async log(entries: ProductionTaskActivityDraft[]): Promise<void> {
+        if (!entries.length) return;
+        try {
+            await this.activities.record(entries);
+        } catch (error) {
+            console.warn('[production-tasks] Verlauf nicht geschrieben:', error instanceof Error ? error.message : error);
+        }
+    }
+
+    /** Eine Anfrage öffnen (30.09.2026) — höchstens eine offene je Art und Unteraufgabe; scheitert still. */
+    private async openRequest(
+        tenantId: string,
+        itemId: string,
+        actor: ProductionTaskActor,
+        task: ProductionDeviceTask,
+        subtaskId: string,
+        kind: ProductionTaskRequestKind,
+        note: string | null,
+    ): Promise<void> {
+        try {
+            if (await this.requests.findOpen(tenantId, itemId, subtaskId, kind)) return;
+            const index = task.subtasks.findIndex((entry) => entry.id === subtaskId);
+            const subtask = task.subtasks[index];
+            if (!subtask) return;
+            await this.requests.create({
+                tenantId,
+                productionItemId: itemId,
+                area: task.area,
+                stage: task.stage,
+                taskId: task.id,
+                taskCode: task.code,
+                taskName: task.name,
+                subtaskId,
+                subtaskCode: `${task.code}.${index + 1}`,
+                subtaskName: subtask.name,
+                kind,
+                note,
+                requestedById: actor.id,
+                requestedByName: actor.name,
+            });
+        } catch (error) {
+            console.warn('[production-tasks] Anfrage nicht angelegt:', error instanceof Error ? error.message : error);
+        }
+    }
+
+    /** Offene Anfragen erledigen, weil die passende Handlung geschah (30.09.2026) — scheitert still. */
+    private async closeRequests(
+        tenantId: string,
+        itemId: string,
+        actor: ProductionTaskActor,
+        subtaskId: string,
+        kinds: readonly ProductionTaskRequestKind[],
+        resolution: ProductionTaskRequestResolution,
+    ): Promise<void> {
+        try {
+            await this.requests.solveOpenFor(tenantId, itemId, subtaskId, kinds, { id: actor.id, name: actor.name }, resolution);
+        } catch (error) {
+            console.warn('[production-tasks] Anfrage nicht erledigt:', error instanceof Error ? error.message : error);
+        }
+    }
+
+    /** Nachrichten an die Leute von Unteraufgaben (30.09.2026) — im Hintergrund; das Gerät für den Verweis. */
+    private async notifyChanged(tenantId: string, itemId: string, actor: ProductionTaskActor, notices: ProductionTaskNotice[]): Promise<void> {
+        if (!notices.length) return;
+        const device = await this.directory.device(tenantId, itemId);
+        if (device) void this.notifier.changed({ tenantId, device, actorId: actor.id, actorName: actor.name, notices });
+    }
+
+    /** Eine Zeile an einer Unteraufgabe — Kürzel und Namen aus der Antwort der Handlung. */
+    private logSubtask(
+        tenantId: string,
+        itemId: string,
+        actor: ProductionTaskActor,
+        kind: ProductionTaskActivityDraft['kind'],
+        task: ProductionDeviceTask,
+        subtaskId: string,
+        details: Record<string, unknown>,
+    ): Promise<void> {
+        const subtask = task.subtasks.find((entry) => entry.id === subtaskId);
+        return subtask ? this.log([activityAt(scopeOf(tenantId, itemId, actor), kind, task, subtask, details)]) : Promise.resolve();
+    }
 
     /** Die Verwaltung oder wer an der Unteraufgabe steht — sonst FILE_FORBIDDEN (403). */
     private async assertOnSubtask(
