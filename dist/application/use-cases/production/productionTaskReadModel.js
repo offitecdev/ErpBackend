@@ -16,7 +16,8 @@ const taskDto = (task) => ({
     status: task.status ?? 'TODO',
     subtasks: task.subtasks.map((subtask) => ({
         ...subtask,
-        files: subtask.files.map(({ ref: _ref, ...file }) => file),
+        // Eine liegengebliebene KI-Prüfung (01.10.2026) zeigt sich als gescheitert, «unterbrochen».
+        files: subtask.files.map(({ ref: _ref, ...file }) => ({ ...file, analysis: (0, productionTasks_1.analysisAsSeen)(file.analysis) })),
     })),
 });
 exports.taskDto = taskDto;

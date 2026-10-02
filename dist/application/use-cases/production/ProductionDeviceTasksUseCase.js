@@ -6,6 +6,22 @@ const productionTaskActivities_1 = require("../../../domain/services/productionT
 const productionTaskReadModel_1 = require("./productionTaskReadModel");
 const ProductionTaskTemplatesUseCase_1 = require("./ProductionTaskTemplatesUseCase");
 const objectOf = (body) => (body && typeof body === 'object' ? body : {});
+/** Höchstens so viele Prüfungen gleichzeitig (für alle Firmen) — der Rest wartet. */
+const ANALYSIS_PARALLEL = 2;
+let analysesRunning = 0;
+const analysisQueue = [];
+const inAnalysisSlot = async (work) => {
+    if (analysesRunning >= ANALYSIS_PARALLEL)
+        await new Promise((resolve) => analysisQueue.push(resolve));
+    analysesRunning += 1;
+    try {
+        return await work();
+    }
+    finally {
+        analysesRunning -= 1;
+        analysisQueue.shift()?.();
+    }
+};
 /** Was an eine Unteraufgabe darf: nur PDF (28.09.2026: «the users only upload PDF. no image»). */
 const SUBTASK_FILE_TYPES = new Set(['application/pdf']);
 /** Alle Verweise in die Ablage, die ein Plan hält. */
@@ -140,7 +156,11 @@ class ProductionDeviceTasksUseCase {
     files;
     activities;
     requests;
-    constructor(plans, templates, directory, notifier, files, activities, requests) {
+    reviewer;
+    standardsFiles;
+    constructor(plans, templates, directory, notifier, files, activities, requests, reviewer, 
+    /** Die Ablage der Standards als PDF (01.10.2026) — eigene Art, die Firma im Pfad. */
+    standardsFiles) {
         this.plans = plans;
         this.templates = templates;
         this.directory = directory;
@@ -148,6 +168,38 @@ class ProductionDeviceTasksUseCase {
         this.files = files;
         this.activities = activities;
         this.requests = requests;
+        this.reviewer = reviewer;
+        this.standardsFiles = standardsFiles;
+    }
+    /**
+     * Die Standards einer Unteraufgabe als PDF hochladen (01.10.2026) — nur die Verwaltung,
+     * aus dem Fenster der Aufgabe (Gerät oder Vorlage). Gespeichert wird gleich; an die
+     * Unteraufgabe kommt der Verweis erst mit dem Speichern der Aufgabe.
+     */
+    async uploadStandardsFile(tenantId, isAdmin, file) {
+        if (!isAdmin)
+            throw (0, productionTasks_1.productionTaskError)('STATUS_FORBIDDEN', 'Standards lädt nur die Verwaltung hoch.', { status: 403 });
+        if (!file || !file.body?.length)
+            throw (0, productionTasks_1.productionTaskError)('FILE_REQUIRED', 'Keine Datei empfangen.');
+        const contentType = String(file.contentType || '').toLowerCase();
+        if (!SUBTASK_FILE_TYPES.has(contentType) || !this.standardsFiles.accepts(contentType)) {
+            throw (0, productionTasks_1.productionTaskError)('FILE_TYPE', 'Erlaubt sind nur PDF-Dateien.');
+        }
+        if (file.body.length > productionTasks_1.STANDARDS_FILE_MAX_BYTES) {
+            throw (0, productionTasks_1.productionTaskError)('FILE_TOO_LARGE', 'Die Datei ist zu gross.', { status: 413, params: { max: 10 } });
+        }
+        const ref = await this.standardsFiles.store(tenantId, file.body, contentType);
+        return { file: { ref, name: cleanFileName(file.fileName), size: file.body.length, uploadedAt: new Date().toISOString() } };
+    }
+    /** Das PDF der Standards lesen — nur aus der eigenen Firma. */
+    async readStandardsFile(tenantId, ref, name) {
+        if (!(0, productionTasks_1.isStandardsRefOf)(ref, tenantId)) {
+            throw (0, productionTasks_1.productionTaskError)('STANDARDS_FILE_NOT_FOUND', 'Das PDF der Standards gibt es nicht.', { status: 404 });
+        }
+        const body = await this.standardsFiles.read(ref).catch(() => null);
+        if (!body)
+            throw (0, productionTasks_1.productionTaskError)('STANDARDS_FILE_NOT_FOUND', 'Das PDF der Standards gibt es nicht.', { status: 404 });
+        return { body, contentType: 'application/pdf', fileName: cleanFileName(name || 'standards.pdf') };
     }
     async get(tenantId, itemId) {
         const [device, plan] = await Promise.all([
@@ -424,12 +476,19 @@ class ProductionDeviceTasksUseCase {
             throw (0, productionTasks_1.productionTaskError)('STATUS_INVALID', 'Unbekannter Stand.');
         }
         let from = status;
+        // Zur Freigabe geschickt (01.10.2026): die PDFs warten auf die KI-Prüfung gegen die Standards.
+        let queued = [];
+        const requestedAt = new Date().toISOString();
         const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!(0, productionTasks_1.worksOnSubtask)(subtask, actor.id)) {
                 throw (0, productionTasks_1.productionTaskError)('STATUS_FORBIDDEN', 'Den Stand setzt nur, wer an der Unteraufgabe steht.', { status: 403 });
             }
             from = subtask.status;
-            return subtaskStatusChange(subtask, status);
+            const next = subtaskStatusChange(subtask, status);
+            if (status !== 'PENDING' || from === 'PENDING')
+                return next;
+            queued = (0, productionTasks_1.filesToAnalyse)(next);
+            return (0, productionTasks_1.withQueuedAnalyses)(next, queued, requestedAt);
         }, actor.id));
         const kind = (0, productionTaskActivities_1.subtaskStepKind)(from, status);
         if (kind)
@@ -437,6 +496,7 @@ class ProductionDeviceTasksUseCase {
         // Zur Freigabe geschickt: eine Anfrage an die Verwaltung (30.09.2026) — höchstens eine offene.
         if (kind === 'SUBTASK_SUBMITTED')
             await this.openRequest(tenantId, itemId, actor, task, subtaskId, 'APPROVAL', null);
+        this.startAnalyses(tenantId, itemId, taskId, subtaskId, queued, requestedAt, actor.id);
         return { task: (0, productionTaskReadModel_1.taskDto)(task) };
     }
     /**
@@ -644,6 +704,8 @@ class ProductionDeviceTasksUseCase {
                     uploadedById: actor.id,
                     uploadedByName: actor.name,
                     uploadedAt: new Date().toISOString(),
+                    // Geprüft wird beim Schicken zur Freigabe (01.10.2026).
+                    analysis: null,
                 };
                 added = entry;
                 return { ...subtask, files: [...subtask.files, entry] };
@@ -656,6 +718,31 @@ class ProductionDeviceTasksUseCase {
         const stored = added;
         if (stored)
             await this.logSubtask(tenantId, itemId, actor, 'FILE_UPLOADED', task, subtaskId, (0, productionTaskActivities_1.fileDetails)(stored));
+        return { task: (0, productionTaskReadModel_1.taskDto)(task) };
+    }
+    /**
+     * Die KI-Prüfung eines PDFs noch einmal (01.10.2026) — nur die Verwaltung, aus dem
+     * Bericht: wenn sie scheiterte, oder für eine Fassung, die nie geprüft wurde.
+     */
+    async retryFileAnalysis(tenantId, actor, isAdmin, itemId, taskId, subtaskId, fileId) {
+        if (!isAdmin)
+            throw (0, productionTasks_1.productionTaskError)('STATUS_FORBIDDEN', 'Die KI-Prüfung startet nur die Verwaltung.', { status: 403 });
+        const requestedAt = new Date().toISOString();
+        const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
+            if (!(0, productionTasks_1.hasDocumentStandards)(subtask)) {
+                throw (0, productionTasks_1.productionTaskError)('NO_STANDARDS', 'Diese Unteraufgabe hat keine Standards für Dokumente.', { status: 409 });
+            }
+            const file = subtask.files.find((entry) => entry.id === fileId);
+            if (!file)
+                throw (0, productionTasks_1.productionTaskError)('FILE_NOT_FOUND', 'Datei nicht gefunden.', { status: 404 });
+            if (file.type !== 'application/pdf')
+                throw (0, productionTasks_1.productionTaskError)('FILE_TYPE', 'Geprüft werden nur PDF-Dateien.');
+            if ((0, productionTasks_1.isAnalysisActive)(file.analysis)) {
+                throw (0, productionTasks_1.productionTaskError)('ANALYSIS_RUNNING', 'Die Prüfung läuft schon.', { status: 409 });
+            }
+            return (0, productionTasks_1.withQueuedAnalyses)(subtask, [fileId], requestedAt);
+        }, actor.id));
+        this.startAnalyses(tenantId, itemId, taskId, subtaskId, [fileId], requestedAt, actor.id);
         return { task: (0, productionTaskReadModel_1.taskDto)(task) };
     }
     /** Eine Datei lesen — wer die Produktion sieht. */
@@ -1047,6 +1134,61 @@ class ProductionDeviceTasksUseCase {
             throw (0, productionTasks_1.productionTaskError)('SUBTASK_NOT_FOUND', 'Unteraufgabe nicht gefunden.', { status: 404 });
         if (!isAdmin && !(0, productionTasks_1.worksOnSubtask)(subtask, actor.id)) {
             throw (0, productionTasks_1.productionTaskError)('FILE_FORBIDDEN', 'Nur die Verwaltung und wer an der Unteraufgabe steht.', { status: 403 });
+        }
+    }
+    /**
+     * Die KI-Prüfung der Dateien im Hintergrund (01.10.2026) — die Antwort an die
+     * Oberfläche wartet nicht darauf; sie fragt nach, solange eine Prüfung läuft.
+     * Eine Datei nach der anderen, höchstens zwei Prüfungen gleichzeitig.
+     */
+    startAnalyses(tenantId, itemId, taskId, subtaskId, fileIds, requestedAt, actorId) {
+        if (!fileIds.length)
+            return;
+        void (async () => {
+            for (const fileId of fileIds) {
+                await inAnalysisSlot(() => this.analyseFile(tenantId, itemId, taskId, subtaskId, fileId, requestedAt, actorId))
+                    .catch((error) => console.error('[production/document-standards] Prüfung abgebrochen', fileId, error));
+            }
+        })();
+    }
+    async analyseFile(tenantId, itemId, taskId, subtaskId, fileId, requestedAt, actorId) {
+        // Nur DIESER Auftrag schreibt — ein neuerer oder eine entfernte Datei bleiben unberührt.
+        const write = (patch) => this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => (0, productionTasks_1.withFileAnalysis)(subtask, fileId, requestedAt, patch), actorId);
+        const task = await this.plans.getTask(tenantId, itemId, taskId);
+        const subtask = task?.subtasks.find((entry) => entry.id === subtaskId);
+        const file = subtask?.files.find((entry) => entry.id === fileId);
+        if (!task || !subtask || !file?.analysis || file.analysis.requestedAt !== requestedAt)
+            return;
+        if (!this.reviewer.configured()) {
+            await write({ status: 'FAILED', finishedAt: new Date().toISOString(), errorCode: 'GPT_NOT_CONFIGURED' });
+            return;
+        }
+        await write({ status: 'RUNNING' });
+        try {
+            // Das PDF der Standards, gegen das dieser Auftrag prüft — nur aus der eigenen Firma.
+            const standardsRef = file.analysis.standardsFileRef;
+            let standardsPdf = null;
+            if (standardsRef) {
+                const body = (0, productionTasks_1.isStandardsRefOf)(standardsRef, tenantId) ? await this.standardsFiles.read(standardsRef).catch(() => null) : null;
+                if (!body)
+                    throw (0, productionTasks_1.productionTaskError)('STANDARDS_FILE_NOT_FOUND', 'Das PDF der Standards gibt es nicht.', { status: 404 });
+                const known = subtask.documentStandardsFile?.ref === standardsRef ? subtask.documentStandardsFile.name : 'standards.pdf';
+                standardsPdf = { body, name: known };
+            }
+            const report = await this.reviewer.review({
+                pdf: await this.files.read(file.ref),
+                fileName: file.name,
+                standards: file.analysis.standards,
+                standardsPdf,
+                taskName: task.name,
+                subtaskName: subtask.name,
+            });
+            await write({ status: 'DONE', finishedAt: new Date().toISOString(), errorCode: null, ...report });
+        }
+        catch (error) {
+            const code = typeof error?.code === 'string' ? error.code : 'ANALYSIS_FAILED';
+            console.error('[production/document-standards]', fileId, code, error?.message ?? error);
+            await write({ status: 'FAILED', finishedAt: new Date().toISOString(), errorCode: code.slice(0, 60) });
         }
     }
     found(task) {

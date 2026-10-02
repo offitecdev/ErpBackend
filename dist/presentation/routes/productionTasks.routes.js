@@ -215,6 +215,24 @@ router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/complete', VIEW,
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/revision', VIEW, MODULE, (req, res, next) => controller.requestDeviceSubtaskRevision(req, res, next));
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/unlock', VIEW, MODULE, (req, res, next) => controller.unlockDeviceSubtask(req, res, next));
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/checklist', VIEW, MODULE, (req, res, next) => controller.addDeviceSubtaskChecklistItem(req, res, next));
+// Die Standards der Dokumente als PDF (01.10.2026): hochladen nur die Verwaltung, lesen wer die Produktion sieht.
+const standardsUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+router.post('/task-standards', VIEW, MODULE, ADMIN, (req, res, next) => {
+    standardsUpload.single('file')(req, res, (error) => {
+        if (!error) {
+            controller.uploadStandardsFile(req, res, next);
+            return;
+        }
+        if (error instanceof multer_1.default.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+            res.status(413).json({ error: 'Die Datei ist zu gross.', code: 'FILE_TOO_LARGE', params: { max: 10 } });
+            return;
+        }
+        res.status(400).json({ error: 'Keine Datei empfangen.', code: 'FILE_REQUIRED' });
+    });
+});
+router.get('/task-standards/file', VIEW, MODULE, (req, res, next) => controller.readStandardsFile(req, res, next));
+// Die KI-Prüfung eines PDFs gegen die Standards noch einmal (01.10.2026) — nur die Verwaltung (prüft der Anwendungsfall).
+router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId/analysis', VIEW, MODULE, (req, res, next) => controller.retryDeviceFileAnalysis(req, res, next));
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files', VIEW, MODULE, (req, res, next) => {
     // Zu gross oder mehr als eine Datei: dieselbe Fehlerform wie die übrigen Wege.
     subtaskUpload.single('file')(req, res, (error) => {
