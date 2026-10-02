@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.templateCheck = exports.tasksInputFrom = exports.templateInputFrom = exports.withAddedStage = exports.withStageWeights = exports.taskCodeOf = exports.sectionPrefixes = exports.taskDatesProblem = exports.subtaskWeightSum = exports.statusOfSubtasks = exports.statusFrom = exports.isProductionTaskStatus = exports.isWorkingStatus = exports.PRODUCTION_TASK_STATUSES = exports.subtasksFrom = exports.reopenedSubtasks = exports.mergeDeviceRecord = exports.requirementsAdded = exports.withoutDeviceRecord = exports.hasSubtaskDocument = exports.SUBTASK_FILE_LIMITS = exports.newSubtaskFileId = exports.fileVersionFor = exports.withChecklistItem = exports.today = exports.placeTask = exports.fromSectionShares = exports.resolveTaskWeights = exports.stageWeightIn = exports.sectionShareOf = exports.storedStageWeightsComplete = exports.areaSharesOf = exports.sectionsFrom = exports.builtInSections = exports.sameTaskCode = exports.worksOnSubtask = exports.withActiveAssignees = exports.taskAssigneesOf = exports.assigneeIdsFrom = exports.dayFrom = exports.roundPercent = exports.productionTaskErrorBody = exports.isProductionTaskError = exports.productionTaskError = exports.PRODUCTION_TASK_LIMITS = exports.stageOfSection = exports.isBuiltInStage = exports.isBuiltInArea = exports.BUILT_IN_STAGES = exports.BUILT_IN_AREAS = void 0;
-exports.CHILLER_EXAMPLE = exports.CHILLER_EXAMPLE_KEY = exports.assignmentNews = exports.orderTasks = void 0;
+exports.statusOfSubtasks = exports.statusFrom = exports.isProductionTaskStatus = exports.isWorkingStatus = exports.PRODUCTION_TASK_STATUSES = exports.subtasksFrom = exports.reopenedSubtasks = exports.mergeDeviceRecord = exports.requirementsAdded = exports.withoutDeviceRecord = exports.hasSubtaskDocument = exports.SUBTASK_FILE_LIMITS = exports.newSubtaskFileId = exports.fileVersionFor = exports.withChecklistItem = exports.withFileAnalysis = exports.withQueuedAnalyses = exports.filesToAnalyse = exports.analysisAsSeen = exports.isAnalysisActive = exports.FILE_ANALYSIS_LIMITS = exports.hasDocumentStandards = exports.isStandardsRefOf = exports.STANDARDS_FILE_MAX_BYTES = exports.today = exports.placeTask = exports.fromSectionShares = exports.resolveTaskWeights = exports.stageWeightIn = exports.sectionShareOf = exports.storedStageWeightsComplete = exports.areaSharesOf = exports.sectionsFrom = exports.builtInSections = exports.sameTaskCode = exports.worksOnSubtask = exports.withActiveAssignees = exports.taskAssigneesOf = exports.assigneeIdsFrom = exports.dayFrom = exports.roundPercent = exports.productionTaskErrorBody = exports.isProductionTaskError = exports.productionTaskError = exports.PRODUCTION_TASK_LIMITS = exports.stageOfSection = exports.isBuiltInStage = exports.isBuiltInArea = exports.BUILT_IN_STAGES = exports.BUILT_IN_AREAS = void 0;
+exports.CHILLER_EXAMPLE = exports.CHILLER_EXAMPLE_KEY = exports.assignmentNews = exports.orderTasks = exports.templateCheck = exports.tasksInputFrom = exports.templateInputFrom = exports.withAddedStage = exports.withStageWeights = exports.taskCodeOf = exports.sectionPrefixes = exports.taskDatesProblem = exports.subtaskWeightSum = void 0;
 /**
  * ── GÖREVLENDİRME · DIE REGELN (26.09.2026, Vorgabe Samet) ─────────────────
  *
@@ -85,6 +85,7 @@ exports.PRODUCTION_TASK_LIMITS = {
     subtaskName: 200,
     checklistItems: 30,
     checklistItemText: 200,
+    documentStandards: 2000,
 };
 /**
  * Kennungen eigener Bereiche, Stufen und Unteraufgaben vergibt die Oberfläche
@@ -120,6 +121,15 @@ exports.productionTaskErrorBody = productionTaskErrorBody;
 const roundPercent = (value) => Math.round(value * 100) / 100;
 exports.roundPercent = roundPercent;
 const text = (value, max) => (typeof value === 'string' ? value : '').replace(/\s+/g, ' ').trim().slice(0, max);
+/** Wie `text`, aber die Zeilen bleiben (höchstens eine Leerzeile am Stück). */
+const multilineText = (value, max) => (typeof value === 'string' ? value : '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, max);
 const objectOf = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
 const percentFrom = (value) => {
     const number = typeof value === 'string' ? Number(value.replace(',', '.')) : Number(value);
@@ -377,10 +387,140 @@ const filesFrom = (value) => {
             uploadedById: typeof row.uploadedById === 'string' ? row.uploadedById : null,
             uploadedByName: text(row.uploadedByName, 120) || null,
             uploadedAt: typeof row.uploadedAt === 'string' ? row.uploadedAt : '',
+            analysis: fileAnalysisFrom(row.analysis),
         });
     }
     return list;
 };
+/* ── Die Standards als PDF (01.10.2026) ─────────────────────────────────────── */
+/** So sieht ein Verweis in die Ablage der Standards aus: Art, Firma, Monat, Zufallsname. */
+const STANDARDS_REF = /^(?:local|r2):production-task-standards\/([A-Za-z0-9_-]+)\/[0-9-]+\/[0-9a-f-]{36}\.pdf$/;
+/** So gross darf das PDF der Standards sein (zusammen mit dem geprüften PDF unter der Grenze der KI). */
+exports.STANDARDS_FILE_MAX_BYTES = 10 * 1024 * 1024;
+/** Gehört dieser Verweis in die Ablage der Standards DIESER Firma? Sonst wird nichts gelesen. */
+const isStandardsRefOf = (ref, tenantId) => STANDARDS_REF.exec(ref)?.[1] === String(tenantId).replace(/[^a-zA-Z0-9_-]/g, '_');
+exports.isStandardsRefOf = isStandardsRefOf;
+/** Das PDF der Standards aus Datenbank oder Anfrage — nur mit «Document»; ein fremder Verweis fällt weg. */
+const standardsFileFrom = (value, requiresDocument) => {
+    if (!requiresDocument)
+        return null;
+    const row = objectOf(value);
+    const ref = typeof row.ref === 'string' ? row.ref : '';
+    if (!STANDARDS_REF.test(ref))
+        return null;
+    return {
+        ref,
+        name: text(row.name, 200) || 'standards.pdf',
+        size: typeof row.size === 'number' && Number.isFinite(row.size) ? row.size : 0,
+        uploadedAt: typeof row.uploadedAt === 'string' ? row.uploadedAt : '',
+    };
+};
+/** Trägt die Unteraufgabe Standards — Text, PDF oder beides? */
+const hasDocumentStandards = (subtask) => subtask.requiresDocument && Boolean(subtask.documentStandards || subtask.documentStandardsFile);
+exports.hasDocumentStandards = hasDocumentStandards;
+/* ── KI-Prüfung der PDFs gegen die Standards (01.10.2026) ──────────────────── */
+const ANALYSIS_STATUSES = new Set(['QUEUED', 'RUNNING', 'DONE', 'FAILED']);
+const ANALYSIS_VERDICTS = new Set(['PASS', 'FAIL', 'UNCLEAR']);
+const ANALYSIS_RESULTS = new Set(['MET', 'NOT_MET', 'UNCLEAR']);
+/** Höchstens so viele geprüfte Standards je Datei, so lang ein Grund, so lang die Zusammenfassung. */
+exports.FILE_ANALYSIS_LIMITS = { checks: 40, standard: 300, reason: 600, summary: 1200 };
+/** Die Prüfung einer Datei aus der Datenbank — Unlesbares heisst «nie geprüft». */
+const fileAnalysisFrom = (value) => {
+    const row = objectOf(value);
+    if (!ANALYSIS_STATUSES.has(String(row.status)) || typeof row.requestedAt !== 'string')
+        return null;
+    const checks = Array.isArray(row.checks) ? row.checks : [];
+    return {
+        status: row.status,
+        standards: multilineText(row.standards, exports.PRODUCTION_TASK_LIMITS.documentStandards),
+        standardsFileRef: typeof row.standardsFileRef === 'string' && STANDARDS_REF.test(row.standardsFileRef) ? row.standardsFileRef : null,
+        requestedAt: row.requestedAt,
+        finishedAt: typeof row.finishedAt === 'string' ? row.finishedAt : null,
+        verdict: ANALYSIS_VERDICTS.has(String(row.verdict)) ? row.verdict : null,
+        summary: multilineText(row.summary, exports.FILE_ANALYSIS_LIMITS.summary) || null,
+        checks: checks.slice(0, exports.FILE_ANALYSIS_LIMITS.checks).map((raw) => objectOf(raw)).map((check) => ({
+            standard: text(check.standard, exports.FILE_ANALYSIS_LIMITS.standard),
+            result: (ANALYSIS_RESULTS.has(String(check.result)) ? check.result : 'UNCLEAR'),
+            reason: multilineText(check.reason, exports.FILE_ANALYSIS_LIMITS.reason),
+        })).filter((check) => check.standard),
+        model: text(row.model, 60) || null,
+        errorCode: text(row.errorCode, 60) || null,
+    };
+};
+/** So lange darf eine Prüfung warten oder laufen — danach ist sie verloren (z. B. Neustart des Servers). */
+const ANALYSIS_STALE_MS = 15 * 60 * 1000;
+/** Wartet oder läuft sie noch wirklich? Eine liegengebliebene gilt als gescheitert. */
+const isAnalysisActive = (analysis, now = Date.now()) => Boolean(analysis && (analysis.status === 'QUEUED' || analysis.status === 'RUNNING')
+    && now - Date.parse(analysis.requestedAt) < ANALYSIS_STALE_MS);
+exports.isAnalysisActive = isAnalysisActive;
+/** Eine liegengebliebene Prüfung, wie die Oberfläche sie sieht: gescheitert, «unterbrochen». */
+const analysisAsSeen = (analysis, now = Date.now()) => {
+    if (!analysis || analysis.status === 'DONE' || analysis.status === 'FAILED' || (0, exports.isAnalysisActive)(analysis, now))
+        return analysis;
+    return { ...analysis, status: 'FAILED', errorCode: 'ANALYSIS_INTERRUPTED' };
+};
+exports.analysisAsSeen = analysisAsSeen;
+/**
+ * Welche PDFs beim Schicken zur Freigabe geprüft werden: je Datei die aktuelle
+ * Fassung — sofern die Unteraufgabe «Document» und Standards trägt und die
+ * Fassung nicht schon gegen DIESELBEN Standards geprüft ist (gescheitert zählt nicht).
+ */
+const filesToAnalyse = (subtask) => {
+    if (!(0, exports.hasDocumentStandards)(subtask))
+        return [];
+    const standards = subtask.documentStandards ?? '';
+    const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    const latest = new Map();
+    for (const file of subtask.files) {
+        const known = latest.get(file.groupId);
+        if (!known || file.version > known.version)
+            latest.set(file.groupId, file);
+    }
+    return [...latest.values()]
+        .filter((file) => file.type === 'application/pdf')
+        .filter((file) => !file.analysis
+        || file.analysis.standards !== standards
+        || file.analysis.standardsFileRef !== standardsFileRef
+        || (0, exports.analysisAsSeen)(file.analysis)?.status === 'FAILED')
+        .map((file) => file.id);
+};
+exports.filesToAnalyse = filesToAnalyse;
+/** Diese Dateien warten auf die Prüfung — gegen die heutigen Standards der Unteraufgabe. */
+const withQueuedAnalyses = (subtask, fileIds, requestedAt) => {
+    const wanted = new Set(fileIds);
+    const standards = subtask.documentStandards ?? '';
+    const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    return {
+        ...subtask,
+        files: subtask.files.map((file) => (!wanted.has(file.id) ? file : {
+            ...file,
+            analysis: {
+                status: 'QUEUED',
+                standards,
+                standardsFileRef,
+                requestedAt,
+                finishedAt: null,
+                verdict: null,
+                summary: null,
+                checks: [],
+                model: null,
+                errorCode: null,
+            },
+        })),
+    };
+};
+exports.withQueuedAnalyses = withQueuedAnalyses;
+/**
+ * Ein Schritt der Prüfung einer Datei — nur, solange DIESER Auftrag gilt (dieselbe
+ * `requestedAt`): ein neuerer Auftrag oder eine entfernte Datei bleiben unberührt.
+ */
+const withFileAnalysis = (subtask, fileId, requestedAt, patch) => ({
+    ...subtask,
+    files: subtask.files.map((file) => (file.id !== fileId || file.analysis?.requestedAt !== requestedAt
+        ? file
+        : { ...file, analysis: { ...file.analysis, ...patch } })),
+});
+exports.withFileAnalysis = withFileAnalysis;
 /**
  * Die Freigabe-Checkliste einer Unteraufgabe (28.09.2026: «add Approval
  * Checklist after they select approval checkbox»). Nur mit «Approval» —
@@ -453,6 +593,10 @@ const subtaskOf = (row, id, name, startDate, dueDate, createdAt, weight) => ({
     requiresDocument: row.requiresDocument === true,
     requiresApproval: row.requiresApproval === true,
     approvalChecklist: approvalChecklistFrom(row.approvalChecklist, row.requiresApproval === true),
+    documentStandards: row.requiresDocument === true
+        ? multilineText(row.documentStandards, exports.PRODUCTION_TASK_LIMITS.documentStandards) || null
+        : null,
+    documentStandardsFile: standardsFileFrom(row.documentStandardsFile, row.requiresDocument === true),
     status: (0, exports.statusFrom)(row.status),
     files: filesFrom(row.files),
     completedById: typeof row.completedById === 'string' ? row.completedById : null,
