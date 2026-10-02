@@ -1,0 +1,386 @@
+{
+  "tenantId": "sub-tenant",
+  "at": "2026-10-02T13:31:00.909Z",
+  "templates": [
+    {
+      "templateId": "t5pTG0GmA6y3",
+      "name": "Chiller",
+      "tasks": [
+        {
+          "id": "IwXxvDgu3pZl",
+          "code": "M-01",
+          "name": "Çalışma şartlarını belirleme",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 5.0008,
+          "stageWeight": 17.86,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "qILO0xJ7PK5b",
+          "code": "M-02",
+          "name": "Ana ekipman seçimi",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 8.9992,
+          "stageWeight": 32.14,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "OU2mf0-uwdNj",
+          "code": "M-03",
+          "name": "Soğutma devresi tasarımı",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 7.9996,
+          "stageWeight": 28.57,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "XB9zQ97uCXSI",
+          "code": "M-04",
+          "name": "Hidrolik devre tasarımı",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 6.0004,
+          "stageWeight": 21.43,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "-rN6vjotha_d",
+          "code": "M-05",
+          "name": "Şase ve gövde tasarımı",
+          "area": "MECHANICAL",
+          "stage": "drawing",
+          "weight": 7,
+          "stageWeight": 100,
+          "assigneeIds": [
+            "00C2cYuaEa2fbo9Qs66S-",
+            "0CxKIBEL"
+          ],
+          "subtasks": [
+            {
+              "id": "u-8v2b9mv3",
+              "name": "test",
+              "createdAt": "2026-09-30",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [
+                "00C2cYuaEa2fbo9Qs66S-",
+                "0CxKIBEL"
+              ],
+              "requiresDocument": false,
+              "requiresApproval": false,
+              "approvalChecklist": [],
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            },
+            {
+              "id": "u-mtkvszcr",
+              "name": "Yeni alt görev",
+              "createdAt": "2026-10-01",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [
+                "0CxKIBEL"
+              ],
+              "requiresDocument": false,
+              "requiresApproval": false,
+              "approvalChecklist": [],
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "l4OKm8QNzYgY",
+          "code": "M-06",
+          "name": "Teknik dokümantasyon ve mekanik BOM",
+          "area": "MECHANICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "7rMm80hmPATG",
+          "code": "M-07",
+          "name": "Şase ve sac imalatı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 10.0012,
+          "stageWeight": 22.73,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "9wgmSH08htrT",
+          "code": "M-08",
+          "name": "Ana ekipman montajı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 7.9992,
+          "stageWeight": 18.18,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "5TKXs3A5EuJz",
+          "code": "M-09",
+          "name": "Soğutucu akışkan borulaması",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 14.0008,
+          "stageWeight": 31.82,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "up70vxrGvD73",
+          "code": "M-10",
+          "name": "Hidrolik grup montajı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 7.9992,
+          "stageWeight": 18.18,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "uD4hjrI4ydyM",
+          "code": "M-11",
+          "name": "Fan grubu montajı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 3.9996,
+          "stageWeight": 9.09,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "IS1d_Z5KFRRk",
+          "code": "M-12",
+          "name": "Basınç ve sızdırmazlık kontrolleri",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "hqcQ2155dkfk",
+          "code": "M-13",
+          "name": "Vakum ve akışkan şarjı",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "5OeJQYOtk1Vj",
+          "code": "M-14",
+          "name": "İzolasyon ve son mekanik kontrol",
+          "area": "MECHANICAL",
+          "stage": "final",
+          "weight": 4,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "dCNlnIw2jUOJ",
+          "code": "E-01",
+          "name": "Elektrik yüklerini belirleme",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 4.0005,
+          "stageWeight": 11.43,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "5xmGjPOwv6Ba",
+          "code": "E-02",
+          "name": "Güç ve koruma tasarımı",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 8.001,
+          "stageWeight": 22.86,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "_B5I4z65hdHP",
+          "code": "E-03",
+          "name": "Elektrik şemaları",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 9.996,
+          "stageWeight": 28.56,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "BlZZsTaxWz2-",
+          "code": "E-04",
+          "name": "Pano yerleşimi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 5.0015,
+          "stageWeight": 14.29,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "rCGMHRmwYFta",
+          "code": "E-05",
+          "name": "Kontrol mimarisi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 8.001,
+          "stageWeight": 22.86,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "oxkR8mdODcBM",
+          "code": "E-06",
+          "name": "Elektrik BOM ve dokümanları",
+          "area": "ELECTRICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "UT9IQHaRmyxg",
+          "code": "E-07",
+          "name": "Pano montajı",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 7.999,
+          "stageWeight": 21.05,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "p8y7sqHiHlGm",
+          "code": "E-08",
+          "name": "Pano içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 9.9978,
+          "stageWeight": 26.31,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "F_H9IFoaw9gN",
+          "code": "E-09",
+          "name": "Cihaz içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 10.0016,
+          "stageWeight": 26.32,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "efea0a79Owuf",
+          "code": "E-10",
+          "name": "Sensör ve kumanda bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 6.0002,
+          "stageWeight": 15.79,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "A3mi-zm7rORk",
+          "code": "E-11",
+          "name": "Koruyucu iletken bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 4.0014,
+          "stageWeight": 10.53,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "1bWSAXjtBIph",
+          "code": "E-12",
+          "name": "Yazılım ve parametre yükleme",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 10,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "j_-mX2HqeAnG",
+          "code": "E-13",
+          "name": "Giriş-çıkış doğrulama",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 5,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "Xn_PWTGaR46K",
+          "code": "E-14",
+          "name": "Elektriksel testler",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 5,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "M3ww78eg75ki",
+          "code": "E-15",
+          "name": "Son durum dokümanları ve yedekleme",
+          "area": "ELECTRICAL",
+          "stage": "final",
+          "weight": 2,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        }
+      ]
+    }
+  ]
+}

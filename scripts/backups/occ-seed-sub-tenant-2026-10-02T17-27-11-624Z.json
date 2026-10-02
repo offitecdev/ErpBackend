@@ -1,0 +1,4680 @@
+{
+  "tenantId": "sub-tenant",
+  "at": "2026-10-02T17:27:11.624Z",
+  "templates": [
+    {
+      "templateId": "t5pTG0GmA6y3",
+      "name": "Chiller",
+      "tasks": [
+        {
+          "id": "05vcGHXeGBEB",
+          "code": "M-01",
+          "name": "Çalışma şartlarını belirleme",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 5.0008,
+          "stageWeight": 17.86,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "NYz1TRR0GsjM",
+          "code": "M-02",
+          "name": "Ana ekipman seçimi",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 8.9992,
+          "stageWeight": 32.14,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "oaSFhW9SndDD",
+          "code": "M-03",
+          "name": "Soğutma devresi tasarımı",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 7.9996,
+          "stageWeight": 28.57,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "apLma7fy8vrP",
+          "code": "M-04",
+          "name": "Hidrolik devre tasarımı",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 6.0004,
+          "stageWeight": 21.43,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "kZLvxWGIAhf-",
+          "code": "M-05",
+          "name": "Şase ve gövde tasarımı",
+          "area": "MECHANICAL",
+          "stage": "drawing",
+          "weight": 7,
+          "stageWeight": 100,
+          "assigneeIds": [
+            "00C2cYuaEa2fbo9Qs66S-",
+            "0CxKIBEL"
+          ],
+          "subtasks": [
+            {
+              "id": "u-8v2b9mv3",
+              "name": "test",
+              "createdAt": "2026-09-30",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [
+                "00C2cYuaEa2fbo9Qs66S-",
+                "0CxKIBEL"
+              ],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": false,
+              "approvalChecklist": [],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            },
+            {
+              "id": "u-mtkvszcr",
+              "name": "Yeni alt görev",
+              "createdAt": "2026-10-01",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [
+                "0CxKIBEL"
+              ],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": false,
+              "approvalChecklist": [],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "ux3pF4ZQbR7L",
+          "code": "M-06",
+          "name": "Teknik dokümantasyon ve mekanik BOM",
+          "area": "MECHANICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "R6YKXWuvPqOp",
+          "code": "M-07",
+          "name": "Şase ve sac imalatı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 10.0012,
+          "stageWeight": 22.73,
+          "assigneeIds": [
+            "0CxKIBEL"
+          ],
+          "subtasks": [
+            {
+              "id": "u-21vwpa0f",
+              "name": "Şase kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [
+                "0CxKIBEL"
+              ],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-ikcxas12",
+                  "text": "Şase/gövde çizime uygun"
+                },
+                {
+                  "id": "c-natid31v",
+                  "text": "Sabitleme noktaları hazır"
+                },
+                {
+                  "id": "c-roja1ke7",
+                  "text": "Hasar yok"
+                },
+                {
+                  "id": "c-7lcdf4qe",
+                  "text": "Servis erişimi uygun"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: şase/gövde genel yerleşim.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "JcTVRRoLIz6o",
+          "code": "M-08",
+          "name": "Ana ekipman montajı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 7.9992,
+          "stageWeight": 18.18,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-rep14csq",
+              "name": "Ana komponent kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-slc6nruh",
+                  "text": "Ana parçalar yerinde"
+                },
+                {
+                  "id": "c-0j85b855",
+                  "text": "Pozisyonlar çizime uygun"
+                },
+                {
+                  "id": "c-jr4fq0u3",
+                  "text": "Sabitlemeler tamam"
+                },
+                {
+                  "id": "c-p2l9l9ur",
+                  "text": "Servis erişimi kontrol edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: kompresör, eşanjörler, pompa/fan, projeye özel parçalar; pozisyon, sabitleme, servis erişimi.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "CfaegGhjU7Yu",
+          "code": "M-09",
+          "name": "Soğutucu akışkan borulaması",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 14.0008,
+          "stageWeight": 31.82,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-2y2uaifj",
+              "name": "Borulama kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-tfun3w8f",
+                  "text": "Borular, vana/filtre/EEV ve sensörler takılı"
+                },
+                {
+                  "id": "c-vyhe4h1o",
+                  "text": "Servis bağlantıları erişilebilir"
+                },
+                {
+                  "id": "c-m2joqxw9",
+                  "text": "Kaynaklar tamam"
+                },
+                {
+                  "id": "c-nfu5mpx6",
+                  "text": "Destekler tamam"
+                },
+                {
+                  "id": "c-k66qfh05",
+                  "text": "İzolasyon kapanmadan fotoğraflar çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: izolasyon kapanmadan borular, kaynaklar, vana/filtre/EEV, sensörler, servis bağlantıları, destekler.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "1GWCpqwCl_35",
+          "code": "M-10",
+          "name": "Hidrolik grup montajı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 7.9992,
+          "stageWeight": 18.18,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-973n280f",
+              "name": "Hidrolik kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-u38hf1x2",
+                  "text": "Bağlantılar, pompa, vana, sensörler takılı"
+                },
+                {
+                  "id": "c-6t10hrku",
+                  "text": "Flow switch doğru yönde"
+                },
+                {
+                  "id": "c-s987cgxc",
+                  "text": "Tahliye ve hava alma var"
+                },
+                {
+                  "id": "c-og3nxpmz",
+                  "text": "Akış yönü doğru"
+                },
+                {
+                  "id": "c-4p3mfkmk",
+                  "text": "İzolasyon öncesi fotoğraflar çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: izolasyon öncesi su bağlantıları, pompa, vana, sensör, flow switch, tahliye/hava alma, akış yönü.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "uM3y2W4Hvur6",
+          "code": "M-11",
+          "name": "Fan grubu montajı",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 3.9996,
+          "stageWeight": 9.09,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-juyg2nsm",
+              "name": "Fan grubu kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-n86x3cvg",
+                  "text": "Fanlar ve koruyucular takılı"
+                },
+                {
+                  "id": "c-t2tcjfoj",
+                  "text": "Motor/EC bağlı"
+                },
+                {
+                  "id": "c-12j5eoqx",
+                  "text": "Montaj yönü doğru"
+                },
+                {
+                  "id": "c-04pt1vup",
+                  "text": "Sabitleme tamam"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: fanlar, koruyucular, motor/EC bağlantıları, montaj yönü, sabitleme.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            },
+            {
+              "id": "u-1iof4vrr",
+              "name": "Ara kontrol",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-twmap5ua",
+                  "text": "Çizim (son revizyon) ile karşılaştırıldı"
+                },
+                {
+                  "id": "c-gj3o7mj1",
+                  "text": "BOM plan/gerçek karşılaştırıldı"
+                },
+                {
+                  "id": "c-jc3u5f3n",
+                  "text": "Görünmeyecek işlerin fotoğrafları var"
+                },
+                {
+                  "id": "c-o2ne9wb3",
+                  "text": "Servis erişimi ve sabitlemeler kontrol edildi"
+                },
+                {
+                  "id": "c-6ao6cd8y",
+                  "text": "Açık hata yok"
+                }
+              ],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "TyRXONBdWGtY",
+          "code": "M-12",
+          "name": "Basınç ve sızdırmazlık kontrolleri",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-las5n1kn",
+              "name": "Soğutma devresi basınç testi",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-6lwp2nqe",
+                  "text": "Basınç ve süre yazılı"
+                },
+                {
+                  "id": "c-ava6jgee",
+                  "text": "Düşüş onaylı limitte"
+                },
+                {
+                  "id": "c-cxsx4ljy",
+                  "text": "Kaçak yok ya da yeri ve düzeltmesi yazılı"
+                },
+                {
+                  "id": "c-qbmcp3zg",
+                  "text": "Sonuç PASS"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: test basıncı, süre, sonuç, varsa kaçak noktası.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            },
+            {
+              "id": "u-f4qdrer6",
+              "name": "Su devresi testi",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-cg5l6r6a",
+                  "text": "Sızdırmazlık PASS"
+                },
+                {
+                  "id": "c-zq7cfvrg",
+                  "text": "Pompa yönü doğru"
+                },
+                {
+                  "id": "c-8v8ykpfn",
+                  "text": "Flow switch çalışıyor"
+                },
+                {
+                  "id": "c-flzx0v4y",
+                  "text": "Debi ölçüldü (mümkünse)"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: sızdırmazlık, pompa yönü, flow switch, mümkünse debi.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "_xD-tx-lxw4_",
+          "code": "M-13",
+          "name": "Vakum ve akışkan şarjı",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-bb7t8oe1",
+              "name": "Vakum ve şarj",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-6nzytqlb",
+                  "text": "Vakum değeri hedefte"
+                },
+                {
+                  "id": "c-3vf79xso",
+                  "text": "Akışkan tipi doğru"
+                },
+                {
+                  "id": "c-uc2twecd",
+                  "text": "Miktar hedefte"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: vakum sonucu, akışkan tipi, doldurulan miktar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            },
+            {
+              "id": "u-u4h9u2i3",
+              "name": "Test çalışması",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-deuc9bwp",
+                  "text": "Sıcaklıklar ve ΔT yazılı"
+                },
+                {
+                  "id": "c-xvrcnho3",
+                  "text": "Basınçlar yazılı"
+                },
+                {
+                  "id": "c-m9fopxk5",
+                  "text": "Akımlar yazılı"
+                },
+                {
+                  "id": "c-umuom3jd",
+                  "text": "Set değere ulaşıldı"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: giriş/çıkış sıcaklıkları, ΔT, basınçlar, kompresör/fan/pompa akımları, set değere ulaşma.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "DgZwT7J5sTJn",
+          "code": "M-14",
+          "name": "İzolasyon ve son mekanik kontrol",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 0.6,
+          "stageWeight": 20,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-9lns9jhq",
+              "name": "Final montaj ve görsel QC",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-xhr063sn",
+                  "text": "Final montaj tamam"
+                },
+                {
+                  "id": "c-9tm9ikq9",
+                  "text": "Çizim/BOM ile son karşılaştırma yapıldı"
+                },
+                {
+                  "id": "c-8lclox91",
+                  "text": "Servis alanı ve temizlik tamam"
+                },
+                {
+                  "id": "c-eq1m7045",
+                  "text": "Seri no ve QR doğru"
+                },
+                {
+                  "id": "c-lk529lw2",
+                  "text": "En az 4 yön fotoğrafı var"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nCihaza özel (Chiller): izolasyon, kapaklar, etiketler, bağlantı ağızları, servis alanı, temizlik.\nFotoğraflarda cihazın en az 4 yönü (ön, arka, sağ, sol) var; seri no ve QR okunur.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "ZshRK7VVqNpJ",
+          "code": "M-15",
+          "name": "Nakliye planı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 0.45,
+          "stageWeight": 15,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-8wuey6ig",
+              "name": "Nakliye planı ve ücret",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": true,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-s122fzj0",
+                  "text": "Nakliyeci seçildi"
+                },
+                {
+                  "id": "c-03dg0ork",
+                  "text": "Nakliye ücreti (CHF) girildi ve teklifle aynı"
+                },
+                {
+                  "id": "c-47hxxz5j",
+                  "text": "Araç tipi uygun"
+                },
+                {
+                  "id": "c-yq0581nv",
+                  "text": "Yükleme ve teslim tarihi projeye uygun"
+                },
+                {
+                  "id": "c-fatsnztt",
+                  "text": "İletişim bilgisi var"
+                }
+              ],
+              "documentStandards": "Teklif belgesi ya da fotoğrafı eklenmiş.\n«Ücret (CHF)» alanındaki tutar teklifteki tutarla aynı.\nKısa notta: nakliyeci, araç tipi, planlanan yükleme tarihi, tahmini teslim tarihi, iletişim bilgisi.\nPlan üretim bitmeden yapılır; final adımında nakliyeci aranmaya başlanmaz.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "92E5-xsmAW4B",
+          "code": "M-16",
+          "name": "Sevkiyat hazırlığı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 0.9,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-jdufvjpm",
+              "name": "Sevkiyat hazırlığı",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-cmuqf4g8",
+                  "text": "Hasar, gevşek parça, kapak, etiket, seri no, QR kontrol edildi"
+                },
+                {
+                  "id": "c-n31wgpoq",
+                  "text": "Bağlantılar korundu"
+                },
+                {
+                  "id": "c-ediqe94b",
+                  "text": "Darbe ve köşe koruması yapıldı"
+                },
+                {
+                  "id": "c-58jwe61r",
+                  "text": "Folyo; hareketli parçalar ve kapaklar sabitlendi"
+                },
+                {
+                  "id": "c-cogo1lsj",
+                  "text": "Aksesuar ve dokümanlar etiketli hazır"
+                }
+              ],
+              "documentStandards": "Fotoğraflar: final görsel kontrol, bağlantı korumaları, darbe/köşe koruması, folyo ve sabitleme, etiketli aksesuar ve dokümanlar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "7y-K2juRzhYd",
+          "code": "M-17",
+          "name": "Sevke hazır onayı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 0.3,
+          "stageWeight": 10,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-ga5utjl9",
+              "name": "Sevke hazır onayı",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-9biwxiq8",
+                  "text": "Montaj adımları tamamlandı"
+                },
+                {
+                  "id": "c-7e13o29d",
+                  "text": "Zorunlu testlerin tamamı PASS"
+                },
+                {
+                  "id": "c-s13crbjc",
+                  "text": "Ölçülen değerler onaylı aralıkta"
+                },
+                {
+                  "id": "c-phrad90v",
+                  "text": "Açık hata/blocker yok"
+                },
+                {
+                  "id": "c-66d4i8yn",
+                  "text": "Fotoğraf, teknik doküman, seri no ve QR tamam"
+                },
+                {
+                  "id": "c-zva1dicx",
+                  "text": "Nakliyeci, sevkiyat planı ve nakliye ücreti onaylı"
+                }
+              ],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "cWuWGFqtvrbg",
+          "code": "M-18",
+          "name": "Yükleme ve sevkiyat",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 0.75,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-8t2nuxer",
+              "name": "Yükleme ve sevkiyat",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-8ntizrip",
+                  "text": "Yükleme öncesi fotoğraf var"
+                },
+                {
+                  "id": "c-mn8erysq",
+                  "text": "Araçta sabitleme yapıldı"
+                },
+                {
+                  "id": "c-eg0dwr7n",
+                  "text": "Yükleme sonrası fotoğraf var"
+                },
+                {
+                  "id": "c-smx3j7k7",
+                  "text": "Sevkiyat bilgisi yazılı"
+                }
+              ],
+              "documentStandards": "Fotoğraflar: yükleme öncesi, araç içi sabitleme, yükleme sonrası.\nKısa notta sevkiyat bilgisi: araç/plaka, çıkış tarihi ve saati.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "pSNqqJnY5zJK",
+          "code": "M-19",
+          "name": "Sevkiyat raporu ve makine dosyası",
+          "area": "MECHANICAL",
+          "stage": "final",
+          "weight": 1,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-v5amtcd8",
+              "name": "Sevkiyat raporu ve makine dosyası",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-tzuf1oki",
+                  "text": "Güncel çizimler ve revizyonlar dosyada"
+                },
+                {
+                  "id": "c-0kty9d95",
+                  "text": "BOM plan/gerçek dosyada"
+                },
+                {
+                  "id": "c-fhbgzxcs",
+                  "text": "Kritik parçaların seri numaraları yazılı"
+                },
+                {
+                  "id": "c-nmrwjxmx",
+                  "text": "Montaj fotoğrafları ve test raporları dosyada"
+                },
+                {
+                  "id": "c-28mxmkxg",
+                  "text": "Seri no, QR ve teknik dokümanlar tamam"
+                },
+                {
+                  "id": "c-6vf2v7do",
+                  "text": "Sevkiyat raporu / teslim belgesi eklendi"
+                }
+              ],
+              "documentStandards": "Sevkiyat raporu ya da imzalı teslim belgesi eklenmiş (belge veya fotoğraf).\nKısa notta: gönderim tarihi, teslim alan kişi, varsa hasar/eksik notu.\nMakine dosyası tek yerde tamam: güncel çizimler ve revizyonlar, BOM plan/gerçek, kullanılan kritik parçalar ve seri numaraları, montaj fotoğrafları, test raporları, Offitec seri no/QR, teknik dokümanlar.\nTamamlanmış rapor ve fotoğraf silinmez; hata varsa yeni düzeltme/revizyon kaydı vardır.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "vZQIDfHKPIrv",
+          "code": "E-01",
+          "name": "Elektrik yüklerini belirleme",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 4.0005,
+          "stageWeight": 11.43,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "Bra7cl-qcF9y",
+          "code": "E-02",
+          "name": "Güç ve koruma tasarımı",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 8.001,
+          "stageWeight": 22.86,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "G7dC8UJumhw1",
+          "code": "E-03",
+          "name": "Elektrik şemaları",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 9.996,
+          "stageWeight": 28.56,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "YjojznIZk0dV",
+          "code": "E-04",
+          "name": "Pano yerleşimi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 5.0015,
+          "stageWeight": 14.29,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "JjnT3IKji32N",
+          "code": "E-05",
+          "name": "Kontrol mimarisi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 8.001,
+          "stageWeight": 22.86,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "hpy54edZoKor",
+          "code": "E-06",
+          "name": "Elektrik BOM ve dokümanları",
+          "area": "ELECTRICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "-vPoPW4yuqsH",
+          "code": "E-07",
+          "name": "Pano montajı",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 7.999,
+          "stageWeight": 21.05,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-cdie7gws",
+              "name": "Pano yerleşim kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-10meg4gk",
+                  "text": "Pano, DIN raylar ve kanallar yerinde"
+                },
+                {
+                  "id": "c-d4w7ug4n",
+                  "text": "Komponentler elektrik şemasına göre yerleşik"
+                },
+                {
+                  "id": "c-vo554iqj",
+                  "text": "İlk yerleşim fotoğrafı var"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: pano, DIN raylar, kanallar, komponentlerin ilk yerleşimi.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "vQKX28I22FGH",
+          "code": "E-08",
+          "name": "Pano içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 9.9978,
+          "stageWeight": 26.31,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-q3zglv9x",
+              "name": "Güç devresi kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-521nzy9w",
+                  "text": "Ana besleme, sigorta/şalter ve kontaktörler bağlı"
+                },
+                {
+                  "id": "c-69tg0zbk",
+                  "text": "Çıkışlar bağlı"
+                },
+                {
+                  "id": "c-dwim3sz1",
+                  "text": "Kesitler şemaya uygun"
+                },
+                {
+                  "id": "c-8705b17j",
+                  "text": "Terminaller kontrol edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: ana besleme, sigorta/şalter, kontaktör, motor/fan/pompa/kompresör çıkışları; kesit ve terminaller.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "DduK2SpOgdcB",
+          "code": "E-09",
+          "name": "Cihaz içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 10.0016,
+          "stageWeight": 26.32,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-w6rvylkl",
+              "name": "Cihaz içi kablolama kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-x041xsfv",
+                  "text": "Güç ve kumanda kabloları çekildi"
+                },
+                {
+                  "id": "c-0hkfhm0w",
+                  "text": "PE bağlantıları yapıldı"
+                },
+                {
+                  "id": "c-kz8rghz9",
+                  "text": "Saha terminalleri bağlı"
+                },
+                {
+                  "id": "c-v9glrwb9",
+                  "text": "Kablo ve terminal etiketleri tamam"
+                },
+                {
+                  "id": "c-dnoyyejc",
+                  "text": "Kapak kapanmadan fotoğraf çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: kapak kapanmadan kablolama.\nCihaza özel (Chiller): makine içi güç/kumanda kabloları ve sensörler.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "ylBsrI7bhC6P",
+          "code": "E-10",
+          "name": "Sensör ve kumanda bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 6.0002,
+          "stageWeight": 15.79,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-o0bz8izd",
+              "name": "Kumanda ve I/O kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-emdhjunv",
+                  "text": "Sensörler bağlı"
+                },
+                {
+                  "id": "c-0mn721z3",
+                  "text": "Giriş/çıkış, röle ve 0-10 V bağlı"
+                },
+                {
+                  "id": "c-xkutj2hh",
+                  "text": "Haberleşme bağlı"
+                },
+                {
+                  "id": "c-9gw27zzc",
+                  "text": "Kanal kapağı kapanmadan fotoğraf çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: sensör, giriş/çıkış, röle, 0-10 V, haberleşme, saha terminalleri; kanal kapağı kapanmadan.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "Q39UYpIxWWmR",
+          "code": "E-11",
+          "name": "Koruyucu iletken bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 4.0014,
+          "stageWeight": 10.53,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-j2r12qpz",
+              "name": "PE ve etiketleme kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-9uyfyamu",
+                  "text": "Koruma iletkeni bütün gövdelere bağlı"
+                },
+                {
+                  "id": "c-d95ym0hj",
+                  "text": "Numaralar tamam"
+                },
+                {
+                  "id": "c-4xt85pz4",
+                  "text": "Komponent etiketleri tamam"
+                },
+                {
+                  "id": "c-4aq91sv0",
+                  "text": "Klemens düzeni şemaya uygun"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: koruma iletkeni, terminal/kablo numaraları, komponent etiketleri, klemens düzeni.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "_XfYOkR3yRRg",
+          "code": "E-12",
+          "name": "Yazılım ve parametre yükleme",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 10,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-suhzzqvh",
+              "name": "PLC/HMI ve haberleşme testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-ablq3r70",
+                  "text": "Program yüklendi, versiyon yazılı"
+                },
+                {
+                  "id": "c-4gzbmrgo",
+                  "text": "Parametreler ve set değerleri girildi"
+                },
+                {
+                  "id": "c-a27kv7fb",
+                  "text": "Ekran kontrol edildi"
+                },
+                {
+                  "id": "c-nvx0jxz2",
+                  "text": "Haberleşme test edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: yazılım versiyonu, parametreler/set değerleri, ekran, projedeki Modbus/BACnet/diğer haberleşme.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "mNK4MpMg-a34",
+          "code": "E-13",
+          "name": "Giriş-çıkış doğrulama",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 5,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-1sa3qklx",
+              "name": "I/O testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-rminshwg",
+                  "text": "Girişler tek tek test edildi"
+                },
+                {
+                  "id": "c-d3dbj5h9",
+                  "text": "Çıkışlar tek tek test edildi"
+                },
+                {
+                  "id": "c-1wipvgkw",
+                  "text": "Sonuçlar yazılı"
+                },
+                {
+                  "id": "c-ior45cdv",
+                  "text": "Hatalı I/O yok ya da düzeltilip tekrar test edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: giriş ve çıkışlar tek tek; her biri için beklenen ve sonuç.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "yII8xHccf3DU",
+          "code": "E-14",
+          "name": "Elektriksel testler",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 5,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-jftlyb48",
+              "name": "Elektrik ve safety testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-oc3pz531",
+                  "text": "Şema ile görsel kontrol yapıldı"
+                },
+                {
+                  "id": "c-0he9fqms",
+                  "text": "PE/süreklilik ölçüldü"
+                },
+                {
+                  "id": "c-sfdms2x3",
+                  "text": "İzolasyon ölçüldü"
+                },
+                {
+                  "id": "c-n4w9yctx",
+                  "text": "Gerilim ve faz sırası kontrol edildi"
+                },
+                {
+                  "id": "c-k97owt0h",
+                  "text": "Korumalar ve ana devre çalışıyor"
+                },
+                {
+                  "id": "c-vslc1ucz",
+                  "text": "Akım değerleri yazılı"
+                },
+                {
+                  "id": "c-fdil44y7",
+                  "text": "Emniyet zinciri, acil stop, alarm, interlock çalışıyor"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: şema ile görsel kontrol, PE/süreklilik, izolasyon, gerilim/faz sırası, korumalar, ana devre, emniyet zinciri/acil stop/alarm/interlock.\nCihaza özel (Chiller): kompresör/fan/pompa akımları, kritik alarm ve emniyet fonksiyonları.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "GLmmBcnVSoVU",
+          "code": "E-15",
+          "name": "Son durum dokümanları ve yedekleme",
+          "area": "ELECTRICAL",
+          "stage": "final",
+          "weight": 2,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-ral4ja01",
+              "name": "Son durum dokümanları",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-x8mr04be",
+                  "text": "Güncel şema dosyada"
+                },
+                {
+                  "id": "c-xw9zhl4j",
+                  "text": "PLC/HMI yedeği alındı"
+                },
+                {
+                  "id": "c-c7h18zcq",
+                  "text": "Test sonuçları dosyada"
+                },
+                {
+                  "id": "c-3gdhjuo1",
+                  "text": "Seri no ve QR doğru"
+                },
+                {
+                  "id": "c-ndfqqfql",
+                  "text": "Teknik dokümanlar tamam"
+                }
+              ],
+              "documentStandards": "Güncel elektrik şeması (son revizyon), PLC/HMI yedeği ve versiyonu, test sonuçları, seri no/QR, teknik dokümanlar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "templateId": "L34CkXAXpv9b",
+      "name": "Dry Cooler",
+      "tasks": [
+        {
+          "id": "nFLWzvtDqWBy",
+          "code": "M-01",
+          "name": "Çalışma şartlarını belirleme",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 4.5,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "ig05UdIUhDBd",
+          "code": "M-02",
+          "name": "Eşanjör ve fan seçimi",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 6,
+          "stageWeight": 40,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "P25dwJZLwM40",
+          "code": "M-03",
+          "name": "Hidrolik bağlantı tasarımı",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 4.5,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "TTV3PPhIpx53",
+          "code": "M-04",
+          "name": "Şase ve gövde tasarımı",
+          "area": "MECHANICAL",
+          "stage": "drawing",
+          "weight": 10,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "mYPHjO7uzUj1",
+          "code": "M-05",
+          "name": "Teknik dokümantasyon ve mekanik BOM",
+          "area": "MECHANICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "FYKwbWPPrrsW",
+          "code": "M-06",
+          "name": "Şase ve eşanjör",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 12.25,
+          "stageWeight": 35,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-rly5s22z",
+              "name": "Şase ve eşanjör kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-ebfh833g",
+                  "text": "Batarya sabitlendi"
+                },
+                {
+                  "id": "c-g2ut3fnx",
+                  "text": "Hasar yok"
+                },
+                {
+                  "id": "c-bg2izn67",
+                  "text": "Kolektör yönü doğru"
+                },
+                {
+                  "id": "c-90dvn2pi",
+                  "text": "Servis erişimi uygun"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: şase/gövde, eşanjör bataryası, sabitleme, hasar, kolektör yönü, servis erişimi.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "VR5zHQjMF2-v",
+          "code": "M-07",
+          "name": "Fan grubu",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 12.25,
+          "stageWeight": 35,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-vghickcs",
+              "name": "Fan grubu kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-l68hseop",
+                  "text": "Fanlar ve koruyucular takılı"
+                },
+                {
+                  "id": "c-jgfo75ti",
+                  "text": "Motor/EC bağlı"
+                },
+                {
+                  "id": "c-7oe11fhh",
+                  "text": "Montaj yönü doğru"
+                },
+                {
+                  "id": "c-4h30l68g",
+                  "text": "Sabitleme tamam"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: fanlar, koruyucular, motor/EC bağlantıları, montaj yönü, sabitleme.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "rOJQnc_-UeDD",
+          "code": "M-08",
+          "name": "Hidrolik bağlantılar",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 10.5,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-s6w5h2bg",
+              "name": "Hidrolik bağlantı kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-ce9e0vg9",
+                  "text": "Kolektörler ve giriş/çıkış bağlı"
+                },
+                {
+                  "id": "c-wskoz338",
+                  "text": "Tahliye ve hava alma var"
+                },
+                {
+                  "id": "c-ippdm44s",
+                  "text": "Sensör/vana takılı"
+                },
+                {
+                  "id": "c-be6ctbkn",
+                  "text": "Destekler tamam"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: kolektörler, giriş/çıkış, tahliye/hava alma, sensör/opsiyonel vana, destekler; bağlantılar kapanmadan.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            },
+            {
+              "id": "u-r402grxb",
+              "name": "Ara kontrol",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-t3l55uj6",
+                  "text": "Çizim (son revizyon) ile karşılaştırıldı"
+                },
+                {
+                  "id": "c-pz3l7cwx",
+                  "text": "BOM plan/gerçek karşılaştırıldı"
+                },
+                {
+                  "id": "c-7o7cdw41",
+                  "text": "Görünmeyecek işlerin fotoğrafları var"
+                },
+                {
+                  "id": "c-xbiqnez1",
+                  "text": "Servis erişimi ve sabitlemeler kontrol edildi"
+                },
+                {
+                  "id": "c-j45a5n3a",
+                  "text": "Açık hata yok"
+                }
+              ],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "GDurg0WuKe2X",
+          "code": "M-09",
+          "name": "Eşanjör basınç testi",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 10,
+          "stageWeight": 40,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-blqj29kh",
+              "name": "Eşanjör basınç testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-q4plck1x",
+                  "text": "Basınç ve süre yazılı"
+                },
+                {
+                  "id": "c-9otrml4f",
+                  "text": "Düşüş onaylı limitte"
+                },
+                {
+                  "id": "c-j2splv09",
+                  "text": "Sonuç PASS"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: test basıncı, süre, sonuç.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "Hr_nHUFZP5p3",
+          "code": "M-10",
+          "name": "Fan yönü ve regülasyon",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 8.75,
+          "stageWeight": 35,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-12z5xdvz",
+              "name": "Fan yönü ve regülasyon testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-mbc836dl",
+                  "text": "Tüm fanların yönü doğru"
+                },
+                {
+                  "id": "c-zwd0rf7r",
+                  "text": "Fanlar çalışıyor"
+                },
+                {
+                  "id": "c-t8ftpsyq",
+                  "text": "Regülasyon komutu ve tepkisi yazılı"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: tüm fanların yönü ve çalışması; kademe/0-10 V/EC kontrolü projeye göre; komut ve tepki.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "qkDvJsSdmw28",
+          "code": "M-11",
+          "name": "Final çalışma",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-u4rdt0e8",
+              "name": "Final çalışma ve görsel QC",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-91xi3bgt",
+                  "text": "Anormal titreşim/ses yok"
+                },
+                {
+                  "id": "c-exew5e20",
+                  "text": "Fanlar normal çalışıyor"
+                },
+                {
+                  "id": "c-wwjgmnx2",
+                  "text": "Hasar yok"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: anormal titreşim/ses, fan çalışması, hasar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "7iF_bMq5fveF",
+          "code": "M-12",
+          "name": "Final montaj ve QC",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 1.6,
+          "stageWeight": 20,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-pru2vujm",
+              "name": "Final montaj ve görsel QC",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-jrnvmexy",
+                  "text": "Final montaj tamam"
+                },
+                {
+                  "id": "c-s5i5ux46",
+                  "text": "Çizim/BOM ile son karşılaştırma yapıldı"
+                },
+                {
+                  "id": "c-omv5jgai",
+                  "text": "Servis alanı ve temizlik tamam"
+                },
+                {
+                  "id": "c-pw74sm7a",
+                  "text": "Seri no ve QR doğru"
+                },
+                {
+                  "id": "c-yidg6ts3",
+                  "text": "En az 4 yön fotoğrafı var"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nCihaza özel (Dry Cooler): kapaklar, koruma elemanları, etiketler, taşıma noktaları, temizlik, çizim/BOM final kontrolü.\nFotoğraflarda cihazın en az 4 yönü (ön, arka, sağ, sol) var; seri no ve QR okunur.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "7ZJiqeZSxGuL",
+          "code": "M-13",
+          "name": "Nakliye planı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 1.2,
+          "stageWeight": 15,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-zzsgflmc",
+              "name": "Nakliye planı ve ücret",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": true,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-abh81xla",
+                  "text": "Nakliyeci seçildi"
+                },
+                {
+                  "id": "c-gb190xmx",
+                  "text": "Nakliye ücreti (CHF) girildi ve teklifle aynı"
+                },
+                {
+                  "id": "c-k669i4kl",
+                  "text": "Araç tipi uygun"
+                },
+                {
+                  "id": "c-jq5d8cac",
+                  "text": "Yükleme ve teslim tarihi projeye uygun"
+                },
+                {
+                  "id": "c-kq5rso9x",
+                  "text": "İletişim bilgisi var"
+                }
+              ],
+              "documentStandards": "Teklif belgesi ya da fotoğrafı eklenmiş.\n«Ücret (CHF)» alanındaki tutar teklifteki tutarla aynı.\nKısa notta: nakliyeci, araç tipi, planlanan yükleme tarihi, tahmini teslim tarihi, iletişim bilgisi.\nPlan üretim bitmeden yapılır; final adımında nakliyeci aranmaya başlanmaz.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "AF3ymm80sXwF",
+          "code": "M-14",
+          "name": "Sevkiyat hazırlığı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 2.4,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-9xtkwova",
+              "name": "Sevkiyat hazırlığı",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-58fff3ud",
+                  "text": "Hasar, gevşek parça, kapak, etiket, seri no, QR kontrol edildi"
+                },
+                {
+                  "id": "c-hh26qo4i",
+                  "text": "Bağlantılar korundu"
+                },
+                {
+                  "id": "c-zd09bfaz",
+                  "text": "Darbe ve köşe koruması yapıldı"
+                },
+                {
+                  "id": "c-oknnreak",
+                  "text": "Folyo; hareketli parçalar ve kapaklar sabitlendi"
+                },
+                {
+                  "id": "c-xu4gp1i4",
+                  "text": "Aksesuar ve dokümanlar etiketli hazır"
+                }
+              ],
+              "documentStandards": "Fotoğraflar: final görsel kontrol, bağlantı korumaları, darbe/köşe koruması, folyo ve sabitleme, etiketli aksesuar ve dokümanlar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "NyeNT224lvnU",
+          "code": "M-15",
+          "name": "Sevke hazır onayı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 0.8,
+          "stageWeight": 10,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-rncxj30e",
+              "name": "Sevke hazır onayı",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-aiodjaun",
+                  "text": "Montaj adımları tamamlandı"
+                },
+                {
+                  "id": "c-whxglnei",
+                  "text": "Zorunlu testlerin tamamı PASS"
+                },
+                {
+                  "id": "c-b1dwuk7t",
+                  "text": "Ölçülen değerler onaylı aralıkta"
+                },
+                {
+                  "id": "c-uph6zxhb",
+                  "text": "Açık hata/blocker yok"
+                },
+                {
+                  "id": "c-e4rj9hx8",
+                  "text": "Fotoğraf, teknik doküman, seri no ve QR tamam"
+                },
+                {
+                  "id": "c-1f7z0gfb",
+                  "text": "Nakliyeci, sevkiyat planı ve nakliye ücreti onaylı"
+                }
+              ],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "S-sqnbbS3h0R",
+          "code": "M-16",
+          "name": "Yükleme ve sevkiyat",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 2,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-qqu3yul8",
+              "name": "Yükleme ve sevkiyat",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-o8f89izx",
+                  "text": "Yükleme öncesi fotoğraf var"
+                },
+                {
+                  "id": "c-ors7vetl",
+                  "text": "Araçta sabitleme yapıldı"
+                },
+                {
+                  "id": "c-4ulhv17g",
+                  "text": "Yükleme sonrası fotoğraf var"
+                },
+                {
+                  "id": "c-hltsvd1v",
+                  "text": "Sevkiyat bilgisi yazılı"
+                }
+              ],
+              "documentStandards": "Fotoğraflar: yükleme öncesi, araç içi sabitleme, yükleme sonrası.\nKısa notta sevkiyat bilgisi: araç/plaka, çıkış tarihi ve saati.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "naFBvCgs7RMp",
+          "code": "M-17",
+          "name": "Sevkiyat raporu ve makine dosyası",
+          "area": "MECHANICAL",
+          "stage": "final",
+          "weight": 2,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-rja12wpf",
+              "name": "Sevkiyat raporu ve makine dosyası",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-ae1t5l0e",
+                  "text": "Güncel çizimler ve revizyonlar dosyada"
+                },
+                {
+                  "id": "c-eqkbpvai",
+                  "text": "BOM plan/gerçek dosyada"
+                },
+                {
+                  "id": "c-cnw0vs9v",
+                  "text": "Kritik parçaların seri numaraları yazılı"
+                },
+                {
+                  "id": "c-k7cmjc78",
+                  "text": "Montaj fotoğrafları ve test raporları dosyada"
+                },
+                {
+                  "id": "c-p6kjn1xp",
+                  "text": "Seri no, QR ve teknik dokümanlar tamam"
+                },
+                {
+                  "id": "c-0th74sqz",
+                  "text": "Sevkiyat raporu / teslim belgesi eklendi"
+                }
+              ],
+              "documentStandards": "Sevkiyat raporu ya da imzalı teslim belgesi eklenmiş (belge veya fotoğraf).\nKısa notta: gönderim tarihi, teslim alan kişi, varsa hasar/eksik notu.\nMakine dosyası tek yerde tamam: güncel çizimler ve revizyonlar, BOM plan/gerçek, kullanılan kritik parçalar ve seri numaraları, montaj fotoğrafları, test raporları, Offitec seri no/QR, teknik dokümanlar.\nTamamlanmış rapor ve fotoğraf silinmez; hata varsa yeni düzeltme/revizyon kaydı vardır.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "LOov16pyBqn_",
+          "code": "E-01",
+          "name": "Elektrik yüklerini belirleme",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 3.6,
+          "stageWeight": 12,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "YRurAvJk2HqR",
+          "code": "E-02",
+          "name": "Güç ve koruma tasarımı",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 6.9,
+          "stageWeight": 23,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "aNYl8uSJpNZI",
+          "code": "E-03",
+          "name": "Elektrik şemaları",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 8.7,
+          "stageWeight": 29,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "MnSa0PQb4vl8",
+          "code": "E-04",
+          "name": "Pano yerleşimi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 4.2,
+          "stageWeight": 14,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "t7o2v0fSuS4s",
+          "code": "E-05",
+          "name": "Kontrol mimarisi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 6.6,
+          "stageWeight": 22,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "bVtTIsiQ-kgZ",
+          "code": "E-06",
+          "name": "Elektrik BOM ve dokümanları",
+          "area": "ELECTRICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "hVTNAcFWxkvU",
+          "code": "E-07",
+          "name": "Pano montajı",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 7.35,
+          "stageWeight": 21,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-38nhdc2n",
+              "name": "Pano yerleşim kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-rnogcke7",
+                  "text": "Pano, DIN raylar ve kanallar yerinde"
+                },
+                {
+                  "id": "c-hmok2i8b",
+                  "text": "Komponentler elektrik şemasına göre yerleşik"
+                },
+                {
+                  "id": "c-j9mzckid",
+                  "text": "İlk yerleşim fotoğrafı var"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: pano, DIN raylar, kanallar, komponentlerin ilk yerleşimi.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "0NZ9dmOZyXVF",
+          "code": "E-08",
+          "name": "Pano içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 9.1,
+          "stageWeight": 26,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-wpfbar0l",
+              "name": "Güç devresi kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-cxdtpl50",
+                  "text": "Ana besleme, sigorta/şalter ve kontaktörler bağlı"
+                },
+                {
+                  "id": "c-tmhz0b7b",
+                  "text": "Çıkışlar bağlı"
+                },
+                {
+                  "id": "c-fmti2hr6",
+                  "text": "Kesitler şemaya uygun"
+                },
+                {
+                  "id": "c-dfucf8xk",
+                  "text": "Terminaller kontrol edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: ana besleme, sigorta/şalter, kontaktör, motor/fan/pompa/kompresör çıkışları; kesit ve terminaller.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "-WwP20AcWl3R",
+          "code": "E-09",
+          "name": "Cihaz içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 9.1,
+          "stageWeight": 26,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-c6hk89ym",
+              "name": "Cihaz içi kablolama kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-9w7cxp6h",
+                  "text": "Güç ve kumanda kabloları çekildi"
+                },
+                {
+                  "id": "c-lzairicr",
+                  "text": "PE bağlantıları yapıldı"
+                },
+                {
+                  "id": "c-9kf4rt6o",
+                  "text": "Saha terminalleri bağlı"
+                },
+                {
+                  "id": "c-icfgu7o2",
+                  "text": "Kablo ve terminal etiketleri tamam"
+                },
+                {
+                  "id": "c-e11lkf61",
+                  "text": "Kapak kapanmadan fotoğraf çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: kapak kapanmadan kablolama.\nCihaza özel (Dry Cooler): besleme, fan kumandası, kontrolör.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "TxCBNX5p3drg",
+          "code": "E-10",
+          "name": "Sensör ve kumanda bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 5.6,
+          "stageWeight": 16,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-u4lkfkrm",
+              "name": "Kumanda ve I/O kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-pgalz3d1",
+                  "text": "Sensörler bağlı"
+                },
+                {
+                  "id": "c-5458tqpi",
+                  "text": "Giriş/çıkış, röle ve 0-10 V bağlı"
+                },
+                {
+                  "id": "c-v8i9zibv",
+                  "text": "Haberleşme bağlı"
+                },
+                {
+                  "id": "c-m9aejmd4",
+                  "text": "Kanal kapağı kapanmadan fotoğraf çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: sensör, giriş/çıkış, röle, 0-10 V, haberleşme, saha terminalleri; kanal kapağı kapanmadan.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "2bL_KuRA5xv3",
+          "code": "E-11",
+          "name": "Koruyucu iletken bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 3.85,
+          "stageWeight": 11,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-gwle8rtq",
+              "name": "PE ve etiketleme kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-fmdeqr5h",
+                  "text": "Koruma iletkeni bütün gövdelere bağlı"
+                },
+                {
+                  "id": "c-tqfitzn6",
+                  "text": "Numaralar tamam"
+                },
+                {
+                  "id": "c-s3md7n2a",
+                  "text": "Komponent etiketleri tamam"
+                },
+                {
+                  "id": "c-z0a4ruvn",
+                  "text": "Klemens düzeni şemaya uygun"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: koruma iletkeni, terminal/kablo numaraları, komponent etiketleri, klemens düzeni.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "6DkXHPV-Y1en",
+          "code": "E-12",
+          "name": "Yazılım ve parametre yükleme",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 12.5,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-oh8b17bm",
+              "name": "PLC/HMI ve haberleşme testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-t73jc8r5",
+                  "text": "Program yüklendi, versiyon yazılı"
+                },
+                {
+                  "id": "c-c5pmgjgc",
+                  "text": "Parametreler ve set değerleri girildi"
+                },
+                {
+                  "id": "c-e434he3k",
+                  "text": "Ekran kontrol edildi"
+                },
+                {
+                  "id": "c-3tibfkmx",
+                  "text": "Haberleşme test edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: yazılım versiyonu, parametreler/set değerleri, ekran, projedeki Modbus/BACnet/diğer haberleşme.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "6vWmmaMQD_SF",
+          "code": "E-13",
+          "name": "Giriş-çıkış doğrulama",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-3bjn0whx",
+              "name": "I/O testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-9ow61l7w",
+                  "text": "Girişler tek tek test edildi"
+                },
+                {
+                  "id": "c-lz6s2be6",
+                  "text": "Çıkışlar tek tek test edildi"
+                },
+                {
+                  "id": "c-uwxbsq2q",
+                  "text": "Sonuçlar yazılı"
+                },
+                {
+                  "id": "c-y2th0mzi",
+                  "text": "Hatalı I/O yok ya da düzeltilip tekrar test edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: giriş ve çıkışlar tek tek; her biri için beklenen ve sonuç.\nCihaza özel (Dry Cooler): sıcaklık/basınç sensörleri ve varsa Modbus/BMS.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "yUySCwUwlHaJ",
+          "code": "E-14",
+          "name": "Elektriksel testler",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-jzzxdesc",
+              "name": "Elektrik ve safety testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-4ueqeum6",
+                  "text": "Şema ile görsel kontrol yapıldı"
+                },
+                {
+                  "id": "c-jiqo1o0k",
+                  "text": "PE/süreklilik ölçüldü"
+                },
+                {
+                  "id": "c-5zd3i6ln",
+                  "text": "İzolasyon ölçüldü"
+                },
+                {
+                  "id": "c-7kbwe1mj",
+                  "text": "Gerilim ve faz sırası kontrol edildi"
+                },
+                {
+                  "id": "c-lhpf95j7",
+                  "text": "Korumalar ve ana devre çalışıyor"
+                },
+                {
+                  "id": "c-0kiebaid",
+                  "text": "Akım değerleri yazılı"
+                },
+                {
+                  "id": "c-0ub582ca",
+                  "text": "Emniyet zinciri, acil stop, alarm, interlock çalışıyor"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: şema ile görsel kontrol, PE/süreklilik, izolasyon, gerilim/faz sırası, korumalar, ana devre, emniyet zinciri/acil stop/alarm/interlock.\nCihaza özel (Dry Cooler): fan akımları ve koruma elemanları.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "mxcl9dISYaEq",
+          "code": "E-15",
+          "name": "Son durum dokümanları ve yedekleme",
+          "area": "ELECTRICAL",
+          "stage": "final",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-1ie343x0",
+              "name": "Son durum dokümanları",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-5nar7536",
+                  "text": "Güncel şema dosyada"
+                },
+                {
+                  "id": "c-vq6mpr7z",
+                  "text": "PLC/HMI yedeği alındı"
+                },
+                {
+                  "id": "c-iy5psj8p",
+                  "text": "Test sonuçları dosyada"
+                },
+                {
+                  "id": "c-tghea42u",
+                  "text": "Seri no ve QR doğru"
+                },
+                {
+                  "id": "c-e8jy96bb",
+                  "text": "Teknik dokümanlar tamam"
+                }
+              ],
+              "documentStandards": "Güncel elektrik şeması (son revizyon), PLC/HMI yedeği ve versiyonu, test sonuçları, seri no/QR, teknik dokümanlar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "templateId": "RcNvVrjCqFwu",
+      "name": "Isı Pompası",
+      "tasks": [
+        {
+          "id": "bO0nT-hA_E6G",
+          "code": "M-01",
+          "name": "Çalışma şartlarını belirleme",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 4,
+          "stageWeight": 20,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "vL_VlA73-UCc",
+          "code": "M-02",
+          "name": "Ana ekipman seçimi",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 6,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "zceo-iGHd47r",
+          "code": "M-03",
+          "name": "Soğutma devresi tasarımı",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 6,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "B0aYRPtudzP3",
+          "code": "M-04",
+          "name": "Hidrolik devre tasarımı",
+          "area": "MECHANICAL",
+          "stage": "equipment",
+          "weight": 4,
+          "stageWeight": 20,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "q6Zh3hXihMrb",
+          "code": "M-05",
+          "name": "Şase ve gövde tasarımı",
+          "area": "MECHANICAL",
+          "stage": "drawing",
+          "weight": 8,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "bFhAhHteYsnZ",
+          "code": "M-06",
+          "name": "Teknik dokümantasyon ve mekanik BOM",
+          "area": "MECHANICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "t9QccEgcOFxa",
+          "code": "M-07",
+          "name": "Şase ve ana komponentler",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 9.6,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-11f1muou",
+              "name": "Ana komponent kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-sbjhtr9k",
+                  "text": "Ana parçalar yerinde"
+                },
+                {
+                  "id": "c-n8wx84c4",
+                  "text": "Pozisyonlar çizime uygun"
+                },
+                {
+                  "id": "c-hxbbcf70",
+                  "text": "Sabitlemeler tamam"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: şase/gövde, kompresör, eşanjörler, fan/pompa, projeye özel parçalar; pozisyon ve sabitleme.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "EgU-cY7zokBr",
+          "code": "M-08",
+          "name": "Soğutma devresi",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 12.8,
+          "stageWeight": 40,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-rw9lsedn",
+              "name": "Soğutma devresi kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-oww60r9l",
+                  "text": "Borulama tamam"
+                },
+                {
+                  "id": "c-feqtph7y",
+                  "text": "4-yollu vana (varsa), EEV, filtre takılı"
+                },
+                {
+                  "id": "c-r4pqppo7",
+                  "text": "Sensörler ve servis bağlantıları tamam"
+                },
+                {
+                  "id": "c-wuge2ypi",
+                  "text": "Kaynaklar kontrol edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: izolasyon öncesi borulama, 4-yollu vana (varsa), EEV, filtre, sensörler, servis bağlantıları, kaynaklar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "TJPmiU0P5fgv",
+          "code": "M-09",
+          "name": "Hidrolik devre",
+          "area": "MECHANICAL",
+          "stage": "production",
+          "weight": 9.6,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-742xjk4y",
+              "name": "Hidrolik kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-f6bei6dx",
+                  "text": "Pompa, vana, sensörler takılı"
+                },
+                {
+                  "id": "c-lob95ofr",
+                  "text": "Flow switch takılı"
+                },
+                {
+                  "id": "c-49x5s0gn",
+                  "text": "Emniyet, tahliye, hava alma var"
+                },
+                {
+                  "id": "c-kddymocy",
+                  "text": "Akış yönü doğru"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: izolasyon öncesi pompa, vana, flow switch, sensör, emniyet/tahliye/hava alma, akış yönü.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            },
+            {
+              "id": "u-uojm0dmr",
+              "name": "Ara kontrol",
+              "createdAt": "2026-10-02",
+              "weight": 50,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-cdytwbzl",
+                  "text": "Çizim (son revizyon) ile karşılaştırıldı"
+                },
+                {
+                  "id": "c-6q7crtj5",
+                  "text": "BOM plan/gerçek karşılaştırıldı"
+                },
+                {
+                  "id": "c-60ird8l5",
+                  "text": "Görünmeyecek işlerin fotoğrafları var"
+                },
+                {
+                  "id": "c-rutiswl0",
+                  "text": "Servis erişimi ve sabitlemeler kontrol edildi"
+                },
+                {
+                  "id": "c-oa6mgx2t",
+                  "text": "Açık hata yok"
+                }
+              ],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "LKezAsm5QTpF",
+          "code": "M-10",
+          "name": "Soğutma devresi basınç testi",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-org50xwx",
+              "name": "Soğutma devresi basınç testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-kfdpmywx",
+                  "text": "Basınç ve süre yazılı"
+                },
+                {
+                  "id": "c-bswmdxli",
+                  "text": "Düşüş onaylı limitte"
+                },
+                {
+                  "id": "c-kz75d36w",
+                  "text": "Sonuç PASS"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: test basıncı, süre, sonuç.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "uwhCr0JZvG3i",
+          "code": "M-11",
+          "name": "Vakum ve akışkan",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-0nyhddup",
+              "name": "Vakum ve şarj",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-xzq411uo",
+                  "text": "Vakum değeri hedefte"
+                },
+                {
+                  "id": "c-f5nyqlv9",
+                  "text": "Akışkan tipi doğru"
+                },
+                {
+                  "id": "c-c5gv0p5c",
+                  "text": "Miktar hedefte"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: vakum sonucu, akışkan tipi, doldurulan miktar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "95TV7tJVUlx-",
+          "code": "M-12",
+          "name": "Su devresi testi",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-hji650i2",
+              "name": "Su devresi testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-raehdxw0",
+                  "text": "Sızdırmazlık PASS"
+                },
+                {
+                  "id": "c-1av6ul5b",
+                  "text": "Pompa yönü doğru"
+                },
+                {
+                  "id": "c-qmxt78fn",
+                  "text": "Flow switch çalışıyor"
+                },
+                {
+                  "id": "c-nyx4dmhb",
+                  "text": "Debi ölçüldü (mümkünse)"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: sızdırmazlık, pompa yönü, flow switch, mümkünse debi.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "4rbXYGbccprx",
+          "code": "M-13",
+          "name": "Fonksiyon testi ve test çalışması",
+          "area": "MECHANICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-rdoxkxyo",
+              "name": "Fonksiyon testi ve test çalışması",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-owny1u9x",
+                  "text": "Isıtma modu çalışıyor"
+                },
+                {
+                  "id": "c-h8wxm67k",
+                  "text": "Soğutma/defrost/4-yollu vana projeye göre test edildi"
+                },
+                {
+                  "id": "c-m38rp4fc",
+                  "text": "Sıcaklıklar ve ΔT yazılı"
+                },
+                {
+                  "id": "c-6epw7g37",
+                  "text": "Set değere ulaşıldı"
+                },
+                {
+                  "id": "c-wbsat0hb",
+                  "text": "Akımlar yazılı"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: ısıtma modu; destekliyorsa soğutma ve defrost/4-yollu vana; gidiş/dönüş sıcaklıkları, ΔT, basınçlar, set değer, akımlar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "Pp5vZE-DYGdf",
+          "code": "M-14",
+          "name": "Final montaj ve QC",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 1.6,
+          "stageWeight": 20,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-oi9z4nn0",
+              "name": "Final montaj ve görsel QC",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-32yyvt8g",
+                  "text": "Final montaj tamam"
+                },
+                {
+                  "id": "c-1fhjss2b",
+                  "text": "Çizim/BOM ile son karşılaştırma yapıldı"
+                },
+                {
+                  "id": "c-iu70nnuw",
+                  "text": "Servis alanı ve temizlik tamam"
+                },
+                {
+                  "id": "c-w390cgzp",
+                  "text": "Seri no ve QR doğru"
+                },
+                {
+                  "id": "c-i131k84d",
+                  "text": "En az 4 yön fotoğrafı var"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nCihaza özel (Isı Pompası): izolasyon, kapaklar, etiketler, dış ortam koruması, bağlantı ağızları, temizlik.\nFotoğraflarda cihazın en az 4 yönü (ön, arka, sağ, sol) var; seri no ve QR okunur.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "7b97zNkFY71G",
+          "code": "M-15",
+          "name": "Nakliye planı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 1.2,
+          "stageWeight": 15,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-lhdm2dur",
+              "name": "Nakliye planı ve ücret",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": true,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-5rxvsj40",
+                  "text": "Nakliyeci seçildi"
+                },
+                {
+                  "id": "c-lzy8g7xa",
+                  "text": "Nakliye ücreti (CHF) girildi ve teklifle aynı"
+                },
+                {
+                  "id": "c-bj2rqalg",
+                  "text": "Araç tipi uygun"
+                },
+                {
+                  "id": "c-eybdq3a5",
+                  "text": "Yükleme ve teslim tarihi projeye uygun"
+                },
+                {
+                  "id": "c-lgipxwr0",
+                  "text": "İletişim bilgisi var"
+                }
+              ],
+              "documentStandards": "Teklif belgesi ya da fotoğrafı eklenmiş.\n«Ücret (CHF)» alanındaki tutar teklifteki tutarla aynı.\nKısa notta: nakliyeci, araç tipi, planlanan yükleme tarihi, tahmini teslim tarihi, iletişim bilgisi.\nPlan üretim bitmeden yapılır; final adımında nakliyeci aranmaya başlanmaz.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "V9T9ocGJmMTl",
+          "code": "M-16",
+          "name": "Sevkiyat hazırlığı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 2.4,
+          "stageWeight": 30,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-18bzebre",
+              "name": "Sevkiyat hazırlığı",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-wj2d2mhi",
+                  "text": "Hasar, gevşek parça, kapak, etiket, seri no, QR kontrol edildi"
+                },
+                {
+                  "id": "c-2rsrvjv8",
+                  "text": "Bağlantılar korundu"
+                },
+                {
+                  "id": "c-u1j8c2hw",
+                  "text": "Darbe ve köşe koruması yapıldı"
+                },
+                {
+                  "id": "c-k6zh422d",
+                  "text": "Folyo; hareketli parçalar ve kapaklar sabitlendi"
+                },
+                {
+                  "id": "c-zu0m6lss",
+                  "text": "Aksesuar ve dokümanlar etiketli hazır"
+                }
+              ],
+              "documentStandards": "Fotoğraflar: final görsel kontrol, bağlantı korumaları, darbe/köşe koruması, folyo ve sabitleme, etiketli aksesuar ve dokümanlar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "aZhbaqDDV-G0",
+          "code": "M-17",
+          "name": "Sevke hazır onayı",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 0.8,
+          "stageWeight": 10,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-rnre9vip",
+              "name": "Sevke hazır onayı",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": false,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-7dl4trzk",
+                  "text": "Montaj adımları tamamlandı"
+                },
+                {
+                  "id": "c-7574i6lt",
+                  "text": "Zorunlu testlerin tamamı PASS"
+                },
+                {
+                  "id": "c-s2qye2rv",
+                  "text": "Ölçülen değerler onaylı aralıkta"
+                },
+                {
+                  "id": "c-2aq2p6mp",
+                  "text": "Açık hata/blocker yok"
+                },
+                {
+                  "id": "c-lhz37aip",
+                  "text": "Fotoğraf, teknik doküman, seri no ve QR tamam"
+                },
+                {
+                  "id": "c-cw8ey5ah",
+                  "text": "Nakliyeci, sevkiyat planı ve nakliye ücreti onaylı"
+                }
+              ],
+              "documentStandards": null,
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "9fWLAViKlrAG",
+          "code": "M-18",
+          "name": "Yükleme ve sevkiyat",
+          "area": "MECHANICAL",
+          "stage": "g-sevkiyat",
+          "weight": 2,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-nkdyshrr",
+              "name": "Yükleme ve sevkiyat",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-psb8ed4x",
+                  "text": "Yükleme öncesi fotoğraf var"
+                },
+                {
+                  "id": "c-mchdg259",
+                  "text": "Araçta sabitleme yapıldı"
+                },
+                {
+                  "id": "c-97tyrpv9",
+                  "text": "Yükleme sonrası fotoğraf var"
+                },
+                {
+                  "id": "c-wdjjgiv4",
+                  "text": "Sevkiyat bilgisi yazılı"
+                }
+              ],
+              "documentStandards": "Fotoğraflar: yükleme öncesi, araç içi sabitleme, yükleme sonrası.\nKısa notta sevkiyat bilgisi: araç/plaka, çıkış tarihi ve saati.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "kCbnQXuCTnEQ",
+          "code": "M-19",
+          "name": "Sevkiyat raporu ve makine dosyası",
+          "area": "MECHANICAL",
+          "stage": "final",
+          "weight": 2,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-w6iwjoxt",
+              "name": "Sevkiyat raporu ve makine dosyası",
+              "createdAt": "2026-10-02",
+              "weight": null,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": true,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-j25ydxes",
+                  "text": "Güncel çizimler ve revizyonlar dosyada"
+                },
+                {
+                  "id": "c-0u3l2sll",
+                  "text": "BOM plan/gerçek dosyada"
+                },
+                {
+                  "id": "c-vtmk9qb5",
+                  "text": "Kritik parçaların seri numaraları yazılı"
+                },
+                {
+                  "id": "c-gr44avzr",
+                  "text": "Montaj fotoğrafları ve test raporları dosyada"
+                },
+                {
+                  "id": "c-jlwyohvn",
+                  "text": "Seri no, QR ve teknik dokümanlar tamam"
+                },
+                {
+                  "id": "c-qwuz9hgd",
+                  "text": "Sevkiyat raporu / teslim belgesi eklendi"
+                }
+              ],
+              "documentStandards": "Sevkiyat raporu ya da imzalı teslim belgesi eklenmiş (belge veya fotoğraf).\nKısa notta: gönderim tarihi, teslim alan kişi, varsa hasar/eksik notu.\nMakine dosyası tek yerde tamam: güncel çizimler ve revizyonlar, BOM plan/gerçek, kullanılan kritik parçalar ve seri numaraları, montaj fotoğrafları, test raporları, Offitec seri no/QR, teknik dokümanlar.\nTamamlanmış rapor ve fotoğraf silinmez; hata varsa yeni düzeltme/revizyon kaydı vardır.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "hOuvxakCzrL2",
+          "code": "E-01",
+          "name": "Elektrik yüklerini belirleme",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 3.6,
+          "stageWeight": 12,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "X-DJBI8h1l3r",
+          "code": "E-02",
+          "name": "Güç ve koruma tasarımı",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 6.9,
+          "stageWeight": 23,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "ZoPtcD_k93Bu",
+          "code": "E-03",
+          "name": "Elektrik şemaları",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 8.7,
+          "stageWeight": 29,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "v6VmhN3vHauN",
+          "code": "E-04",
+          "name": "Pano yerleşimi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 4.2,
+          "stageWeight": 14,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "bH5VRHZojh9O",
+          "code": "E-05",
+          "name": "Kontrol mimarisi",
+          "area": "ELECTRICAL",
+          "stage": "circuit",
+          "weight": 6.6,
+          "stageWeight": 22,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "r8T0PRnHmkH7",
+          "code": "E-06",
+          "name": "Elektrik BOM ve dokümanları",
+          "area": "ELECTRICAL",
+          "stage": "bom",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": []
+        },
+        {
+          "id": "XhiN_oq-HI1D",
+          "code": "E-07",
+          "name": "Pano montajı",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 7.35,
+          "stageWeight": 21,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-y3fa10fb",
+              "name": "Pano yerleşim kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-584am8tx",
+                  "text": "Pano, DIN raylar ve kanallar yerinde"
+                },
+                {
+                  "id": "c-8u6t36p5",
+                  "text": "Komponentler elektrik şemasına göre yerleşik"
+                },
+                {
+                  "id": "c-bcj20myq",
+                  "text": "İlk yerleşim fotoğrafı var"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: pano, DIN raylar, kanallar, komponentlerin ilk yerleşimi.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "7yuU52iQgPkt",
+          "code": "E-08",
+          "name": "Pano içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 9.1,
+          "stageWeight": 26,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-bf4meo77",
+              "name": "Güç devresi kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-x6d40owy",
+                  "text": "Ana besleme, sigorta/şalter ve kontaktörler bağlı"
+                },
+                {
+                  "id": "c-fmg5ppxi",
+                  "text": "Çıkışlar bağlı"
+                },
+                {
+                  "id": "c-myh4ppo5",
+                  "text": "Kesitler şemaya uygun"
+                },
+                {
+                  "id": "c-u0fuj2o9",
+                  "text": "Terminaller kontrol edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: ana besleme, sigorta/şalter, kontaktör, motor/fan/pompa/kompresör çıkışları; kesit ve terminaller.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "t1WVgfZXl4aH",
+          "code": "E-09",
+          "name": "Cihaz içi kablolama",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 9.1,
+          "stageWeight": 26,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-80ajv8p2",
+              "name": "Cihaz içi kablolama kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-hpxmsvbd",
+                  "text": "Güç ve kumanda kabloları çekildi"
+                },
+                {
+                  "id": "c-7cspjuya",
+                  "text": "PE bağlantıları yapıldı"
+                },
+                {
+                  "id": "c-o2nqlhhx",
+                  "text": "Saha terminalleri bağlı"
+                },
+                {
+                  "id": "c-a5b3qzyk",
+                  "text": "Kablo ve terminal etiketleri tamam"
+                },
+                {
+                  "id": "c-aonj6vrc",
+                  "text": "Kapak kapanmadan fotoğraf çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: kapak kapanmadan kablolama.\nCihaza özel (Isı Pompası): fan/pompa/kompresör bağlantıları.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "UvSJgI5M5aEn",
+          "code": "E-10",
+          "name": "Sensör ve kumanda bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 5.6,
+          "stageWeight": 16,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-ru4y09lm",
+              "name": "Kumanda ve I/O kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-r902mcn1",
+                  "text": "Sensörler bağlı"
+                },
+                {
+                  "id": "c-7t5sf5ub",
+                  "text": "Giriş/çıkış, röle ve 0-10 V bağlı"
+                },
+                {
+                  "id": "c-4uxcv0cs",
+                  "text": "Haberleşme bağlı"
+                },
+                {
+                  "id": "c-30wekzcz",
+                  "text": "Kanal kapağı kapanmadan fotoğraf çekildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: sensör, giriş/çıkış, röle, 0-10 V, haberleşme, saha terminalleri; kanal kapağı kapanmadan.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "Mju_OCoQMP9a",
+          "code": "E-11",
+          "name": "Koruyucu iletken bağlantıları",
+          "area": "ELECTRICAL",
+          "stage": "panel",
+          "weight": 3.85,
+          "stageWeight": 11,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-c6vm73i0",
+              "name": "PE ve etiketleme kontrolü",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-lfcv33vo",
+                  "text": "Koruma iletkeni bütün gövdelere bağlı"
+                },
+                {
+                  "id": "c-ts39xfi9",
+                  "text": "Numaralar tamam"
+                },
+                {
+                  "id": "c-rp3p06u7",
+                  "text": "Komponent etiketleri tamam"
+                },
+                {
+                  "id": "c-faobu2jn",
+                  "text": "Klemens düzeni şemaya uygun"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda neyin çekildiği anlaşılır; görünmeyecek işler kapanmadan çekilmiş ve net.\nKısa notta yapılan iş yazılı; varsa sapma, kullanılan malzeme, çizim/BOM değiştiyse revizyon numarası yazılı.\nBu alt göreve özel: koruma iletkeni, terminal/kablo numaraları, komponent etiketleri, klemens düzeni.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "ckApW6o8R_SO",
+          "code": "E-12",
+          "name": "Yazılım ve parametre yükleme",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 12.5,
+          "stageWeight": 50,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-vo0b8n96",
+              "name": "PLC/HMI ve haberleşme testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-yb07qpea",
+                  "text": "Program yüklendi, versiyon yazılı"
+                },
+                {
+                  "id": "c-1rxovpdf",
+                  "text": "Parametreler ve set değerleri girildi"
+                },
+                {
+                  "id": "c-2qpg2eyz",
+                  "text": "Ekran kontrol edildi"
+                },
+                {
+                  "id": "c-gcns5972",
+                  "text": "Haberleşme test edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: yazılım versiyonu, parametreler/set değerleri, ekran, projedeki Modbus/BACnet/diğer haberleşme.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "U5k479BgJK0d",
+          "code": "E-13",
+          "name": "Giriş-çıkış doğrulama",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-l8s8alid",
+              "name": "I/O testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-52fhmajy",
+                  "text": "Girişler tek tek test edildi"
+                },
+                {
+                  "id": "c-rhnnhwur",
+                  "text": "Çıkışlar tek tek test edildi"
+                },
+                {
+                  "id": "c-17sot1b0",
+                  "text": "Sonuçlar yazılı"
+                },
+                {
+                  "id": "c-sws8qyzl",
+                  "text": "Hatalı I/O yok ya da düzeltilip tekrar test edildi"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: giriş ve çıkışlar tek tek; her biri için beklenen ve sonuç.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "fALdxeRtm4_2",
+          "code": "E-14",
+          "name": "Elektriksel testler",
+          "area": "ELECTRICAL",
+          "stage": "test",
+          "weight": 6.25,
+          "stageWeight": 25,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-5qydwbv2",
+              "name": "Elektrik ve safety testi",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": true,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-4z2vbjnv",
+                  "text": "Şema ile görsel kontrol yapıldı"
+                },
+                {
+                  "id": "c-456uoyuz",
+                  "text": "PE/süreklilik ölçüldü"
+                },
+                {
+                  "id": "c-jvzuj4qi",
+                  "text": "İzolasyon ölçüldü"
+                },
+                {
+                  "id": "c-07ee4ok3",
+                  "text": "Gerilim ve faz sırası kontrol edildi"
+                },
+                {
+                  "id": "c-gakh7ck7",
+                  "text": "Korumalar ve ana devre çalışıyor"
+                },
+                {
+                  "id": "c-2rsfxwnk",
+                  "text": "Akım değerleri yazılı"
+                },
+                {
+                  "id": "c-s5yyhc6x",
+                  "text": "Emniyet zinciri, acil stop, alarm, interlock çalışıyor"
+                }
+              ],
+              "documentStandards": "Fotoğraflarda ölçüm cihazı ya da ekran değeri okunur.\nKısa notta (ya da eklenen belgede) her ölçüm için hedef/limit, ölçülen değer ve PASS/FAIL yazılı.\nÖlçülen değer proje/üretici onaylı aralıkta.\nFAIL varsa düzeltme ve tekrar test notta yazılı.\nBu alt göreve özel: şema ile görsel kontrol, PE/süreklilik, izolasyon, gerilim/faz sırası, korumalar, ana devre, emniyet zinciri/acil stop/alarm/interlock.\nCihaza özel (Isı Pompası): kompresör/fan/pompa akımları, alarm fonksiyonları.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        },
+        {
+          "id": "Xfm_jGuiH6r_",
+          "code": "E-15",
+          "name": "Son durum dokümanları ve yedekleme",
+          "area": "ELECTRICAL",
+          "stage": "final",
+          "weight": 5,
+          "stageWeight": 100,
+          "assigneeIds": [],
+          "subtasks": [
+            {
+              "id": "u-jocuvza3",
+              "name": "Son durum dokümanları",
+              "createdAt": "2026-10-02",
+              "weight": 100,
+              "startDate": null,
+              "dueDate": null,
+              "assigneeIds": [],
+              "requiresDocument": true,
+              "photoAllowed": false,
+              "feeRequired": false,
+              "priorStepsRequired": false,
+              "requiresApproval": true,
+              "approvalChecklist": [
+                {
+                  "id": "c-1uo3pphu",
+                  "text": "Güncel şema dosyada"
+                },
+                {
+                  "id": "c-synu5bbb",
+                  "text": "PLC/HMI yedeği alındı"
+                },
+                {
+                  "id": "c-etl2375t",
+                  "text": "Test sonuçları dosyada"
+                },
+                {
+                  "id": "c-ivasdmvo",
+                  "text": "Seri no ve QR doğru"
+                },
+                {
+                  "id": "c-l3zv7b1o",
+                  "text": "Teknik dokümanlar tamam"
+                }
+              ],
+              "documentStandards": "Güncel elektrik şeması (son revizyon), PLC/HMI yedeği ve versiyonu, test sonuçları, seri no/QR, teknik dokümanlar.",
+              "documentStandardsFile": null,
+              "status": "TODO",
+              "files": [],
+              "completedById": null,
+              "completedByName": null,
+              "completedAt": null,
+              "completionNote": null,
+              "submissionNote": null,
+              "fee": null,
+              "revisionById": null,
+              "revisionByName": null,
+              "revisionAt": null,
+              "revisionNote": null,
+              "revisionHistory": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
