@@ -17,3 +17,5 @@ node_modules
 /Produkt (product.template)*.csv
 
 scratchpad/
+
+env
