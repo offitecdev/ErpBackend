@@ -38,6 +38,7 @@ import {
     withActiveAssignees,
     withFileAnalysis,
     assertNotBomDriven,
+    BOM_SUBTASK_ID,
     withBomStages,
     withoutDeviceRecord,
     withQueuedAnalyses,
@@ -289,6 +290,14 @@ const stageKeyOf = (task: { area: string; stage: string }): string => `${task.ar
 /** Die Stufen, in denen die Person an einer Unteraufgabe steht (30.09.2026). */
 const stagesOf = (tasks: readonly ProductionDeviceTask[], employeeId: string): Set<string> =>
     new Set(tasks.filter((task) => task.subtasks.some((subtask) => worksOnSubtask(subtask, employeeId))).map(stageKeyOf));
+
+/**
+ * Die Stufen mit einer Unteraufgabe, die auf die Freigabe wartet (02.10.2026, Samet: «show all
+ * pending approvals to admins») — «BOM Creation» führt die BOM, die gibt hier niemand frei.
+ */
+const approvalStagesOf = (tasks: readonly ProductionDeviceTask[]): Set<string> =>
+    new Set(tasks.filter((task) => task.subtasks.some((subtask) =>
+        subtask.requiresApproval && subtask.status === 'PENDING' && subtask.id !== BOM_SUBTASK_ID)).map(stageKeyOf));
 
 /** Wer die erste (noch vorhandene) Fassung einer Datei hochgeladen hat. */
 const originalUploaderOf = (files: readonly ProductionSubtaskFile[], groupId: string): string | null => {
@@ -1331,9 +1340,17 @@ export class ProductionDeviceTasksUseCase {
      * project task tables». Je Projekt die Geräte, an denen die Person an einer Unteraufgabe
      * steht, und dort NUR diese Aufgaben — samt Bereichen und Stufen, damit die Oberfläche die
      * Tabellen der Stufen zeichnen kann. Keine Produktionsrechte nötig: es sind die eigenen.
+     *
+     * Die Verwaltung sieht dazu JEDE Stufe mit einer Unteraufgabe, die auf ihre Freigabe wartet
+     * (02.10.2026, Samet: «show all pending approvals to admins») — «Approve the task» steht dort
+     * an derselben Stelle wie auf der Geräteseite.
      */
-    async myTasks(tenantId: string, actor: ProductionTaskActor): Promise<MyProductionTasksDto> {
-        const itemIds = await this.plans.itemIdsForAssignee(tenantId, actor.id);
+    async myTasks(tenantId: string, actor: ProductionTaskActor, isAdmin = false): Promise<MyProductionTasksDto> {
+        const [ownItemIds, pendingItemIds] = await Promise.all([
+            this.plans.itemIdsForAssignee(tenantId, actor.id),
+            isAdmin ? this.plans.itemIdsWithPendingSubtasks(tenantId) : Promise.resolve([]),
+        ]);
+        const itemIds = [...new Set([...ownItemIds, ...pendingItemIds])];
         const found = await Promise.all(itemIds.map(async (itemId) => {
             const [device, plan] = await Promise.all([this.directory.device(tenantId, itemId), this.plans.getPlan(tenantId, itemId)]);
             if (!device || !device.isActive || !plan) return null;
@@ -1341,6 +1358,7 @@ export class ProductionDeviceTasksUseCase {
                should be able to see all tasks and subtasks of the stages they are assigned»). Handeln
                darf sie weiter nur an den eigenen — das prüfen die Wege je Unteraufgabe. */
             const stages = stagesOf(plan.tasks, actor.id);
+            if (isAdmin) for (const key of approvalStagesOf(plan.tasks)) stages.add(key);
             const tasks = plan.tasks.filter((task) => stages.has(stageKeyOf(task)));
             return tasks.length ? { device, plan, tasks } : null;
         }));
@@ -1386,6 +1404,7 @@ export class ProductionDeviceTasksUseCase {
      * Eine Datei lesen — über «Görevlerim» (30.09.2026): wer in DERSELBEN STUFE des Geräts an einer
      * Unteraufgabe steht, öffnet auch die Dateien der anderen («they should be able to open the
      * files uploaded by other employees … but they can't delete or modify them»). Nur lesen.
+     * Die Verwaltung liest jede Datei — sie prüft sie beim Freigeben auf der Startseite (02.10.2026).
      */
     async readSubtaskFileAsAssignee(
         tenantId: string,
@@ -1394,11 +1413,12 @@ export class ProductionDeviceTasksUseCase {
         taskId: string,
         subtaskId: string,
         fileId: string,
+        isAdmin = false,
     ): Promise<{ body: Buffer; contentType: string; fileName: string }> {
         const plan = await this.plans.getPlan(tenantId, itemId);
         const task = plan?.tasks.find((entry) => entry.id === taskId);
         if (!plan || !task) throw productionTaskError('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
-        if (!stagesOf(plan.tasks, actor.id).has(stageKeyOf(task))) {
+        if (!isAdmin && !stagesOf(plan.tasks, actor.id).has(stageKeyOf(task))) {
             throw productionTaskError('FILE_FORBIDDEN', 'Nur wer in dieser Stufe an einer Unteraufgabe steht.', { status: 403 });
         }
         return this.readSubtaskFile(tenantId, itemId, taskId, subtaskId, fileId);

@@ -568,6 +568,16 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
                AND JSON_CONTAINS(assigneeIds, JSON_QUOTE(${employeeId}))`);
         return rows.map((row) => row.productionItemId);
     }
+
+    async itemIdsWithPendingSubtasks(tenantId: string): Promise<string[]> {
+        // Der Stand jeder Unteraufgabe steht in der JSON-Liste `subtasks` — EIN Rundgang.
+        const rows = await prisma.$queryRaw<Array<{ productionItemId: string }>>(Prisma.sql`
+            SELECT DISTINCT productionItemId
+              FROM uretim_cihaz_gorevleri
+             WHERE tenantId = ${tenantId}
+               AND JSON_SEARCH(subtasks, 'one', 'PENDING', NULL, '$[*].status') IS NOT NULL`);
+        return rows.map((row) => row.productionItemId);
+    }
 }
 
 const personName = (row: { firstName: string | null; lastName: string | null }): string =>

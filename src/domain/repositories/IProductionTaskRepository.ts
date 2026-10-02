@@ -114,6 +114,12 @@ export interface IProductionDeviceTaskRepository {
      * sind, entscheidet der Anwendungsfall an den Unteraufgaben.
      */
     itemIdsForAssignee(tenantId: string, employeeId: string): Promise<string[]>;
+    /**
+     * Die Geräte mit einer Unteraufgabe im Stand PENDING (02.10.2026, Freigaben der Verwaltung auf
+     * der Startseite) — eine Vorauswahl; ob sie wirklich auf eine Freigabe wartet, entscheidet der
+     * Anwendungsfall an den Unteraufgaben.
+     */
+    itemIdsWithPendingSubtasks(tenantId: string): Promise<string[]>;
 }
 
 export interface IProductionTaskDirectory {

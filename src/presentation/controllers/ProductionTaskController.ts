@@ -323,11 +323,15 @@ export class ProductionTaskController {
 
     /* ── «Görevlerim» (30.09.2026): die eigenen Aufgaben, ohne Produktionsrechte ──
        Wer hier handelt, handelt als Person an der Unteraufgabe — nie als Verwaltung
-       (`isAdmin` false): Stand setzen, eigene PDFs hochladen, lesen und entfernen. */
+       (`isAdmin` false): Stand setzen, eigene PDFs hochladen, lesen und entfernen.
+       Nur zwei Stellen kennen die Verwaltung (02.10.2026): sie sieht dazu jede Stufe mit
+       wartender Freigabe und liest deren Dateien. Freigeben selbst läuft über die Wege
+       der Geräteseite. */
 
     async myTasks(req: Request, res: Response, next: NextFunction) {
         try {
-            res.json(await productionTasksModule.devices.myTasks(tenantOf(req), await actorOf(req)));
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
+            res.json(await productionTasksModule.devices.myTasks(tenantOf(req), await actorOf(req), Boolean(isSystemAdmin)));
         } catch (error) { fail(res, next, error); }
     }
 
@@ -363,6 +367,7 @@ export class ProductionTaskController {
 
     async myReadSubtaskFile(req: Request, res: Response, next: NextFunction) {
         try {
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user!.id);
             const file = await productionTasksModule.devices.readSubtaskFileAsAssignee(
                 tenantOf(req),
                 await actorOf(req),
@@ -370,6 +375,7 @@ export class ProductionTaskController {
                 param(req, 'taskId'),
                 param(req, 'subtaskId'),
                 param(req, 'fileId'),
+                Boolean(isSystemAdmin),
             );
             res.setHeader('Content-Type', file.contentType);
             res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
