@@ -1,1 +1,1 @@
-{"version":3,"file":"ProductionTask.js","sourceRoot":"","sources":["../../../src/domain/entities/ProductionTask.ts"],"names":[],"mappings":";AAAA;;;;;;;;;;;;;;;;;;;;;GAqBG"}
+{"version":3,"file":"ProductionTask.js","sourceRoot":"","sources":["../../../src/domain/entities/ProductionTask.ts"],"names":[],"mappings":";AAAA;;;;;;;;;;;;;;;;;;;;;GAqBG;;;AAuJU,QAAA,uBAAuB,GAAG,CAAC,IAAI,EAAE,IAAI,EAAE,IAAI,CAAU,CAAC"}

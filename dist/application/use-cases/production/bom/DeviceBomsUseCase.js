@@ -80,6 +80,7 @@ class DeviceBomsUseCase {
     async view(tenantId, actor, itemId, rawArea, compact = false) {
         const area = (0, productionBom_1.areaFrom)(rawArea) ?? 'MECHANICAL';
         const device = await this.requireDevice(tenantId, itemId);
+        await this.requireArea(tenantId, area);
         const [project, settings, listed, templates, assignees, deliveryDates] = await Promise.all([
             this.directory.project(tenantId, device.productionProjectId),
             this.settings.get(tenantId),
@@ -94,13 +95,13 @@ class DeviceBomsUseCase {
         let all = listed;
         let main = all.find((bom) => bom.kind === 'MAIN' && bom.area === area) ?? null;
         if (!main && canEdit) {
-            main = await this.ensureMain(tenantId, actor, device, area);
+            main = await this.ensureMain(tenantId, actor, device, area, settings);
             all = [...all.filter((bom) => bom.id !== main.id), main];
         }
         const subs = main ? this.subsOf(main, all) : [];
         const shown = main ? [main, ...subs] : [];
         const dtos = await this.dtos(tenantId, shown, all, compact ? 'summary' : 'full');
-        const category = ProductionBom_1.CATEGORY_OF_AREA[area];
+        const category = (0, ProductionBom_1.categoryOfArea)(area);
         return {
             settings: { maxPerArea: settings.maxPerArea },
             area,
@@ -113,15 +114,13 @@ class DeviceBomsUseCase {
                 deliveryDate: deliveryDates.get(project.id)?.toISOString() ?? null,
             },
             canEdit,
-            counts: {
-                MECHANICAL: all.filter((bom) => bom.area === 'MECHANICAL').length,
-                ELECTRICAL: all.filter((bom) => bom.area === 'ELECTRICAL').length,
-            },
+            counts: Object.fromEntries(['MECHANICAL', 'ELECTRICAL', ...settings.categories.map((entry) => entry.id)]
+                .map((key) => [key, all.filter((bom) => bom.area === key).length])),
             ...(compact ? {
                 main: dtos[0] ? (0, bomReadModel_1.bomSummaryDto)(dtos[0]) : null,
                 subs: dtos.slice(1).map(bomReadModel_1.bomSummaryDto),
             } : { main: dtos[0] ?? null, subs: dtos.slice(1), boms: dtos }),
-            codes: settings.codes[area],
+            codes: settings.codes[area] ?? [],
             templates: templates.filter((template) => template.category === category).map(bomReadModel_1.templateSummaryDto),
         };
     }
@@ -241,16 +240,36 @@ class DeviceBomsUseCase {
         });
     }
     /* ── Anlegen, Zeilen, Löschen ──────────────────────────────────────── */
+    /** Eine eigene Kategorie muss es in der Firma geben; die festen gibt es immer. */
+    async requireArea(tenantId, area) {
+        if (!(0, ProductionBom_1.isCustomBomCategory)(area))
+            return;
+        const settings = await this.settings.get(tenantId);
+        if (!settings.categories.some((entry) => entry.id === area)) {
+            throw (0, productionBom_1.bomError)('CATEGORY_NOT_FOUND', 'Diese BOM-Kategorie gibt es nicht (mehr).', { status: 404 });
+        }
+    }
+    /** BOM-MEK / BOM-ELK, bei einer eigenen Kategorie BOM-<Kod>. */
+    async mainPrefixOf(tenantId, area, known) {
+        if (!(0, ProductionBom_1.isCustomBomCategory)(area))
+            return ProductionBom_1.MAIN_BOM_PREFIX[area];
+        const settings = known ?? await this.settings.get(tenantId);
+        const category = settings.categories.find((entry) => entry.id === area);
+        if (!category)
+            throw (0, productionBom_1.bomError)('CATEGORY_NOT_FOUND', 'Diese BOM-Kategorie gibt es nicht (mehr).', { status: 404 });
+        return (0, ProductionBom_1.mainBomPrefixOf)(category.code);
+    }
     /**
      * Die Haupt-BOM des Geräts im Bereich — angelegt, wenn es sie noch nicht
      * gibt (BOM-MEK-00001 / BOM-ELK-00001, leer). Zwei gleichzeitige Aufrufe
      * legen nie zwei an: der eindeutige Schlüssel lässt den zweiten scheitern,
      * und er liest dann die erste.
      */
-    async ensureMain(tenantId, actor, device, area) {
+    async ensureMain(tenantId, actor, device, area, known) {
         const existing = await this.boms.findMain(tenantId, device.id, area);
         if (existing)
             return existing;
+        const codePrefix = await this.mainPrefixOf(tenantId, area, known);
         try {
             return await this.boms.create(tenantId, {
                 productionProjectId: device.productionProjectId,
@@ -261,7 +280,7 @@ class DeviceBomsUseCase {
                 templateId: null,
                 templateName: '',
                 mainCard: null,
-                codePrefix: ProductionBom_1.MAIN_BOM_PREFIX[area],
+                codePrefix,
                 lines: [],
             }, actor.id);
         }
@@ -286,17 +305,18 @@ class DeviceBomsUseCase {
         const area = (0, productionBom_1.areaFrom)(input.area);
         if (!area)
             throw (0, productionBom_1.bomError)('CATEGORY_MISMATCH', 'Bereich fehlt (Mekanik / Elektrik).');
+        await this.requireArea(tenantId, area);
         const device = await this.requireDevice(tenantId, itemId);
         await this.assertCanEdit(tenantId, actor, itemId, area);
         const settings = await this.settings.get(tenantId);
         const prefix = (0, productionBom_1.prefixFrom)(input.prefix);
-        const code = prefix ? settings.codes[area].find((entry) => entry.prefix === prefix) : undefined;
+        const code = prefix ? (settings.codes[area] ?? []).find((entry) => entry.prefix === prefix) : undefined;
         if (!code) {
             throw (0, productionBom_1.bomError)('CODE_UNKNOWN', 'Diesen Alt-BOM-Kod gibt es in den Einstellungen nicht.', {
                 params: { prefix: String(input.prefix ?? '').slice(0, 40) },
             });
         }
-        const main = await this.ensureMain(tenantId, actor, device, area);
+        const main = await this.ensureMain(tenantId, actor, device, area, settings);
         if (main.status === 'COMPLETED' || main.consumedAt) {
             throw (0, productionBom_1.bomError)('PARENT_COMPLETED', 'Die Haupt-BOM ist abgeschlossen — erst wieder öffnen.', { status: 409, params: { number: main.bomNumber } });
         }
@@ -319,6 +339,7 @@ class DeviceBomsUseCase {
             codePrefix: code.prefix,
             lines: [],
         }, actor.id);
+        await this.syncTask(tenantId, actor, bom);
         return { bom: await this.get(tenantId, bom.id, true) };
     }
     async saveLines(tenantId, actor, bomId, body) {
@@ -328,12 +349,14 @@ class DeviceBomsUseCase {
             // «Bom onaylanırsa geri dönüş yok, revize olması lazım» (27.09.2026):
             // eine freigegebene BOM ändert nur ihre Revision im Entwurf.
             await this.saveRevisionLines(tenantId, actor, bom, body);
+            await this.syncTask(tenantId, actor, bom);
             return { bom: await this.get(tenantId, bomId, true) };
         }
         const lines = await this.templateUseCase.linesFrom(tenantId, body?.lines);
         const saved = await this.boms.replaceLines(tenantId, bomId, lines, actor.id);
         if (!saved)
             throw (0, productionBom_1.bomError)('STATUS_INVALID', 'Die BOM ist nicht mehr im Entwurf.', { status: 409 });
+        await this.syncTask(tenantId, actor, bom);
         return { bom: await this.get(tenantId, bomId, true) };
     }
     /**
@@ -412,6 +435,7 @@ class DeviceBomsUseCase {
             throw (0, productionBom_1.bomError)('BOM_NOT_FOUND', 'BOM nicht gefunden.', { status: 404 });
         if (bom.status !== 'DRAFT')
             await this.reservations.releaseForDevice(tenantId, bom).catch(() => undefined);
+        await this.syncTask(tenantId, actor, bom);
         return { removed: true };
     }
     /* ── Freigeben, Abschliessen, Verbrauchen ──────────────────────────── */
@@ -444,6 +468,7 @@ class DeviceBomsUseCase {
             console.warn('[production-bom] baseline revision failed', bomId, error?.message);
         });
         await this.reservations.assignFreeSerials(tenantId, approved.lines.map((line) => line.productId));
+        await this.syncTask(tenantId, actor, bom);
         return { bom: await this.get(tenantId, bomId, true) };
     }
     /**
@@ -477,6 +502,7 @@ class DeviceBomsUseCase {
         }, actor.id);
         if (!completed)
             throw (0, productionBom_1.bomError)('STATUS_INVALID', 'Die BOM ist nicht freigegeben.', { status: 409 });
+        await this.syncTask(tenantId, actor, bom);
         return { bom: await this.get(tenantId, bomId, true) };
     }
     async reopen(tenantId, actor, bomId) {
@@ -496,6 +522,7 @@ class DeviceBomsUseCase {
         }, actor.id);
         if (!reopened)
             throw (0, productionBom_1.bomError)('STATUS_INVALID', 'Die BOM ist nicht abgeschlossen.', { status: 409 });
+        await this.syncTask(tenantId, actor, bom);
         return { bom: await this.get(tenantId, bomId, true) };
     }
     /**
@@ -525,6 +552,7 @@ class DeviceBomsUseCase {
         const consumed = await this.consumeOne(tenantId, actor, bom);
         if (!consumed)
             throw (0, productionBom_1.bomError)('ALREADY_CONSUMED', 'Diese BOM ist schon abgebucht.', { status: 409 });
+        await this.syncTask(tenantId, actor, bom);
         return { bom: await this.get(tenantId, bomId, true) };
     }
     /** Eine BOM vom Bestand abbuchen (ihre Reservierungen, ihre Seriennummern). */
@@ -947,6 +975,15 @@ class DeviceBomsUseCase {
     revisionApprovals = null;
     attachRevisionApprovals(store) {
         this.revisionApprovals = store;
+    }
+    /** Die Unteraufgabe «BOM Creation» folgt der BOM (02.10.2026) — nach dem Bau angeschlossen. */
+    taskSync = null;
+    attachTaskSync(sync) {
+        this.taskSync = sync;
+    }
+    /** Nach jeder Änderung an einer BOM: Stand der Unteraufgabe ihres Bereichs (auch aus den Revisionen). */
+    async syncTask(tenantId, actor, bom) {
+        await this.taskSync?.afterChange(tenantId, actor, bom);
     }
     /** Die Depo-Karten (ERP-Code, Name …) — für die Prüfungen der Revision. */
     productsOf(tenantId, productIds) {

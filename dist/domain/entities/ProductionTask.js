@@ -22,4 +22,6 @@
  * Weg («görevlendirme en başta»), darum kommen hier nur die Arbeitsstufen vor.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.PRODUCTION_UI_LANGUAGES = void 0;
+exports.PRODUCTION_UI_LANGUAGES = ['tr', 'en', 'de'];
 //# sourceMappingURL=ProductionTask.js.map

@@ -7,6 +7,7 @@ exports.PrismaBomGoodsInRepository = exports.PrismaBomProcurementRepository = vo
 const nanoid_1 = require("nanoid");
 const client_1 = require("@prisma/client");
 const prisma_client_1 = __importDefault(require("../database/prisma.client"));
+const ProductionBom_1 = require("../../domain/entities/ProductionBom");
 const productionBom_1 = require("../../domain/services/productionBom");
 /**
  * ── SATIN ALMA TALEBİ & GELEN MALLAR · DIE DATENBANKSEITE (27.09.2026) ───────
@@ -66,7 +67,7 @@ const toRequest = (row) => ({
     bomId: row.bomId,
     productionProjectId: row.productionProjectId,
     productionItemId: row.productionItemId,
-    area: (row.area === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL'),
+    area: ((0, ProductionBom_1.isCustomBomCategory)(row.area) ? row.area : row.area === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL'),
     kind: KINDS.has(row.kind) ? row.kind : 'ORDER',
     status: statusOf(row),
     bomRevision: Number(row.bomRevision) || 0,

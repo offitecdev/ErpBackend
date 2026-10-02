@@ -66,8 +66,7 @@ class BomRevisionsUseCase {
     /** Der Weg zur BOM (Geräteseite, Reiter BOM) — für die Glocke. */
     linkOf(bom) {
         const query = new URLSearchParams();
-        if (bom.area === 'ELECTRICAL')
-            query.set('area', 'electrical');
+        query.set('area', bom.area === 'MECHANICAL' ? 'mechanical' : bom.area === 'ELECTRICAL' ? 'electrical' : bom.area);
         query.set('stage', 'bom');
         query.set('bom', bom.id);
         return `/production/orders/${encodeURIComponent(bom.productionProjectId)}/devices/${encodeURIComponent(bom.productionItemId)}?${query.toString()}`;
@@ -114,6 +113,7 @@ class BomRevisionsUseCase {
             actorName: actor.name,
             reason: draft.reason,
         });
+        await this.devices.syncTask(tenantId, actor, bom);
         return { bom: await this.devices.get(tenantId, bomId, true) };
     }
     /** «Reddet» — nur die Administratorrolle; die Revision bleibt im Entwurf, die Glocke sagt es der einreichenden Person. */
@@ -147,6 +147,7 @@ class BomRevisionsUseCase {
             actorName: actor.name,
             note,
         });
+        await this.devices.syncTask(tenantId, actor, bom);
         return { bom: await this.devices.get(tenantId, bomId, true) };
     }
     /* ── Beginnen, Verwerfen ─────────────────────────────────────────────── */
@@ -170,6 +171,7 @@ class BomRevisionsUseCase {
                 params: { number: bom.bomNumber, revision: bom.revision + 1 },
             });
         }
+        await this.devices.syncTask(tenantId, actor, bom);
         return { bom: await this.devices.get(tenantId, bomId, true) };
     }
     async discard(tenantId, actor, bomId) {
@@ -178,6 +180,7 @@ class BomRevisionsUseCase {
         const removed = await this.revisions.deleteDraft(tenantId, bom.id);
         if (!removed)
             throw (0, productionBom_1.bomError)('REVISION_NONE', 'Es gibt keine Revision im Entwurf.', { status: 409 });
+        await this.devices.syncTask(tenantId, actor, bom);
         return { bom: await this.devices.get(tenantId, bomId, true) };
     }
     /* ── Vorschau und Freigabe ───────────────────────────────────────────── */
@@ -278,6 +281,7 @@ class BomRevisionsUseCase {
             actorName: actor.name,
             note: null,
         });
+        await this.devices.syncTask(tenantId, actor, bom);
         return { bom: await this.devices.get(tenantId, bomId, true), preview: plan };
     }
     /** Die Automatik des Einkaufs (ProcurementDispatchUseCase) — nach dem Bau angeschlossen. */

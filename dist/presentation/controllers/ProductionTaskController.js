@@ -160,6 +160,39 @@ class ProductionTaskController {
         }
     }
     /** Das PDF der Standards lesen (`?ref=…&name=…`) — nur aus der eigenen Firma. */
+    /* ── Vorlagen der Dokument-Standards (02.10.2026) ── */
+    async standardsTemplates(req, res, next) {
+        try {
+            res.json(await productionTasksModule_1.productionTasksModule.standards.list(tenantOf(req)));
+        }
+        catch (error) {
+            fail(res, next, error);
+        }
+    }
+    async createStandardsTemplate(req, res, next) {
+        try {
+            res.status(201).json(await productionTasksModule_1.productionTasksModule.standards.create(tenantOf(req), (await actorOf(req)).id, req.body));
+        }
+        catch (error) {
+            fail(res, next, error);
+        }
+    }
+    async updateStandardsTemplate(req, res, next) {
+        try {
+            res.json(await productionTasksModule_1.productionTasksModule.standards.update(tenantOf(req), (await actorOf(req)).id, param(req, 'templateId'), req.body));
+        }
+        catch (error) {
+            fail(res, next, error);
+        }
+    }
+    async removeStandardsTemplate(req, res, next) {
+        try {
+            res.json(await productionTasksModule_1.productionTasksModule.standards.remove(tenantOf(req), param(req, 'templateId')));
+        }
+        catch (error) {
+            fail(res, next, error);
+        }
+    }
     async readStandardsFile(req, res, next) {
         try {
             const file = await productionTasksModule_1.productionTasksModule.devices.readStandardsFile(tenantOf(req), typeof req.query.ref === 'string' ? req.query.ref : '', typeof req.query.name === 'string' ? req.query.name : '');
@@ -249,10 +282,14 @@ class ProductionTaskController {
     }
     /* ── «Görevlerim» (30.09.2026): die eigenen Aufgaben, ohne Produktionsrechte ──
        Wer hier handelt, handelt als Person an der Unteraufgabe — nie als Verwaltung
-       (`isAdmin` false): Stand setzen, eigene PDFs hochladen, lesen und entfernen. */
+       (`isAdmin` false): Stand setzen, eigene PDFs hochladen, lesen und entfernen.
+       Nur zwei Stellen kennen die Verwaltung (02.10.2026): sie sieht dazu jede Stufe mit
+       wartender Freigabe und liest deren Dateien. Freigeben selbst läuft über die Wege
+       der Geräteseite. */
     async myTasks(req, res, next) {
         try {
-            res.json(await productionTasksModule_1.productionTasksModule.devices.myTasks(tenantOf(req), await actorOf(req)));
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user.id);
+            res.json(await productionTasksModule_1.productionTasksModule.devices.myTasks(tenantOf(req), await actorOf(req), Boolean(isSystemAdmin)));
         }
         catch (error) {
             fail(res, next, error);
@@ -277,7 +314,8 @@ class ProductionTaskController {
     }
     async myReadSubtaskFile(req, res, next) {
         try {
-            const file = await productionTasksModule_1.productionTasksModule.devices.readSubtaskFileAsAssignee(tenantOf(req), await actorOf(req), param(req, 'itemId'), param(req, 'taskId'), param(req, 'subtaskId'), param(req, 'fileId'));
+            const { isSystemAdmin } = await roles.getEmployeeRoleInfo(req.user.id);
+            const file = await productionTasksModule_1.productionTasksModule.devices.readSubtaskFileAsAssignee(tenantOf(req), await actorOf(req), param(req, 'itemId'), param(req, 'taskId'), param(req, 'subtaskId'), param(req, 'fileId'), Boolean(isSystemAdmin));
             res.setHeader('Content-Type', file.contentType);
             res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
             res.setHeader('Cache-Control', 'private, no-store');
@@ -307,6 +345,14 @@ class ProductionTaskController {
         }
     }
     /** Projekte und Geräte mit Aufgaben — die Auswahl der Startseite der Verwaltung (30.09.2026). */
+    async workload(req, res, next) {
+        try {
+            res.json(await productionTasksModule_1.productionTasksModule.devices.workload(tenantOf(req)));
+        }
+        catch (error) {
+            fail(res, next, error);
+        }
+    }
     async taskDevices(req, res, next) {
         try {
             res.json(await productionTasksModule_1.productionTasksModule.devices.taskDevices(tenantOf(req)));

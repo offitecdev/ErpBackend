@@ -9,6 +9,8 @@ const productionBomPurchaseWriter_1 = require("../../infrastructure/services/pro
 const productionBomRevisionWriter_1 = require("../../infrastructure/services/productionBomRevisionWriter");
 const ProductionBomRevisionRepository_1 = require("../../infrastructure/repositories/ProductionBomRevisionRepository");
 const BomRevisionsUseCase_1 = require("../../application/use-cases/production/bom/BomRevisionsUseCase");
+const BomTaskSync_1 = require("../../application/use-cases/production/bom/BomTaskSync");
+const ProductionTaskRepository_1 = require("../../infrastructure/repositories/ProductionTaskRepository");
 const bomTableAi_1 = require("../../infrastructure/services/bomTableAi");
 const BomReservationService_1 = require("../../application/use-cases/production/bom/BomReservationService");
 const BomTemplatesUseCase_1 = require("../../application/use-cases/production/bom/BomTemplatesUseCase");
@@ -42,6 +44,7 @@ const stock = new ProductionBomRepository_1.PrismaBomStockReader();
 const purchases = new ProductionBomRepository_1.PrismaBomPurchaseRepository();
 const directory = new ProductionBomRepository_1.PrismaBomProductionDirectory();
 const settings = new ProductionBomRepository_1.PrismaBomSettingsRepository();
+const categories = new ProductionBomRepository_1.PrismaBomCategoryRepository();
 const writer = new productionBomPurchaseWriter_1.BomPurchaseOrderWriter();
 const warehouseProducts = new WarehouseRepository_1.PrismaWarehouseProductRepository();
 const revisions = new ProductionBomRevisionRepository_1.PrismaBomRevisionRepository();
@@ -53,7 +56,7 @@ const templateUseCase = new BomTemplatesUseCase_1.BomTemplatesUseCase(templates,
     groups: new WarehouseCatalogRepository_1.PrismaWarehouseGroupRepository(),
     products: warehouseProducts,
     directory: new WarehouseRepository_1.PrismaWarehouseDirectory(),
-});
+}, categories);
 const devices = new DeviceBomsUseCase_1.DeviceBomsUseCase(boms, templates, stock, purchases, directory, settings, reservations, templateUseCase, writer, (tenantId) => (0, inventory_routes_1.nextPurchaseReference)(tenantId, 'ORDER'), (tenantId) => (0, inventory_routes_1.nextPurchaseReference)(tenantId, 'PRICE_REQUEST'), revisions);
 /* «Satın alma» (27.09.2026 abends): der Einkauf macht aus den Taleplern der BOM die Belege. */
 const procurement = new BomProcurementUseCase_1.BomProcurementUseCase(procurementRequests, goodsIn, purchases, stock, directory, reservations, devices, journal);
@@ -61,6 +64,8 @@ devices.attachProcurement(procurement);
 /* Die Freigaben der Revisionen (eingereicht / zurückgewiesen) stehen an der BOM (30.09.2026). */
 const revisionApprovals = new BomRevisionApprovalRepository_1.PrismaBomRevisionApprovals();
 devices.attachRevisionApprovals(revisionApprovals);
+/* «BOM Creation» folgt der BOM (02.10.2026): Freigabe, Abschluss und Revisionen setzen den Stand der Unteraufgabe. */
+devices.attachTaskSync(new BomTaskSync_1.BomTaskSync(new ProductionTaskRepository_1.PrismaProductionDeviceTaskRepository(), boms, revisions, revisionApprovals));
 exports.productionBomModule = {
     templates: templateUseCase,
     devices,
@@ -76,7 +81,7 @@ exports.productionBomModule = {
     revisions: new BomRevisionsUseCase_1.BomRevisionsUseCase(boms, revisions, directory, reservations, devices, new productionBomRevisionWriter_1.PrismaBomRevisionWriter(), productionBomGuardModule_1.productionBomDocumentStorage, 
     // Eine Revision gibt die Administratorrolle frei (30.09.2026).
     revisionApprovals, new bomRevisionNotifications_1.BomRevisionNotifier()),
-    settings: new BomSettingsUseCase_1.BomSettingsUseCase(settings),
+    settings: new BomSettingsUseCase_1.BomSettingsUseCase(settings, categories),
     reservations,
     directory,
     guard: productionBomGuardModule_1.productionBomGuard,

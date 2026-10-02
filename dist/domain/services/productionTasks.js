@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.statusOfSubtasks = exports.statusFrom = exports.isProductionTaskStatus = exports.isWorkingStatus = exports.PRODUCTION_TASK_STATUSES = exports.subtasksFrom = exports.reopenedSubtasks = exports.mergeDeviceRecord = exports.requirementsAdded = exports.withoutDeviceRecord = exports.hasSubtaskDocument = exports.SUBTASK_FILE_LIMITS = exports.newSubtaskFileId = exports.fileVersionFor = exports.withChecklistItem = exports.withFileAnalysis = exports.withQueuedAnalyses = exports.filesToAnalyse = exports.analysisAsSeen = exports.isAnalysisActive = exports.FILE_ANALYSIS_LIMITS = exports.hasDocumentStandards = exports.isStandardsRefOf = exports.STANDARDS_FILE_MAX_BYTES = exports.today = exports.placeTask = exports.fromSectionShares = exports.resolveTaskWeights = exports.stageWeightIn = exports.sectionShareOf = exports.storedStageWeightsComplete = exports.areaSharesOf = exports.sectionsFrom = exports.builtInSections = exports.sameTaskCode = exports.worksOnSubtask = exports.withActiveAssignees = exports.taskAssigneesOf = exports.assigneeIdsFrom = exports.dayFrom = exports.roundPercent = exports.productionTaskErrorBody = exports.isProductionTaskError = exports.productionTaskError = exports.PRODUCTION_TASK_LIMITS = exports.stageOfSection = exports.isBuiltInStage = exports.isBuiltInArea = exports.BUILT_IN_STAGES = exports.BUILT_IN_AREAS = void 0;
-exports.CHILLER_EXAMPLE = exports.CHILLER_EXAMPLE_KEY = exports.assignmentNews = exports.orderTasks = exports.templateCheck = exports.tasksInputFrom = exports.templateInputFrom = exports.withAddedStage = exports.withStageWeights = exports.taskCodeOf = exports.sectionPrefixes = exports.taskDatesProblem = exports.subtaskWeightSum = void 0;
+exports.analysisNoteOf = exports.feeFrom = exports.SUBTASK_FEE_MAX = exports.SUBMISSION_NOTE_MAX = exports.isSubtaskPhotoType = exports.SUBTASK_PHOTO_TYPES = exports.SUBTASK_FILE_LIMITS = exports.newSubtaskFileId = exports.fileVersionFor = exports.withChecklistItem = exports.withFileAnalyses = exports.withFileAnalysis = exports.withQueuedAnalyses = exports.photoGroupOf = exports.PHOTO_GROUP_MAX = exports.filesToAnalyse = exports.analysisAsSeen = exports.isAnalysisActive = exports.FILE_ANALYSIS_LIMITS = exports.hasDocumentStandards = exports.storedStandardsFile = exports.standardsTemplateInputFrom = exports.isStandardsRefOf = exports.STANDARDS_FILE_MAX_BYTES = exports.today = exports.placeTask = exports.fromSectionShares = exports.resolveTaskWeights = exports.stageWeightIn = exports.sectionShareOf = exports.storedStageWeightsComplete = exports.areaSharesOf = exports.sectionsFrom = exports.builtInSections = exports.sameTaskCode = exports.worksOnSubtask = exports.withActiveAssignees = exports.taskAssigneesOf = exports.assigneeIdsFrom = exports.dayFrom = exports.roundPercent = exports.productionTaskErrorBody = exports.isProductionTaskError = exports.productionTaskError = exports.PRODUCTION_TASK_LIMITS = exports.stageOfSection = exports.isBuiltInStage = exports.isBuiltInArea = exports.BUILT_IN_STAGES = exports.BUILT_IN_AREAS = void 0;
+exports.CHILLER_EXAMPLE = exports.CHILLER_EXAMPLE_KEY = exports.withBomStages = exports.newBomTask = exports.assertNotBomDriven = exports.BOM_SUBTASK_NAME = exports.BOM_SUBTASK_ID = exports.BOM_TASK_NAME = exports.BOM_STAGE = exports.assignmentNews = exports.orderTasks = exports.templateCheck = exports.tasksInputFrom = exports.templateInputFrom = exports.withAddedStage = exports.withStageWeights = exports.taskCodeOf = exports.sectionPrefixes = exports.taskDatesProblem = exports.subtaskWeightSum = exports.statusOfSubtasks = exports.statusFrom = exports.isProductionTaskStatus = exports.isWorkingStatus = exports.PRODUCTION_TASK_STATUSES = exports.subtasksFrom = exports.reopenedSubtasks = exports.mergeDeviceRecord = exports.requirementsAdded = exports.withWorkClock = exports.runningWorkSeconds = exports.withoutDeviceRecord = exports.priorStepsError = exports.openPriorSteps = exports.hasSubtaskDocument = exports.subtaskAcceptsType = void 0;
+const ProductionTask_1 = require("../entities/ProductionTask");
 /**
  * ── GÖREVLENDİRME · DIE REGELN (26.09.2026, Vorgabe Samet) ─────────────────
  *
@@ -239,7 +240,12 @@ const sectionsFrom = (stored, areaShares) => {
             const stageKey = typeof stage.key === 'string' ? stage.key : '';
             if (!STAGE_KEY.test(stageKey) || RESERVED_STAGE_KEYS.has(stageKey) || stages.some((entry) => entry.key === stageKey))
                 continue;
-            stages.push({ key: stageKey, name: text(stage.name, exports.PRODUCTION_TASK_LIMITS.stageName), weight: percentFrom(stage.weight) ?? 0 });
+            stages.push({
+                key: stageKey,
+                name: text(stage.name, exports.PRODUCTION_TASK_LIMITS.stageName),
+                weight: percentFrom(stage.weight) ?? 0,
+                ...(stage.customerVisible === true ? { customerVisible: true } : {}),
+            });
         }
         sections.push({
             key,
@@ -415,6 +421,27 @@ const standardsFileFrom = (value, requiresDocument) => {
         uploadedAt: typeof row.uploadedAt === 'string' ? row.uploadedAt : '',
     };
 };
+/**
+ * Name, Text und PDF einer Vorlage der Standards (02.10.2026) aus der Anfrage. Das PDF
+ * muss in der eigenen Ablage der Firma liegen (wie bei den Standards einer Unteraufgabe).
+ */
+const standardsTemplateInputFrom = (body, tenantId) => {
+    const input = objectOf(body);
+    const name = text(input.name, 120);
+    if (!name)
+        throw (0, exports.productionTaskError)('NAME_REQUIRED', 'Die Vorlage braucht einen Namen.');
+    const written = multilineText(input.text, exports.PRODUCTION_TASK_LIMITS.documentStandards) || null;
+    const file = standardsFileFrom(input.file, true);
+    if (file && !(0, exports.isStandardsRefOf)(file.ref, tenantId))
+        throw (0, exports.productionTaskError)('STANDARDS_FILE_NOT_FOUND', 'Das PDF der Standards gibt es nicht.', { status: 404 });
+    if (!written && !file)
+        throw (0, exports.productionTaskError)('STANDARDS_EMPTY', 'Die Vorlage braucht Text oder ein PDF.');
+    return { name, text: written, file };
+};
+exports.standardsTemplateInputFrom = standardsTemplateInputFrom;
+/** Gespeichertes PDF einer Vorlage lesen (JSON aus der Datenbank). */
+const storedStandardsFile = (value) => standardsFileFrom(value, true);
+exports.storedStandardsFile = storedStandardsFile;
 /** Trägt die Unteraufgabe Standards — Text, PDF oder beides? */
 const hasDocumentStandards = (subtask) => subtask.requiresDocument && Boolean(subtask.documentStandards || subtask.documentStandardsFile);
 exports.hasDocumentStandards = hasDocumentStandards;
@@ -445,7 +472,32 @@ const fileAnalysisFrom = (value) => {
         })).filter((check) => check.standard),
         model: text(row.model, 60) || null,
         errorCode: text(row.errorCode, 60) || null,
+        // Ältere Prüfungen kennen beides nicht (02.10.2026): ohne Notiz, keine Fotogruppe.
+        note: multilineText(row.note, exports.SUBMISSION_NOTE_MAX) || null,
+        groupFileIds: Array.isArray(row.groupFileIds)
+            ? row.groupFileIds.filter((id) => typeof id === 'string' && SUBTASK_ID.test(id)).slice(0, exports.SUBTASK_FILE_LIMITS.files)
+            : [],
+        i18n: analysisI18nFrom(row.i18n),
     };
+};
+/** Die Sprachen eines gespeicherten Berichts — Unbekanntes fällt still weg. */
+const analysisI18nFrom = (value) => {
+    const row = objectOf(value);
+    const result = {};
+    for (const lang of ProductionTask_1.PRODUCTION_UI_LANGUAGES) {
+        const entry = objectOf(row[lang]);
+        if (!Object.keys(entry).length)
+            continue;
+        const checks = Array.isArray(entry.checks) ? entry.checks : [];
+        result[lang] = {
+            summary: multilineText(entry.summary, exports.FILE_ANALYSIS_LIMITS.summary) || null,
+            checks: checks.slice(0, exports.FILE_ANALYSIS_LIMITS.checks).map((raw) => objectOf(raw)).map((check) => ({
+                standard: text(check.standard, exports.FILE_ANALYSIS_LIMITS.standard),
+                reason: multilineText(check.reason, exports.FILE_ANALYSIS_LIMITS.reason),
+            })),
+        };
+    }
+    return Object.keys(result).length ? result : null;
 };
 /** So lange darf eine Prüfung warten oder laufen — danach ist sie verloren (z. B. Neustart des Servers). */
 const ANALYSIS_STALE_MS = 15 * 60 * 1000;
@@ -470,26 +522,63 @@ const filesToAnalyse = (subtask) => {
         return [];
     const standards = subtask.documentStandards ?? '';
     const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    // Die Notiz der Einsendung (und der Betrag) liest die KI mit (02.10.2026) — eine andere Notiz heisst neu prüfen.
+    const note = (0, exports.analysisNoteOf)(subtask);
+    const stale = (file) => !file.analysis
+        || file.analysis.standards !== standards
+        || file.analysis.standardsFileRef !== standardsFileRef
+        || file.analysis.note !== note
+        || (0, exports.analysisAsSeen)(file.analysis)?.status === 'FAILED';
+    const pdfs = latestFilesOf(subtask.files)
+        .filter((file) => file.type === 'application/pdf')
+        .filter(stale)
+        .map((file) => file.id);
+    // Die Fotos (nur mit «Fotoğraf yeterli») zusammen: neu, sobald eines fehlt, anders geprüft ist oder die Gruppe sich änderte.
+    const group = (0, exports.photoGroupOf)(subtask);
+    const groupKey = [...group].sort().join(',');
+    const photosStale = group.some((id) => {
+        const file = subtask.files.find((entry) => entry.id === id);
+        return !file || stale(file) || [...(file.analysis?.groupFileIds ?? [])].sort().join(',') !== groupKey;
+    });
+    return [...pdfs, ...(photosStale ? group : [])];
+};
+exports.filesToAnalyse = filesToAnalyse;
+/** Je Datei die aktuelle Fassung (die höchste ihrer Gruppe). */
+const latestFilesOf = (files) => {
     const latest = new Map();
-    for (const file of subtask.files) {
+    for (const file of files) {
         const known = latest.get(file.groupId);
         if (!known || file.version > known.version)
             latest.set(file.groupId, file);
     }
-    return [...latest.values()]
-        .filter((file) => file.type === 'application/pdf')
-        .filter((file) => !file.analysis
-        || file.analysis.standards !== standards
-        || file.analysis.standardsFileRef !== standardsFileRef
-        || (0, exports.analysisAsSeen)(file.analysis)?.status === 'FAILED')
+    return [...latest.values()];
+};
+/** So viele Fotos gehen höchstens in EINE Prüfung (02.10.2026) — die neuesten. */
+exports.PHOTO_GROUP_MAX = 10;
+/**
+ * Die Fotos, die zusammen geprüft werden (02.10.2026: «Fotoğraflar TEK istekte birlikte analiz
+ * edilir»): nur mit «Fotoğraf yeterli», je Datei die aktuelle Fassung, die neuesten zehn — in der
+ * Reihenfolge des Hochladens.
+ */
+const photoGroupOf = (subtask) => {
+    if (!subtask.photoAllowed)
+        return [];
+    return latestFilesOf(subtask.files)
+        .filter((file) => (0, exports.isSubtaskPhotoType)(file.type))
+        .sort((left, right) => right.uploadedAt.localeCompare(left.uploadedAt))
+        .slice(0, exports.PHOTO_GROUP_MAX)
+        .reverse()
         .map((file) => file.id);
 };
-exports.filesToAnalyse = filesToAnalyse;
+exports.photoGroupOf = photoGroupOf;
 /** Diese Dateien warten auf die Prüfung — gegen die heutigen Standards der Unteraufgabe. */
 const withQueuedAnalyses = (subtask, fileIds, requestedAt) => {
     const wanted = new Set(fileIds);
     const standards = subtask.documentStandards ?? '';
     const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    const note = (0, exports.analysisNoteOf)(subtask);
+    // Die Fotos unter den Dateien bilden EINE Gruppe (02.10.2026); ein PDF steht für sich.
+    const photoIds = fileIds.filter((id) => (0, exports.isSubtaskPhotoType)(subtask.files.find((file) => file.id === id)?.type ?? ''));
     return {
         ...subtask,
         files: subtask.files.map((file) => (!wanted.has(file.id) ? file : {
@@ -505,6 +594,9 @@ const withQueuedAnalyses = (subtask, fileIds, requestedAt) => {
                 checks: [],
                 model: null,
                 errorCode: null,
+                note,
+                groupFileIds: (0, exports.isSubtaskPhotoType)(file.type) ? photoIds : [],
+                i18n: null,
             },
         })),
     };
@@ -521,6 +613,9 @@ const withFileAnalysis = (subtask, fileId, requestedAt, patch) => ({
         : { ...file, analysis: { ...file.analysis, ...patch } })),
 });
 exports.withFileAnalysis = withFileAnalysis;
+/** Wie `withFileAnalysis`, für mehrere Dateien zugleich — derselbe Bericht an jedem Foto der Gruppe (02.10.2026). */
+const withFileAnalyses = (subtask, fileIds, requestedAt, patch) => fileIds.reduce((current, fileId) => (0, exports.withFileAnalysis)(current, fileId, requestedAt, patch), subtask);
+exports.withFileAnalyses = withFileAnalyses;
 /**
  * Die Freigabe-Checkliste einer Unteraufgabe (28.09.2026: «add Approval
  * Checklist after they select approval checkbox»). Nur mit «Approval» —
@@ -579,9 +674,108 @@ const newSubtaskFileId = () => randomKey('f');
 exports.newSubtaskFileId = newSubtaskFileId;
 /** Höchstens so viele Dateien je Unteraufgabe; so gross darf eine sein. */
 exports.SUBTASK_FILE_LIMITS = { files: 20, bytes: 25 * 1024 * 1024 };
-/** Gilt das Dokument einer Unteraufgabe als da? Ein PDF («görev PDF'siz kapanmaz»). */
-const hasSubtaskDocument = (subtask) => subtask.files.some((file) => file.type === 'application/pdf');
+/** Fotos, die mit «Fotoğraf yeterli» an eine Unteraufgabe dürfen (02.10.2026). */
+exports.SUBTASK_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const isSubtaskPhotoType = (type) => exports.SUBTASK_PHOTO_TYPES.includes(type);
+exports.isSubtaskPhotoType = isSubtaskPhotoType;
+/** So lang darf die kurze Notiz der Einsendung sein (02.10.2026) — Messwerte brauchen Platz. */
+exports.SUBMISSION_NOTE_MAX = 1000;
+/** Der höchste Betrag beim Einsenden (CHF, 02.10.2026). */
+exports.SUBTASK_FEE_MAX = 100_000_000;
+/**
+ * Ein Betrag (CHF) aus der Datenbank oder einer Anfrage: Zahl oder Text mit Punkt/Komma, 0 bis
+ * `SUBTASK_FEE_MAX`, auf Rappen gerundet. Leer → null; Unlesbares → undefined.
+ */
+const feeFrom = (value) => {
+    if (value === undefined || value === null || value === '')
+        return null;
+    const raw = typeof value === 'number'
+        ? value
+        : typeof value === 'string' ? Number(value.replace(/['’\s]/g, '').replace(',', '.')) : Number.NaN;
+    if (!Number.isFinite(raw) || raw < 0 || raw > exports.SUBTASK_FEE_MAX)
+        return undefined;
+    return Math.round(raw * 100) / 100;
+};
+exports.feeFrom = feeFrom;
+/**
+ * Was die KI neben den Dateien liest (02.10.2026): die kurze Notiz der Einsendung — mit «Ücret
+ * girilsin» davor der Betrag. Ändert sich eins davon, gilt eine Prüfung nicht mehr.
+ */
+const analysisNoteOf = (subtask) => {
+    const fee = subtask.feeRequired && subtask.fee !== null ? `Ücret (CHF): ${subtask.fee.toFixed(2)}` : null;
+    return [fee, subtask.submissionNote].filter(Boolean).join('\n') || null;
+};
+exports.analysisNoteOf = analysisNoteOf;
+/** Darf diese Dateiart an die Unteraufgabe? PDF immer; ein Foto nur mit «Fotoğraf yeterli» (02.10.2026). */
+const subtaskAcceptsType = (subtask, type) => type === 'application/pdf' || (subtask.photoAllowed && (0, exports.isSubtaskPhotoType)(type));
+exports.subtaskAcceptsType = subtaskAcceptsType;
+/**
+ * Gilt das Dokument einer Unteraufgabe als da? Ein PDF («görev PDF'siz kapanmaz») — mit
+ * «Fotoğraf yeterli» genügt auch ein Foto (02.10.2026).
+ */
+const hasSubtaskDocument = (subtask) => subtask.files.some((file) => file.type === 'application/pdf' || (subtask.photoAllowed === true && (0, exports.isSubtaskPhotoType)(file.type)));
 exports.hasSubtaskDocument = hasSubtaskDocument;
+/**
+ * «Sistem kilidi» (02.10.2026, OCC-Standard S. 7 «Sevke Hazır / Gönderildi seçilemez …»): was VOR
+ * dieser Unteraufgabe noch nicht erledigt ist. Davor heisst: im eigenen Bereich die früheren
+ * Stufen (Reihenfolge des Wegs), in derselben Stufe die früheren Aufgaben, in derselben Aufgabe die
+ * früheren Unteraufgaben — und jeder andere Bereich ganz (die Elektrik bis zu ihrem Final:
+ * Schema, Seriennummer, QR). Eine Aufgabe ohne Unteraufgaben zählt mit ihrem eigenen Stand.
+ * Antwort: «M-12.1 Soğutma devresi basınç testi» … in der Reihenfolge des Wegs.
+ */
+const openPriorSteps = (sections, tasks, taskId, subtaskId) => {
+    const target = tasks.find((task) => task.id === taskId);
+    if (!target)
+        return [];
+    const sectionAt = (area) => {
+        const index = sections.findIndex((section) => section.key === area);
+        return index < 0 ? sections.length : index;
+    };
+    const stageAt = (area, stage) => {
+        const index = sections.find((section) => section.key === area)?.stages.findIndex((entry) => entry.key === stage) ?? -1;
+        return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+    };
+    const ordered = tasks
+        .map((task, index) => ({ task, index }))
+        .sort((left, right) => sectionAt(left.task.area) - sectionAt(right.task.area)
+        || stageAt(left.task.area, left.task.stage) - stageAt(right.task.area, right.task.stage)
+        || left.task.sortOrder - right.task.sortOrder
+        || left.index - right.index)
+        .map(({ task }) => task);
+    const position = ordered.indexOf(target);
+    const targetStage = stageAt(target.area, target.stage);
+    const open = [];
+    const openSubtasks = (task, count) => task.subtasks.slice(0, count).forEach((subtask, index) => {
+        if (subtask.status !== 'DONE')
+            open.push(`${task.code}.${index + 1} ${subtask.name}`);
+    });
+    ordered.forEach((task, at) => {
+        // In der eigenen Aufgabe: nur die Unteraufgaben darüber.
+        if (task === target) {
+            openSubtasks(task, Math.max(0, task.subtasks.findIndex((subtask) => subtask.id === subtaskId)));
+            return;
+        }
+        const stage = stageAt(task.area, task.stage);
+        const earlier = task.area !== target.area || stage < targetStage || (stage === targetStage && at < position);
+        if (!earlier)
+            return;
+        if (task.subtasks.length)
+            openSubtasks(task, task.subtasks.length);
+        else if (task.status !== 'DONE')
+            open.push(`${task.code} ${task.name}`);
+    });
+    return open;
+};
+exports.openPriorSteps = openPriorSteps;
+/** Die offenen Schritte davor als Fehler (409) — höchstens acht genannt, dazu die Zahl. */
+const priorStepsError = (open) => {
+    const shown = open.slice(0, 8).join(' · ') + (open.length > 8 ? ' …' : '');
+    return (0, exports.productionTaskError)('PRIOR_STEPS_OPEN', `Erst die Schritte davor abschliessen: ${shown}`, {
+        status: 409,
+        params: { count: open.length, steps: shown },
+    });
+};
+exports.priorStepsError = priorStepsError;
 const subtaskOf = (row, id, name, startDate, dueDate, createdAt, weight) => ({
     id,
     name,
@@ -591,6 +785,9 @@ const subtaskOf = (row, id, name, startDate, dueDate, createdAt, weight) => ({
     dueDate,
     assigneeIds: (0, exports.assigneeIdsFrom)(row.assigneeIds),
     requiresDocument: row.requiresDocument === true,
+    photoAllowed: row.requiresDocument === true && row.photoAllowed === true,
+    feeRequired: row.feeRequired === true,
+    priorStepsRequired: row.priorStepsRequired === true,
     requiresApproval: row.requiresApproval === true,
     approvalChecklist: approvalChecklistFrom(row.approvalChecklist, row.requiresApproval === true),
     documentStandards: row.requiresDocument === true
@@ -603,11 +800,16 @@ const subtaskOf = (row, id, name, startDate, dueDate, createdAt, weight) => ({
     completedByName: text(row.completedByName, 120) || null,
     completedAt: typeof row.completedAt === 'string' ? row.completedAt : null,
     completionNote: text(row.completionNote, 500) || null,
+    submissionNote: multilineText(row.submissionNote, exports.SUBMISSION_NOTE_MAX) || null,
+    fee: row.feeRequired === true ? (0, exports.feeFrom)(row.fee) ?? null : null,
     revisionById: typeof row.revisionById === 'string' ? row.revisionById : null,
     revisionByName: text(row.revisionByName, 120) || null,
     revisionAt: typeof row.revisionAt === 'string' ? row.revisionAt : null,
     revisionNote: text(row.revisionNote, 500) || null,
     revisionHistory: revisionHistoryFrom(row.revisionHistory),
+    customerVisible: row.customerVisible === true,
+    workSeconds: Number.isFinite(Number(row.workSeconds)) && Number(row.workSeconds) > 0 ? Math.round(Number(row.workSeconds)) : 0,
+    workStartedAt: typeof row.workStartedAt === 'string' && !Number.isNaN(Date.parse(row.workStartedAt)) ? row.workStartedAt : null,
 });
 /** Der Verlauf der Rückgaben aus der Datenbank (höchstens 50, älteste zuerst); Unlesbares fällt heraus. */
 const revisionHistoryFrom = (value) => {
@@ -636,13 +838,44 @@ const withoutDeviceRecord = (subtask) => ({
     completedByName: null,
     completedAt: null,
     completionNote: null,
+    submissionNote: null,
+    fee: null,
     revisionById: null,
     revisionByName: null,
     revisionAt: null,
     revisionNote: null,
     revisionHistory: [],
+    workSeconds: 0,
+    workStartedAt: null,
 });
 exports.withoutDeviceRecord = withoutDeviceRecord;
+/* ── Die Arbeitszeit einer Unteraufgabe (02.10.2026) ─────────────────────── */
+/** Sekunden der laufenden Runde bis `now` (0, wenn keine läuft). */
+const runningWorkSeconds = (subtask, now) => {
+    if (!subtask.workStartedAt)
+        return 0;
+    const started = Date.parse(subtask.workStartedAt);
+    return Number.isNaN(started) ? 0 : Math.max(0, Math.round((now.getTime() - started) / 1000));
+};
+exports.runningWorkSeconds = runningWorkSeconds;
+/**
+ * Die Uhr folgt dem Stand: ▶ (in Arbeit) startet eine Runde, jedes Verlassen
+ * von «in Arbeit» (■, zur Freigabe, erledigt, Neubeginn) zählt sie zur Summe.
+ * Wer den Stand ändert, ist gleich — die Uhr gehört der Unteraufgabe.
+ */
+const withWorkClock = (before, after, now) => {
+    const wasRunning = Boolean(before.workStartedAt);
+    const running = after.status === 'IN_PROGRESS';
+    // Nur der Wechsel nach «in Arbeit» startet die Uhr (eine schon laufende Arbeit von früher nicht).
+    if (running && !wasRunning && before.status !== 'IN_PROGRESS') {
+        return { ...after, workSeconds: before.workSeconds, workStartedAt: now.toISOString() };
+    }
+    if (!running && wasRunning) {
+        return { ...after, workSeconds: before.workSeconds + (0, exports.runningWorkSeconds)(before, now), workStartedAt: null };
+    }
+    return { ...after, workSeconds: before.workSeconds, workStartedAt: before.workStartedAt };
+};
+exports.withWorkClock = withWorkClock;
 /**
  * Kommt durch die Anpassung am Gerät eine Pflicht DAZU (28.09.2026: «it
  * didn't require a document but admin adds it, or adds a new checklist
@@ -653,6 +886,11 @@ const requirementsAdded = (before, after) => {
     if (after.requiresDocument && !before.requiresDocument)
         return true;
     if (after.requiresApproval && !before.requiresApproval)
+        return true;
+    if (after.requiresDocument && before.photoAllowed && !after.photoAllowed)
+        return true;
+    // Ein Betrag wird verlangt, und es gibt noch keinen (02.10.2026).
+    if (after.feeRequired && !before.feeRequired && before.fee === null)
         return true;
     const earlier = new Map(before.approvalChecklist.map((item) => [item.id, item.text]));
     return after.approvalChecklist.some((item) => earlier.get(item.id) !== item.text);
@@ -673,15 +911,19 @@ const mergeDeviceRecord = (edited, kept) => {
         completedByName: kept.completedByName,
         completedAt: kept.completedAt,
         completionNote: kept.completionNote,
+        submissionNote: kept.submissionNote,
+        fee: edited.feeRequired ? kept.fee : null,
         revisionById: kept.revisionById,
         revisionByName: kept.revisionByName,
         revisionAt: kept.revisionAt,
         revisionNote: kept.revisionNote,
         revisionHistory: kept.revisionHistory,
+        workSeconds: kept.workSeconds,
+        workStartedAt: kept.workStartedAt,
     };
-    // Auch beim Neubeginn bleiben Dateien und der Verlauf der Rückgaben (er ist Geschichte, kein Stand).
+    // Auch beim Neubeginn bleiben Dateien, der Verlauf der Rückgaben und die gearbeitete Zeit.
     return (0, exports.requirementsAdded)(kept, edited)
-        ? { ...(0, exports.withoutDeviceRecord)(merged), files: kept.files, revisionHistory: kept.revisionHistory }
+        ? (0, exports.withWorkClock)(kept, { ...(0, exports.withoutDeviceRecord)(merged), files: kept.files, revisionHistory: kept.revisionHistory }, new Date())
         : merged;
 };
 exports.mergeDeviceRecord = mergeDeviceRecord;
@@ -916,7 +1158,7 @@ const sectionsInputFrom = (value) => {
                     params: { section: label, name: stageName || stageKey },
                 });
             }
-            stages.push({ key: stageKey, name: stageName, weight });
+            stages.push({ key: stageKey, name: stageName, weight, ...(stage.customerVisible === true ? { customerVisible: true } : {}) });
         }
         sections.push({ key, name, share, stages });
     });
@@ -935,6 +1177,7 @@ const withStageWeights = (sections, value) => {
     if (!Array.isArray(value))
         return sections.map((section) => ({ ...section }));
     const given = new Map();
+    const visible = new Map();
     for (const raw of value) {
         const row = objectOf(raw);
         for (const rawStage of Array.isArray(row.stages) ? row.stages : []) {
@@ -942,11 +1185,23 @@ const withStageWeights = (sections, value) => {
             if (typeof row.key === 'string' && typeof stage.key === 'string' && stage.weight !== undefined) {
                 given.set(`${row.key}|${stage.key}`, stage.weight);
             }
+            // Sichtbar für den Kunden (02.10.2026) — am Gerät wie das Gewicht änderbar.
+            if (typeof row.key === 'string' && typeof stage.key === 'string' && typeof stage.customerVisible === 'boolean') {
+                visible.set(`${row.key}|${stage.key}`, stage.customerVisible);
+            }
         }
     }
+    const withVisibility = (sectionKey, stage) => {
+        const flag = visible.get(`${sectionKey}|${stage.key}`);
+        if (flag === undefined)
+            return stage;
+        const { customerVisible: _old, ...rest } = stage;
+        return flag ? { ...rest, customerVisible: true } : rest;
+    };
     return sections.map((section) => ({
         ...section,
-        stages: section.stages.map((stage) => {
+        stages: section.stages.map((raw) => {
+            const stage = withVisibility(section.key, raw);
             if (!given.has(`${section.key}|${stage.key}`))
                 return stage;
             const weight = percentFrom(given.get(`${section.key}|${stage.key}`));
@@ -1115,6 +1370,7 @@ const tasksInputFrom = (value, sections, withDates) => {
             dueDate,
             createdAt: createdDayFrom(row.createdAt),
             subtasks,
+            customerVisible: row.customerVisible === true,
         });
     });
     fillMissingCodes(sections, tasks);
@@ -1226,6 +1482,62 @@ exports.assignmentNews = assignmentNews;
  * Personen stehen im Beispiel keine — die weist die Firma selbst zu. Es
  * bleibt bei den festen Bereichen Mekanik / Elektrik.
  */
+/* ── Die BOM-Stufe jedes Bereichs (02.10.2026) ───────────────────────────
+   «When an assignment template is created automatically add it to the
+    template — 1 BOM stage for all sections. BOM will have only one main task:
+    BOM, and its subtask is BOM Creation. Admin will assign employees, select
+    document or approval check box etc. like the other stage tasks.»
+   Jeder Bereich (= BOM-Kategorie) trägt die Stufe «bom» mit genau dieser einen
+   Aufgabe; die Stufe zählt 0 % (die übrigen Stufen behalten ihre Gewichte),
+   die Aufgabe trägt 100 % der Stufe. Fehlt etwas, kommt es dazu — Vorhandenes
+   (auch ältere Aufgaben in der Stufe) bleibt, wie es ist. */
+exports.BOM_STAGE = 'bom';
+exports.BOM_TASK_NAME = 'BOM';
+exports.BOM_SUBTASK_ID = 'bom-create';
+exports.BOM_SUBTASK_NAME = 'BOM Creation';
+/**
+ * «BOM Creation»: ▶ / ■ und das Schloss gehen wie überall (02.10.2026: «put the
+ * play stop lock functionalities to the bom sub task»); erledigt, zur Freigabe
+ * und zurückgewiesen setzt aber die BOM (BomTaskSync) — nicht die Hand.
+ */
+const assertNotBomDriven = (subtaskId, status) => {
+    if (subtaskId === exports.BOM_SUBTASK_ID && (status === undefined || status === 'PENDING' || status === 'DONE')) {
+        throw (0, exports.productionTaskError)('BOM_DRIVEN', 'Den Stand von «BOM Creation» führt die BOM — im BOM-Fenster freigeben, abschliessen oder revidieren.', { status: 409 });
+    }
+};
+exports.assertNotBomDriven = assertNotBomDriven;
+const newBomTask = (area) => ({
+    area,
+    stage: exports.BOM_STAGE,
+    code: '',
+    name: exports.BOM_TASK_NAME,
+    weight: 100,
+    assigneeIds: [],
+    startDate: null,
+    dueDate: null,
+    createdAt: null,
+    subtasks: [(0, exports.withoutDeviceRecord)(subtaskOf({}, exports.BOM_SUBTASK_ID, exports.BOM_SUBTASK_NAME, null, null, null, null))],
+});
+exports.newBomTask = newBomTask;
+/**
+ * Bereiche und Aufgaben mit der BOM-Stufe je Bereich. `make` macht aus einer
+ * neuen Aufgabe die Form der Liste (Vorlage: mit Kennung und Reihenfolge).
+ */
+const withBomStages = (sections, tasks, make) => {
+    const nextSections = sections.map((section) => (section.stages.some((stage) => stage.key === exports.BOM_STAGE)
+        ? section
+        : { ...section, stages: [...section.stages, { key: exports.BOM_STAGE, name: '', weight: 0 }] }));
+    const added = nextSections
+        .filter((section) => !tasks.some((task) => task.area === section.key && task.stage === exports.BOM_STAGE))
+        .map((section) => (0, exports.newBomTask)(section.key));
+    if (!added.length && nextSections.every((section, index) => section === sections[index])) {
+        return { sections: [...sections], tasks: [...tasks] };
+    }
+    // Die Kürzel der neuen Aufgaben folgen denen der vorhandenen (M-07, H-04 …).
+    fillMissingCodes(nextSections, [...tasks, ...added]);
+    return { sections: nextSections, tasks: [...tasks, ...added.map(make)] };
+};
+exports.withBomStages = withBomStages;
 exports.CHILLER_EXAMPLE_KEY = 'chiller';
 const CHILLER_MECHANICAL = [
     ['M-01', 'Çalışma şartlarını belirleme', 'equipment', 5],

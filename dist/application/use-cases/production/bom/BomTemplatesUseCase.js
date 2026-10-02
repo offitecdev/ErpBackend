@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.snapshotLine = exports.BomTemplatesUseCase = void 0;
+const ProductionBom_1 = require("../../../../domain/entities/ProductionBom");
 const productionBom_1 = require("../../../../domain/services/productionBom");
 const bomExamples_1 = require("./bomExamples");
 const bomReadModel_1 = require("./bomReadModel");
@@ -22,12 +23,14 @@ class BomTemplatesUseCase {
     stock;
     reservations;
     warehouse;
-    constructor(templates, boms, stock, reservations, warehouse) {
+    categories;
+    constructor(templates, boms, stock, reservations, warehouse, categories) {
         this.templates = templates;
         this.boms = boms;
         this.stock = stock;
         this.reservations = reservations;
         this.warehouse = warehouse;
+        this.categories = categories;
     }
     assertCanWrite(actor) {
         if (!actor.isAdmin && !actor.canManage) {
@@ -78,7 +81,9 @@ class BomTemplatesUseCase {
         const needle = String(query ?? '').trim();
         if (needle.length < 1)
             return { items: [] };
-        const found = await this.stock.search(tenantId, needle, 20, (0, productionBom_1.areaFrom)(area));
+        // Eine eigene Kategorie sucht in allen Karten — die Kod-Türe kennen nur Mekanik/Elektrik.
+        const parsed = (0, productionBom_1.areaFrom)(area);
+        const found = await this.stock.search(tenantId, needle, 20, parsed && !(0, ProductionBom_1.isCustomBomCategory)(parsed) ? parsed : null);
         if (!found.length)
             return { items: [] };
         const facts = await this.reservations.facts(tenantId, found.map((product) => product.productId));
@@ -104,6 +109,9 @@ class BomTemplatesUseCase {
     }
     async inputFrom(tenantId, body) {
         const head = (0, productionBom_1.templateHeadFrom)(body);
+        if ((0, ProductionBom_1.isCustomBomCategory)(head.category) && !(await this.categories.get(tenantId, head.category))) {
+            throw (0, productionBom_1.bomError)('CATEGORY_NOT_FOUND', 'Diese BOM-Kategorie gibt es nicht (mehr).', { status: 404 });
+        }
         const lines = await this.linesFrom(tenantId, body?.lines);
         return { ...head, lines };
     }

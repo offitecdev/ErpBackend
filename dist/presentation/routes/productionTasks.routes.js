@@ -152,6 +152,8 @@ router.get('/devices/:itemId/activities', VIEW, MODULE, ADMIN, (req, res, next) 
  */
 // Projekte und Geräte mit Aufgaben (30.09.2026) — Auswahl von Anfragen und Verlauf auf der Startseite.
 router.get('/task-devices', VIEW, MODULE, ADMIN, (req, res, next) => controller.taskDevices(req, res, next));
+// Wer schon woran arbeitet — für die Auswahl der Personen (02.10.2026), nur die Verwaltung.
+router.get('/task-workload', VIEW, MODULE, ADMIN, cache, (req, res, next) => controller.workload(req, res, next));
 router.get('/devices/:itemId/requests', VIEW, MODULE, ADMIN, (req, res, next) => controller.deviceRequests(req, res, next));
 router.post('/devices/:itemId/requests/:requestId/solve', VIEW, MODULE, ADMIN, (req, res, next) => controller.solveDeviceRequest(req, res, next));
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/unlock-request', VIEW, MODULE, (req, res, next) => controller.requestUnlock(req, res, next));
@@ -231,6 +233,11 @@ router.post('/task-standards', VIEW, MODULE, ADMIN, (req, res, next) => {
     });
 });
 router.get('/task-standards/file', VIEW, MODULE, (req, res, next) => controller.readStandardsFile(req, res, next));
+// Vorlagen der Standards (02.10.2026): lesen wer die Produktion sieht, pflegen die Verwaltung.
+router.get('/task-standards/templates', VIEW, MODULE, (req, res, next) => controller.standardsTemplates(req, res, next));
+router.post('/task-standards/templates', VIEW, MODULE, ADMIN, (req, res, next) => controller.createStandardsTemplate(req, res, next));
+router.put('/task-standards/templates/:templateId', VIEW, MODULE, ADMIN, (req, res, next) => controller.updateStandardsTemplate(req, res, next));
+router.delete('/task-standards/templates/:templateId', VIEW, MODULE, ADMIN, (req, res, next) => controller.removeStandardsTemplate(req, res, next));
 // Die KI-Prüfung eines PDFs gegen die Standards noch einmal (01.10.2026) — nur die Verwaltung (prüft der Anwendungsfall).
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files/:fileId/analysis', VIEW, MODULE, (req, res, next) => controller.retryDeviceFileAnalysis(req, res, next));
 router.post('/devices/:itemId/tasks/:taskId/subtasks/:subtaskId/files', VIEW, MODULE, (req, res, next) => {

@@ -9,6 +9,8 @@ const productionTaskNotifications_1 = require("../../infrastructure/services/pro
 const documentStandardsReview_1 = require("../../infrastructure/services/documentStandardsReview");
 const ProductionTaskTemplatesUseCase_1 = require("../../application/use-cases/production/ProductionTaskTemplatesUseCase");
 const ProductionDeviceTasksUseCase_1 = require("../../application/use-cases/production/ProductionDeviceTasksUseCase");
+const ProductionStandardsTemplatesUseCase_1 = require("../../application/use-cases/production/ProductionStandardsTemplatesUseCase");
+const ProductionStandardsTemplateRepository_1 = require("../../infrastructure/repositories/ProductionStandardsTemplateRepository");
 const path_1 = __importDefault(require("path"));
 const LocalFileStorage_1 = require("../../infrastructure/services/LocalFileStorage");
 /** Dateien an Unteraufgaben (28.09.2026): Platte, sobald eingerichtet R2 — wie die BOM. */
@@ -39,6 +41,8 @@ exports.productionTasksModule = {
     new ProductionTaskRepository_1.PrismaProductionTaskRequestRepository(), 
     // Die KI-Prüfung der PDFs gegen die Standards der Dokumente (01.10.2026).
     documentStandardsReview_1.documentStandardsReviewer, standardsFiles),
+    // Vorlagen der Dokument-Standards (02.10.2026).
+    standards: new ProductionStandardsTemplatesUseCase_1.ProductionStandardsTemplatesUseCase(new ProductionStandardsTemplateRepository_1.PrismaProductionStandardsTemplateRepository()),
     directory,
 };
 //# sourceMappingURL=productionTasksModule.js.map

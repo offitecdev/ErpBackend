@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.revisionOrderPlan = exports.acceptsMoreLines = exports.orderAtSupplier = exports.demandsWithRevision = exports.revisionChanges = exports.revisionLineIds = exports.ORDER_UNIT_LABELS = exports.sameLockedRows = exports.confirmProblems = exports.PRICE_REQUEST_STATUSES = exports.CONFIRMING_STATUSES = exports.CONFIRMED_ORDER_STATUSES = exports.completionOf = exports.requestLinesFrom = exports.mergeLinkRecords = exports.mergeOrderItems = exports.sameSupplier = exports.supplierKey = exports.orderLinesFrom = exports.orderProposal = exports.serialsToRelease = exports.serialAssignments = exports.computeCoverage = exports.openOf = exports.byPriority = exports.storedCodes = exports.codesFrom = exports.templateHeadFrom = exports.lineDraftsFrom = exports.quantityFrom = exports.formatBomNumber = exports.prefixFrom = exports.unitFrom = exports.areaFrom = exports.categoryFrom = exports.ceil3 = exports.round3 = exports.BOM_NUMBER_DIGITS = exports.PREFIX_MAX = exports.BOM_LIMITS = exports.bomErrorBody = exports.isBomError = exports.bomError = exports.assertErpCodes = void 0;
+exports.revisionOrderPlan = exports.acceptsMoreLines = exports.orderAtSupplier = exports.demandsWithRevision = exports.revisionChanges = exports.revisionLineIds = exports.ORDER_UNIT_LABELS = exports.sameLockedRows = exports.confirmProblems = exports.PRICE_REQUEST_STATUSES = exports.CONFIRMING_STATUSES = exports.CONFIRMED_ORDER_STATUSES = exports.completionOf = exports.requestLinesFrom = exports.mergeLinkRecords = exports.mergeOrderItems = exports.sameSupplier = exports.supplierKey = exports.orderLinesFrom = exports.orderProposal = exports.serialsToRelease = exports.serialAssignments = exports.computeCoverage = exports.openOf = exports.byPriority = exports.storedCodes = exports.storedCodeList = exports.codesFrom = exports.templateHeadFrom = exports.lineDraftsFrom = exports.quantityFrom = exports.formatBomNumber = exports.prefixFrom = exports.unitFrom = exports.newBomCategoryId = exports.categoryInputFrom = exports.categoryCodeFrom = exports.BOM_CATEGORY_LIMITS = exports.areaFrom = exports.categoryFrom = exports.ceil3 = exports.round3 = exports.BOM_NUMBER_DIGITS = exports.PREFIX_MAX = exports.BOM_LIMITS = exports.bomErrorBody = exports.isBomError = exports.bomError = exports.assertErpCodes = void 0;
 const ProductionBom_1 = require("../entities/ProductionBom");
 /**
  * «ERP kodları olmadan BOM onaylanamasın» (Samet, 30.09.2026): die Zeilen,
@@ -79,7 +79,9 @@ const categoryFrom = (value) => {
         return 'MACHINE';
     if (['ELEKTRIK', 'ELEKTRİK', 'ELECTRIC'].includes(raw))
         return 'ELECTRICAL';
-    return null;
+    // Eine eigene Kategorie («c-…») — ob es sie gibt, prüft der Anwendungsfall.
+    const custom = String(value ?? '').trim().toLowerCase();
+    return (0, ProductionBom_1.isCustomBomCategory)(custom) ? custom : null;
 };
 exports.categoryFrom = categoryFrom;
 const areaFrom = (value) => {
@@ -88,9 +90,36 @@ const areaFrom = (value) => {
         return 'MECHANICAL';
     if (raw === 'ELECTRICAL' || raw === 'ELEKTRIK')
         return 'ELECTRICAL';
-    return null;
+    const custom = String(value ?? '').trim().toLowerCase();
+    return (0, ProductionBom_1.isCustomBomCategory)(custom) ? custom : null;
 };
 exports.areaFrom = areaFrom;
+/* ── Eigene Kategorien ──────────────────────────────────────────────────── */
+exports.BOM_CATEGORY_LIMITS = { categories: 20, name: 60 };
+/** Kod einer Kategorie: 2–8 Zeichen A–Z/0–9 (HYD → BOM-HYD-00001). */
+const CATEGORY_CODE_RE = /^[A-Z0-9]{2,8}$/;
+const categoryCodeFrom = (value) => {
+    const raw = String(value ?? '').trim().toUpperCase().replace(/[İ]/g, 'I').replace(/\s+/g, '');
+    return CATEGORY_CODE_RE.test(raw) ? raw : null;
+};
+exports.categoryCodeFrom = categoryCodeFrom;
+/** Name und Kod einer eigenen Kategorie aus der Anfrage; MEK/ELK gehören den festen. */
+const categoryInputFrom = (raw) => {
+    const value = (raw && typeof raw === 'object' ? raw : {});
+    const name = text(value.name, exports.BOM_CATEGORY_LIMITS.name);
+    if (!name)
+        throw (0, exports.bomError)('CATEGORY_NAME_REQUIRED', 'Die Kategorie braucht einen Namen.');
+    const code = (0, exports.categoryCodeFrom)(value.code);
+    if (!code)
+        throw (0, exports.bomError)('CATEGORY_CODE_INVALID', 'Kod: 2–8 Zeichen A–Z / 0–9 (z. B. HYD).');
+    if (Object.values(ProductionBom_1.BUILT_IN_CATEGORY_CODE).includes(code)) {
+        throw (0, exports.bomError)('CATEGORY_CODE_TAKEN', `${code} gehört einer festen Kategorie.`, { status: 409, params: { code } });
+    }
+    return { name, code };
+};
+exports.categoryInputFrom = categoryInputFrom;
+const newBomCategoryId = () => `c-${Math.random().toString(36).slice(2, 10).padEnd(8, '0')}`;
+exports.newBomCategoryId = newBomCategoryId;
 const unitFrom = (value) => {
     const raw = String(value ?? '').trim().toUpperCase();
     return ProductionBom_1.BOM_UNITS.includes(raw) ? raw : 'PCS';
@@ -174,53 +203,62 @@ exports.templateHeadFrom = templateHeadFrom;
 /** Die Vorsätze der Haupt-BOMs (BOM-MEK / BOM-ELK) sind vergeben. */
 const RESERVED_PREFIXES = new Set(Object.values(ProductionBom_1.MAIN_BOM_PREFIX));
 /**
- * `{ MECHANICAL: [{ prefix, name }], ELECTRICAL: [...] }` aus der Anfrage —
- * jeder Vorsatz gültig (MAK-COOL), nicht BOM-MEK/BOM-ELK, in beiden Bereichen
- * zusammen nur einmal (er zählt seine Nummern selbst).
+ * `{ MECHANICAL: [{ prefix, name }], ELECTRICAL: [...], 'c-…': [...] }` aus der
+ * Anfrage — jeder Vorsatz gültig (MAK-COOL), nicht der einer Haupt-BOM
+ * (BOM-MEK, BOM-ELK, BOM-<Kod> der eigenen), über alle Bereiche zusammen nur
+ * einmal (er zählt seine Nummern selbst). Eine eigene Kategorie, die die
+ * Anfrage nicht nennt, fehlt im Ergebnis (ihre Kodes bleiben unverändert).
  */
-const codesFrom = (raw) => {
+const codesFrom = (raw, custom = []) => {
     const input = (raw && typeof raw === 'object' ? raw : {});
     const result = { MECHANICAL: [], ELECTRICAL: [] };
+    const reserved = new Set([...RESERVED_PREFIXES, ...custom.map((category) => (0, ProductionBom_1.mainBomPrefixOf)(category.code))]);
     const seen = new Set();
-    for (const area of ['MECHANICAL', 'ELECTRICAL']) {
+    const areas = ['MECHANICAL', 'ELECTRICAL', ...custom.filter((category) => input[category.id] !== undefined).map((category) => category.id)];
+    for (const area of areas) {
         const list = Array.isArray(input[area]) ? input[area] : [];
         if (list.length > exports.BOM_LIMITS.codesPerArea) {
             throw (0, exports.bomError)('SETTINGS_INVALID', `Höchstens ${exports.BOM_LIMITS.codesPerArea} Kodes je Bereich.`, {
                 params: { min: 0, max: exports.BOM_LIMITS.codesPerArea },
             });
         }
+        const codes = [];
         list.forEach((entry, index) => {
             const value = (entry && typeof entry === 'object' ? entry : {});
             const prefix = (0, exports.prefixFrom)(value.prefix);
             if (!prefix) {
                 throw (0, exports.bomError)('CODE_INVALID', `Kod ${index + 1} ist ungültig (z. B. MAK-COOL).`, { params: { row: index + 1, area } });
             }
-            if (RESERVED_PREFIXES.has(prefix)) {
+            if (reserved.has(prefix)) {
                 throw (0, exports.bomError)('CODE_RESERVED', `${prefix} gehört der Haupt-BOM.`, { params: { prefix } });
             }
             if (seen.has(prefix))
                 throw (0, exports.bomError)('CODE_DUPLICATE', `${prefix} steht zweimal.`, { params: { prefix } });
             seen.add(prefix);
-            result[area].push({ prefix, name: text(value.name, exports.BOM_LIMITS.codeName) || prefix });
+            codes.push({ prefix, name: text(value.name, exports.BOM_LIMITS.codeName) || prefix });
         });
+        result[area] = codes;
     }
     return result;
 };
 exports.codesFrom = codesFrom;
-/** Gespeicherte Kodes lesen (JSON aus der Datenbank) — Ungültiges fällt still weg. */
-const storedCodes = (raw) => {
-    const input = (raw && typeof raw === 'object' ? raw : {});
-    const result = { MECHANICAL: [], ELECTRICAL: [] };
-    for (const area of ['MECHANICAL', 'ELECTRICAL']) {
-        const list = Array.isArray(input[area]) ? input[area] : [];
-        for (const entry of list) {
-            const value = (entry && typeof entry === 'object' ? entry : {});
-            const prefix = (0, exports.prefixFrom)(value.prefix);
-            if (prefix && !RESERVED_PREFIXES.has(prefix))
-                result[area].push({ prefix, name: text(value.name, exports.BOM_LIMITS.codeName) || prefix });
-        }
+/** Eine gespeicherte Liste von Kodes (JSON) lesen — Ungültiges fällt still weg. */
+const storedCodeList = (raw) => {
+    const list = Array.isArray(raw) ? raw : [];
+    const result = [];
+    for (const entry of list) {
+        const value = (entry && typeof entry === 'object' ? entry : {});
+        const prefix = (0, exports.prefixFrom)(value.prefix);
+        if (prefix && !RESERVED_PREFIXES.has(prefix))
+            result.push({ prefix, name: text(value.name, exports.BOM_LIMITS.codeName) || prefix });
     }
     return result;
+};
+exports.storedCodeList = storedCodeList;
+/** Die gespeicherten Kodes der FESTEN Bereiche (`uretim_bom_ayarlari.codes`). */
+const storedCodes = (raw) => {
+    const input = (raw && typeof raw === 'object' ? raw : {});
+    return { MECHANICAL: (0, exports.storedCodeList)(input.MECHANICAL), ELECTRICAL: (0, exports.storedCodeList)(input.ELECTRICAL) };
 };
 exports.storedCodes = storedCodes;
 /* ── Priorität: frühester Liefertermin zuerst ───────────────────────────── */

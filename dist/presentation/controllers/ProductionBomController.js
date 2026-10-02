@@ -96,6 +96,37 @@ class ProductionBomController {
             (0, exports.fail)(res, next, error);
         }
     }
+    /** Eigene Kategorien — die Antwort sind die ganzen Einstellungen danach. */
+    async createCategory(req, res, next) {
+        try {
+            const actor = await (0, exports.actorOf)(req);
+            await productionBomModule_1.productionBomModule.settings.createCategory(tenantOf(req), actor, req.body);
+            res.status(201).json({ ...(await productionBomModule_1.productionBomModule.settings.get(tenantOf(req))), canEdit: actor.isAdmin });
+        }
+        catch (error) {
+            (0, exports.fail)(res, next, error);
+        }
+    }
+    async updateCategory(req, res, next) {
+        try {
+            const actor = await (0, exports.actorOf)(req);
+            await productionBomModule_1.productionBomModule.settings.updateCategory(tenantOf(req), actor, param(req, 'categoryId'), req.body);
+            res.json({ ...(await productionBomModule_1.productionBomModule.settings.get(tenantOf(req))), canEdit: actor.isAdmin });
+        }
+        catch (error) {
+            (0, exports.fail)(res, next, error);
+        }
+    }
+    async deleteCategory(req, res, next) {
+        try {
+            const actor = await (0, exports.actorOf)(req);
+            await productionBomModule_1.productionBomModule.settings.deleteCategory(tenantOf(req), actor, param(req, 'categoryId'));
+            res.json({ ...(await productionBomModule_1.productionBomModule.settings.get(tenantOf(req))), canEdit: actor.isAdmin });
+        }
+        catch (error) {
+            (0, exports.fail)(res, next, error);
+        }
+    }
     /* ── Vorlagen ───────────────────────────────────────────────────────── */
     async listTemplates(req, res, next) {
         try {

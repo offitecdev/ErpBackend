@@ -115,6 +115,8 @@ const ACTIVITY_KINDS = new Set([
     'TASK_CREATED', 'TASK_UPDATED', 'TASK_DELETED', 'TASK_MOVED', 'TASK_STATUS',
     'SUBTASK_CREATED', 'SUBTASK_UPDATED', 'SUBTASK_DELETED', 'STAGE_ADDED',
     'PLAN_LOADED', 'PLAN_REMOVED',
+    // Ältere Tagesnotizen (02.10.2026, wieder abgeschafft) — «Çalışma».
+    'DAILY_NOTE',
 ]);
 const scopeOf = (tenantId, itemId, actor) => ({
     tenantId,
@@ -126,28 +128,17 @@ const scopeOf = (tenantId, itemId, actor) => ({
 const stageKeyOf = (task) => `${task.area}|${task.stage}`;
 /** Die Stufen, in denen die Person an einer Unteraufgabe steht (30.09.2026). */
 const stagesOf = (tasks, employeeId) => new Set(tasks.filter((task) => task.subtasks.some((subtask) => (0, productionTasks_1.worksOnSubtask)(subtask, employeeId))).map(stageKeyOf));
+/**
+ * Die Stufen mit einer Unteraufgabe, die auf die Freigabe wartet (02.10.2026, Samet: «show all
+ * pending approvals to admins») — «BOM Creation» führt die BOM, die gibt hier niemand frei.
+ */
+const approvalStagesOf = (tasks) => new Set(tasks.filter((task) => task.subtasks.some((subtask) => subtask.requiresApproval && subtask.status === 'PENDING' && subtask.id !== productionTasks_1.BOM_SUBTASK_ID)).map(stageKeyOf));
 /** Wer die erste (noch vorhandene) Fassung einer Datei hochgeladen hat. */
 const originalUploaderOf = (files, groupId) => {
     const versions = files.filter((file) => file.groupId === groupId).sort((left, right) => left.version - right.version);
     return versions[0]?.uploadedById ?? null;
 };
 const cleanFileName = (value) => (value || 'file').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 200) || 'file';
-/**
- * ── DIE AUFGABEN EINES GERÄTS (26.09.2026, Vorgabe Samet) ──────────────────
- *
- * «Üretimde görevlere eğer administrator isek görevleri yükleyebiliyoruz …
- *  her aşamada büyük olmayacak şekilde görevlendirme kartı olması lazım, ve
- *  bu görevlere yüklendiğinde ve kişilere özel atandığında gelmesi lazım.»
- *
- *   lesen      jede Person mit Produktionsrecht (die Karten der Stufen)
- *   laden      nur die Administratorrolle: eine VOLLSTÄNDIGE Vorlage wird
- *              als Kopie auf das Gerät gelegt (ein bestehender Plan nur mit
- *              ausdrücklichem «ersetzen»)
- *   zuweisen   nur die Administratorrolle: Personen einer Aufgabe
- *   entfernen  nur die Administratorrolle
- *
- * Wer neu in einer Aufgabe steht, bekommt eine Nachricht (Glocke).
- */
 class ProductionDeviceTasksUseCase {
     plans;
     templates;
@@ -225,7 +216,9 @@ class ProductionDeviceTasksUseCase {
             throw this.deviceNotFound();
         if (!template)
             throw (0, productionTasks_1.productionTaskError)('TEMPLATE_NOT_FOUND', 'Vorlage nicht gefunden.', { status: 404 });
-        const check = (0, productionTasks_1.templateCheck)(template.sections, template.tasks);
+        // Auch eine Vorlage von vor der BOM-Stufe bringt sie aufs Gerät (02.10.2026).
+        const { sections, tasks: templateTasks } = (0, productionTasks_1.withBomStages)(template.sections, template.tasks, (draft) => draft);
+        const check = (0, productionTasks_1.templateCheck)(sections, templateTasks);
         if (!check.valid) {
             throw (0, productionTasks_1.productionTaskError)('TEMPLATE_INCOMPLETE', `Die Vorlage «${template.name}» geht noch nicht auf (Anteile und Gewichte je 100 %).`, {
                 status: 409,
@@ -236,8 +229,8 @@ class ProductionDeviceTasksUseCase {
         if (existing && !replace)
             throw this.planExists(existing.templateName);
         // Nur wer heute noch aktiv in der Firma ist, kommt mit auf das Gerät.
-        const active = await this.directory.activePeople(tenantId, (0, productionTaskReadModel_1.assigneesOf)(template.tasks));
-        const tasks = (0, productionTasks_1.orderTasks)(template.tasks, template.sections).map((task) => (0, productionTasks_1.withActiveAssignees)({
+        const active = await this.directory.activePeople(tenantId, (0, productionTaskReadModel_1.assigneesOf)(templateTasks));
+        const tasks = (0, productionTasks_1.orderTasks)(templateTasks, sections).map((task) => (0, productionTasks_1.withActiveAssignees)({
             area: task.area,
             stage: task.stage,
             code: task.code,
@@ -250,6 +243,8 @@ class ProductionDeviceTasksUseCase {
             createdAt: (0, productionTasks_1.today)(),
             // Am Gerät beginnt jede Unteraufgabe offen, ohne Dateien und Abschluss.
             subtasks: task.subtasks.map((subtask) => ({ ...(0, productionTasks_1.withoutDeviceRecord)(subtask), createdAt: (0, productionTasks_1.today)() })),
+            // Was der Kunde sehen darf, bringt die Vorlage mit (02.10.2026).
+            customerVisible: task.customerVisible === true,
         }, active));
         let plan;
         try {
@@ -257,7 +252,7 @@ class ProductionDeviceTasksUseCase {
                 device,
                 templateId: template.id,
                 templateName: template.name,
-                sections: template.sections,
+                sections,
                 actorId: actor.id,
                 tasks,
             });
@@ -471,10 +466,26 @@ class ProductionDeviceTasksUseCase {
      * «Approval» schliesst nur «Complete the task»; «Document» braucht ein PDF.
      */
     async setSubtaskStatus(tenantId, actor, itemId, taskId, subtaskId, body) {
-        const status = objectOf(body).status;
+        const input = objectOf(body);
+        const status = input.status;
+        (0, productionTasks_1.assertNotBomDriven)(subtaskId, status);
         if (!(0, productionTasks_1.isProductionTaskStatus)(status)) {
             throw (0, productionTasks_1.productionTaskError)('STATUS_INVALID', 'Unbekannter Stand.');
         }
+        /* Die kurze Notiz beim Einsenden («Görevi tamamla», 02.10.2026) — Messwerte, Nakliye-Preis;
+           die KI liest sie mit. Nur beim Fertigmelden; ohne Feld bleibt die Notiz von vorher. */
+        const noteGiven = typeof input.note === 'string';
+        const sentNote = noteGiven ? String(input.note).replace(/\r\n?/g, '\n').trim().slice(0, productionTasks_1.SUBMISSION_NOTE_MAX) || null : null;
+        /* Der Betrag beim Einsenden («Ücret girilsin», 02.10.2026, OCC-Standard S. 7) — ohne Feld
+           bleibt der von vorher. */
+        const feeGiven = input.fee !== undefined;
+        const sentFee = feeGiven ? (0, productionTasks_1.feeFrom)(input.fee) : null;
+        if (sentFee === undefined)
+            throw (0, productionTasks_1.productionTaskError)('FEE_INVALID', 'Der Betrag ist ungültig.');
+        // «Sistem kilidi» (02.10.2026): fertig melden erst, wenn die Schritte davor erledigt sind.
+        if (status === 'PENDING' || status === 'DONE')
+            await this.assertPriorStepsDone(tenantId, itemId, taskId, subtaskId);
+        let fee = null;
         let from = status;
         // Zur Freigabe geschickt (01.10.2026): die PDFs warten auf die KI-Prüfung gegen die Standards.
         let queued = [];
@@ -484,18 +495,30 @@ class ProductionDeviceTasksUseCase {
                 throw (0, productionTasks_1.productionTaskError)('STATUS_FORBIDDEN', 'Den Stand setzt nur, wer an der Unteraufgabe steht.', { status: 403 });
             }
             from = subtask.status;
-            const next = subtaskStatusChange(subtask, status);
+            const changed = subtaskStatusChange(subtask, status);
+            const sending = (status === 'PENDING' || status === 'DONE') && from !== status;
+            let next = sending && noteGiven ? { ...changed, submissionNote: sentNote } : changed;
+            // «Ücret girilsin»: ohne Betrag kein Einsenden — der neue oder der von vorher.
+            if (sending && subtask.feeRequired) {
+                fee = feeGiven ? sentFee : subtask.fee;
+                if (fee === null)
+                    throw (0, productionTasks_1.productionTaskError)('FEE_REQUIRED', 'Bitte den Betrag (CHF) eingeben.', { status: 409 });
+                next = { ...next, fee };
+            }
             if (status !== 'PENDING' || from === 'PENDING')
                 return next;
             queued = (0, productionTasks_1.filesToAnalyse)(next);
             return (0, productionTasks_1.withQueuedAnalyses)(next, queued, requestedAt);
         }, actor.id));
         const kind = (0, productionTaskActivities_1.subtaskStepKind)(from, status);
+        const sent = kind === 'SUBTASK_SUBMITTED' || kind === 'SUBTASK_DONE';
+        const withNote = sentNote && sent ? { note: sentNote } : {};
+        const withFee = fee !== null && sent ? { fee } : {};
         if (kind)
-            await this.logSubtask(tenantId, itemId, actor, kind, task, subtaskId, { from, to: status });
+            await this.logSubtask(tenantId, itemId, actor, kind, task, subtaskId, { from, to: status, ...withNote, ...withFee });
         // Zur Freigabe geschickt: eine Anfrage an die Verwaltung (30.09.2026) — höchstens eine offene.
         if (kind === 'SUBTASK_SUBMITTED')
-            await this.openRequest(tenantId, itemId, actor, task, subtaskId, 'APPROVAL', null);
+            await this.openRequest(tenantId, itemId, actor, task, subtaskId, 'APPROVAL', sentNote);
         this.startAnalyses(tenantId, itemId, taskId, subtaskId, queued, requestedAt, actor.id);
         return { task: (0, productionTaskReadModel_1.taskDto)(task) };
     }
@@ -505,6 +528,7 @@ class ProductionDeviceTasksUseCase {
      * Erledigt, mit wem, wann und kurzer Notiz; danach gesperrt.
      */
     async completeSubtask(tenantId, actor, isAdmin, itemId, taskId, subtaskId, body) {
+        (0, productionTasks_1.assertNotBomDriven)(subtaskId);
         if (!isAdmin)
             throw (0, productionTasks_1.productionTaskError)('STATUS_FORBIDDEN', 'Abschliessen darf nur die Verwaltung.', { status: 403 });
         const input = objectOf(body);
@@ -514,6 +538,8 @@ class ProductionDeviceTasksUseCase {
         const checked = new Set(Array.isArray(input.checked) ? input.checked.filter((id) => typeof id === 'string') : []);
         let checklist = [];
         let fileIds = [];
+        // «Sistem kilidi» (02.10.2026): freigeben erst, wenn die Schritte davor erledigt sind.
+        await this.assertPriorStepsDone(tenantId, itemId, taskId, subtaskId);
         const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!subtask.requiresApproval) {
                 throw (0, productionTasks_1.productionTaskError)('NOT_APPROVABLE', 'Diese Unteraufgabe braucht keine Freigabe.', { status: 409 });
@@ -526,6 +552,9 @@ class ProductionDeviceTasksUseCase {
             }
             if (subtask.requiresDocument && !(0, productionTasks_1.hasSubtaskDocument)(subtask)) {
                 throw (0, productionTasks_1.productionTaskError)('DOCUMENT_REQUIRED', 'Ohne PDF schliesst sie nicht ab.', { status: 409 });
+            }
+            if (subtask.feeRequired && subtask.fee === null) {
+                throw (0, productionTasks_1.productionTaskError)('FEE_REQUIRED', 'Ohne Betrag (CHF) schliesst sie nicht ab.', { status: 409 });
             }
             // Jeder Punkt der Checkliste muss abgehakt sein (28.09.2026) — sonst keine Freigabe.
             if (subtask.approvalChecklist.some((item) => !checked.has(item.id))) {
@@ -615,6 +644,7 @@ class ProductionDeviceTasksUseCase {
      * Arbeit, mit wem, wann und was zu ändern ist.
      */
     async requestSubtaskRevision(tenantId, actor, isAdmin, itemId, taskId, subtaskId, body) {
+        (0, productionTasks_1.assertNotBomDriven)(subtaskId);
         if (!isAdmin)
             throw (0, productionTasks_1.productionTaskError)('STATUS_FORBIDDEN', 'Zurückgeben darf nur die Verwaltung.', { status: 403 });
         const rawNote = objectOf(body).note;
@@ -659,7 +689,7 @@ class ProductionDeviceTasksUseCase {
     revisionOf = null, 
     /** Was sich geändert hat — Pflicht für eine neue Fassung (28.09.2026). */
     rawRevisionNote = null) {
-        await this.assertOnSubtask(tenantId, actor, isAdmin, itemId, taskId, subtaskId);
+        const target = await this.assertOnSubtask(tenantId, actor, isAdmin, itemId, taskId, subtaskId);
         const revisionNote = typeof rawRevisionNote === 'string' ? rawRevisionNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
         if (revisionOf && !revisionNote) {
             throw (0, productionTasks_1.productionTaskError)('REVISION_NOTE_REQUIRED', 'Zu einer neuen Fassung gehört eine Notiz, was sich geändert hat.');
@@ -667,19 +697,32 @@ class ProductionDeviceTasksUseCase {
         if (!file || !file.body?.length)
             throw (0, productionTasks_1.productionTaskError)('FILE_REQUIRED', 'Keine Datei empfangen.');
         const contentType = String(file.contentType || '').toLowerCase();
-        if (!SUBTASK_FILE_TYPES.has(contentType) || !this.files.accepts(contentType)) {
-            throw (0, productionTasks_1.productionTaskError)('FILE_TYPE', 'Erlaubt sind nur PDF-Dateien.');
-        }
+        // PDF wie bisher; mit «Fotoğraf yeterli» auch JPEG, PNG, WebP (02.10.2026).
+        const wrongType = () => (0, productionTasks_1.productionTaskError)('FILE_TYPE', target.photoAllowed ? 'Erlaubt sind PDF und Fotos (JPEG, PNG, WebP).' : 'Erlaubt sind nur PDF-Dateien.');
+        if (!(0, productionTasks_1.subtaskAcceptsType)(target, contentType) || !this.files.accepts(contentType))
+            throw wrongType();
         if (file.body.length > productionTasks_1.SUBTASK_FILE_LIMITS.bytes) {
             throw (0, productionTasks_1.productionTaskError)('FILE_TOO_LARGE', 'Die Datei ist zu gross.', { status: 413, params: { max: 25 } });
         }
         const ref = await this.files.store(tenantId, file.body, contentType);
         let added = null;
         let task;
+        // Gegen die Standards geprüft wird gleich beim Hochladen (02.10.2026: «the file should be
+        // sent to the AI immediately and show the analysis result immediately on the page»).
+        let analyse = false;
+        const requestedAt = new Date().toISOString();
         try {
             task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
                 // Gesperrt heisst für ALLE gesperrt (28.09.2026) — auch solange sie auf die Freigabe wartet.
                 assertFilesOpen(subtask);
+                // «Fotoğraf yeterli» kann inzwischen weg sein — dann kein Foto mehr.
+                if (!(0, productionTasks_1.subtaskAcceptsType)(subtask, contentType))
+                    throw wrongType();
+                // Solange die KI ein PDF dieser Unteraufgabe prüft, kommt kein neues dazu (02.10.2026:
+                // «when the AI analyses a pdf prevent uploading a new one; after the analysis allow it»).
+                if (subtask.files.some((entry) => (0, productionTasks_1.isAnalysisActive)(entry.analysis))) {
+                    throw (0, productionTasks_1.productionTaskError)('ANALYSIS_RUNNING', 'Die KI prüft gerade ein PDF dieser Unteraufgabe — danach geht das Hochladen wieder.', { status: 409 });
+                }
                 if (subtask.files.length >= productionTasks_1.SUBTASK_FILE_LIMITS.files) {
                     throw (0, productionTasks_1.productionTaskError)('FILES_TOO_MANY', 'Zu viele Dateien.', { status: 409, params: { max: productionTasks_1.SUBTASK_FILE_LIMITS.files } });
                 }
@@ -704,11 +747,12 @@ class ProductionDeviceTasksUseCase {
                     uploadedById: actor.id,
                     uploadedByName: actor.name,
                     uploadedAt: new Date().toISOString(),
-                    // Geprüft wird beim Schicken zur Freigabe (01.10.2026).
                     analysis: null,
                 };
                 added = entry;
-                return { ...subtask, files: [...subtask.files, entry] };
+                const next = { ...subtask, files: [...subtask.files, entry] };
+                analyse = contentType === 'application/pdf' && (0, productionTasks_1.hasDocumentStandards)(subtask);
+                return analyse ? (0, productionTasks_1.withQueuedAnalyses)(next, [id], requestedAt) : next;
             }, actor.id));
         }
         catch (error) {
@@ -718,6 +762,8 @@ class ProductionDeviceTasksUseCase {
         const stored = added;
         if (stored)
             await this.logSubtask(tenantId, itemId, actor, 'FILE_UPLOADED', task, subtaskId, (0, productionTaskActivities_1.fileDetails)(stored));
+        if (stored && analyse)
+            this.startAnalyses(tenantId, itemId, taskId, subtaskId, [stored.id], requestedAt, actor.id);
         return { task: (0, productionTaskReadModel_1.taskDto)(task) };
     }
     /**
@@ -728,6 +774,7 @@ class ProductionDeviceTasksUseCase {
         if (!isAdmin)
             throw (0, productionTasks_1.productionTaskError)('STATUS_FORBIDDEN', 'Die KI-Prüfung startet nur die Verwaltung.', { status: 403 });
         const requestedAt = new Date().toISOString();
+        let queued = [fileId];
         const task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
             if (!(0, productionTasks_1.hasDocumentStandards)(subtask)) {
                 throw (0, productionTasks_1.productionTaskError)('NO_STANDARDS', 'Diese Unteraufgabe hat keine Standards für Dokumente.', { status: 409 });
@@ -735,14 +782,19 @@ class ProductionDeviceTasksUseCase {
             const file = subtask.files.find((entry) => entry.id === fileId);
             if (!file)
                 throw (0, productionTasks_1.productionTaskError)('FILE_NOT_FOUND', 'Datei nicht gefunden.', { status: 404 });
-            if (file.type !== 'application/pdf')
+            // Ein Foto (nur mit «Fotoğraf yeterli», 02.10.2026) prüft seine ganze Gruppe noch einmal.
+            const photo = subtask.photoAllowed && (0, productionTasks_1.isSubtaskPhotoType)(file.type);
+            if (file.type !== 'application/pdf' && !photo)
                 throw (0, productionTasks_1.productionTaskError)('FILE_TYPE', 'Geprüft werden nur PDF-Dateien.');
-            if ((0, productionTasks_1.isAnalysisActive)(file.analysis)) {
+            queued = photo ? (0, productionTasks_1.photoGroupOf)(subtask) : [fileId];
+            if (!queued.length)
+                queued = [fileId];
+            if (queued.some((id) => (0, productionTasks_1.isAnalysisActive)(subtask.files.find((entry) => entry.id === id)?.analysis ?? null))) {
                 throw (0, productionTasks_1.productionTaskError)('ANALYSIS_RUNNING', 'Die Prüfung läuft schon.', { status: 409 });
             }
-            return (0, productionTasks_1.withQueuedAnalyses)(subtask, [fileId], requestedAt);
+            return (0, productionTasks_1.withQueuedAnalyses)(subtask, queued, requestedAt);
         }, actor.id));
-        this.startAnalyses(tenantId, itemId, taskId, subtaskId, [fileId], requestedAt, actor.id);
+        this.startAnalyses(tenantId, itemId, taskId, subtaskId, queued, requestedAt, actor.id);
         return { task: (0, productionTaskReadModel_1.taskDto)(task) };
     }
     /** Eine Datei lesen — wer die Produktion sieht. */
@@ -964,6 +1016,51 @@ class ProductionDeviceTasksUseCase {
                 .sort((left, right) => byText(right.projectNumber, left.projectNumber)),
         };
     }
+    /**
+     * Wer schon woran arbeitet (02.10.2026: «when admins assign people show which tasks that
+     * employee has on which projects and devices») — je Person ihre OFFENEN Unteraufgaben
+     * (nicht erledigt) über alle Geräte mit Plan: Projekt, Gerät, Bereich, Stufe, Aufgabe.
+     */
+    async workload(tenantId) {
+        const devices = await this.directory.taskDevices(tenantId);
+        const plans = await Promise.all(devices.map(async (row) => ({ row, plan: await this.plans.getPlan(tenantId, row.deviceId) })));
+        const people = {};
+        for (const { row, plan } of plans) {
+            if (!plan)
+                continue;
+            for (const task of plan.tasks) {
+                const section = plan.sections.find((entry) => entry.key === task.area) ?? null;
+                const stage = section?.stages.find((entry) => entry.key === task.stage) ?? null;
+                for (const subtask of task.subtasks) {
+                    if (subtask.status === 'DONE')
+                        continue;
+                    for (const personId of subtask.assigneeIds) {
+                        (people[personId] ??= []).push({
+                            projectId: row.projectId,
+                            projectNumber: row.projectNumber,
+                            projectName: row.projectName,
+                            deviceId: row.deviceId,
+                            deviceName: row.deviceName,
+                            positionNumber: row.positionNumber,
+                            area: task.area,
+                            sectionName: section?.name ?? '',
+                            stage: task.stage,
+                            stageName: stage?.name ?? '',
+                            taskCode: task.code,
+                            taskName: task.name,
+                            subtaskName: subtask.name,
+                            status: subtask.status,
+                            dueDate: subtask.dueDate ?? task.dueDate ?? null,
+                        });
+                    }
+                }
+            }
+        }
+        // Das Dringende zuerst: nach Termin, ohne Termin ans Ende.
+        for (const list of Object.values(people))
+            list.sort((left, right) => (left.dueDate ?? '9999').localeCompare(right.dueDate ?? '9999'));
+        return { people };
+    }
     /** «Mark as solved» (30.09.2026) — nur die Verwaltung (der Weg sichert es). */
     async solveRequest(tenantId, actor, itemId, requestId) {
         const solved = await this.requests.solve(tenantId, itemId, requestId, { id: actor.id, name: actor.name }, 'MANUAL');
@@ -993,9 +1090,17 @@ class ProductionDeviceTasksUseCase {
      * project task tables». Je Projekt die Geräte, an denen die Person an einer Unteraufgabe
      * steht, und dort NUR diese Aufgaben — samt Bereichen und Stufen, damit die Oberfläche die
      * Tabellen der Stufen zeichnen kann. Keine Produktionsrechte nötig: es sind die eigenen.
+     *
+     * Die Verwaltung sieht dazu JEDE Stufe mit einer Unteraufgabe, die auf ihre Freigabe wartet
+     * (02.10.2026, Samet: «show all pending approvals to admins») — «Approve the task» steht dort
+     * an derselben Stelle wie auf der Geräteseite.
      */
-    async myTasks(tenantId, actor) {
-        const itemIds = await this.plans.itemIdsForAssignee(tenantId, actor.id);
+    async myTasks(tenantId, actor, isAdmin = false) {
+        const [ownItemIds, pendingItemIds] = await Promise.all([
+            this.plans.itemIdsForAssignee(tenantId, actor.id),
+            isAdmin ? this.plans.itemIdsWithPendingSubtasks(tenantId) : Promise.resolve([]),
+        ]);
+        const itemIds = [...new Set([...ownItemIds, ...pendingItemIds])];
         const found = await Promise.all(itemIds.map(async (itemId) => {
             const [device, plan] = await Promise.all([this.directory.device(tenantId, itemId), this.plans.getPlan(tenantId, itemId)]);
             if (!device || !device.isActive || !plan)
@@ -1004,6 +1109,9 @@ class ProductionDeviceTasksUseCase {
                should be able to see all tasks and subtasks of the stages they are assigned»). Handeln
                darf sie weiter nur an den eigenen — das prüfen die Wege je Unteraufgabe. */
             const stages = stagesOf(plan.tasks, actor.id);
+            if (isAdmin)
+                for (const key of approvalStagesOf(plan.tasks))
+                    stages.add(key);
             const tasks = plan.tasks.filter((task) => stages.has(stageKeyOf(task)));
             return tasks.length ? { device, plan, tasks } : null;
         }));
@@ -1046,13 +1154,14 @@ class ProductionDeviceTasksUseCase {
      * Eine Datei lesen — über «Görevlerim» (30.09.2026): wer in DERSELBEN STUFE des Geräts an einer
      * Unteraufgabe steht, öffnet auch die Dateien der anderen («they should be able to open the
      * files uploaded by other employees … but they can't delete or modify them»). Nur lesen.
+     * Die Verwaltung liest jede Datei — sie prüft sie beim Freigeben auf der Startseite (02.10.2026).
      */
-    async readSubtaskFileAsAssignee(tenantId, actor, itemId, taskId, subtaskId, fileId) {
+    async readSubtaskFileAsAssignee(tenantId, actor, itemId, taskId, subtaskId, fileId, isAdmin = false) {
         const plan = await this.plans.getPlan(tenantId, itemId);
         const task = plan?.tasks.find((entry) => entry.id === taskId);
         if (!plan || !task)
             throw (0, productionTasks_1.productionTaskError)('TASK_NOT_FOUND', 'Aufgabe nicht gefunden.', { status: 404 });
-        if (!stagesOf(plan.tasks, actor.id).has(stageKeyOf(task))) {
+        if (!isAdmin && !stagesOf(plan.tasks, actor.id).has(stageKeyOf(task))) {
             throw (0, productionTasks_1.productionTaskError)('FILE_FORBIDDEN', 'Nur wer in dieser Stufe an einer Unteraufgabe steht.', { status: 403 });
         }
         return this.readSubtaskFile(tenantId, itemId, taskId, subtaskId, fileId);
@@ -1071,6 +1180,21 @@ class ProductionDeviceTasksUseCase {
         catch (error) {
             console.warn('[production-tasks] Verlauf nicht geschrieben:', error instanceof Error ? error.message : error);
         }
+    }
+    /**
+     * «Sistem kilidi» (02.10.2026, OCC-Standard S. 7): trägt die Unteraufgabe «Kilit», muss alles
+     * davor erledigt sein — sonst ein Fehler mit den offenen Schritten. Ohne «Kilit» nichts.
+     */
+    async assertPriorStepsDone(tenantId, itemId, taskId, subtaskId) {
+        const current = await this.plans.getTask(tenantId, itemId, taskId);
+        if (!current?.subtasks.find((entry) => entry.id === subtaskId)?.priorStepsRequired)
+            return;
+        const plan = await this.plans.getPlan(tenantId, itemId);
+        if (!plan)
+            return;
+        const open = (0, productionTasks_1.openPriorSteps)(plan.sections, plan.tasks, taskId, subtaskId);
+        if (open.length)
+            throw (0, productionTasks_1.priorStepsError)(open);
     }
     /** Eine Anfrage öffnen (30.09.2026) — höchstens eine offene je Art und Unteraufgabe; scheitert still. */
     async openRequest(tenantId, itemId, actor, task, subtaskId, kind, note) {
@@ -1124,7 +1248,7 @@ class ProductionDeviceTasksUseCase {
         const subtask = task.subtasks.find((entry) => entry.id === subtaskId);
         return subtask ? this.log([(0, productionTaskActivities_1.activityAt)(scopeOf(tenantId, itemId, actor), kind, task, subtask, details)]) : Promise.resolve();
     }
-    /** Die Verwaltung oder wer an der Unteraufgabe steht — sonst FILE_FORBIDDEN (403). */
+    /** Die Verwaltung oder wer an der Unteraufgabe steht — sonst FILE_FORBIDDEN (403). Gibt die Unteraufgabe zurück. */
     async assertOnSubtask(tenantId, actor, isAdmin, itemId, taskId, subtaskId) {
         const task = await this.plans.getTask(tenantId, itemId, taskId);
         if (!task)
@@ -1135,6 +1259,7 @@ class ProductionDeviceTasksUseCase {
         if (!isAdmin && !(0, productionTasks_1.worksOnSubtask)(subtask, actor.id)) {
             throw (0, productionTasks_1.productionTaskError)('FILE_FORBIDDEN', 'Nur die Verwaltung und wer an der Unteraufgabe steht.', { status: 403 });
         }
+        return subtask;
     }
     /**
      * Die KI-Prüfung der Dateien im Hintergrund (01.10.2026) — die Antwort an die
@@ -1145,11 +1270,68 @@ class ProductionDeviceTasksUseCase {
         if (!fileIds.length)
             return;
         void (async () => {
-            for (const fileId of fileIds) {
+            // Die Fotos gehen ZUSAMMEN in eine Prüfung (02.10.2026), jedes PDF für sich.
+            const task = await this.plans.getTask(tenantId, itemId, taskId).catch(() => null);
+            const files = task?.subtasks.find((entry) => entry.id === subtaskId)?.files ?? [];
+            const photos = fileIds.filter((id) => (0, productionTasks_1.isSubtaskPhotoType)(files.find((file) => file.id === id)?.type ?? ''));
+            for (const fileId of fileIds.filter((id) => !photos.includes(id))) {
                 await inAnalysisSlot(() => this.analyseFile(tenantId, itemId, taskId, subtaskId, fileId, requestedAt, actorId))
                     .catch((error) => console.error('[production/document-standards] Prüfung abgebrochen', fileId, error));
             }
+            if (photos.length) {
+                await inAnalysisSlot(() => this.analysePhotos(tenantId, itemId, taskId, subtaskId, photos, requestedAt, actorId))
+                    .catch((error) => console.error('[production/document-standards] Prüfung der Fotos abgebrochen', photos.join(','), error));
+            }
         })();
+    }
+    /** Das PDF der Standards, gegen das ein Auftrag prüft — nur aus der eigenen Firma; ohne Verweis null. */
+    async standardsPdfOf(tenantId, subtask, standardsRef) {
+        if (!standardsRef)
+            return null;
+        const body = (0, productionTasks_1.isStandardsRefOf)(standardsRef, tenantId) ? await this.standardsFiles.read(standardsRef).catch(() => null) : null;
+        if (!body)
+            throw (0, productionTasks_1.productionTaskError)('STANDARDS_FILE_NOT_FOUND', 'Das PDF der Standards gibt es nicht.', { status: 404 });
+        const known = subtask.documentStandardsFile?.ref === standardsRef ? subtask.documentStandardsFile.name : 'standards.pdf';
+        return { body, name: known };
+    }
+    /**
+     * Die Fotos einer Einsendung ZUSAMMEN prüfen (02.10.2026, «Fotoğraf yeterli»): eine Anfrage
+     * mit allen Fotos (die KI bekommt sie verkleinert), den Standards und der kurzen Notiz;
+     * derselbe Bericht kommt an jedes Foto. Nur DIESER Auftrag schreibt.
+     */
+    async analysePhotos(tenantId, itemId, taskId, subtaskId, fileIds, requestedAt, actorId) {
+        const task = await this.plans.getTask(tenantId, itemId, taskId);
+        const subtask = task?.subtasks.find((entry) => entry.id === subtaskId);
+        const photos = (subtask?.files ?? []).filter((file) => fileIds.includes(file.id) && file.analysis?.requestedAt === requestedAt);
+        const first = photos[0]?.analysis;
+        if (!task || !subtask || !first)
+            return;
+        const ids = photos.map((file) => file.id);
+        const write = (patch) => this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (current) => (0, productionTasks_1.withFileAnalyses)(current, ids, requestedAt, patch), actorId);
+        if (!this.reviewer.configured()) {
+            await write({ status: 'FAILED', finishedAt: new Date().toISOString(), errorCode: 'GPT_NOT_CONFIGURED' });
+            return;
+        }
+        await write({ status: 'RUNNING' });
+        try {
+            const images = await Promise.all(photos.map(async (file) => ({ body: await this.files.read(file.ref), type: file.type, name: file.name })));
+            const report = await this.reviewer.review({
+                pdf: null,
+                fileName: photos.map((file) => file.name).join(', ').slice(0, 300),
+                standards: first.standards,
+                standardsPdf: await this.standardsPdfOf(tenantId, subtask, first.standardsFileRef),
+                images,
+                note: first.note,
+                taskName: task.name,
+                subtaskName: subtask.name,
+            });
+            await write({ status: 'DONE', finishedAt: new Date().toISOString(), errorCode: null, ...report });
+        }
+        catch (error) {
+            const code = typeof error?.code === 'string' ? error.code : 'ANALYSIS_FAILED';
+            console.error('[production/document-standards] photos', ids.join(','), code, error?.message ?? error);
+            await write({ status: 'FAILED', finishedAt: new Date().toISOString(), errorCode: code.slice(0, 60) });
+        }
     }
     async analyseFile(tenantId, itemId, taskId, subtaskId, fileId, requestedAt, actorId) {
         // Nur DIESER Auftrag schreibt — ein neuerer oder eine entfernte Datei bleiben unberührt.
@@ -1166,20 +1348,14 @@ class ProductionDeviceTasksUseCase {
         await write({ status: 'RUNNING' });
         try {
             // Das PDF der Standards, gegen das dieser Auftrag prüft — nur aus der eigenen Firma.
-            const standardsRef = file.analysis.standardsFileRef;
-            let standardsPdf = null;
-            if (standardsRef) {
-                const body = (0, productionTasks_1.isStandardsRefOf)(standardsRef, tenantId) ? await this.standardsFiles.read(standardsRef).catch(() => null) : null;
-                if (!body)
-                    throw (0, productionTasks_1.productionTaskError)('STANDARDS_FILE_NOT_FOUND', 'Das PDF der Standards gibt es nicht.', { status: 404 });
-                const known = subtask.documentStandardsFile?.ref === standardsRef ? subtask.documentStandardsFile.name : 'standards.pdf';
-                standardsPdf = { body, name: known };
-            }
+            const standardsPdf = await this.standardsPdfOf(tenantId, subtask, file.analysis.standardsFileRef);
             const report = await this.reviewer.review({
                 pdf: await this.files.read(file.ref),
                 fileName: file.name,
                 standards: file.analysis.standards,
                 standardsPdf,
+                // Die kurze Notiz der Einsendung liest die KI mit (02.10.2026) — ohne Notiz wie bisher.
+                note: file.analysis.note,
                 taskName: task.name,
                 subtaskName: subtask.name,
             });

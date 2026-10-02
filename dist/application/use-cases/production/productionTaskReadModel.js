@@ -14,6 +14,7 @@ const taskDto = (task) => ({
     dueDate: task.dueDate,
     createdAt: task.createdAt,
     status: task.status ?? 'TODO',
+    customerVisible: task.customerVisible === true,
     subtasks: task.subtasks.map((subtask) => ({
         ...subtask,
         // Eine liegengebliebene KI-Prüfung (01.10.2026) zeigt sich als gescheitert, «unterbrochen».

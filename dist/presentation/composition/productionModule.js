@@ -15,6 +15,8 @@ const ListProductionLinesUseCase_1 = require("../../application/use-cases/produc
 const GetProductionItemUseCase_1 = require("../../application/use-cases/production/GetProductionItemUseCase");
 const ProductionPickerUseCase_1 = require("../../application/use-cases/production/ProductionPickerUseCase");
 const ProductionSettingsUseCase_1 = require("../../application/use-cases/production/ProductionSettingsUseCase");
+const ProductionSupplierLinksUseCase_1 = require("../../application/use-cases/production/ProductionSupplierLinksUseCase");
+const ProductionSupplierLinkRepository_1 = require("../../infrastructure/repositories/ProductionSupplierLinkRepository");
 const ProductionPurchaseLinkService_1 = require("../../application/use-cases/production/ProductionPurchaseLinkService");
 const tenantModules_1 = require("../../shared/tenantModules");
 /**
@@ -43,6 +45,8 @@ exports.productionModule = {
     item: new GetProductionItemUseCase_1.GetProductionItemUseCase(projects, purchase, purchaseOrders),
     picker: new ProductionPickerUseCase_1.ProductionPickerUseCase(projects, purchase),
     settings: new ProductionSettingsUseCase_1.ProductionSettingsUseCase(settings, tenants, sync),
+    /** Modul-Einstellungen › Produktion › Produktionslieferant (02.10.2026). */
+    supplierLinks: new ProductionSupplierLinksUseCase_1.ProductionSupplierLinksUseCase(new ProductionSupplierLinkRepository_1.PrismaProductionSupplierLinkRepository(), sync),
     purchaseLink: new ProductionPurchaseLinkService_1.ProductionPurchaseLinkService(projects, purchase, exports.isProductionEnabled),
 };
 //# sourceMappingURL=productionModule.js.map

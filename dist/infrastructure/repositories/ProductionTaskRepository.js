@@ -42,6 +42,7 @@ const draftOf = (row, sections, weight) => {
         createdAt: dayOf(row.createdAt),
         subtasks,
         sortOrder: row.sortOrder,
+        customerVisible: row.customerVisible === true,
     };
 };
 /**
@@ -104,6 +105,7 @@ const templateTaskRows = (tenantId, templateId, tasks, sections) => tasks.map((t
     // Das Beispiel kommt ohne Tag: es entsteht heute.
     createdAt: dateOf(task.createdAt ?? new Date().toISOString().slice(0, 10)),
     sortOrder: index,
+    customerVisible: task.customerVisible === true,
 }));
 /** Die eben geschriebenen Zeilen wieder als Aufgaben — ohne neuen Rundgang. */
 const writtenRows = (rows) => rows.map((row) => ({ ...row, assigneeIds: row.assigneeIds, subtasks: row.subtasks }));
@@ -271,6 +273,7 @@ class PrismaProductionDeviceTaskRepository {
             dueDate: dateOf(task.dueDate),
             status: 'TODO',
             sortOrder: index,
+            customerVisible: task.customerVisible === true,
             updatedById: write.actorId,
         }));
         const plan = await prisma_client_1.default.$transaction(async (tx) => {
@@ -344,6 +347,7 @@ class PrismaProductionDeviceTaskRepository {
                     status: (0, productionTasks_1.statusOfSubtasks)(subtasks) ?? previous?.status ?? 'TODO',
                     createdAt: previous?.createdAt ?? now,
                     sortOrder: index,
+                    customerVisible: task.customerVisible === true,
                     updatedById: actorId,
                 };
             });
@@ -388,7 +392,8 @@ class PrismaProductionDeviceTaskRepository {
             if (!current)
                 return 'no-subtask';
             // Der Rückruf braucht die Aufgabe nur zum Lesen von Stand und Personen — das Gewicht zählt hier nicht.
-            const changed = change(current, deviceTaskOf(row, sections, Number(row.stageWeight ?? 0)));
+            // Die Arbeitszeit folgt dem Stand — bei jeder Änderung, wer sie auch macht (02.10.2026).
+            const changed = (0, productionTasks_1.withWorkClock)(current, change(current, deviceTaskOf(row, sections, Number(row.stageWeight ?? 0))), new Date());
             const next = subtasks.map((subtask) => (subtask.id === subtaskId ? changed : subtask));
             await tx.productionDeviceTask.update({
                 where: { id: row.id },
@@ -417,6 +422,15 @@ class PrismaProductionDeviceTaskRepository {
               FROM uretim_cihaz_gorevleri
              WHERE tenantId = ${tenantId}
                AND JSON_CONTAINS(assigneeIds, JSON_QUOTE(${employeeId}))`);
+        return rows.map((row) => row.productionItemId);
+    }
+    async itemIdsWithPendingSubtasks(tenantId) {
+        // Der Stand jeder Unteraufgabe steht in der JSON-Liste `subtasks` — EIN Rundgang.
+        const rows = await prisma_client_1.default.$queryRaw(client_1.Prisma.sql `
+            SELECT DISTINCT productionItemId
+              FROM uretim_cihaz_gorevleri
+             WHERE tenantId = ${tenantId}
+               AND JSON_SEARCH(subtasks, 'one', 'PENDING', NULL, '$[*].status') IS NOT NULL`);
         return rows.map((row) => row.productionItemId);
     }
 }

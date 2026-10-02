@@ -32,6 +32,7 @@ const productionProcurement_routes_1 = __importDefault(require("./productionProc
  *   GET  /picker/projects/:id          … die Geräte eines Projekts
  *   GET  /picker/purchase-orders/:id   … die Auswahl einer Bestellung
  *   GET  /settings, PUT /settings      Einstellungen → Firmenübertragungen
+ *   GET  /supplier-links, PUT …        Modul-Einstellungen › Produktion › Produktionslieferant
  *
  * Die Auswahl selbst wird mit der Bestellung gespeichert (inventory.routes).
  * Die Lagerleute brauchen die Auswahl-Wege auch ohne eigenes Produktionsrecht:
@@ -59,6 +60,11 @@ router.get('/picker/purchase-orders/:purchaseOrderId', VIEW_OR_INVENTORY, cache,
 // Einstellungsmenü). Lesen geht ohne Schleuse, damit die Seite ihren Stand zeigt.
 router.get('/settings', (0, RbacMiddleware_1.requirePermission)('roles.manage'), (req, res, next) => controller.getSettings(req, res, next));
 router.put('/settings', (0, RbacMiddleware_1.requirePermission)('roles.manage'), ItGateMiddleware_1.requireItGate, (req, res, next) => controller.saveSettings(req, res, next));
+// Produktionslieferant (02.10.2026): stellt die BESTELLENDE Firma ein — dort
+// ist die Produktion meist gar nicht eingeschaltet, darum ohne requireModule.
+// Gleiche Hürde wie die Firmenübertragungen.
+router.get('/supplier-links', (0, RbacMiddleware_1.requirePermission)('roles.manage'), (req, res, next) => controller.getSupplierLinks(req, res, next));
+router.put('/supplier-links', (0, RbacMiddleware_1.requirePermission)('roles.manage'), ItGateMiddleware_1.requireItGate, (req, res, next) => controller.saveSupplierLinks(req, res, next));
 // Die Schaltschrank-Wege erben `requireAuth` von oben.
 router.use('/panels', panel_routes_1.default);
 // Görevlendirme: /task-templates und /devices/:itemId/tasks (erben `requireAuth`).
