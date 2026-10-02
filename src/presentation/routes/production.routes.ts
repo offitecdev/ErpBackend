@@ -20,6 +20,7 @@ import productionBomRouter from './productionBom.routes';
  *   GET  /overview                     Seite «Produktionsaufträge»
  *   GET  /projects/:id                 Projektseite (zwei Reiter + Vergleich)
  *   GET  /projects/:id/devices         Projektseite + Geräteseite: Tabelle, Geräte (24.09.2026)
+ *   GET  /projects/:id/devices/:deviceId  Kopf der Geräteseite: Projekt + Gerät
  *   GET  /lines                        Seite «Bestellte Produkte»
  *   GET  /items/:id                    das Gerät im Fenster
  *   GET  /picker/projects              Auswahl in der Lieferantenbestellung
@@ -45,6 +46,7 @@ router.get('/status', (req, res, next) => controller.status(req, res, next));
 router.post('/sync', VIEW_OR_INVENTORY, ProductionController.requireModule, (req, res, next) => controller.sync(req, res, next));
 
 router.get('/overview', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.overview(req, res, next));
+router.get('/projects/:id/devices/:deviceId', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.deviceHeader(req, res, next));
 router.get('/projects/:id/devices', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.projectDevices(req, res, next));
 router.get('/projects/:id', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.project(req, res, next));
 router.get('/lines', VIEW, ProductionController.requireModule, cache, (req, res, next) => controller.lines(req, res, next));

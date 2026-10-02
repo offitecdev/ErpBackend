@@ -62,6 +62,11 @@ export interface ProductionProjectDetailsDto {
     syncedAt: string | null;
 }
 
+export interface ProductionDeviceHeaderDto {
+    project: Pick<ProjectDto, 'id' | 'projectNumber' | 'projectName'>;
+    device: Pick<ProductionDeviceRowDto, 'id' | 'name' | 'positionNumber' | 'articleCode' | 'quantity' | 'unit' | 'salesOrderNumber' | 'orderKind'>;
+}
+
 export interface ProductionProjectDevicesDto {
     project: ProjectDto & { sourceTenantName: string | null };
     devices: ProductionDeviceRowDto[];
@@ -142,6 +147,26 @@ export class GetProductionProjectDevicesUseCase {
                 services: devices.filter((row) => row.kind === 'SERVICE').length,
             },
             details: detailsOf(project, source, orders, rank, devices),
+        };
+    }
+
+    /** Der Kopf der Geräteseite: Projekt und die eine Zeile aus derselben Liste. */
+    async header(tenantId: string, projectId: string, deviceId: string): Promise<ProductionDeviceHeaderDto> {
+        const { project, devices } = await this.execute(tenantId, projectId);
+        const device = devices.find((row) => row.id === deviceId);
+        if (!device) throw productionError('NOT_FOUND', 'Gerät nicht gefunden.', { status: 404 });
+        return {
+            project: { id: project.id, projectNumber: project.projectNumber, projectName: project.projectName },
+            device: {
+                id: device.id,
+                name: device.name,
+                positionNumber: device.positionNumber,
+                articleCode: device.articleCode,
+                quantity: device.quantity,
+                unit: device.unit,
+                salesOrderNumber: device.salesOrderNumber,
+                orderKind: device.orderKind,
+            },
         };
     }
 
