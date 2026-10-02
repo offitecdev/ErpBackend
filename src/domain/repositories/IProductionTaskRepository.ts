@@ -16,6 +16,8 @@ import type {
     ProductionTaskTemplate,
     ProductionTaskTemplateInput,
     ProductionTaskTemplateSummary,
+    ProductionStandardsFile,
+    ProductionStandardsTemplate,
 } from '../entities/ProductionTask';
 
 /**
@@ -266,4 +268,12 @@ export interface IProductionTaskRequestRepository {
         by: { id: string; name: string | null },
         resolution: ProductionTaskRequestResolution,
     ): Promise<number>;
+}
+
+/** Die Vorlagen der Dokument-Standards (02.10.2026). */
+export interface IProductionStandardsTemplateRepository {
+    list(tenantId: string): Promise<ProductionStandardsTemplate[]>;
+    create(tenantId: string, input: { name: string; text: string | null; file: ProductionStandardsFile | null }, userId: string): Promise<ProductionStandardsTemplate | 'NAME_TAKEN'>;
+    update(tenantId: string, id: string, input: { name: string; text: string | null; file: ProductionStandardsFile | null }, userId: string): Promise<ProductionStandardsTemplate | null | 'NAME_TAKEN'>;
+    remove(tenantId: string, id: string): Promise<boolean>;
 }

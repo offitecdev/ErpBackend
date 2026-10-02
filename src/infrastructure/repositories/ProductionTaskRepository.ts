@@ -42,6 +42,7 @@ import {
     storedStageWeightsComplete,
     statusFrom,
     statusOfSubtasks,
+    withWorkClock,
     subtasksFrom,
     taskAssigneesOf,
     mergeDeviceRecord,
@@ -78,6 +79,7 @@ type TaskRow = {
     dueDate: Date | null;
     createdAt: Date | null;
     sortOrder: number;
+    customerVisible?: boolean;
 };
 
 /* Beginn und Termin sind DATE-Spalten: Prisma liefert Mitternacht UTC —
@@ -105,6 +107,7 @@ const draftOf = (row: TaskRow, sections: readonly ProductionTaskSection[], weigh
         createdAt: dayOf(row.createdAt),
         subtasks,
         sortOrder: row.sortOrder,
+        customerVisible: row.customerVisible === true,
     };
 };
 
@@ -190,6 +193,7 @@ const templateTaskRows = (tenantId: string, templateId: string, tasks: Productio
         // Das Beispiel kommt ohne Tag: es entsteht heute.
         createdAt: dateOf(task.createdAt ?? new Date().toISOString().slice(0, 10)),
         sortOrder: index,
+        customerVisible: task.customerVisible === true,
     }));
 
 /** Die eben geschriebenen Zeilen wieder als Aufgaben — ohne neuen Rundgang. */
@@ -392,6 +396,7 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             dueDate: dateOf(task.dueDate),
             status: 'TODO',
             sortOrder: index,
+            customerVisible: task.customerVisible === true,
             updatedById: write.actorId,
         }));
         const plan = await prisma.$transaction(async (tx) => {
@@ -471,6 +476,7 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
                     status: statusOfSubtasks(subtasks) ?? previous?.status ?? 'TODO',
                     createdAt: previous?.createdAt ?? now,
                     sortOrder: index,
+                    customerVisible: task.customerVisible === true,
                     updatedById: actorId,
                 };
             });
@@ -529,7 +535,8 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             const current = subtasks.find((subtask) => subtask.id === subtaskId);
             if (!current) return 'no-subtask' as const;
             // Der Rückruf braucht die Aufgabe nur zum Lesen von Stand und Personen — das Gewicht zählt hier nicht.
-            const changed = change(current, deviceTaskOf(row, sections, Number(row.stageWeight ?? 0)));
+            // Die Arbeitszeit folgt dem Stand — bei jeder Änderung, wer sie auch macht (02.10.2026).
+            const changed = withWorkClock(current, change(current, deviceTaskOf(row, sections, Number(row.stageWeight ?? 0))), new Date());
             const next = subtasks.map((subtask) => (subtask.id === subtaskId ? changed : subtask));
             await tx.productionDeviceTask.update({
                 where: { id: row.id },

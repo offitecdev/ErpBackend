@@ -92,6 +92,8 @@ model ProductionTaskTemplateTask {
   /// schreibt die Zeilen neu — der Tag reist darum mit dem Entwurf mit.
   createdAt   DateTime? @db.Date
   sortOrder   Int    @default(0)
+  /// Sieht der Kunde diese Aufgabe (02.10.2026)? Gesetzt von der Verwaltung; Vorgabe nein.
+  customerVisible Boolean @default(false)
 
   template ProductionTaskTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 
@@ -151,6 +153,8 @@ model ProductionDeviceTask {
   /// die Freigabe (aus den Unteraufgaben).
   status           String   @default("TODO") @db.VarChar(12)
   sortOrder        Int      @default(0)
+  /// Sieht der Kunde diese Aufgabe (02.10.2026)? Aus der Vorlage, am Gerät änderbar; Vorgabe nein.
+  customerVisible  Boolean  @default(false)
   updatedById      String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -240,4 +244,23 @@ model ProductionDeviceTaskRequest {
   @@index([tenantId, productionItemId, area, stage, createdAt], map: "uretim_cihaz_gorev_talepleri_stage_idx")
   @@index([tenantId, productionItemId, subtaskId, kind], map: "uretim_cihaz_gorev_talepleri_subtask_idx")
   @@map("uretim_cihaz_gorev_talepleri")
+}
+
+/// Vorlagen der Dokument-Standards (02.10.2026: «in the Document standards the admin should be
+/// able to add a template for standard and select a standard with a combobox»). Text und/oder
+/// PDF (dieselbe Ablage wie die Standards einer Unteraufgabe, `file` = { ref, name, size, uploadedAt }).
+/// Gewählt wird sie im Fenster der Standards; die Unteraufgabe bekommt eine KOPIE von Text und Verweis.
+model ProductionTaskStandardsTemplate {
+  id          String   @id
+  tenantId    String
+  name        String   @db.VarChar(120)
+  text        String?  @db.Text
+  file        Json?
+  createdById String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@map("uretim_gorev_standart_sablonlari")
 }

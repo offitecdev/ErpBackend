@@ -3,7 +3,9 @@ import type {
     BomStockProduct,
     BomTemplateInput,
 } from '../../../../domain/entities/ProductionBom';
+import { isCustomBomCategory } from '../../../../domain/entities/ProductionBom';
 import type {
+    IBomCategoryRepository,
     IBomRepository,
     IBomStockReader,
     IBomTemplateRepository,
@@ -82,6 +84,7 @@ export class BomTemplatesUseCase {
             products: IWarehouseProductRepository;
             directory: IWarehouseDirectory;
         },
+        private categories: IBomCategoryRepository,
     ) {}
 
     private assertCanWrite(actor: BomActor): void {
@@ -135,7 +138,9 @@ export class BomTemplatesUseCase {
     async searchProducts(tenantId: string, query: unknown, area?: unknown): Promise<{ items: BomProductDto[] }> {
         const needle = String(query ?? '').trim();
         if (needle.length < 1) return { items: [] };
-        const found = await this.stock.search(tenantId, needle, 20, areaFrom(area));
+        // Eine eigene Kategorie sucht in allen Karten — die Kod-Türe kennen nur Mekanik/Elektrik.
+        const parsed = areaFrom(area);
+        const found = await this.stock.search(tenantId, needle, 20, parsed && !isCustomBomCategory(parsed) ? parsed : null);
         if (!found.length) return { items: [] };
         const facts = await this.reservations.facts(tenantId, found.map((product) => product.productId));
         return { items: found.map((product) => productDto(product, facts.coverage.free.get(product.productId))) };
@@ -161,6 +166,9 @@ export class BomTemplatesUseCase {
 
     private async inputFrom(tenantId: string, body: unknown): Promise<BomTemplateInput> {
         const head = templateHeadFrom(body);
+        if (isCustomBomCategory(head.category) && !(await this.categories.get(tenantId, head.category))) {
+            throw bomError('CATEGORY_NOT_FOUND', 'Diese BOM-Kategorie gibt es nicht (mehr).', { status: 404 });
+        }
         const lines = await this.linesFrom(tenantId, (body as Record<string, unknown> | null)?.lines);
         return { ...head, lines };
     }

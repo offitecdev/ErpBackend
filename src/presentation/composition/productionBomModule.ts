@@ -2,6 +2,7 @@ import { PrismaBomRevisionApprovals } from '../../infrastructure/repositories/Bo
 import { BomRevisionNotifier } from '../../infrastructure/services/bomRevisionNotifications';
 import { PrismaSupplierEmailBook } from '../../infrastructure/repositories/SupplierEmailBook';
 import {
+    PrismaBomCategoryRepository,
     PrismaBomProductionDirectory,
     PrismaBomPurchaseRepository,
     PrismaBomRepository,
@@ -13,6 +14,8 @@ import { BomPurchaseOrderWriter } from '../../infrastructure/services/production
 import { PrismaBomRevisionWriter } from '../../infrastructure/services/productionBomRevisionWriter';
 import { PrismaBomRevisionRepository } from '../../infrastructure/repositories/ProductionBomRevisionRepository';
 import { BomRevisionsUseCase } from '../../application/use-cases/production/bom/BomRevisionsUseCase';
+import { BomTaskSync } from '../../application/use-cases/production/bom/BomTaskSync';
+import { PrismaProductionDeviceTaskRepository } from '../../infrastructure/repositories/ProductionTaskRepository';
 import { fillTableWithAi } from '../../infrastructure/services/bomTableAi';
 import { BomReservationService } from '../../application/use-cases/production/bom/BomReservationService';
 import { BomTemplatesUseCase } from '../../application/use-cases/production/bom/BomTemplatesUseCase';
@@ -48,6 +51,7 @@ const stock = new PrismaBomStockReader();
 const purchases = new PrismaBomPurchaseRepository();
 const directory = new PrismaBomProductionDirectory();
 const settings = new PrismaBomSettingsRepository();
+const categories = new PrismaBomCategoryRepository();
 const writer = new BomPurchaseOrderWriter();
 const warehouseProducts = new PrismaWarehouseProductRepository();
 const revisions = new PrismaBomRevisionRepository();
@@ -60,7 +64,7 @@ const templateUseCase = new BomTemplatesUseCase(templates, boms, stock, reservat
     groups: new PrismaWarehouseGroupRepository(),
     products: warehouseProducts,
     directory: new PrismaWarehouseDirectory(),
-});
+}, categories);
 const devices = new DeviceBomsUseCase(
     boms,
     templates,
@@ -82,6 +86,8 @@ devices.attachProcurement(procurement);
 /* Die Freigaben der Revisionen (eingereicht / zurückgewiesen) stehen an der BOM (30.09.2026). */
 const revisionApprovals = new PrismaBomRevisionApprovals();
 devices.attachRevisionApprovals(revisionApprovals);
+/* «BOM Creation» folgt der BOM (02.10.2026): Freigabe, Abschluss und Revisionen setzen den Stand der Unteraufgabe. */
+devices.attachTaskSync(new BomTaskSync(new PrismaProductionDeviceTaskRepository(), boms, revisions, revisionApprovals));
 
 export const productionBomModule = {
     templates: templateUseCase,
@@ -129,7 +135,7 @@ export const productionBomModule = {
         revisionApprovals,
         new BomRevisionNotifier(),
     ),
-    settings: new BomSettingsUseCase(settings),
+    settings: new BomSettingsUseCase(settings, categories),
     reservations,
     directory,
     guard: productionBomGuard,

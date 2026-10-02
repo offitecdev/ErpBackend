@@ -56,6 +56,8 @@ export interface ProductionTaskSectionStage {
      * should fill the weight of its stage») — die Stufen eines Bereichs ergeben 100 %.
      */
     weight: number;
+    /** Sieht der Kunde diese Stufe (02.10.2026)? Fehlt = nein. */
+    customerVisible?: boolean;
 }
 
 /** Ein Bereich («bölüm») einer Vorlage: Anteil an der Gesamtfertigstellung und seine Stufen. */
@@ -159,7 +161,21 @@ export interface ProductionFileAnalysis {
      * lagen — derselbe Bericht steht an jedem. Leer bei einem PDF (jedes für sich).
      */
     groupFileIds: string[];
+    /**
+     * Derselbe Bericht in jeder Sprache der Oberfläche (02.10.2026: «give the
+     * analysis in all languages OCC supports but show it in the language the
+     * user uses»): Zusammenfassung und je Prüfpunkt Anforderung und Begründung,
+     * in der Reihenfolge von `checks`. Ältere Berichte haben keinen (null).
+     */
+    i18n: ProductionFileAnalysisI18n | null;
 }
+
+export const PRODUCTION_UI_LANGUAGES = ['tr', 'en', 'de'] as const;
+export type ProductionUiLanguage = typeof PRODUCTION_UI_LANGUAGES[number];
+export type ProductionFileAnalysisI18n = Partial<Record<ProductionUiLanguage, {
+    summary: string | null;
+    checks: Array<{ standard: string; reason: string }>;
+}>>;
 
 /** Ein Punkt der Freigabe-Checkliste einer Unteraufgabe (28.09.2026). */
 export interface ProductionSubtaskChecklistItem {
@@ -261,6 +277,16 @@ export interface ProductionSubtask {
      * oben bleibt sie auch nach der Freigabe stehen: die Prüfansicht zeigt den Verlauf.
      */
     revisionHistory: ProductionSubtaskRevisionRequest[];
+    /**
+     * Die Arbeitszeit (02.10.2026: «when the employee clicks on the play button
+     * then stop button store the work time; if they stop and start again add the
+     * new time to the old time»): Sekunden aus allen abgeschlossenen Runden,
+     * dazu der Beginn der laufenden (ISO) — null, solange niemand arbeitet.
+     */
+    workSeconds: number;
+    workStartedAt: string | null;
+    /** Sieht der Kunde diese Unteraufgabe (02.10.2026)? Fehlt = nein. */
+    customerVisible?: boolean;
 }
 
 /** Eine Rückgabe zur Überarbeitung (28.09.2026): wer, wann (ISO), was zu ändern war. */
@@ -294,6 +320,8 @@ export interface ProductionTaskDraft {
     /** Der Tag des Anlegens (am Gerät: des Ladens) — Beginn, solange keiner gesetzt ist. */
     createdAt: ProductionTaskDay | null;
     subtasks: ProductionSubtask[];
+    /** Sieht der Kunde diese Aufgabe (02.10.2026)? Fehlt = nein. */
+    customerVisible?: boolean;
 }
 
 export interface ProductionTemplateTask extends ProductionTaskDraft {
@@ -491,4 +519,13 @@ export interface ProductionTaskRequest extends ProductionTaskRequestDraft {
     solvedById: string | null;
     solvedByName: string | null;
     resolution: ProductionTaskRequestResolution | null;
+}
+
+/** Eine Vorlage der Dokument-Standards (02.10.2026): Text und/oder PDF unter einem Namen. */
+export interface ProductionStandardsTemplate {
+    id: string;
+    name: string;
+    text: string | null;
+    file: ProductionStandardsFile | null;
+    updatedAt: string;
 }

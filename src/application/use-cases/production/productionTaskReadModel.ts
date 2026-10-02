@@ -42,6 +42,7 @@ export interface ProductionTaskDto {
     /** Der Stand am Gerät; in der Vorlage immer TODO (der Anfang). */
     status: ProductionTaskStatus;
     subtasks: ProductionSubtaskDto[];
+    customerVisible: boolean;
 }
 
 export interface ProductionTaskTemplateSummaryDto {
@@ -104,6 +105,7 @@ export const taskDto = (task: ProductionTaskDraft & { id: string; status?: Produ
     dueDate: task.dueDate,
     createdAt: task.createdAt,
     status: task.status ?? 'TODO',
+    customerVisible: task.customerVisible === true,
     subtasks: task.subtasks.map((subtask) => ({
         ...subtask,
         // Eine liegengebliebene KI-Prüfung (01.10.2026) zeigt sich als gescheitert, «unterbrochen».

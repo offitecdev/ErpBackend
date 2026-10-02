@@ -13,15 +13,43 @@
  */
 import type { ProductionBuiltInArea } from './ProductionTask';
 
-/** Die BOM hängt an den FESTEN Bereichen (Mekanik / Elektrik), nicht an eigenen einer Vorlage. */
-export type BomArea = ProductionBuiltInArea;
+/** Die FESTEN Bereiche (Mekanik / Elektrik) — es gibt sie in jeder Firma. */
+export type BomBuiltInArea = ProductionBuiltInArea;
 /** «bom şablon kategorisi elektrik, makineden biri». */
-export type BomCategory = 'MACHINE' | 'ELECTRICAL';
-export const BOM_CATEGORIES: readonly BomCategory[] = ['MACHINE', 'ELECTRICAL'];
+export type BomBuiltInCategory = 'MACHINE' | 'ELECTRICAL';
+export const BOM_CATEGORIES: readonly BomBuiltInCategory[] = ['MACHINE', 'ELECTRICAL'];
 
-/** Makine ↔ Mekanik, Elektrik ↔ Elektrik. */
-export const CATEGORY_OF_AREA: Record<BomArea, BomCategory> = { MECHANICAL: 'MACHINE', ELECTRICAL: 'ELECTRICAL' };
-export const AREA_OF_CATEGORY: Record<BomCategory, BomArea> = { MACHINE: 'MECHANICAL', ELECTRICAL: 'ELECTRICAL' };
+/**
+ * Eigene Kategorien (02.10.2026, «add category button to create categories
+ * like Mechanical and Electric»): ihre Kennung «c-xxxxxxxx» ist zugleich
+ * Bereich der BOM und Kategorie der Vorlage — Tabelle `uretim_bom_kategorileri`.
+ */
+export const CUSTOM_BOM_CATEGORY = /^c-[a-z0-9]{8}$/;
+export type BomCustomCategoryId = `c-${string}`;
+export const isCustomBomCategory = (value: unknown): value is BomCustomCategoryId =>
+    typeof value === 'string' && CUSTOM_BOM_CATEGORY.test(value);
+
+/** Der Bereich einer BOM: fest oder eine eigene Kategorie. */
+export type BomArea = BomBuiltInArea | BomCustomCategoryId;
+/** Die Kategorie einer Vorlage: fest oder eine eigene Kategorie. */
+export type BomCategory = BomBuiltInCategory | BomCustomCategoryId;
+
+/** Makine ↔ Mekanik, Elektrik ↔ Elektrik; eine eigene Kategorie ist beides zugleich. */
+export const categoryOfArea = (area: BomArea): BomCategory => (area === 'MECHANICAL' ? 'MACHINE' : area);
+export const areaOfCategory = (category: BomCategory): BomArea => (category === 'MACHINE' ? 'MECHANICAL' : category);
+
+/** Eine eigene Kategorie, wie die Einstellungen sie führen. */
+export interface BomCustomCategory {
+    id: BomCustomCategoryId;
+    name: string;
+    /** Kod der Haupt-BOM (HYD → BOM-HYD-00001). */
+    code: string;
+    codes: BomCode[];
+    sortOrder: number;
+}
+
+/** «Mekanik MEK-00001, Elektrik ELK-00001 — automatisch.» */
+export const BUILT_IN_CATEGORY_CODE: Record<BomBuiltInArea, string> = { MECHANICAL: 'MEK', ELECTRICAL: 'ELK' };
 
 /**
  * DRAFT      Zeilen werden zusammengestellt, nichts ist reserviert.
@@ -48,7 +76,9 @@ export type BomStatus = 'DRAFT' | 'APPROVED' | 'COMPLETED';
 export type BomKind = 'MAIN' | 'SUB';
 
 /** «Ana BOM kod şudur: BOM-MEK-00001, BOM-ELK-00001.» */
-export const MAIN_BOM_PREFIX: Record<BomArea, string> = { MECHANICAL: 'BOM-MEK', ELECTRICAL: 'BOM-ELK' };
+export const MAIN_BOM_PREFIX: Record<BomBuiltInArea, string> = { MECHANICAL: 'BOM-MEK', ELECTRICAL: 'BOM-ELK' };
+/** Der Vorsatz der Haupt-BOM aus dem Kod der Kategorie (MEK → BOM-MEK). */
+export const mainBomPrefixOf = (categoryCode: string): string => `BOM-${categoryCode}`;
 
 /** Ein Alt-BOM-Kod der Einstellungen: Vorsatz und Name (MAK-COOL · Soğutma devresi). */
 export interface BomCode {
@@ -453,8 +483,13 @@ export interface BomPurchaseRevision {
 export interface BomSettings {
     /** Höchstzahl der Alt-BOMs unter einer Haupt-BOM (je Gerät und Bereich). */
     maxPerArea: number;
-    /** Die Alt-BOM-Kodes je Bereich («ayarlardan Mekanik ve Elektrik için ayrı ayrı»). */
-    codes: Record<BomArea, BomCode[]>;
+    /**
+     * Die Alt-BOM-Kodes je Bereich («ayarlardan Mekanik ve Elektrik için ayrı
+     * ayrı») — die festen immer, dazu je eigene Kategorie ihre Liste.
+     */
+    codes: Record<BomBuiltInArea, BomCode[]> & Partial<Record<BomCustomCategoryId, BomCode[]>>;
+    /** Die eigenen Kategorien (die festen stehen nicht darin). */
+    categories: BomCustomCategory[];
 }
 
 /* ── Satın alma talebi & gelen mallar (27.09.2026 abends, Vorgabe Samet) ────

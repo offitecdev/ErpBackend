@@ -1,3 +1,4 @@
+import { PRODUCTION_UI_LANGUAGES } from '../entities/ProductionTask';
 import type {
     ProductionAreaShares,
     ProductionAreaTotals,
@@ -5,6 +6,7 @@ import type {
     ProductionBuiltInStage,
     ProductionDeviceTask,
     ProductionFileAnalysis,
+    ProductionFileAnalysisI18n,
     ProductionStandardsFile,
     ProductionSubtask,
     ProductionSubtaskChecklistItem,
@@ -154,6 +156,9 @@ export type ProductionTaskErrorCode =
     | 'SUBTASK_NOT_FOUND'
     | 'APPROVAL_REQUIRED'
     | 'SUBTASK_LOCKED'
+    | 'BOM_DRIVEN'
+    | 'STANDARDS_EMPTY'
+    | 'STANDARDS_TEMPLATE_NOT_FOUND'
     | 'NOT_LOCKED'
     | 'SUBTASK_AWAITING'
     | 'NOT_IN_PROGRESS'
@@ -338,7 +343,12 @@ export const sectionsFrom = (stored: unknown, areaShares: unknown): ProductionTa
             const stage = objectOf(rawStage);
             const stageKey = typeof stage.key === 'string' ? stage.key : '';
             if (!STAGE_KEY.test(stageKey) || RESERVED_STAGE_KEYS.has(stageKey) || stages.some((entry) => entry.key === stageKey)) continue;
-            stages.push({ key: stageKey, name: text(stage.name, PRODUCTION_TASK_LIMITS.stageName), weight: percentFrom(stage.weight) ?? 0 });
+            stages.push({
+                key: stageKey,
+                name: text(stage.name, PRODUCTION_TASK_LIMITS.stageName),
+                weight: percentFrom(stage.weight) ?? 0,
+                ...(stage.customerVisible === true ? { customerVisible: true } : {}),
+            });
         }
         sections.push({
             key,
@@ -542,6 +552,24 @@ const standardsFileFrom = (value: unknown, requiresDocument: boolean): Productio
     };
 };
 
+/**
+ * Name, Text und PDF einer Vorlage der Standards (02.10.2026) aus der Anfrage. Das PDF
+ * muss in der eigenen Ablage der Firma liegen (wie bei den Standards einer Unteraufgabe).
+ */
+export const standardsTemplateInputFrom = (body: unknown, tenantId: string): { name: string; text: string | null; file: ProductionStandardsFile | null } => {
+    const input = objectOf(body);
+    const name = text(input.name, 120);
+    if (!name) throw productionTaskError('NAME_REQUIRED', 'Die Vorlage braucht einen Namen.');
+    const written = multilineText(input.text, PRODUCTION_TASK_LIMITS.documentStandards) || null;
+    const file = standardsFileFrom(input.file, true);
+    if (file && !isStandardsRefOf(file.ref, tenantId)) throw productionTaskError('STANDARDS_FILE_NOT_FOUND', 'Das PDF der Standards gibt es nicht.', { status: 404 });
+    if (!written && !file) throw productionTaskError('STANDARDS_EMPTY', 'Die Vorlage braucht Text oder ein PDF.');
+    return { name, text: written, file };
+};
+
+/** Gespeichertes PDF einer Vorlage lesen (JSON aus der Datenbank). */
+export const storedStandardsFile = (value: unknown): ProductionStandardsFile | null => standardsFileFrom(value, true);
+
 /** Trägt die Unteraufgabe Standards — Text, PDF oder beides? */
 export const hasDocumentStandards = (subtask: Pick<ProductionSubtask, 'requiresDocument' | 'documentStandards' | 'documentStandardsFile'>): boolean =>
     subtask.requiresDocument && Boolean(subtask.documentStandards || subtask.documentStandardsFile);
@@ -579,7 +607,27 @@ const fileAnalysisFrom = (value: unknown): ProductionFileAnalysis | null => {
         groupFileIds: Array.isArray(row.groupFileIds)
             ? row.groupFileIds.filter((id): id is string => typeof id === 'string' && SUBTASK_ID.test(id)).slice(0, SUBTASK_FILE_LIMITS.files)
             : [],
+        i18n: analysisI18nFrom(row.i18n),
     };
+};
+
+/** Die Sprachen eines gespeicherten Berichts — Unbekanntes fällt still weg. */
+const analysisI18nFrom = (value: unknown): ProductionFileAnalysisI18n | null => {
+    const row = objectOf(value);
+    const result: ProductionFileAnalysisI18n = {};
+    for (const lang of PRODUCTION_UI_LANGUAGES) {
+        const entry = objectOf(row[lang]);
+        if (!Object.keys(entry).length) continue;
+        const checks = Array.isArray(entry.checks) ? entry.checks : [];
+        result[lang] = {
+            summary: multilineText(entry.summary, FILE_ANALYSIS_LIMITS.summary) || null,
+            checks: checks.slice(0, FILE_ANALYSIS_LIMITS.checks).map((raw) => objectOf(raw)).map((check) => ({
+                standard: text(check.standard, FILE_ANALYSIS_LIMITS.standard),
+                reason: multilineText(check.reason, FILE_ANALYSIS_LIMITS.reason),
+            })),
+        };
+    }
+    return Object.keys(result).length ? result : null;
 };
 
 /** So lange darf eine Prüfung warten oder laufen — danach ist sie verloren (z. B. Neustart des Servers). */
@@ -679,6 +727,7 @@ export const withQueuedAnalyses = (subtask: ProductionSubtask, fileIds: readonly
                 errorCode: null,
                 note,
                 groupFileIds: isSubtaskPhotoType(file.type) ? photoIds : [],
+                i18n: null,
             },
         })),
     };
@@ -914,6 +963,9 @@ const subtaskOf = (
     revisionAt: typeof row.revisionAt === 'string' ? row.revisionAt : null,
     revisionNote: text(row.revisionNote, 500) || null,
     revisionHistory: revisionHistoryFrom(row.revisionHistory),
+    customerVisible: row.customerVisible === true,
+    workSeconds: Number.isFinite(Number(row.workSeconds)) && Number(row.workSeconds) > 0 ? Math.round(Number(row.workSeconds)) : 0,
+    workStartedAt: typeof row.workStartedAt === 'string' && !Number.isNaN(Date.parse(row.workStartedAt)) ? row.workStartedAt : null,
 });
 
 /** Der Verlauf der Rückgaben aus der Datenbank (höchstens 50, älteste zuerst); Unlesbares fällt heraus. */
@@ -950,7 +1002,36 @@ export const withoutDeviceRecord = (subtask: ProductionSubtask): ProductionSubta
     revisionAt: null,
     revisionNote: null,
     revisionHistory: [],
+    workSeconds: 0,
+    workStartedAt: null,
 });
+
+/* ── Die Arbeitszeit einer Unteraufgabe (02.10.2026) ─────────────────────── */
+
+/** Sekunden der laufenden Runde bis `now` (0, wenn keine läuft). */
+export const runningWorkSeconds = (subtask: Pick<ProductionSubtask, 'workStartedAt'>, now: Date): number => {
+    if (!subtask.workStartedAt) return 0;
+    const started = Date.parse(subtask.workStartedAt);
+    return Number.isNaN(started) ? 0 : Math.max(0, Math.round((now.getTime() - started) / 1000));
+};
+
+/**
+ * Die Uhr folgt dem Stand: ▶ (in Arbeit) startet eine Runde, jedes Verlassen
+ * von «in Arbeit» (■, zur Freigabe, erledigt, Neubeginn) zählt sie zur Summe.
+ * Wer den Stand ändert, ist gleich — die Uhr gehört der Unteraufgabe.
+ */
+export const withWorkClock = (before: ProductionSubtask, after: ProductionSubtask, now: Date): ProductionSubtask => {
+    const wasRunning = Boolean(before.workStartedAt);
+    const running = after.status === 'IN_PROGRESS';
+    // Nur der Wechsel nach «in Arbeit» startet die Uhr (eine schon laufende Arbeit von früher nicht).
+    if (running && !wasRunning && before.status !== 'IN_PROGRESS') {
+        return { ...after, workSeconds: before.workSeconds, workStartedAt: now.toISOString() };
+    }
+    if (!running && wasRunning) {
+        return { ...after, workSeconds: before.workSeconds + runningWorkSeconds(before, now), workStartedAt: null };
+    }
+    return { ...after, workSeconds: before.workSeconds, workStartedAt: before.workStartedAt };
+};
 
 /**
  * Kommt durch die Anpassung am Gerät eine Pflicht DAZU (28.09.2026: «it
@@ -990,10 +1071,12 @@ export const mergeDeviceRecord = (edited: ProductionSubtask, kept: ProductionSub
         revisionAt: kept.revisionAt,
         revisionNote: kept.revisionNote,
         revisionHistory: kept.revisionHistory,
+        workSeconds: kept.workSeconds,
+        workStartedAt: kept.workStartedAt,
     };
-    // Auch beim Neubeginn bleiben Dateien und der Verlauf der Rückgaben (er ist Geschichte, kein Stand).
+    // Auch beim Neubeginn bleiben Dateien, der Verlauf der Rückgaben und die gearbeitete Zeit.
     return requirementsAdded(kept, edited)
-        ? { ...withoutDeviceRecord(merged), files: kept.files, revisionHistory: kept.revisionHistory }
+        ? withWorkClock(kept, { ...withoutDeviceRecord(merged), files: kept.files, revisionHistory: kept.revisionHistory }, new Date())
         : merged;
 };
 
@@ -1230,7 +1313,7 @@ const sectionsInputFrom = (value: unknown[]): ProductionTaskSection[] => {
                     params: { section: label, name: stageName || stageKey },
                 });
             }
-            stages.push({ key: stageKey, name: stageName, weight });
+            stages.push({ key: stageKey, name: stageName, weight, ...(stage.customerVisible === true ? { customerVisible: true } : {}) });
         }
         sections.push({ key, name, share, stages });
     });
@@ -1251,6 +1334,7 @@ const requestHasStageWeights = (value: unknown): boolean =>
 export const withStageWeights = (sections: readonly ProductionTaskSection[], value: unknown): ProductionTaskSection[] => {
     if (!Array.isArray(value)) return sections.map((section) => ({ ...section }));
     const given = new Map<string, unknown>();
+    const visible = new Map<string, boolean>();
     for (const raw of value) {
         const row = objectOf(raw);
         for (const rawStage of Array.isArray(row.stages) ? row.stages : []) {
@@ -1258,11 +1342,22 @@ export const withStageWeights = (sections: readonly ProductionTaskSection[], val
             if (typeof row.key === 'string' && typeof stage.key === 'string' && stage.weight !== undefined) {
                 given.set(`${row.key}|${stage.key}`, stage.weight);
             }
+            // Sichtbar für den Kunden (02.10.2026) — am Gerät wie das Gewicht änderbar.
+            if (typeof row.key === 'string' && typeof stage.key === 'string' && typeof stage.customerVisible === 'boolean') {
+                visible.set(`${row.key}|${stage.key}`, stage.customerVisible);
+            }
         }
     }
+    const withVisibility = (sectionKey: string, stage: ProductionTaskSectionStage): ProductionTaskSectionStage => {
+        const flag = visible.get(`${sectionKey}|${stage.key}`);
+        if (flag === undefined) return stage;
+        const { customerVisible: _old, ...rest } = stage;
+        return flag ? { ...rest, customerVisible: true } : rest;
+    };
     return sections.map((section) => ({
         ...section,
-        stages: section.stages.map((stage) => {
+        stages: section.stages.map((raw) => {
+            const stage = withVisibility(section.key, raw);
             if (!given.has(`${section.key}|${stage.key}`)) return stage;
             const weight = percentFrom(given.get(`${section.key}|${stage.key}`));
             if (weight === null) {
@@ -1434,6 +1529,7 @@ export const tasksInputFrom = (
             dueDate,
             createdAt: createdDayFrom(row.createdAt),
             subtasks,
+            customerVisible: row.customerVisible === true,
         });
     });
     fillMissingCodes(sections, tasks);
@@ -1588,6 +1684,68 @@ export const assignmentNews = (
  * Personen stehen im Beispiel keine — die weist die Firma selbst zu. Es
  * bleibt bei den festen Bereichen Mekanik / Elektrik.
  */
+/* ── Die BOM-Stufe jedes Bereichs (02.10.2026) ───────────────────────────
+   «When an assignment template is created automatically add it to the
+    template — 1 BOM stage for all sections. BOM will have only one main task:
+    BOM, and its subtask is BOM Creation. Admin will assign employees, select
+    document or approval check box etc. like the other stage tasks.»
+   Jeder Bereich (= BOM-Kategorie) trägt die Stufe «bom» mit genau dieser einen
+   Aufgabe; die Stufe zählt 0 % (die übrigen Stufen behalten ihre Gewichte),
+   die Aufgabe trägt 100 % der Stufe. Fehlt etwas, kommt es dazu — Vorhandenes
+   (auch ältere Aufgaben in der Stufe) bleibt, wie es ist. */
+
+export const BOM_STAGE: ProductionBuiltInStage = 'bom';
+export const BOM_TASK_NAME = 'BOM';
+export const BOM_SUBTASK_ID = 'bom-create';
+export const BOM_SUBTASK_NAME = 'BOM Creation';
+
+/**
+ * «BOM Creation»: ▶ / ■ und das Schloss gehen wie überall (02.10.2026: «put the
+ * play stop lock functionalities to the bom sub task»); erledigt, zur Freigabe
+ * und zurückgewiesen setzt aber die BOM (BomTaskSync) — nicht die Hand.
+ */
+export const assertNotBomDriven = (subtaskId: string, status?: unknown): void => {
+    if (subtaskId === BOM_SUBTASK_ID && (status === undefined || status === 'PENDING' || status === 'DONE')) {
+        throw productionTaskError('BOM_DRIVEN', 'Den Stand von «BOM Creation» führt die BOM — im BOM-Fenster freigeben, abschliessen oder revidieren.', { status: 409 });
+    }
+};
+
+export const newBomTask = (area: string): ProductionTaskDraft => ({
+    area,
+    stage: BOM_STAGE,
+    code: '',
+    name: BOM_TASK_NAME,
+    weight: 100,
+    assigneeIds: [],
+    startDate: null,
+    dueDate: null,
+    createdAt: null,
+    subtasks: [withoutDeviceRecord(subtaskOf({}, BOM_SUBTASK_ID, BOM_SUBTASK_NAME, null, null, null, null))],
+});
+
+/**
+ * Bereiche und Aufgaben mit der BOM-Stufe je Bereich. `make` macht aus einer
+ * neuen Aufgabe die Form der Liste (Vorlage: mit Kennung und Reihenfolge).
+ */
+export const withBomStages = <T extends ProductionTaskDraft>(
+    sections: readonly ProductionTaskSection[],
+    tasks: readonly T[],
+    make: (draft: ProductionTaskDraft) => T,
+): { sections: ProductionTaskSection[]; tasks: T[] } => {
+    const nextSections = sections.map((section) => (section.stages.some((stage) => stage.key === BOM_STAGE)
+        ? section
+        : { ...section, stages: [...section.stages, { key: BOM_STAGE, name: '', weight: 0 }] }));
+    const added: ProductionTaskDraft[] = nextSections
+        .filter((section) => !tasks.some((task) => task.area === section.key && task.stage === BOM_STAGE))
+        .map((section) => newBomTask(section.key));
+    if (!added.length && nextSections.every((section, index) => section === sections[index])) {
+        return { sections: [...sections], tasks: [...tasks] };
+    }
+    // Die Kürzel der neuen Aufgaben folgen denen der vorhandenen (M-07, H-04 …).
+    fillMissingCodes(nextSections, [...tasks, ...added]);
+    return { sections: nextSections, tasks: [...tasks, ...added.map(make)] };
+};
+
 export const CHILLER_EXAMPLE_KEY = 'chiller';
 
 type ExampleTask = [code: string, name: string, stage: ProductionBuiltInStage, weight: number];

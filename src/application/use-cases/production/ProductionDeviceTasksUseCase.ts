@@ -45,6 +45,8 @@ import {
     SUBTASK_FILE_LIMITS,
     withActiveAssignees,
     withFileAnalysis,
+    assertNotBomDriven,
+    withBomStages,
     withoutDeviceRecord,
     withQueuedAnalyses,
     worksOnSubtask,
@@ -328,6 +330,25 @@ const cleanFileName = (value: string): string =>
  *
  * Wer neu in einer Aufgabe steht, bekommt eine Nachricht (Glocke).
  */
+/** Eine offene Unteraufgabe einer Person — für die Auswahl der Personen (02.10.2026). */
+export interface ProductionWorkloadItem {
+    projectId: string;
+    projectNumber: string;
+    projectName: string;
+    deviceId: string;
+    deviceName: string;
+    positionNumber: string | null;
+    area: string;
+    sectionName: string;
+    stage: string;
+    stageName: string;
+    taskCode: string;
+    taskName: string;
+    subtaskName: string;
+    status: ProductionSubtask['status'];
+    dueDate: string | null;
+}
+
 export class ProductionDeviceTasksUseCase {
     constructor(
         private readonly plans: IProductionDeviceTaskRepository,
@@ -397,8 +418,10 @@ export class ProductionDeviceTasksUseCase {
         ]);
         if (!device) throw this.deviceNotFound();
         if (!template) throw productionTaskError('TEMPLATE_NOT_FOUND', 'Vorlage nicht gefunden.', { status: 404 });
+        // Auch eine Vorlage von vor der BOM-Stufe bringt sie aufs Gerät (02.10.2026).
+        const { sections, tasks: templateTasks } = withBomStages(template.sections, template.tasks, (draft) => draft);
 
-        const check = templateCheck(template.sections, template.tasks);
+        const check = templateCheck(sections, templateTasks);
         if (!check.valid) {
             throw productionTaskError('TEMPLATE_INCOMPLETE', `Die Vorlage «${template.name}» geht noch nicht auf (Anteile und Gewichte je 100 %).`, {
                 status: 409,
@@ -409,8 +432,8 @@ export class ProductionDeviceTasksUseCase {
         if (existing && !replace) throw this.planExists(existing.templateName);
 
         // Nur wer heute noch aktiv in der Firma ist, kommt mit auf das Gerät.
-        const active = await this.directory.activePeople(tenantId, assigneesOf(template.tasks));
-        const tasks = orderTasks(template.tasks, template.sections).map((task) => withActiveAssignees({
+        const active = await this.directory.activePeople(tenantId, assigneesOf(templateTasks));
+        const tasks = orderTasks(templateTasks, sections).map((task) => withActiveAssignees({
             area: task.area,
             stage: task.stage,
             code: task.code,
@@ -423,6 +446,8 @@ export class ProductionDeviceTasksUseCase {
             createdAt: today(),
             // Am Gerät beginnt jede Unteraufgabe offen, ohne Dateien und Abschluss.
             subtasks: task.subtasks.map((subtask) => ({ ...withoutDeviceRecord(subtask), createdAt: today() })),
+            // Was der Kunde sehen darf, bringt die Vorlage mit (02.10.2026).
+            customerVisible: task.customerVisible === true,
         }, active));
 
         let plan: ProductionDeviceTaskPlan;
@@ -431,7 +456,7 @@ export class ProductionDeviceTasksUseCase {
                 device,
                 templateId: template.id,
                 templateName: template.name,
-                sections: template.sections,
+                sections,
                 actorId: actor.id,
                 tasks,
             });
@@ -665,6 +690,7 @@ export class ProductionDeviceTasksUseCase {
     ): Promise<{ task: ProductionTaskDto }> {
         const input = objectOf(body);
         const status = input.status;
+        assertNotBomDriven(subtaskId, status);
         if (!isProductionTaskStatus(status)) {
             throw productionTaskError('STATUS_INVALID', 'Unbekannter Stand.');
         }
@@ -727,6 +753,7 @@ export class ProductionDeviceTasksUseCase {
         subtaskId: string,
         body: unknown,
     ): Promise<{ task: ProductionTaskDto }> {
+        assertNotBomDriven(subtaskId);
         if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Abschliessen darf nur die Verwaltung.', { status: 403 });
         const input = objectOf(body);
         const rawNote = input.note;
@@ -864,6 +891,7 @@ export class ProductionDeviceTasksUseCase {
         subtaskId: string,
         body: unknown,
     ): Promise<{ task: ProductionTaskDto }> {
+        assertNotBomDriven(subtaskId);
         if (!isAdmin) throw productionTaskError('STATUS_FORBIDDEN', 'Zurückgeben darf nur die Verwaltung.', { status: 403 });
         const rawNote = objectOf(body).note;
         const note = typeof rawNote === 'string' ? rawNote.replace(/\r\n/g, '\n').trim().slice(0, 500) : '';
@@ -931,12 +959,21 @@ export class ProductionDeviceTasksUseCase {
         const ref = await this.files.store(tenantId, file.body, contentType);
         let added: ProductionSubtaskFile | null = null;
         let task: ProductionDeviceTask;
+        // Gegen die Standards geprüft wird gleich beim Hochladen (02.10.2026: «the file should be
+        // sent to the AI immediately and show the analysis result immediately on the page»).
+        let analyse = false;
+        const requestedAt = new Date().toISOString();
         try {
             task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
                 // Gesperrt heisst für ALLE gesperrt (28.09.2026) — auch solange sie auf die Freigabe wartet.
                 assertFilesOpen(subtask);
                 // «Fotoğraf yeterli» kann inzwischen weg sein — dann kein Foto mehr.
                 if (!subtaskAcceptsType(subtask, contentType)) throw wrongType();
+                // Solange die KI ein PDF dieser Unteraufgabe prüft, kommt kein neues dazu (02.10.2026:
+                // «when the AI analyses a pdf prevent uploading a new one; after the analysis allow it»).
+                if (subtask.files.some((entry) => isAnalysisActive(entry.analysis))) {
+                    throw productionTaskError('ANALYSIS_RUNNING', 'Die KI prüft gerade ein PDF dieser Unteraufgabe — danach geht das Hochladen wieder.', { status: 409 });
+                }
                 if (subtask.files.length >= SUBTASK_FILE_LIMITS.files) {
                     throw productionTaskError('FILES_TOO_MANY', 'Zu viele Dateien.', { status: 409, params: { max: SUBTASK_FILE_LIMITS.files } });
                 }
@@ -961,11 +998,12 @@ export class ProductionDeviceTasksUseCase {
                     uploadedById: actor.id,
                     uploadedByName: actor.name,
                     uploadedAt: new Date().toISOString(),
-                    // Geprüft wird beim Schicken zur Freigabe (01.10.2026).
                     analysis: null,
                 };
                 added = entry;
-                return { ...subtask, files: [...subtask.files, entry] };
+                const next = { ...subtask, files: [...subtask.files, entry] };
+                analyse = contentType === 'application/pdf' && hasDocumentStandards(subtask);
+                return analyse ? withQueuedAnalyses(next, [id], requestedAt) : next;
             }, actor.id));
         } catch (error) {
             await this.files.remove(ref).catch(() => undefined);
@@ -973,6 +1011,7 @@ export class ProductionDeviceTasksUseCase {
         }
         const stored = added as ProductionSubtaskFile | null;
         if (stored) await this.logSubtask(tenantId, itemId, actor, 'FILE_UPLOADED', task, subtaskId, fileDetails(stored));
+        if (stored && analyse) this.startAnalyses(tenantId, itemId, taskId, subtaskId, [(stored as ProductionSubtaskFile).id], requestedAt, actor.id);
         return { task: taskDto(task) };
     }
 
@@ -1269,6 +1308,49 @@ export class ProductionDeviceTasksUseCase {
                 }))
                 .sort((left, right) => byText(right.projectNumber, left.projectNumber)),
         };
+    }
+
+    /**
+     * Wer schon woran arbeitet (02.10.2026: «when admins assign people show which tasks that
+     * employee has on which projects and devices») — je Person ihre OFFENEN Unteraufgaben
+     * (nicht erledigt) über alle Geräte mit Plan: Projekt, Gerät, Bereich, Stufe, Aufgabe.
+     */
+    async workload(tenantId: string): Promise<{ people: Record<string, ProductionWorkloadItem[]> }> {
+        const devices = await this.directory.taskDevices(tenantId);
+        const plans = await Promise.all(devices.map(async (row) => ({ row, plan: await this.plans.getPlan(tenantId, row.deviceId) })));
+        const people: Record<string, ProductionWorkloadItem[]> = {};
+        for (const { row, plan } of plans) {
+            if (!plan) continue;
+            for (const task of plan.tasks) {
+                const section = plan.sections.find((entry) => entry.key === task.area) ?? null;
+                const stage = section?.stages.find((entry) => entry.key === task.stage) ?? null;
+                for (const subtask of task.subtasks) {
+                    if (subtask.status === 'DONE') continue;
+                    for (const personId of subtask.assigneeIds) {
+                        (people[personId] ??= []).push({
+                            projectId: row.projectId,
+                            projectNumber: row.projectNumber,
+                            projectName: row.projectName,
+                            deviceId: row.deviceId,
+                            deviceName: row.deviceName,
+                            positionNumber: row.positionNumber,
+                            area: task.area,
+                            sectionName: section?.name ?? '',
+                            stage: task.stage,
+                            stageName: stage?.name ?? '',
+                            taskCode: task.code,
+                            taskName: task.name,
+                            subtaskName: subtask.name,
+                            status: subtask.status,
+                            dueDate: subtask.dueDate ?? task.dueDate ?? null,
+                        });
+                    }
+                }
+            }
+        }
+        // Das Dringende zuerst: nach Termin, ohne Termin ans Ende.
+        for (const list of Object.values(people)) list.sort((left, right) => (left.dueDate ?? '9999').localeCompare(right.dueDate ?? '9999'));
+        return { people };
     }
 
     /** «Mark as solved» (30.09.2026) — nur die Verwaltung (der Weg sichert es). */
