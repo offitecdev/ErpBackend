@@ -9,6 +9,7 @@ import {
     orderTasks,
     productionTaskError,
     templateInputFrom,
+    withBomStages,
     withActiveAssignees,
 } from '../../../domain/services/productionTasks';
 import {
@@ -62,7 +63,8 @@ export class ProductionTaskTemplatesUseCase {
     async get(tenantId: string, id: string): Promise<ProductionTaskTemplateDto> {
         const template = await this.templates.get(tenantId, id);
         if (!template) throw this.notFound();
-        return this.dto(tenantId, template);
+        // Eine Vorlage von vor der BOM-Stufe zeigt sie schon — gespeichert wird sie beim nächsten Sichern.
+        return this.dto(tenantId, { ...template, ...withBomStages(template.sections, template.tasks, (draft) => ({ ...draft, id: `bom-${draft.area}`, sortOrder: Number.MAX_SAFE_INTEGER })) });
     }
 
     async create(tenantId: string, actor: ProductionTaskActor, body: unknown): Promise<ProductionTaskTemplateDto> {
@@ -115,7 +117,9 @@ export class ProductionTaskTemplatesUseCase {
     }
 
     private async inputFrom(tenantId: string, body: unknown): Promise<ProductionTaskTemplateInput> {
-        const input = templateInputFrom(body);
+        const parsed = templateInputFrom(body);
+        // Jeder Bereich trägt seine BOM-Stufe (02.10.2026) — auch wenn der Browser sie nicht mitschickt.
+        const input = { ...parsed, ...withBomStages(parsed.sections, parsed.tasks, (draft) => draft) };
         return { ...input, tasks: orderTasks(await this.keepActivePeople(tenantId, input.tasks), input.sections) };
     }
 

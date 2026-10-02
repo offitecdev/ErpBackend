@@ -9,6 +9,8 @@ import { ProductionTaskNotifier } from '../../infrastructure/services/production
 import { documentStandardsReviewer } from '../../infrastructure/services/documentStandardsReview';
 import { ProductionTaskTemplatesUseCase } from '../../application/use-cases/production/ProductionTaskTemplatesUseCase';
 import { ProductionDeviceTasksUseCase } from '../../application/use-cases/production/ProductionDeviceTasksUseCase';
+import { ProductionStandardsTemplatesUseCase } from '../../application/use-cases/production/ProductionStandardsTemplatesUseCase';
+import { PrismaProductionStandardsTemplateRepository } from '../../infrastructure/repositories/ProductionStandardsTemplateRepository';
 import path from 'path';
 import { DocumentStorage } from '../../infrastructure/services/LocalFileStorage';
 
@@ -50,5 +52,7 @@ export const productionTasksModule = {
         documentStandardsReviewer,
         standardsFiles,
     ),
+    // Vorlagen der Dokument-Standards (02.10.2026).
+    standards: new ProductionStandardsTemplatesUseCase(new PrismaProductionStandardsTemplateRepository()),
     directory,
 };

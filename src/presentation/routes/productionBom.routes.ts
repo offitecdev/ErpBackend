@@ -11,6 +11,9 @@ import { ProductionBomController } from '../controllers/ProductionBomController'
  *
  *   GET    /bom/settings                          Höchstzahl BOM je Gerät und Bereich
  *   PUT    /bom/settings                          … ändern                              [Administratorrolle]
+ *   POST   /bom/categories                        eigene BOM-Kategorie { name, code }   [Administratorrolle]
+ *   PUT    /bom/categories/:categoryId            … umbenennen / Kod ändern (ohne BOMs) [Administratorrolle]
+ *   DELETE /bom/categories/:categoryId            … löschen (ohne BOMs und Vorlagen)    [Administratorrolle]
  *   GET    /bom/templates                         Vorlagen (Kategorie, Ana kart, Vorsatz)
  *   POST   /bom/templates                         neue Vorlage                         [Admin / production.manage]
  *   POST   /bom/templates/examples                Beispiel «CHILLER» anlegen           [Admin / production.manage]
@@ -96,6 +99,9 @@ const aiLimiter = rateLimit({
  */
 router.get('/bom/settings', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.getSettings(req, res, next));
 router.put('/bom/settings', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.saveSettings(req, res, next));
+router.post('/bom/categories', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.createCategory(req, res, next));
+router.put('/bom/categories/:categoryId', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.updateCategory(req, res, next));
+router.delete('/bom/categories/:categoryId', VIEW, MODULE, AVAILABLE, (req, res, next) => controller.deleteCategory(req, res, next));
 
 /**
  * @swagger

@@ -101,6 +101,31 @@ export class ProductionBomController {
         } catch (error) { fail(res, next, error); }
     }
 
+    /** Eigene Kategorien — die Antwort sind die ganzen Einstellungen danach. */
+    async createCategory(req: Request, res: Response, next: NextFunction) {
+        try {
+            const actor = await actorOf(req);
+            await productionBomModule.settings.createCategory(tenantOf(req), actor, req.body);
+            res.status(201).json({ ...(await productionBomModule.settings.get(tenantOf(req))), canEdit: actor.isAdmin });
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async updateCategory(req: Request, res: Response, next: NextFunction) {
+        try {
+            const actor = await actorOf(req);
+            await productionBomModule.settings.updateCategory(tenantOf(req), actor, param(req, 'categoryId'), req.body);
+            res.json({ ...(await productionBomModule.settings.get(tenantOf(req))), canEdit: actor.isAdmin });
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async deleteCategory(req: Request, res: Response, next: NextFunction) {
+        try {
+            const actor = await actorOf(req);
+            await productionBomModule.settings.deleteCategory(tenantOf(req), actor, param(req, 'categoryId'));
+            res.json({ ...(await productionBomModule.settings.get(tenantOf(req))), canEdit: actor.isAdmin });
+        } catch (error) { fail(res, next, error); }
+    }
+
     /* ── Vorlagen ───────────────────────────────────────────────────────── */
 
     async listTemplates(req: Request, res: Response, next: NextFunction) {

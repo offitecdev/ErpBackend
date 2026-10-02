@@ -27,8 +27,11 @@
 import type {
     Bom,
     BomArea,
+    BomBuiltInArea,
     BomCategory,
     BomCode,
+    BomCustomCategoryId,
+    BomSettings,
     BomDemand,
     BomIncomingLine,
     BomLine,
@@ -47,7 +50,7 @@ import type {
     BomUnit,
     BomSerialFact,
 } from '../entities/ProductionBom';
-import { BOM_CATEGORIES, BOM_UNITS, MAIN_BOM_PREFIX } from '../entities/ProductionBom';
+import { BOM_CATEGORIES, BOM_UNITS, BUILT_IN_CATEGORY_CODE, MAIN_BOM_PREFIX, isCustomBomCategory, mainBomPrefixOf } from '../entities/ProductionBom';
 
 /* ── Fehler mit Kennung ─────────────────────────────────────────────────── */
 
@@ -100,6 +103,13 @@ export type BomErrorCode =
     | 'CODE_RESERVED'
     | 'CODE_DUPLICATE'
     | 'CODE_UNKNOWN'
+    | 'CATEGORY_NOT_FOUND'
+    | 'CATEGORY_NAME_REQUIRED'
+    | 'CATEGORY_NAME_TAKEN'
+    | 'CATEGORY_CODE_INVALID'
+    | 'CATEGORY_CODE_TAKEN'
+    | 'CATEGORY_IN_USE'
+    | 'CATEGORY_LIMIT'
     | 'MAIN_LOCKED'
     | 'PARENT_COMPLETED'
     | 'REQUEST_DRAFT_ONLY'
@@ -242,15 +252,46 @@ export const categoryFrom = (value: unknown): BomCategory | null => {
     if ((BOM_CATEGORIES as readonly string[]).includes(raw)) return raw as BomCategory;
     if (['MAKINE', 'MAKİNE', 'MECHANICAL', 'MEKANIK', 'MASCHINE'].includes(raw)) return 'MACHINE';
     if (['ELEKTRIK', 'ELEKTRİK', 'ELECTRIC'].includes(raw)) return 'ELECTRICAL';
-    return null;
+    // Eine eigene Kategorie («c-…») — ob es sie gibt, prüft der Anwendungsfall.
+    const custom = String(value ?? '').trim().toLowerCase();
+    return isCustomBomCategory(custom) ? custom : null;
 };
 
 export const areaFrom = (value: unknown): BomArea | null => {
     const raw = String(value ?? '').trim().toUpperCase();
     if (raw === 'MECHANICAL' || raw === 'MECHANIK' || raw === 'MEKANIK') return 'MECHANICAL';
     if (raw === 'ELECTRICAL' || raw === 'ELEKTRIK') return 'ELECTRICAL';
-    return null;
+    const custom = String(value ?? '').trim().toLowerCase();
+    return isCustomBomCategory(custom) ? custom : null;
 };
+
+/* ── Eigene Kategorien ──────────────────────────────────────────────────── */
+
+export const BOM_CATEGORY_LIMITS = { categories: 20, name: 60 } as const;
+
+/** Kod einer Kategorie: 2–8 Zeichen A–Z/0–9 (HYD → BOM-HYD-00001). */
+const CATEGORY_CODE_RE = /^[A-Z0-9]{2,8}$/;
+
+export const categoryCodeFrom = (value: unknown): string | null => {
+    const raw = String(value ?? '').trim().toUpperCase().replace(/[İ]/g, 'I').replace(/\s+/g, '');
+    return CATEGORY_CODE_RE.test(raw) ? raw : null;
+};
+
+/** Name und Kod einer eigenen Kategorie aus der Anfrage; MEK/ELK gehören den festen. */
+export const categoryInputFrom = (raw: unknown): { name: string; code: string } => {
+    const value = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    const name = text(value.name, BOM_CATEGORY_LIMITS.name);
+    if (!name) throw bomError('CATEGORY_NAME_REQUIRED', 'Die Kategorie braucht einen Namen.');
+    const code = categoryCodeFrom(value.code);
+    if (!code) throw bomError('CATEGORY_CODE_INVALID', 'Kod: 2–8 Zeichen A–Z / 0–9 (z. B. HYD).');
+    if ((Object.values(BUILT_IN_CATEGORY_CODE) as string[]).includes(code)) {
+        throw bomError('CATEGORY_CODE_TAKEN', `${code} gehört einer festen Kategorie.`, { status: 409, params: { code } });
+    }
+    return { name, code };
+};
+
+export const newBomCategoryId = (): `c-${string}` =>
+    `c-${Math.random().toString(36).slice(2, 10).padEnd(8, '0')}`;
 
 export const unitFrom = (value: unknown): BomUnit => {
     const raw = String(value ?? '').trim().toUpperCase();
@@ -330,52 +371,67 @@ export const templateHeadFrom = (raw: unknown): Omit<BomTemplateInput, 'lines'> 
 /** Die Vorsätze der Haupt-BOMs (BOM-MEK / BOM-ELK) sind vergeben. */
 const RESERVED_PREFIXES = new Set(Object.values(MAIN_BOM_PREFIX));
 
+/** Eine eigene Kategorie, soweit die Kodes sie brauchen. */
+export interface BomCodeCategory {
+    id: BomCustomCategoryId;
+    code: string;
+}
+
 /**
- * `{ MECHANICAL: [{ prefix, name }], ELECTRICAL: [...] }` aus der Anfrage —
- * jeder Vorsatz gültig (MAK-COOL), nicht BOM-MEK/BOM-ELK, in beiden Bereichen
- * zusammen nur einmal (er zählt seine Nummern selbst).
+ * `{ MECHANICAL: [{ prefix, name }], ELECTRICAL: [...], 'c-…': [...] }` aus der
+ * Anfrage — jeder Vorsatz gültig (MAK-COOL), nicht der einer Haupt-BOM
+ * (BOM-MEK, BOM-ELK, BOM-<Kod> der eigenen), über alle Bereiche zusammen nur
+ * einmal (er zählt seine Nummern selbst). Eine eigene Kategorie, die die
+ * Anfrage nicht nennt, fehlt im Ergebnis (ihre Kodes bleiben unverändert).
  */
-export const codesFrom = (raw: unknown): Record<BomArea, BomCode[]> => {
+export const codesFrom = (raw: unknown, custom: readonly BomCodeCategory[] = []): BomSettings['codes'] => {
     const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    const result: Record<BomArea, BomCode[]> = { MECHANICAL: [], ELECTRICAL: [] };
+    const result: BomSettings['codes'] = { MECHANICAL: [], ELECTRICAL: [] };
+    const reserved = new Set<string>([...RESERVED_PREFIXES, ...custom.map((category) => mainBomPrefixOf(category.code))]);
     const seen = new Set<string>();
-    for (const area of ['MECHANICAL', 'ELECTRICAL'] as const) {
+    const areas: BomArea[] = ['MECHANICAL', 'ELECTRICAL', ...custom.filter((category) => input[category.id] !== undefined).map((category) => category.id)];
+    for (const area of areas) {
         const list = Array.isArray(input[area]) ? input[area] as unknown[] : [];
         if (list.length > BOM_LIMITS.codesPerArea) {
             throw bomError('SETTINGS_INVALID', `Höchstens ${BOM_LIMITS.codesPerArea} Kodes je Bereich.`, {
                 params: { min: 0, max: BOM_LIMITS.codesPerArea },
             });
         }
+        const codes: BomCode[] = [];
         list.forEach((entry, index) => {
             const value = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
             const prefix = prefixFrom(value.prefix);
             if (!prefix) {
                 throw bomError('CODE_INVALID', `Kod ${index + 1} ist ungültig (z. B. MAK-COOL).`, { params: { row: index + 1, area } });
             }
-            if (RESERVED_PREFIXES.has(prefix)) {
+            if (reserved.has(prefix)) {
                 throw bomError('CODE_RESERVED', `${prefix} gehört der Haupt-BOM.`, { params: { prefix } });
             }
             if (seen.has(prefix)) throw bomError('CODE_DUPLICATE', `${prefix} steht zweimal.`, { params: { prefix } });
             seen.add(prefix);
-            result[area].push({ prefix, name: text(value.name, BOM_LIMITS.codeName) || prefix });
+            codes.push({ prefix, name: text(value.name, BOM_LIMITS.codeName) || prefix });
         });
+        result[area] = codes;
     }
     return result;
 };
 
-/** Gespeicherte Kodes lesen (JSON aus der Datenbank) — Ungültiges fällt still weg. */
-export const storedCodes = (raw: unknown): Record<BomArea, BomCode[]> => {
-    const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    const result: Record<BomArea, BomCode[]> = { MECHANICAL: [], ELECTRICAL: [] };
-    for (const area of ['MECHANICAL', 'ELECTRICAL'] as const) {
-        const list = Array.isArray(input[area]) ? input[area] as unknown[] : [];
-        for (const entry of list) {
-            const value = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
-            const prefix = prefixFrom(value.prefix);
-            if (prefix && !RESERVED_PREFIXES.has(prefix)) result[area].push({ prefix, name: text(value.name, BOM_LIMITS.codeName) || prefix });
-        }
+/** Eine gespeicherte Liste von Kodes (JSON) lesen — Ungültiges fällt still weg. */
+export const storedCodeList = (raw: unknown): BomCode[] => {
+    const list = Array.isArray(raw) ? raw as unknown[] : [];
+    const result: BomCode[] = [];
+    for (const entry of list) {
+        const value = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+        const prefix = prefixFrom(value.prefix);
+        if (prefix && !RESERVED_PREFIXES.has(prefix)) result.push({ prefix, name: text(value.name, BOM_LIMITS.codeName) || prefix });
     }
     return result;
+};
+
+/** Die gespeicherten Kodes der FESTEN Bereiche (`uretim_bom_ayarlari.codes`). */
+export const storedCodes = (raw: unknown): Record<BomBuiltInArea, BomCode[]> => {
+    const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    return { MECHANICAL: storedCodeList(input.MECHANICAL), ELECTRICAL: storedCodeList(input.ELECTRICAL) };
 };
 
 /* ── Priorität: frühester Liefertermin zuerst ───────────────────────────── */

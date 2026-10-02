@@ -51,6 +51,30 @@ model ProductionBomSettings {
   @@map("uretim_bom_ayarlari")
 }
 
+/// Eigene BOM-Kategorien neben den festen Mekanik (MEK) / Elektrik (ELK)
+/// (02.10.2026: «add category button to create categories like Mechanical and
+/// Electric … for other categories we will define them»). Die Kennung `id`
+/// («c-…») steht wie MECHANICAL/ELECTRICAL in `uretim_bomlari.area` und
+/// `uretim_bom_sablonlari.category`; `code` gibt die Nummer der Haupt-BOM
+/// (HYD → BOM-HYD-00001); `codes` sind ihre Alt-BOM-Kodes `[{ prefix, name }]`
+/// — die der festen Kategorien bleiben in `uretim_bom_ayarlari.codes`.
+model ProductionBomCategory {
+  id          String   @id @db.VarChar(16)
+  tenantId    String
+  name        String   @db.VarChar(60)
+  code        String   @db.VarChar(8)
+  codes       Json?
+  sortOrder   Int      @default(0)
+  createdById String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId, sortOrder])
+  @@map("uretim_bom_kategorileri")
+}
+
 model ProductionBomTemplate {
   id          String    @id
   tenantId    String

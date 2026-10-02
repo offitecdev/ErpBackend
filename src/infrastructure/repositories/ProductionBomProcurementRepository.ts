@@ -10,6 +10,7 @@ import type {
     BomProcurementRequest,
     BomProcurementStatus,
 } from '../../domain/entities/ProductionBom';
+import { isCustomBomCategory } from '../../domain/entities/ProductionBom';
 import type {
     BomProcurementCreateInput,
     IBomGoodsInRepository,
@@ -82,7 +83,7 @@ const toRequest = (row: RequestRow): BomProcurementRequest => ({
     bomId: row.bomId,
     productionProjectId: row.productionProjectId,
     productionItemId: row.productionItemId,
-    area: (row.area === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL') as BomArea,
+    area: (isCustomBomCategory(row.area) ? row.area : row.area === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL') as BomArea,
     kind: KINDS.has(row.kind as BomProcurementKind) ? row.kind as BomProcurementKind : 'ORDER',
     status: statusOf(row),
     bomRevision: Number(row.bomRevision) || 0,

@@ -176,6 +176,32 @@ export class ProductionTaskController {
     }
 
     /** Das PDF der Standards lesen (`?ref=…&name=…`) — nur aus der eigenen Firma. */
+    /* ── Vorlagen der Dokument-Standards (02.10.2026) ── */
+
+    async standardsTemplates(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.standards.list(tenantOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async createStandardsTemplate(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.status(201).json(await productionTasksModule.standards.create(tenantOf(req), (await actorOf(req)).id, req.body));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async updateStandardsTemplate(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.standards.update(tenantOf(req), (await actorOf(req)).id, param(req, 'templateId'), req.body));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async removeStandardsTemplate(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.standards.remove(tenantOf(req), param(req, 'templateId')));
+        } catch (error) { fail(res, next, error); }
+    }
+
     async readStandardsFile(req: Request, res: Response, next: NextFunction) {
         try {
             const file = await productionTasksModule.devices.readStandardsFile(
@@ -384,6 +410,12 @@ export class ProductionTaskController {
     }
 
     /** Projekte und Geräte mit Aufgaben — die Auswahl der Startseite der Verwaltung (30.09.2026). */
+    async workload(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionTasksModule.devices.workload(tenantOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
     async taskDevices(req: Request, res: Response, next: NextFunction) {
         try {
             res.json(await productionTasksModule.devices.taskDevices(tenantOf(req)));

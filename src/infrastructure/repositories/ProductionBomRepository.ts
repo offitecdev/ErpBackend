@@ -6,6 +6,8 @@ import type {
     Bom,
     BomArea,
     BomCategory,
+    BomCustomCategory,
+    BomCustomCategoryId,
     BomKind,
     BomIncomingLine,
     BomLine,
@@ -23,7 +25,7 @@ import type {
     BomTemplateSummary,
     BomUnit,
 } from '../../domain/entities/ProductionBom';
-import { BOM_UNITS } from '../../domain/entities/ProductionBom';
+import { BOM_UNITS, isCustomBomCategory } from '../../domain/entities/ProductionBom';
 import type {
     BomConsumePlan,
     BomCreateInput,
@@ -35,6 +37,7 @@ import type {
     IBomRepository,
     IBomSettingsRepository,
     IBomStockReader,
+    IBomCategoryRepository,
     IBomTemplateRepository,
 } from '../../domain/repositories/IProductionBomRepository';
 import {
@@ -44,6 +47,7 @@ import {
     formatBomNumber,
     PRICE_REQUEST_STATUSES,
     round3,
+    storedCodeList,
     storedCodes,
     unitFrom,
 } from '../../domain/services/productionBom';
@@ -80,8 +84,11 @@ const str = (value: unknown): string | null => {
     const clean = String(value ?? '').trim();
     return clean ? clean : null;
 };
-const categoryOf = (value: string): BomCategory => (value === 'ELECTRICAL' ? 'ELECTRICAL' : 'MACHINE');
-const areaOf = (value: string): BomArea => (value === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL');
+// Eine eigene Kategorie («c-…») geht durch; alles andere wie bisher auf die festen.
+const categoryOf = (value: string): BomCategory =>
+    (isCustomBomCategory(value) ? value : value === 'ELECTRICAL' ? 'ELECTRICAL' : 'MACHINE');
+const areaOf = (value: string): BomArea =>
+    (isCustomBomCategory(value) ? value : value === 'ELECTRICAL' ? 'ELECTRICAL' : 'MECHANICAL');
 const statusOf = (value: string): BomStatus =>
     (value === 'APPROVED' || value === 'COMPLETED' ? value : 'DRAFT');
 const likeOf = (value: string): string => `%${value.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
@@ -1256,27 +1263,142 @@ export class PrismaBomProductionDirectory implements IBomProductionDirectory {
 
 /* ═══════════════════════════ EINSTELLUNGEN ════════════════════════════════ */
 
-export const DEFAULT_BOM_SETTINGS: BomSettings = { maxPerArea: 2, codes: { MECHANICAL: [], ELECTRICAL: [] } };
+export const DEFAULT_BOM_SETTINGS: BomSettings = { maxPerArea: 2, codes: { MECHANICAL: [], ELECTRICAL: [] }, categories: [] };
 
-const settingsOf = (row: { maxPerArea: number; codes: Prisma.JsonValue | null }): BomSettings => ({
-    maxPerArea: row.maxPerArea,
-    codes: storedCodes(row.codes),
+type CategoryRow = { id: string; name: string; code: string; codes: Prisma.JsonValue | null; sortOrder: number };
+
+const categoryOfRow = (row: CategoryRow): BomCustomCategory => ({
+    id: row.id as BomCustomCategoryId,
+    name: row.name,
+    code: row.code,
+    codes: storedCodeList(row.codes),
+    sortOrder: row.sortOrder,
 });
 
+/** Ohne die Migration vom 02.10.2026 gibt es die Tabelle noch nicht — dann keine eigenen Kategorien. */
+const isMissingTable = (error: unknown): boolean =>
+    (error as { code?: string })?.code === 'P2021'
+    || /doesn't exist|1146/i.test(String((error as { message?: unknown })?.message ?? error));
+
+const listCategories = async (tenantId: string): Promise<BomCustomCategory[]> => {
+    try {
+        const rows = await prisma.productionBomCategory.findMany({
+            where: { tenantId },
+            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        });
+        return rows.filter((row) => isCustomBomCategory(row.id)).map(categoryOfRow);
+    } catch (error) {
+        if (isMissingTable(error)) return [];
+        throw error;
+    }
+};
+
+const settingsOf = (row: { maxPerArea: number; codes: Prisma.JsonValue | null } | null, categories: BomCustomCategory[]): BomSettings => {
+    const codes: BomSettings['codes'] = row ? storedCodes(row.codes) : { MECHANICAL: [], ELECTRICAL: [] };
+    for (const category of categories) codes[category.id] = category.codes;
+    return { maxPerArea: row?.maxPerArea ?? DEFAULT_BOM_SETTINGS.maxPerArea, codes, categories };
+};
+
+/**
+ * Die festen Bereiche halten ihre Kodes wie bisher in `uretim_bom_ayarlari.codes`
+ * (nur MECHANICAL/ELECTRICAL — ein älterer Server liest dasselbe JSON); die
+ * eigenen Kategorien die ihren in `uretim_bom_kategorileri`.
+ */
 export class PrismaBomSettingsRepository implements IBomSettingsRepository {
     async get(tenantId: string): Promise<BomSettings> {
-        const row = await prisma.productionBomSettings.findUnique({ where: { tenantId } });
-        return row ? settingsOf(row) : { maxPerArea: DEFAULT_BOM_SETTINGS.maxPerArea, codes: { MECHANICAL: [], ELECTRICAL: [] } };
+        const [row, categories] = await Promise.all([
+            prisma.productionBomSettings.findUnique({ where: { tenantId } }),
+            listCategories(tenantId),
+        ]);
+        return settingsOf(row, categories);
     }
 
-    async save(tenantId: string, settings: BomSettings, userId: string): Promise<BomSettings> {
+    async save(tenantId: string, settings: Pick<BomSettings, 'maxPerArea' | 'codes'>, userId: string): Promise<BomSettings> {
         const maxPerArea = Math.max(1, Math.min(BOM_LIMITS.maxPerAreaCeiling, Math.trunc(settings.maxPerArea)));
-        const codes = settings.codes as unknown as Prisma.InputJsonValue;
-        const row = await prisma.productionBomSettings.upsert({
-            where: { tenantId },
-            create: { tenantId, maxPerArea, codes, updatedById: userId },
-            update: { maxPerArea, codes, updatedById: userId },
-        });
-        return settingsOf(row);
+        const codes = { MECHANICAL: settings.codes.MECHANICAL, ELECTRICAL: settings.codes.ELECTRICAL } as unknown as Prisma.InputJsonValue;
+        const custom = Object.keys(settings.codes).filter(isCustomBomCategory);
+        await prisma.$transaction([
+            prisma.productionBomSettings.upsert({
+                where: { tenantId },
+                create: { tenantId, maxPerArea, codes, updatedById: userId },
+                update: { maxPerArea, codes, updatedById: userId },
+            }),
+            ...custom.map((id) => prisma.productionBomCategory.updateMany({
+                where: { tenantId, id },
+                data: { codes: (settings.codes[id] ?? []) as unknown as Prisma.InputJsonValue, updatedById: userId },
+            })),
+        ]);
+        return this.get(tenantId);
+    }
+}
+
+export class PrismaBomCategoryRepository implements IBomCategoryRepository {
+    list(tenantId: string): Promise<BomCustomCategory[]> {
+        return listCategories(tenantId);
+    }
+
+    async get(tenantId: string, id: string): Promise<BomCustomCategory | null> {
+        if (!isCustomBomCategory(id)) return null;
+        try {
+            const row = await prisma.productionBomCategory.findFirst({ where: { tenantId, id } });
+            return row ? categoryOfRow(row) : null;
+        } catch (error) {
+            if (isMissingTable(error)) return null;
+            throw error;
+        }
+    }
+
+    async create(tenantId: string, input: { id: BomCustomCategoryId; name: string; code: string }, userId: string): Promise<BomCustomCategory | null> {
+        const last = await prisma.productionBomCategory.aggregate({ where: { tenantId }, _max: { sortOrder: true } });
+        try {
+            const row = await prisma.productionBomCategory.create({
+                data: {
+                    id: input.id,
+                    tenantId,
+                    name: input.name,
+                    code: input.code,
+                    codes: [],
+                    sortOrder: (last._max.sortOrder ?? 0) + 1,
+                    createdById: userId,
+                    updatedById: userId,
+                },
+            });
+            return categoryOfRow(row);
+        } catch (error) {
+            if ((error as { code?: string })?.code === 'P2002') return null;
+            throw error;
+        }
+    }
+
+    async update(tenantId: string, id: string, patch: { name?: string; code?: string }, userId: string): Promise<BomCustomCategory | null | 'CODE_TAKEN'> {
+        try {
+            const result = await prisma.productionBomCategory.updateMany({
+                where: { tenantId, id },
+                data: { ...patch, updatedById: userId },
+            });
+            return result.count ? this.get(tenantId, id) : null;
+        } catch (error) {
+            if ((error as { code?: string })?.code === 'P2002') return 'CODE_TAKEN';
+            throw error;
+        }
+    }
+
+    async remove(tenantId: string, id: string): Promise<boolean> {
+        const result = await prisma.productionBomCategory.deleteMany({ where: { tenantId, id } });
+        return result.count > 0;
+    }
+
+    async usage(tenantId: string, id: string): Promise<{ boms: number; templates: number; taskTemplates: number }> {
+        const [boms, templates, taskTemplates] = await Promise.all([
+            prisma.productionBom.count({ where: { tenantId, area: id } }),
+            prisma.productionBomTemplate.count({ where: { tenantId, category: id, deletedAt: null } }),
+            // Die Bereiche einer Görevlendirme-Vorlage stehen als JSON-Liste `[{ key, … }]` in `sections`.
+            prisma.$queryRaw<Array<{ count: bigint | number }>>`
+                SELECT COUNT(*) AS count FROM uretim_gorev_sablonlari
+                WHERE tenantId = ${tenantId} AND deletedAt IS NULL
+                  AND JSON_SEARCH(sections, 'one', ${id}, NULL, '$[*].key') IS NOT NULL`
+                .then((rows) => Number(rows[0]?.count ?? 0)),
+        ]);
+        return { boms, templates, taskTemplates };
     }
 }

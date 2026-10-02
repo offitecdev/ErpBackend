@@ -1,6 +1,8 @@
 import type {
     Bom,
     BomArea,
+    BomCustomCategory,
+    BomCustomCategoryId,
     BomKind,
     BomIncomingLine,
     BomLineChange,
@@ -243,8 +245,29 @@ export interface IBomProductionDirectory {
 }
 
 export interface IBomSettingsRepository {
+    /** Die Einstellungen samt den eigenen Kategorien und deren Alt-BOM-Kodes. */
     get(tenantId: string): Promise<BomSettings>;
-    save(tenantId: string, settings: BomSettings, userId: string): Promise<BomSettings>;
+    /**
+     * Speichert Zahl und Kodes: die der festen Bereiche in `uretim_bom_ayarlari`,
+     * die einer eigenen Kategorie (nur wenn mitgegeben) in ihrer Zeile.
+     */
+    save(tenantId: string, settings: Pick<BomSettings, 'maxPerArea' | 'codes'>, userId: string): Promise<BomSettings>;
+}
+
+/** Die eigenen BOM-Kategorien (`uretim_bom_kategorileri`). */
+export interface IBomCategoryRepository {
+    list(tenantId: string): Promise<BomCustomCategory[]>;
+    get(tenantId: string, id: string): Promise<BomCustomCategory | null>;
+    /** null, wenn der Kod in der Firma schon vergeben ist. */
+    create(tenantId: string, input: { id: BomCustomCategoryId; name: string; code: string }, userId: string): Promise<BomCustomCategory | null>;
+    /** null, wenn es die Kategorie nicht gibt; `'CODE_TAKEN'`, wenn der Kod vergeben ist. */
+    update(tenantId: string, id: string, patch: { name?: string; code?: string }, userId: string): Promise<BomCustomCategory | null | 'CODE_TAKEN'>;
+    remove(tenantId: string, id: string): Promise<boolean>;
+    /**
+     * Wie viele BOMs, (nicht gelöschte) BOM-Vorlagen und Görevlendirme-Vorlagen
+     * die Kategorie tragen — in den letzten ist sie ein Bereich (02.10.2026).
+     */
+    usage(tenantId: string, id: string): Promise<{ boms: number; templates: number; taskTemplates: number }>;
 }
 
 /**

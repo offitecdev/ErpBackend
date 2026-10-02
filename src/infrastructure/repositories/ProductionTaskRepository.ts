@@ -42,6 +42,7 @@ import {
     storedStageWeightsComplete,
     statusFrom,
     statusOfSubtasks,
+    withWorkClock,
     subtasksFrom,
     taskAssigneesOf,
     mergeDeviceRecord,
@@ -529,7 +530,8 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             const current = subtasks.find((subtask) => subtask.id === subtaskId);
             if (!current) return 'no-subtask' as const;
             // Der Rückruf braucht die Aufgabe nur zum Lesen von Stand und Personen — das Gewicht zählt hier nicht.
-            const changed = change(current, deviceTaskOf(row, sections, Number(row.stageWeight ?? 0)));
+            // Die Arbeitszeit folgt dem Stand — bei jeder Änderung, wer sie auch macht (02.10.2026).
+            const changed = withWorkClock(current, change(current, deviceTaskOf(row, sections, Number(row.stageWeight ?? 0))), new Date());
             const next = subtasks.map((subtask) => (subtask.id === subtaskId ? changed : subtask));
             await tx.productionDeviceTask.update({
                 where: { id: row.id },
