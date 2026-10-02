@@ -92,6 +92,8 @@ model ProductionTaskTemplateTask {
   /// schreibt die Zeilen neu — der Tag reist darum mit dem Entwurf mit.
   createdAt   DateTime? @db.Date
   sortOrder   Int    @default(0)
+  /// Sieht der Kunde diese Aufgabe (02.10.2026)? Gesetzt von der Verwaltung; Vorgabe nein.
+  customerVisible Boolean @default(false)
 
   template ProductionTaskTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 
@@ -151,6 +153,8 @@ model ProductionDeviceTask {
   /// die Freigabe (aus den Unteraufgaben).
   status           String   @default("TODO") @db.VarChar(12)
   sortOrder        Int      @default(0)
+  /// Sieht der Kunde diese Aufgabe (02.10.2026)? Aus der Vorlage, am Gerät änderbar; Vorgabe nein.
+  customerVisible  Boolean  @default(false)
   updatedById      String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

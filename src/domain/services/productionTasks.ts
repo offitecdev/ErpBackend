@@ -338,7 +338,12 @@ export const sectionsFrom = (stored: unknown, areaShares: unknown): ProductionTa
             const stage = objectOf(rawStage);
             const stageKey = typeof stage.key === 'string' ? stage.key : '';
             if (!STAGE_KEY.test(stageKey) || RESERVED_STAGE_KEYS.has(stageKey) || stages.some((entry) => entry.key === stageKey)) continue;
-            stages.push({ key: stageKey, name: text(stage.name, PRODUCTION_TASK_LIMITS.stageName), weight: percentFrom(stage.weight) ?? 0 });
+            stages.push({
+                key: stageKey,
+                name: text(stage.name, PRODUCTION_TASK_LIMITS.stageName),
+                weight: percentFrom(stage.weight) ?? 0,
+                ...(stage.customerVisible === true ? { customerVisible: true } : {}),
+            });
         }
         sections.push({
             key,
@@ -790,6 +795,7 @@ const subtaskOf = (
     revisionAt: typeof row.revisionAt === 'string' ? row.revisionAt : null,
     revisionNote: text(row.revisionNote, 500) || null,
     revisionHistory: revisionHistoryFrom(row.revisionHistory),
+    customerVisible: row.customerVisible === true,
     workSeconds: Number.isFinite(Number(row.workSeconds)) && Number(row.workSeconds) > 0 ? Math.round(Number(row.workSeconds)) : 0,
     workStartedAt: typeof row.workStartedAt === 'string' && !Number.isNaN(Date.parse(row.workStartedAt)) ? row.workStartedAt : null,
 });
@@ -1132,7 +1138,7 @@ const sectionsInputFrom = (value: unknown[]): ProductionTaskSection[] => {
                     params: { section: label, name: stageName || stageKey },
                 });
             }
-            stages.push({ key: stageKey, name: stageName, weight });
+            stages.push({ key: stageKey, name: stageName, weight, ...(stage.customerVisible === true ? { customerVisible: true } : {}) });
         }
         sections.push({ key, name, share, stages });
     });
@@ -1153,6 +1159,7 @@ const requestHasStageWeights = (value: unknown): boolean =>
 export const withStageWeights = (sections: readonly ProductionTaskSection[], value: unknown): ProductionTaskSection[] => {
     if (!Array.isArray(value)) return sections.map((section) => ({ ...section }));
     const given = new Map<string, unknown>();
+    const visible = new Map<string, boolean>();
     for (const raw of value) {
         const row = objectOf(raw);
         for (const rawStage of Array.isArray(row.stages) ? row.stages : []) {
@@ -1160,11 +1167,22 @@ export const withStageWeights = (sections: readonly ProductionTaskSection[], val
             if (typeof row.key === 'string' && typeof stage.key === 'string' && stage.weight !== undefined) {
                 given.set(`${row.key}|${stage.key}`, stage.weight);
             }
+            // Sichtbar für den Kunden (02.10.2026) — am Gerät wie das Gewicht änderbar.
+            if (typeof row.key === 'string' && typeof stage.key === 'string' && typeof stage.customerVisible === 'boolean') {
+                visible.set(`${row.key}|${stage.key}`, stage.customerVisible);
+            }
         }
     }
+    const withVisibility = (sectionKey: string, stage: ProductionTaskSectionStage): ProductionTaskSectionStage => {
+        const flag = visible.get(`${sectionKey}|${stage.key}`);
+        if (flag === undefined) return stage;
+        const { customerVisible: _old, ...rest } = stage;
+        return flag ? { ...rest, customerVisible: true } : rest;
+    };
     return sections.map((section) => ({
         ...section,
-        stages: section.stages.map((stage) => {
+        stages: section.stages.map((raw) => {
+            const stage = withVisibility(section.key, raw);
             if (!given.has(`${section.key}|${stage.key}`)) return stage;
             const weight = percentFrom(given.get(`${section.key}|${stage.key}`));
             if (weight === null) {
@@ -1336,6 +1354,7 @@ export const tasksInputFrom = (
             dueDate,
             createdAt: createdDayFrom(row.createdAt),
             subtasks,
+            customerVisible: row.customerVisible === true,
         });
     });
     fillMissingCodes(sections, tasks);

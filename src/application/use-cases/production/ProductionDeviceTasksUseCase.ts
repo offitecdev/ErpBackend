@@ -431,6 +431,8 @@ export class ProductionDeviceTasksUseCase {
             createdAt: today(),
             // Am Gerät beginnt jede Unteraufgabe offen, ohne Dateien und Abschluss.
             subtasks: task.subtasks.map((subtask) => ({ ...withoutDeviceRecord(subtask), createdAt: today() })),
+            // Was der Kunde sehen darf, bringt die Vorlage mit (02.10.2026).
+            customerVisible: task.customerVisible === true,
         }, active));
 
         let plan: ProductionDeviceTaskPlan;
@@ -921,6 +923,11 @@ export class ProductionDeviceTasksUseCase {
             task = this.found(await this.plans.changeSubtask(tenantId, itemId, taskId, subtaskId, (subtask) => {
                 // Gesperrt heisst für ALLE gesperrt (28.09.2026) — auch solange sie auf die Freigabe wartet.
                 assertFilesOpen(subtask);
+                // Solange die KI ein PDF dieser Unteraufgabe prüft, kommt kein neues dazu (02.10.2026:
+                // «when the AI analyses a pdf prevent uploading a new one; after the analysis allow it»).
+                if (subtask.files.some((entry) => isAnalysisActive(entry.analysis))) {
+                    throw productionTaskError('ANALYSIS_RUNNING', 'Die KI prüft gerade ein PDF dieser Unteraufgabe — danach geht das Hochladen wieder.', { status: 409 });
+                }
                 if (subtask.files.length >= SUBTASK_FILE_LIMITS.files) {
                     throw productionTaskError('FILES_TOO_MANY', 'Zu viele Dateien.', { status: 409, params: { max: SUBTASK_FILE_LIMITS.files } });
                 }

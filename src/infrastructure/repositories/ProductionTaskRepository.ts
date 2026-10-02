@@ -79,6 +79,7 @@ type TaskRow = {
     dueDate: Date | null;
     createdAt: Date | null;
     sortOrder: number;
+    customerVisible?: boolean;
 };
 
 /* Beginn und Termin sind DATE-Spalten: Prisma liefert Mitternacht UTC —
@@ -106,6 +107,7 @@ const draftOf = (row: TaskRow, sections: readonly ProductionTaskSection[], weigh
         createdAt: dayOf(row.createdAt),
         subtasks,
         sortOrder: row.sortOrder,
+        customerVisible: row.customerVisible === true,
     };
 };
 
@@ -191,6 +193,7 @@ const templateTaskRows = (tenantId: string, templateId: string, tasks: Productio
         // Das Beispiel kommt ohne Tag: es entsteht heute.
         createdAt: dateOf(task.createdAt ?? new Date().toISOString().slice(0, 10)),
         sortOrder: index,
+        customerVisible: task.customerVisible === true,
     }));
 
 /** Die eben geschriebenen Zeilen wieder als Aufgaben — ohne neuen Rundgang. */
@@ -393,6 +396,7 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
             dueDate: dateOf(task.dueDate),
             status: 'TODO',
             sortOrder: index,
+            customerVisible: task.customerVisible === true,
             updatedById: write.actorId,
         }));
         const plan = await prisma.$transaction(async (tx) => {
@@ -472,6 +476,7 @@ export class PrismaProductionDeviceTaskRepository implements IProductionDeviceTa
                     status: statusOfSubtasks(subtasks) ?? previous?.status ?? 'TODO',
                     createdAt: previous?.createdAt ?? now,
                     sortOrder: index,
+                    customerVisible: task.customerVisible === true,
                     updatedById: actorId,
                 };
             });
