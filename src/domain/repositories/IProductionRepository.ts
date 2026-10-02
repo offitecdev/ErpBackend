@@ -124,6 +124,29 @@ export interface ITenantDirectory {
     list(): Promise<TenantDirectoryEntry[]>;
 }
 
+/** Modul-Einstellungen › Produktion › Produktionslieferant (02.10.2026). */
+export interface ProductionSupplierLink {
+    supplierId: string;
+    producerTenantId: string;
+}
+
+export interface ProductionSupplierOption {
+    id: string;
+    name: string;
+    isActive: boolean;
+}
+
+export interface IProductionSupplierLinkRepository {
+    /** Die Zuordnungen der bestellenden Firma. */
+    list(tenantId: string): Promise<ProductionSupplierLink[]>;
+    /** Ersetzt alle Zuordnungen der bestellenden Firma. */
+    replace(tenantId: string, links: ProductionSupplierLink[], updatedById: string): Promise<void>;
+    /** Die aktiven Produktionsfirmen (Firmentyp PRODUCTION) im Firmenbaum, ohne die eigene. */
+    producers(tenantId: string): Promise<Array<{ id: string; name: string }>>;
+    /** Die Lieferanten der bestellenden Firma. */
+    suppliers(tenantId: string): Promise<ProductionSupplierOption[]>;
+}
+
 /**
  * Welche bestätigte interne Bestellung welches Gerät gebracht hat — je
  * Offertposition (`ProductionItem.sourceId`), nur lesend.

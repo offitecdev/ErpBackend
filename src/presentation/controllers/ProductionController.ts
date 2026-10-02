@@ -139,4 +139,17 @@ export class ProductionController {
             ));
         } catch (error) { fail(res, next, error); }
     }
+
+    /** Modul-Einstellungen › Produktion › Produktionslieferant (02.10.2026). */
+    async getSupplierLinks(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionModule.supplierLinks.get(tenantOf(req)));
+        } catch (error) { fail(res, next, error); }
+    }
+
+    async saveSupplierLinks(req: Request, res: Response, next: NextFunction) {
+        try {
+            res.json(await productionModule.supplierLinks.save(tenantOf(req), req.body?.links, req.user!.id));
+        } catch (error) { fail(res, next, error); }
+    }
 }

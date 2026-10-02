@@ -19,6 +19,8 @@ export type ProductionErrorCode =
     | 'LINE_UNASSIGNED'
     | 'LINE_FOREIGN_ITEM'
     | 'SOURCE_INVALID'
+    | 'SUPPLIER_INVALID'
+    | 'SUPPLIER_DUPLICATE'
     | 'APPROVAL_FIELDS_MISSING';
 
 export type ProductionError = Error & {

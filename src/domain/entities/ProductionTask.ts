@@ -149,6 +149,16 @@ export interface ProductionFileAnalysis {
     model: string | null;
     /** Warum sie scheiterte (z. B. GPT_NOT_CONFIGURED, GPT_QUOTA, ANALYSIS_INTERRUPTED). */
     errorCode: string | null;
+    /**
+     * Die kurze Notiz der Einsendung, die mitgelesen wurde (02.10.2026, «kısa not da kanıttır») —
+     * ändert sie sich, gilt die Prüfung nicht mehr. Ältere Prüfungen: null.
+     */
+    note: string | null;
+    /**
+     * Fotos werden ZUSAMMEN geprüft (02.10.2026): die Kennungen der Fotos, die in derselben Anfrage
+     * lagen — derselbe Bericht steht an jedem. Leer bei einem PDF (jedes für sich).
+     */
+    groupFileIds: string[];
 }
 
 /** Ein Punkt der Freigabe-Checkliste einer Unteraufgabe (28.09.2026). */
@@ -180,6 +190,22 @@ export interface ProductionSubtask {
     assigneeIds: string[];
     /** Zur Unteraufgabe gehört ein Dokument. */
     requiresDocument: boolean;
+    /**
+     * «Fotoğraf yeterli» (02.10.2026, OCC-Standard): nur mit «Document» — dann zählt auch ein
+     * Foto (JPEG, PNG, WebP) als Dokument, nicht nur ein PDF. Ohne: wie bisher nur PDF.
+     */
+    photoAllowed: boolean;
+    /**
+     * «Ücret girilsin» (02.10.2026, OCC-Standard S. 7 «Teklif/fiyat … kayıtlı olur»): beim Einsenden
+     * ist ein Betrag (CHF) Pflicht — etwa der Nakliye-Preis. Ohne: wie bisher kein Betrag.
+     */
+    feeRequired: boolean;
+    /**
+     * «Kilit» (02.10.2026, OCC-Standard S. 7 «Sistem kilidi — sevkiyat yasağı»): fertig melden und
+     * freigeben erst, wenn alle Schritte DAVOR erledigt sind — die früheren Stufen und Aufgaben des
+     * eigenen Wegs und der ganze andere Weg. Siehe `openPriorSteps`.
+     */
+    priorStepsRequired: boolean;
     /** Die Unteraufgabe braucht eine Freigabe. */
     requiresApproval: boolean;
     /** Was die Verwaltung bei der Freigabe prüft (nur mit «Approval», sonst leer). */
@@ -212,6 +238,16 @@ export interface ProductionSubtask {
     completedByName: string | null;
     completedAt: string | null;
     completionNote: string | null;
+    /**
+     * Die kurze Notiz beim Einsenden («Görevi tamamla», 02.10.2026) — Messwerte, Nakliye-Preis …;
+     * die KI liest sie mit den Dateien. Gehört dem Server wie der Stand.
+     */
+    submissionNote: string | null;
+    /**
+     * Der Betrag beim Einsenden (02.10.2026, nur mit «Ücret girilsin») in CHF — gehört dem Server
+     * wie die Notiz; die KI liest ihn mit der Notiz.
+     */
+    fee: number | null;
     /**
      * Zurück zur Überarbeitung (28.09.2026, «Request revision» beim Prüfen der
      * Dateien): wer, wann (ISO) und was zu ändern ist. Der Abschluss leert es.
@@ -392,6 +428,8 @@ export type ProductionTaskActivityKind =
     /* Anfragen an die Verwaltung (30.09.2026) */
     | 'UNLOCK_REQUESTED'
     | 'REQUEST_SOLVED'
+    /* Tagesnotiz statt Datei (02.10.2026) — zählt in der Dateihistorie wie ein Hochladen */
+    | 'DAILY_NOTE'
     /* das ganze Gerät (Bereich und Stufe leer) */
     | 'PLAN_LOADED'
     | 'PLAN_REMOVED';

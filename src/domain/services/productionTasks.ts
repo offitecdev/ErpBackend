@@ -3,6 +3,7 @@ import type {
     ProductionAreaTotals,
     ProductionBuiltInArea,
     ProductionBuiltInStage,
+    ProductionDeviceTask,
     ProductionFileAnalysis,
     ProductionStandardsFile,
     ProductionSubtask,
@@ -175,7 +176,11 @@ export type ProductionTaskErrorCode =
     | 'FILE_TOO_LARGE'
     | 'FILES_TOO_MANY'
     | 'FILE_NOT_FOUND'
-    | 'FILE_FORBIDDEN';
+    | 'FILE_FORBIDDEN'
+    // OCC-Standard S. 7 (02.10.2026): Betrag beim Einsenden, Sperre bis die Schritte davor erledigt sind.
+    | 'FEE_REQUIRED'
+    | 'FEE_INVALID'
+    | 'PRIOR_STEPS_OPEN';
 
 export type ProductionTaskError = Error & {
     code: ProductionTaskErrorCode;
@@ -569,6 +574,11 @@ const fileAnalysisFrom = (value: unknown): ProductionFileAnalysis | null => {
         })).filter((check) => check.standard),
         model: text(row.model, 60) || null,
         errorCode: text(row.errorCode, 60) || null,
+        // Ältere Prüfungen kennen beides nicht (02.10.2026): ohne Notiz, keine Fotogruppe.
+        note: multilineText(row.note, SUBMISSION_NOTE_MAX) || null,
+        groupFileIds: Array.isArray(row.groupFileIds)
+            ? row.groupFileIds.filter((id): id is string => typeof id === 'string' && SUBTASK_ID.test(id)).slice(0, SUBTASK_FILE_LIMITS.files)
+            : [],
     };
 };
 
@@ -595,17 +605,52 @@ export const filesToAnalyse = (subtask: ProductionSubtask): string[] => {
     if (!hasDocumentStandards(subtask)) return [];
     const standards = subtask.documentStandards ?? '';
     const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    // Die Notiz der Einsendung (und der Betrag) liest die KI mit (02.10.2026) — eine andere Notiz heisst neu prüfen.
+    const note = analysisNoteOf(subtask);
+    const stale = (file: ProductionSubtaskFile) => !file.analysis
+        || file.analysis.standards !== standards
+        || file.analysis.standardsFileRef !== standardsFileRef
+        || file.analysis.note !== note
+        || analysisAsSeen(file.analysis)?.status === 'FAILED';
+    const pdfs = latestFilesOf(subtask.files)
+        .filter((file) => file.type === 'application/pdf')
+        .filter(stale)
+        .map((file) => file.id);
+    // Die Fotos (nur mit «Fotoğraf yeterli») zusammen: neu, sobald eines fehlt, anders geprüft ist oder die Gruppe sich änderte.
+    const group = photoGroupOf(subtask);
+    const groupKey = [...group].sort().join(',');
+    const photosStale = group.some((id) => {
+        const file = subtask.files.find((entry) => entry.id === id);
+        return !file || stale(file) || [...(file.analysis?.groupFileIds ?? [])].sort().join(',') !== groupKey;
+    });
+    return [...pdfs, ...(photosStale ? group : [])];
+};
+
+/** Je Datei die aktuelle Fassung (die höchste ihrer Gruppe). */
+const latestFilesOf = (files: readonly ProductionSubtaskFile[]): ProductionSubtaskFile[] => {
     const latest = new Map<string, ProductionSubtaskFile>();
-    for (const file of subtask.files) {
+    for (const file of files) {
         const known = latest.get(file.groupId);
         if (!known || file.version > known.version) latest.set(file.groupId, file);
     }
-    return [...latest.values()]
-        .filter((file) => file.type === 'application/pdf')
-        .filter((file) => !file.analysis
-            || file.analysis.standards !== standards
-            || file.analysis.standardsFileRef !== standardsFileRef
-            || analysisAsSeen(file.analysis)?.status === 'FAILED')
+    return [...latest.values()];
+};
+
+/** So viele Fotos gehen höchstens in EINE Prüfung (02.10.2026) — die neuesten. */
+export const PHOTO_GROUP_MAX = 10;
+
+/**
+ * Die Fotos, die zusammen geprüft werden (02.10.2026: «Fotoğraflar TEK istekte birlikte analiz
+ * edilir»): nur mit «Fotoğraf yeterli», je Datei die aktuelle Fassung, die neuesten zehn — in der
+ * Reihenfolge des Hochladens.
+ */
+export const photoGroupOf = (subtask: Pick<ProductionSubtask, 'photoAllowed' | 'files'>): string[] => {
+    if (!subtask.photoAllowed) return [];
+    return latestFilesOf(subtask.files)
+        .filter((file) => isSubtaskPhotoType(file.type))
+        .sort((left, right) => right.uploadedAt.localeCompare(left.uploadedAt))
+        .slice(0, PHOTO_GROUP_MAX)
+        .reverse()
         .map((file) => file.id);
 };
 
@@ -614,6 +659,9 @@ export const withQueuedAnalyses = (subtask: ProductionSubtask, fileIds: readonly
     const wanted = new Set(fileIds);
     const standards = subtask.documentStandards ?? '';
     const standardsFileRef = subtask.documentStandardsFile?.ref ?? null;
+    const note = analysisNoteOf(subtask);
+    // Die Fotos unter den Dateien bilden EINE Gruppe (02.10.2026); ein PDF steht für sich.
+    const photoIds = fileIds.filter((id) => isSubtaskPhotoType(subtask.files.find((file) => file.id === id)?.type ?? ''));
     return {
         ...subtask,
         files: subtask.files.map((file) => (!wanted.has(file.id) ? file : {
@@ -629,6 +677,8 @@ export const withQueuedAnalyses = (subtask: ProductionSubtask, fileIds: readonly
                 checks: [],
                 model: null,
                 errorCode: null,
+                note,
+                groupFileIds: isSubtaskPhotoType(file.type) ? photoIds : [],
             },
         })),
     };
@@ -649,6 +699,14 @@ export const withFileAnalysis = (
         ? file
         : { ...file, analysis: { ...file.analysis, ...patch } })),
 });
+
+/** Wie `withFileAnalysis`, für mehrere Dateien zugleich — derselbe Bericht an jedem Foto der Gruppe (02.10.2026). */
+export const withFileAnalyses = (
+    subtask: ProductionSubtask,
+    fileIds: readonly string[],
+    requestedAt: string,
+    patch: Partial<ProductionFileAnalysis>,
+): ProductionSubtask => fileIds.reduce((current, fileId) => withFileAnalysis(current, fileId, requestedAt, patch), subtask);
 
 /**
  * Die Freigabe-Checkliste einer Unteraufgabe (28.09.2026: «add Approval
@@ -708,9 +766,114 @@ export const newSubtaskFileId = (): string => randomKey('f');
 /** Höchstens so viele Dateien je Unteraufgabe; so gross darf eine sein. */
 export const SUBTASK_FILE_LIMITS = { files: 20, bytes: 25 * 1024 * 1024 } as const;
 
-/** Gilt das Dokument einer Unteraufgabe als da? Ein PDF («görev PDF'siz kapanmaz»). */
-export const hasSubtaskDocument = (subtask: Pick<ProductionSubtask, 'files'>): boolean =>
-    subtask.files.some((file) => file.type === 'application/pdf');
+/** Fotos, die mit «Fotoğraf yeterli» an eine Unteraufgabe dürfen (02.10.2026). */
+export const SUBTASK_PHOTO_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/webp'];
+export const isSubtaskPhotoType = (type: string): boolean => SUBTASK_PHOTO_TYPES.includes(type);
+
+/** So lang darf die kurze Notiz der Einsendung sein (02.10.2026) — Messwerte brauchen Platz. */
+export const SUBMISSION_NOTE_MAX = 1000;
+
+/** Der höchste Betrag beim Einsenden (CHF, 02.10.2026). */
+export const SUBTASK_FEE_MAX = 100_000_000;
+
+/**
+ * Ein Betrag (CHF) aus der Datenbank oder einer Anfrage: Zahl oder Text mit Punkt/Komma, 0 bis
+ * `SUBTASK_FEE_MAX`, auf Rappen gerundet. Leer → null; Unlesbares → undefined.
+ */
+export const feeFrom = (value: unknown): number | null | undefined => {
+    if (value === undefined || value === null || value === '') return null;
+    const raw = typeof value === 'number'
+        ? value
+        : typeof value === 'string' ? Number(value.replace(/['’\s]/g, '').replace(',', '.')) : Number.NaN;
+    if (!Number.isFinite(raw) || raw < 0 || raw > SUBTASK_FEE_MAX) return undefined;
+    return Math.round(raw * 100) / 100;
+};
+
+/**
+ * Was die KI neben den Dateien liest (02.10.2026): die kurze Notiz der Einsendung — mit «Ücret
+ * girilsin» davor der Betrag. Ändert sich eins davon, gilt eine Prüfung nicht mehr.
+ */
+export const analysisNoteOf = (subtask: Pick<ProductionSubtask, 'submissionNote' | 'fee' | 'feeRequired'>): string | null => {
+    const fee = subtask.feeRequired && subtask.fee !== null ? `Ücret (CHF): ${subtask.fee.toFixed(2)}` : null;
+    return [fee, subtask.submissionNote].filter(Boolean).join('\n') || null;
+};
+
+/** Darf diese Dateiart an die Unteraufgabe? PDF immer; ein Foto nur mit «Fotoğraf yeterli» (02.10.2026). */
+export const subtaskAcceptsType = (subtask: Pick<ProductionSubtask, 'photoAllowed'>, type: string): boolean =>
+    type === 'application/pdf' || (subtask.photoAllowed && isSubtaskPhotoType(type));
+
+/**
+ * Gilt das Dokument einer Unteraufgabe als da? Ein PDF («görev PDF'siz kapanmaz») — mit
+ * «Fotoğraf yeterli» genügt auch ein Foto (02.10.2026).
+ */
+export const hasSubtaskDocument = (subtask: Pick<ProductionSubtask, 'files'> & { photoAllowed?: boolean }): boolean =>
+    subtask.files.some((file) => file.type === 'application/pdf' || (subtask.photoAllowed === true && isSubtaskPhotoType(file.type)));
+
+/** Eine Aufgabe, wie die Sperre sie liest. */
+type PriorStepTask = Pick<ProductionDeviceTask, 'id' | 'area' | 'stage' | 'code' | 'name' | 'status' | 'sortOrder'> & {
+    subtasks: ReadonlyArray<Pick<ProductionSubtask, 'id' | 'name' | 'status'>>;
+};
+
+/**
+ * «Sistem kilidi» (02.10.2026, OCC-Standard S. 7 «Sevke Hazır / Gönderildi seçilemez …»): was VOR
+ * dieser Unteraufgabe noch nicht erledigt ist. Davor heisst: im eigenen Bereich die früheren
+ * Stufen (Reihenfolge des Wegs), in derselben Stufe die früheren Aufgaben, in derselben Aufgabe die
+ * früheren Unteraufgaben — und jeder andere Bereich ganz (die Elektrik bis zu ihrem Final:
+ * Schema, Seriennummer, QR). Eine Aufgabe ohne Unteraufgaben zählt mit ihrem eigenen Stand.
+ * Antwort: «M-12.1 Soğutma devresi basınç testi» … in der Reihenfolge des Wegs.
+ */
+export const openPriorSteps = (
+    sections: readonly ProductionTaskSection[],
+    tasks: readonly PriorStepTask[],
+    taskId: string,
+    subtaskId: string,
+): string[] => {
+    const target = tasks.find((task) => task.id === taskId);
+    if (!target) return [];
+    const sectionAt = (area: string): number => {
+        const index = sections.findIndex((section) => section.key === area);
+        return index < 0 ? sections.length : index;
+    };
+    const stageAt = (area: string, stage: string): number => {
+        const index = sections.find((section) => section.key === area)?.stages.findIndex((entry) => entry.key === stage) ?? -1;
+        return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+    };
+    const ordered = tasks
+        .map((task, index) => ({ task, index }))
+        .sort((left, right) => sectionAt(left.task.area) - sectionAt(right.task.area)
+            || stageAt(left.task.area, left.task.stage) - stageAt(right.task.area, right.task.stage)
+            || left.task.sortOrder - right.task.sortOrder
+            || left.index - right.index)
+        .map(({ task }) => task);
+    const position = ordered.indexOf(target);
+    const targetStage = stageAt(target.area, target.stage);
+    const open: string[] = [];
+    const openSubtasks = (task: PriorStepTask, count: number) => task.subtasks.slice(0, count).forEach((subtask, index) => {
+        if (subtask.status !== 'DONE') open.push(`${task.code}.${index + 1} ${subtask.name}`);
+    });
+    ordered.forEach((task, at) => {
+        // In der eigenen Aufgabe: nur die Unteraufgaben darüber.
+        if (task === target) {
+            openSubtasks(task, Math.max(0, task.subtasks.findIndex((subtask) => subtask.id === subtaskId)));
+            return;
+        }
+        const stage = stageAt(task.area, task.stage);
+        const earlier = task.area !== target.area || stage < targetStage || (stage === targetStage && at < position);
+        if (!earlier) return;
+        if (task.subtasks.length) openSubtasks(task, task.subtasks.length);
+        else if (task.status !== 'DONE') open.push(`${task.code} ${task.name}`);
+    });
+    return open;
+};
+
+/** Die offenen Schritte davor als Fehler (409) — höchstens acht genannt, dazu die Zahl. */
+export const priorStepsError = (open: readonly string[]): ProductionTaskError => {
+    const shown = open.slice(0, 8).join(' · ') + (open.length > 8 ? ' …' : '');
+    return productionTaskError('PRIOR_STEPS_OPEN', `Erst die Schritte davor abschliessen: ${shown}`, {
+        status: 409,
+        params: { count: open.length, steps: shown },
+    });
+};
 
 const subtaskOf = (
     row: Record<string, unknown>,
@@ -729,6 +892,9 @@ const subtaskOf = (
     dueDate,
     assigneeIds: assigneeIdsFrom(row.assigneeIds),
     requiresDocument: row.requiresDocument === true,
+    photoAllowed: row.requiresDocument === true && row.photoAllowed === true,
+    feeRequired: row.feeRequired === true,
+    priorStepsRequired: row.priorStepsRequired === true,
     requiresApproval: row.requiresApproval === true,
     approvalChecklist: approvalChecklistFrom(row.approvalChecklist, row.requiresApproval === true),
     documentStandards: row.requiresDocument === true
@@ -741,6 +907,8 @@ const subtaskOf = (
     completedByName: text(row.completedByName, 120) || null,
     completedAt: typeof row.completedAt === 'string' ? row.completedAt : null,
     completionNote: text(row.completionNote, 500) || null,
+    submissionNote: multilineText(row.submissionNote, SUBMISSION_NOTE_MAX) || null,
+    fee: row.feeRequired === true ? feeFrom(row.fee) ?? null : null,
     revisionById: typeof row.revisionById === 'string' ? row.revisionById : null,
     revisionByName: text(row.revisionByName, 120) || null,
     revisionAt: typeof row.revisionAt === 'string' ? row.revisionAt : null,
@@ -775,6 +943,8 @@ export const withoutDeviceRecord = (subtask: ProductionSubtask): ProductionSubta
     completedByName: null,
     completedAt: null,
     completionNote: null,
+    submissionNote: null,
+    fee: null,
     revisionById: null,
     revisionByName: null,
     revisionAt: null,
@@ -791,6 +961,9 @@ export const withoutDeviceRecord = (subtask: ProductionSubtask): ProductionSubta
 export const requirementsAdded = (before: ProductionSubtask, after: ProductionSubtask): boolean => {
     if (after.requiresDocument && !before.requiresDocument) return true;
     if (after.requiresApproval && !before.requiresApproval) return true;
+    if (after.requiresDocument && before.photoAllowed && !after.photoAllowed) return true;
+    // Ein Betrag wird verlangt, und es gibt noch keinen (02.10.2026).
+    if (after.feeRequired && !before.feeRequired && before.fee === null) return true;
     const earlier = new Map(before.approvalChecklist.map((item) => [item.id, item.text]));
     return after.approvalChecklist.some((item) => earlier.get(item.id) !== item.text);
 };
@@ -810,6 +983,8 @@ export const mergeDeviceRecord = (edited: ProductionSubtask, kept: ProductionSub
         completedByName: kept.completedByName,
         completedAt: kept.completedAt,
         completionNote: kept.completionNote,
+        submissionNote: kept.submissionNote,
+        fee: edited.feeRequired ? kept.fee : null,
         revisionById: kept.revisionById,
         revisionByName: kept.revisionByName,
         revisionAt: kept.revisionAt,
