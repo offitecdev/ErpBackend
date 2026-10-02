@@ -182,13 +182,19 @@ class SmtpMailService {
      *   KİŞİSEL posta kutusu varsa (EmployeeMailbox) mail o hesabın SMTP'sinden,
      *   o hesabın adresiyle çıkar — «kullanıcının maili her yerde sadece o».
      *   Yoksa firma posta kutusu geçerlidir.
+     * @param options.fixedFromName Görünen gönderen adı SABİT — kişisel posta
+     *   kutusunun adı da onu ezmez (adres yine kişinin adresidir). Sipariş ve
+     *   fiyat talebi mailinde «OCC» (01.10.2026, Samet: «mailde Şahin yazıyordu,
+     *   OCC yazması»).
      */
     async send(companySettings, originalMail, options = {}) {
         const personal = options.asEmployeeId
             ? await (0, employeeMailbox_1.applyPersonalSender)(options.asEmployeeId, companySettings, originalMail)
             : null;
         const settings = personal ? personal.settings : companySettings;
-        const mail = personal ? personal.mail : originalMail;
+        const fixedFromName = String(options.fixedFromName || "").trim();
+        const routed = personal ? personal.mail : originalMail;
+        const mail = fixedFromName ? { ...routed, fromName: fixedFromName } : routed;
         const host = settings.smtpHost?.trim();
         const port = Number(settings.smtpPort || 0);
         const ccList = (mail.cc || []).map((value) => String(value || "").trim()).filter(Boolean);

@@ -3467,7 +3467,7 @@ router.post('/supply/requests', AuthMiddleware_1.requireAuth, (0, RbacMiddleware
                 replyTo: settings?.replyTo || null,
                 attachments: [],
                 inlineImages: [...mail.inlineImages, ...signature.inlineImages],
-            }, { asEmployeeId: req.user.id });
+            }, { asEmployeeId: req.user.id, fixedFromName: PO_MAIL_FROM_NAME });
             emailSent = !result.preview;
         }
         const created = await prisma_client_1.default.supplyRequest.create({
@@ -3590,6 +3590,8 @@ const PO_ORDER_STATUSES = new Set(['ORDER_DRAFT', 'PENDING', 'ORDERED', 'TO_BE_S
 // SUPPLIER tedarikçi hesabından gelen SABİT net birim fiyatla çarpar (indirim kilitli).
 const PO_CALC_MODES = new Set(['AUTO', 'DIRECT', 'SUPPLIER']);
 const PO_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Sipariş / fiyat talebi mailinde tedarikçinin gördüğü gönderen adı (01.10.2026, Samet). */
+const PO_MAIL_FROM_NAME = 'OCC';
 // CR/LF temizliği: SMTP başlığına yerleşen değer ek başlık enjekte edemesin.
 const poStripHeader = (value) => value.replace(/[\r\n]+/g, ' ').trim();
 /**
@@ -6943,7 +6945,7 @@ router.post('/purchase-orders/:id/forward', AuthMiddleware_1.requireAuth, (0, Rb
                     replyTo: PO_EMAIL_RE.test(actorEmail) ? actorEmail : (settings?.replyTo || null),
                     attachments,
                     inlineImages: mail.inlineImages,
-                }, { asEmployeeId: req.user.id });
+                }, { asEmployeeId: req.user.id, fixedFromName: PO_MAIL_FROM_NAME });
                 mailed = !result.preview;
                 preview = result.preview;
             }
@@ -7171,7 +7173,8 @@ router.post('/purchase-orders/:id/send-mail', AuthMiddleware_1.requireAuth, (0, 
             replyTo: settings?.replyTo || null,
             attachments,
             inlineImages: [...mail.inlineImages, ...signature.inlineImages],
-        }, { asEmployeeId: req.user.id });
+            // Tedarikçinin gelen kutusunda gönderen adı hep «OCC» — kişinin adı değil (01.10.2026).
+        }, { asEmployeeId: req.user.id, fixedFromName: PO_MAIL_FROM_NAME });
         // preview = SMTP yapılandırılmamış, gerçek gönderim yok → emailSentAt
         // damgalanmaz; revizyon mantığı gerçek gönderime bağlıdır.
         // TALEP TASLAĞI (DRAFT) gerçekten gönderilince FİYAT TALEBİ
