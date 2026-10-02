@@ -186,3 +186,29 @@ model ProductionOrderLine {
   @@index([tenantId, approvedAt])
   @@map("uretim_siparisleri")
 }
+
+/// ── ÜRETİM TEDARİKÇİSİ (02.10.2026, Vorgabe Samet) ──────────────────────────
+/// «Modül ayarları › Üretim › Üretim tedarikçisi seç»: Welcher Lieferant der
+/// bestellenden Firma IST die Produktionsfirma? Eine bestätigte Bestellung bei
+/// diesem Lieferanten öffnet das Projekt in der Produktionsfirma — wie eine
+/// Zeile mit `source.producerTenantId` (siehe shared/producerOrders.ts). Die
+/// Namensgleichheit bleibt daneben bestehen; diese Zuordnung braucht sie nicht.
+///
+/// Eine Zeile je bestellende Firma und Produktionsfirma; ein Lieferant gehört
+/// höchstens einer Produktionsfirma.
+model ProductionSupplierLink {
+  id               String   @id
+  /// Die bestellende Firma (Projektfirma) — ihr gehört der Lieferant.
+  tenantId         String
+  supplierId       String
+  /// Die Produktionsfirma, die dieser Lieferant ist.
+  producerTenantId String
+  updatedById      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([tenantId, producerTenantId])
+  @@unique([tenantId, supplierId])
+  @@index([producerTenantId])
+  @@map("uretim_tedarikci_baglari")
+}

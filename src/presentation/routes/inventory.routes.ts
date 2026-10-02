@@ -5763,7 +5763,9 @@ router.patch(
                 }
                 // Onaylı iç sipariş düzenlendi (miktar, satır): üretim projesi
                 // hemen yeni hâli alır — eski satırların üreticisi de dahil.
-                if (PO_APPROVED_STATUSES.has(updated.status) && data.items !== undefined) {
+                // Tedarikçi değişince de: üretim tedarikçisine geçen (ya da
+                // ondan çıkan) sipariş projeyi açar / kapatır.
+                if (PO_APPROVED_STATUSES.has(updated.status) && (data.items !== undefined || data.supplierId !== undefined || data.supplierName !== undefined)) {
                     // Aynı üreticinin ikinci çağrısı süren senkrona katılır.
                     refreshProducerProduction(existing);
                     refreshProducerProduction(updated);

@@ -17,6 +17,8 @@ import { ListProductionLinesUseCase } from '../../application/use-cases/producti
 import { GetProductionItemUseCase } from '../../application/use-cases/production/GetProductionItemUseCase';
 import { ProductionPickerUseCase } from '../../application/use-cases/production/ProductionPickerUseCase';
 import { ProductionSettingsUseCase } from '../../application/use-cases/production/ProductionSettingsUseCase';
+import { ProductionSupplierLinksUseCase } from '../../application/use-cases/production/ProductionSupplierLinksUseCase';
+import { PrismaProductionSupplierLinkRepository } from '../../infrastructure/repositories/ProductionSupplierLinkRepository';
 import { ProductionPurchaseLinkService } from '../../application/use-cases/production/ProductionPurchaseLinkService';
 import { isModuleEnabledForTenant } from '../../shared/tenantModules';
 
@@ -54,5 +56,7 @@ export const productionModule = {
     item: new GetProductionItemUseCase(projects, purchase, purchaseOrders),
     picker: new ProductionPickerUseCase(projects, purchase),
     settings: new ProductionSettingsUseCase(settings, tenants, sync),
+    /** Modul-Einstellungen › Produktion › Produktionslieferant (02.10.2026). */
+    supplierLinks: new ProductionSupplierLinksUseCase(new PrismaProductionSupplierLinkRepository(), sync),
     purchaseLink: new ProductionPurchaseLinkService(projects, purchase, isProductionEnabled),
 };
